@@ -1,0 +1,52 @@
+// tests/k/term_twin.ci: the terminal twin on the host (FONT-1 swap; docs/specs/2026-11-07-k-kit2.md section 3f): a
+// small terminal case fed to user/ci/terms.ci, slot 0, and drawn by its draw_row at 1x and 2x. It prints the case's
+// bytes as `case HEX`, the grid as `grid COLS ROWS`, then each frame as `frame term-Zx W H` and each row as runs
+// `rgb count` in hex and decimal, as tests/font/proof.ci does. `tools/check-tiler.py --hosted OUTPUT` draws the
+// same bytes with vt() and term_pixels() (tools/textwin.py) and compares. Run by check.sh:
+// cint run --root . tests/k/term_twin.ci
+
+import user.ci.terms;
+
+const I64 COLS = 14;
+const I64 ROWS = 5;
+
+U32[448] row;
+
+// Prints row[0..w] as runs of one color.
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+void twin(in U8[_] CASE) {
+    "case ";
+    for k in 0..len(CASE) { "{CASE[k]:02x}"; }
+    "\n";
+    "grid {COLS} {ROWS}\n";
+    terms.init(0, COLS, ROWS);
+    for k in 0..len(CASE) { terms.feed(0, CASE[k]); }
+    for z in 1..3 {
+        I64 w = 8 * z * COLS;
+        I64 h = 16 * z * ROWS;
+        "frame term-{z}x {w} {h}\n";
+        for y in 0..h {
+            terms.draw_row(0, row[0..w], y, z);
+            emit(w);
+        }
+    }
+}
+
+// The case: ASCII, Latin-1, box drawing, a code point the face lacks, SGR bold, reverse, ANSI colors, a wrap and
+// the shown cursor on a colored cell, a bar by DECSCUSR after three malformed forms are dropped.
+void main() {
+    twin(b"plain ~ caf\xc3\xa9 \xc3\x80\r\n\x1b[1mbold B\x1b[22m \x1b[7mrev\x1b[27m\x1b[1;7mBR\x1b[m\r\n\xe2\x94\x8c\xe2\x94\x80\xe2\x94\xac\xe2\x94\x80\xe2\x94\x90 \xe2\x95\x94\xe2\x95\x90\xe2\x95\x97 \xe2\x96\x88\xf0\x9f\x98\x80\x80\r\n\x1b[31;44mred on blue\x1b[0;1;32m wraps here\x1b[m\x1b[5;3H\x1b[33;45mcur\x1b[5;4H\x1b[ 5q\x1b[6 1q\x1b[?4 q\x1b[6 q");
+}
+// SPDX-License-Identifier: Apache-2.0

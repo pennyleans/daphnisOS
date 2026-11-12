@@ -1,0 +1,28 @@
+{
+  "id": "paste-across-reads-is-one-undo",
+  "rules": [
+    "UNDO-2",
+    "KEY-1"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b3230307e7879",
+    "7a771b5b3230317e",
+    "1a"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      0,
+      0
+    ]
+  }
+}

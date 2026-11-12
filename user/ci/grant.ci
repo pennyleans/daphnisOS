@@ -1,0 +1,76 @@
+// user/ci/grant.ci: `grant LIST CMD [ARG...]`, ruling GR-1 A (docs/specs/2026-11-05-p-disk.md,
+// docs/specs/2026-11-05-n-net.md): sets the process's grant word to the grants LIST names and runs CMD (a path, or a
+// name looked up in PATH and then taken as it is, BU-2c) with its arguments. LIST is one grant or several joined by
+// commas (AU-3, docs/specs/2026-11-06-au-audio.md section 4): disk, to write under /disk (without it -EROFS); net
+// (N-4), to open a socket (without it -EACCES); audio (AU-3), to open /dev/dsp (without it -EACCES). `grant
+// disk,audio doom` holds both. The word is inherited by fork and kept by execve, so CMD and every process it starts
+// hold it. On Linux the call does not exist (-ENOSYS) and there is nothing to lift: CMD runs as it is. Status 2 for
+// a usage error, 1 when the word could not be set, 127 when CMD could not be run.
+import user.ci.dev;
+import user.ci.grantcall;
+
+const U64 GRANT_DISK = 1;
+const U64 GRANT_NET = 2;
+const U64 GRANT_AUDIO = 4;
+const I64 ENOSYS = 38;
+const I64 EACCES = 13;
+
+// The bit of the grant named by args[from..to), or 0 for no such grant.
+U64 bit(in U8[_] args, I64 from, I64 to) {
+    I64 n = to - from;
+    if (n == 4 && args[from] == 100 && args[from + 1] == 105 && args[from + 2] == 115 && args[from + 3] == 107) {
+        return GRANT_DISK;
+    }
+    if (n == 3 && args[from] == 110 && args[from + 1] == 101 && args[from + 2] == 116) {
+        return GRANT_NET;
+    }
+    if (n == 5 && args[from] == 97 && args[from + 1] == 117 && args[from + 2] == 100 && args[from + 3] == 105
+        && args[from + 4] == 111) {
+        return GRANT_AUDIO;
+    }
+    return 0;
+}
+
+void usage() {
+    "grant: usage: grant disk|net|audio[,...] CMD [ARG...]\n";
+    dev.exit_now(2);
+}
+
+void main(in U8[_] args) {
+    U64 w = 0;
+    I64 at = 0;
+    I64 start = 0;
+    Bool more = true;
+    while (more) {
+        if (at >= len(args)) { usage(); }
+        U8 c = args[at];
+        if (c == 44 || c == 0) {
+            U64 b = bit(args, start, at);
+            if (b == 0) { usage(); }
+            w = w | b;
+            start = at + 1;
+            more = c == 44;
+        }
+        at = at + 1;
+    }
+    if (at >= len(args)) { usage(); }
+    I64 r = grantcall.grant_set(w);
+    if (r == 0 - EACCES) {
+        // AC-1c (L2, L8): past this account's ceiling a parent is asked at the machine; a yes adds the bits, so the
+        // word is set again
+        I64 q = grantcall.grant_ask(args, at, w);
+        if (q != 0) {
+            "grant: a parent refused, or no parent could be asked: error {0 - q}\n";
+            dev.exit_now(1);
+        }
+        r = grantcall.grant_set(w);
+    }
+    if (r < 0 && r != 0 - ENOSYS) {
+        "grant: the grant word was not set: error {0 - r}\n";
+        dev.exit_now(1);
+    }
+    I64 e = grantcall.exec_from(args, at);
+    "grant: cannot run the command: error {0 - e}\n";
+    dev.exit_now(127);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,52 @@
+// user/ci/uname.ci: uname [-asnrvm] (docs/specs/2026-11-07-bu2-meta.md section 6, BU-2b; XCU uname): the fields of
+// struct utsname that the options name, in the order sysname, nodename, release, version, machine, one space
+// apart; none named is -s, -a all five.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.metactl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+
+U8[390] uts;
+
+// Field k of uts: its bytes up to the first NUL.
+void field(I64 k) {
+    I64 s = metactl.UTS_FIELD * k;
+    I64 e = s;
+    while (e < s + metactl.UTS_FIELD - 1 && uts[e] != 0) { e = e + 1; }
+    put.bytes(uts[s..e]);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"uname");
+    args.parse(a, b"asnrvm", b"");
+    if (args.operands() > 0) { msg.usage(b"extra operand"); }
+    I64 r = metactl.co_uname(uts);
+    if (r < 0) {
+        msg.file(b"uname", 0 - r);
+        msg.finish();
+    }
+    U8[5] opt;
+    opt[0] = 's';
+    opt[1] = 'n';
+    opt[2] = 'r';
+    opt[3] = 'v';
+    opt[4] = 'm';
+    Bool any = false;
+    for k in 0..5 {
+        if (args.has(opt[k])) { any = true; }
+    }
+    Bool first = true;
+    for k in 0..5 {
+        if (args.has('a') || args.has(opt[k]) || (!any && k == 0)) {
+            if (!first) { put.byte(' '); }
+            field(k);
+            first = false;
+        }
+    }
+    put.byte('\n');
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

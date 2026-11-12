@@ -1,0 +1,369 @@
+// tests/ff/plane_proof.ci: the Super plane of FF edition 14 (section 3g) drawn by the kit on the host, resting and
+// with a query, at 1x and 2x on the three screens, dark and light. For each frame it prints `name NAME`, the model as
+// plane.dump() writes it, then `frame W H` and each device row as runs `rgb count` in hex and decimal, as
+// tests/font/proof.ci does; `python3 tools/check-hdesk.py --plane-proof OUTPUT [DIR]` draws the same frames from the
+// dumped model with its twin, compares them pixel for pixel and, given DIR, writes both as PNGs.
+// Run by check.sh: cint run --root . tests/ff/plane_proof.ci > OUTPUT
+import user.ci.kit.plane;
+import user.ci.kit.tokens;
+import user.ci.kit.icons3;
+import user.ci.kit.apps;
+import user.ci.kit.anim;
+
+U32[2048] row;
+
+// Prints row[0..w] as runs of one color.
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+// The frame named by the `name` line before it: the model, then its rows.
+void frame(I64 w, I64 h) {
+    plane.dump();
+    "frame {w} {h}\n";
+    for y in 0..h {
+        for x in 0..w { row[x] = tokens.word(tokens.PAPER); }   // DN-49: the desk under the scrim
+        plane.paint(row, y);
+        emit(w);
+    }
+}
+
+// The desk's sources as hdesk offers them (FF-5): two windows, Settings, a few of /bin's programs.
+void sources() {
+    plane.source(plane.WIN, 0, icons3.TERMINAL, b"sh - /", 6, b"pid 9", 5, 2);
+    plane.source(plane.WIN, 1, icons3.TERMINAL, b"sh - /home/notes", 16, b"pid 12", 6, 1);
+    plane.source(plane.PROG, 900, icons3.SETTINGS, b"settings", 8, b"Super+,", 7, 0);
+    plane.source(plane.PROG, 0, icons3.EDITOR, b"/bin/ced", 8, b"/bin", 4, 0);
+    plane.source(plane.PROG, 1, icons3.TERMINAL, b"/bin/cish", 9, b"/bin", 4, 0);
+    plane.source(plane.PROG, 2, icons3.PROGRAM, b"/bin/sh", 7, b"/bin", 4, 0);
+    plane.source(plane.PROG, 3, icons3.PROGRAM, b"/bin/sha256sum", 14, b"/bin", 4, 0);
+    plane.source(plane.PROG, 4, icons3.PROGRAM, b"/bin/ls", 7, b"/bin", 4, 0);
+}
+
+// Frame 1's desk: every app on the desk, n pinned (the apps in order, Settings a home and never a pin, DN-49; past
+// the apps, files /home/notes/pin-NN.txt), one window, a Console's.
+void desk(I64 w, I64 h, I64 z, I64 n) {
+    plane.clear();
+    plane.power_close();                 // clear() keeps the power menu and the armed chord: shut both
+    plane.arm(-1);
+    plane.place(w, h, z);
+    for i in 0..apps.N { plane.app(i); }
+    I64 k = 0;
+    for i in 0..apps.N {
+        if (k < n && plane.pin_app(i)) { k = k + 1; }
+    }
+    U8[22] fp = b"/home/notes/pin-00.txt";
+    while (k < n) {
+        fp[16] = ('0' as I64 + k / 10) as U8;
+        fp[17] = ('0' as I64 + k % 10) as U8;
+        Bool t = plane.taskbar_toggle(fp, false);
+        k = k + 1;
+    }
+    plane.window(0, icons3.TERMINAL, b"sh", 2, b"/", 1, 1, false);
+    plane.window_app(apps.by_program(b"/bin/cish"));   // DN-39 (e): a Console window, so Console carries the dot
+}
+
+void type_in(in U8[_] s) {
+    for k in 0..len(s) { Bool t = plane.typed(s[k]); }
+    plane.filter_begin();
+    plane.offer_file(0, b"/home/notes/shopping.txt", 3);
+    plane.offer_file(1, b"/home/notes", 4);
+    plane.offer_file(2, b"/home/ci/hdesk.ci", 5);
+    I64 n = plane.filter_end();
+    for k in 0..n {
+        if (plane.row_kind(k) == plane.FILE) {
+            I64 r = plane.row_ref(k);
+            if (r == 0) { plane.fill_file(k, b"/home/notes/shopping.txt", 24, 812, false); }
+            if (r == 1) { plane.fill_file(k, b"/home/notes", 11, 0, true); }
+            if (r == 2) { plane.fill_file(k, b"/home/ci/hdesk.ci", 17, 182044, false); }
+        }
+    }
+}
+
+void main() {
+    tokens.set_theme(tokens.DARK);
+    // frame 1: resting at 1024 x 768, the first cell selected
+    desk(1024, 740, 1, 4);
+    "name rest-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // frame 2: the query `editor`
+    desk(1024, 740, 1, 4);
+    sources();
+    type_in(b"editor");
+    "name query-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // the same in Warm Paper
+    tokens.set_theme(tokens.LIGHT);
+    desk(1024, 740, 1, 4);
+    "name rest-1024x768-1x-light\n";
+    frame(1024, 740);
+    tokens.set_theme(tokens.DARK);
+    // 1920 x 1080 at 1x: every app, recent files, two windows (one minimized) and a grant; the third cell hovered
+    desk(1920, 1052, 1, 9);
+    plane.window(1, icons3.TERMINAL, b"sh", 2, b"/home/notes", 11, 2, true);
+    plane.grant(1, 1, b"sh - /home/notes", 16);
+    plane.recent(b"/home/notes/shopping.txt", 24, 812, false);
+    plane.recent(b"/home/ci/hdesk.ci", 17, 182044, false);
+    I64[4] cb;
+    plane.cell_box(2, cb);
+    I64 hv = plane.hover(cb[0] + 4, cb[1] + 4);
+    I64 m = plane.nav(1, 0);
+    "name rest-1920x1080-1x-dark\n";
+    frame(1920, 1052);
+    // 1920 x 1080 at 2x: C = 896, six columns; the band clipped whole or nothing
+    desk(1920, 1024, 2, 9);
+    "name rest-1920x1080-2x-dark\n";
+    frame(1920, 1024);
+    // AC-D5: an account's session offers Lock (Super+L) before Restart, at 2x and on a narrow 1x plane
+    plane.set_lock(true);
+    "name lock-1920x1080-2x-dark\n";
+    frame(1920, 1024);
+    desk(1024, 740, 1, 9);
+    "name lock-1024x768-1x-dark\n";
+    frame(1024, 740);
+    plane.set_lock(false);
+    // 1080 x 1920 at 2x: C = 476, four columns, the band stacked; then the query `sh` with files, the second row
+    desk(1080, 1864, 2, 9);
+    plane.recent(b"/home/notes/shopping.txt", 24, 812, false);
+    "name rest-1080x1920-2x-dark\n";
+    frame(1080, 1864);
+    desk(1080, 1864, 2, 9);
+    sources();
+    type_in(b"sh");
+    I64 mv = plane.move(1);
+    "name query-1080x1920-2x-dark\n";
+    frame(1080, 1864);
+    // 1080 x 1920 at 1x: the frame's column, the preview's lines on a file row
+    desk(1080, 1892, 1, 9);
+    sources();
+    type_in(b"shop");
+    plane.preview_begin(b"/home/notes/shopping.txt", 24);
+    plane.preview_line(b"eggs", 4);
+    plane.preview_line(b"bread", 5);
+    Bool on = plane.toggle_preview();
+    plane.arm(3);
+    "name query-1080x1920-1x-dark\n";
+    frame(1080, 1892);
+    // MS-6 on the stepped clock (MS section 6, gate 5), 1024 x 768 at 1x: the third cell hovered after 6 steps
+    // (mid) and 12 (end); a press after 8 (56 px); the pill from the first cell to the second after 6 and 12; a
+    // list's pill between two rows after 6; motion off, the pill at its end on the first frame
+    desk(1024, 740, 1, 4);
+    plane.set_time(0);
+    I64[4] c3;
+    plane.cell_box(2, c3);
+    I64 h3 = plane.hover(c3[0] + 4, c3[1] + 4);
+    plane.set_time(anim.steps(6));
+    "name hover-6-1024x768-1x-dark\n";
+    frame(1024, 740);
+    plane.set_time(anim.steps(12));
+    "name hover-12-1024x768-1x-dark\n";
+    frame(1024, 740);
+    plane.press(true);
+    plane.set_time(anim.steps(20));
+    "name press-8-1024x768-1x-dark\n";
+    frame(1024, 740);
+    plane.press(false);
+    I64 h0 = plane.hover(0, 0);
+    plane.set_time(anim.steps(100));
+    I64 r1 = plane.nav(1, 0);
+    plane.set_time(anim.steps(106));
+    "name pill-6-1024x768-1x-dark\n";
+    frame(1024, 740);
+    plane.set_time(anim.steps(112));
+    "name pill-12-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 4);
+    sources();
+    plane.set_time(0);
+    type_in(b"sh");
+    I64 m1 = plane.move(1);
+    plane.set_time(anim.steps(50));
+    I64 m2 = plane.move(1);
+    plane.set_time(anim.steps(56));
+    "name rowpill-6-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 4);
+    plane.motion(false);
+    plane.set_time(0);
+    I64 r2 = plane.nav(2, 0);
+    "name off-0-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // no results; an empty grid; 1024 x 768 at 2x with every app (the second row past the footer: not drawn)
+    desk(1024, 740, 1, 4);
+    type_in(b"zzqx");
+    "name none-1024x768-1x-dark\n";
+    frame(1024, 740);
+    plane.clear();
+    plane.place(1024, 740, 1);
+    "name empty-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 712, 2, 9);
+    "name rest-1024x768-2x-dark\n";
+    frame(1024, 712);
+    // DN-5, sheet frame 7: the All Apps picker at 1920 x 1080, 1x and 2x, dark and light; and at the frame's
+    // 1024 x 768; then its query `c`, the pill sliding one cell to the right after 6 steps
+    for t in 0..2 {
+        tokens.set_theme(t);
+        for z in 1..3 {
+            desk(1920, 1080 - 28 * z, z, 4);
+            plane.open_picker();
+            if (t == 0 && z == 1) { "name picker-1920x1080-1x-dark\n"; }
+            if (t == 0 && z == 2) { "name picker-1920x1080-2x-dark\n"; }
+            if (t == 1 && z == 1) { "name picker-1920x1080-1x-light\n"; }
+            if (t == 1 && z == 2) { "name picker-1920x1080-2x-light\n"; }
+            frame(1920, 1080 - 28 * z);
+        }
+    }
+    tokens.set_theme(tokens.DARK);
+    desk(1024, 740, 1, 4);
+    plane.open_picker();
+    "name picker-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 4);
+    plane.open_picker();
+    plane.set_time(0);
+    Bool c = plane.picker_typed('e');
+    I64 pn = plane.picker_nav(1, 0);
+    plane.set_time(anim.steps(6));
+    "name picker-query-6-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // DN-22: the picker mid-change, its icons the larger drawing scaled down: the second cell hovered 80 to 88
+    // after 6 steps, at 1x and 2x; then pressed, 88 to 72, after 4 steps
+    for z in 1..3 {
+        desk(1024 * z, (768 - 28) * z, z, 4);
+        plane.open_picker();
+        plane.set_time(0);
+        I64[4] b;
+        plane.pk_box(1, b);
+        I64 h = plane.hover(b[0] + 4, b[1] + 4);
+        plane.set_time(anim.steps(6));
+        if (z == 1) { "name picker-hover-6-1024x768-1x-dark\n"; } else { "name picker-hover-6-1024x768-2x-dark\n"; }
+        frame(1024 * z, (768 - 28) * z);
+    }
+    plane.set_time(anim.steps(12));
+    plane.press(true);
+    plane.set_time(anim.steps(16));
+    "name picker-press-4-1024x768-2x-dark\n";
+    frame(2048, 1480);
+    // DN-47: the power menu: opened by the keyboard, Shut Down chosen (1x dark); with Lock, a session up (2x light);
+    // armed by Super+Shift+R's first press (1x dark); the button hovered, the menu shut (1x dark)
+    tokens.set_theme(tokens.DARK);
+    desk(1024, 740, 1, 4);
+    plane.power_toggle(true);
+    I64 pk = plane.power_key(plane.PK_DOWN);
+    "name power-1024x768-1x-dark\n";
+    frame(1024, 740);
+    tokens.set_theme(tokens.LIGHT);
+    desk(2048, 1480, 2, 4);
+    plane.set_lock(true);
+    plane.power_toggle(true);
+    "name power-lock-1024x768-2x-light\n";
+    frame(2048, 1480);
+    tokens.set_theme(tokens.DARK);
+    desk(1024, 740, 1, 4);
+    plane.power_toggle(true);
+    "name power-lock-1024x768-1x-dark\n";   // DN-47 on 250: Lock first, then Shut Down, Restart
+    frame(1024, 740);
+    plane.set_lock(false);
+    desk(1024, 740, 1, 4);
+    plane.arm(2);
+    "name power-armed-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 4);
+    I64[4] pb;
+    plane.power_span(1, pb);
+    Bool ph = plane.power_hover(pb[0] + 4, pb[1] + 4);
+    "name power-hover-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // DN-46 (c): a file and a folder pinned to the Taskbar, after the apps, with their file icons
+    desk(1024, 740, 1, 3);
+    Bool f1 = plane.taskbar_toggle(b"/home/notes/shopping.txt", false);
+    Bool f2 = plane.taskbar_toggle(b"/home/photos", true);
+    "name taskbar-files-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // DN-49's density at 6, 16 and 26 pins (48, 40 and 28 px), the 26 with a pin hovered (its name in the tooltip),
+    // and the query state on the same plate: docs/handoff/evidence/20261110-plane/
+    desk(1024, 740, 1, 6);
+    "name pins-6-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // FF 3h: the rail's Trash full (the desk counts the session's $HOME/.trash/items), dark and light
+    desk(1024, 740, 1, 6);
+    plane.set_trash_full(true);
+    "name trash-full-1024x768-1x-dark\n";
+    frame(1024, 740);
+    tokens.set_theme(tokens.LIGHT);
+    desk(1024, 740, 1, 6);
+    plane.set_trash_full(true);
+    "name trash-full-1024x768-1x-light\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 6);
+    plane.set_trash_full(false);
+    "name trash-empty-1024x768-1x-light\n";
+    frame(1024, 740);
+    tokens.set_theme(tokens.DARK);
+    plane.set_trash_full(false);
+    desk(1024, 740, 1, 9);                  // DN-52 (e): names at 12, 11 or 10 px as each fits its cell
+    "name pins-9-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 16);
+    "name pins-16-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 28);
+    "name pins-28-1024x768-1x-dark\n";
+    frame(1024, 740);
+    I64[4] c16;
+    plane.cell_box(9, c16);                 // Web Browser, clipped at 40 px: its full name in the tooltip
+    I64 h16 = plane.hover(c16[0] + 4, c16[1] + 4);
+    "name pins-16-hover-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 26);
+    "name pins-26-1024x768-1x-dark\n";
+    frame(1024, 740);
+    I64[4] c9;
+    plane.cell_box(9, c9);
+    I64 h9 = plane.hover(c9[0] + 4, c9[1] + 4);
+    "name pins-26-hover-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(1024, 740, 1, 6);
+    sources();
+    type_in(b"editor");
+    "name pins-query-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(2048, 1480, 2, 26);
+    "name pins-26-1024x768-2x-dark\n";
+    frame(2048, 1480);
+    // DN-49: at 28 pins the preview's Pin to Taskbar dims (a file's row, not pinned)
+    desk(1024, 740, 1, 28);
+    sources();
+    type_in(b"shop");
+    "name pins-28-query-1024x768-1x-dark\n";
+    frame(1024, 740);
+    // DN-39 (d): Console's pin right-clicked: its two windows (one minimized), New Window, Unpin from Taskbar, Close
+    // All Windows; the minimized one selected. Then a file's pin: Unpin from Taskbar alone, at 2x.
+    desk(1024, 740, 1, 6);
+    plane.window(1, icons3.TERMINAL, b"hello.ci", 8, b"/home", 5, 1, true);
+    plane.window_app(apps.by_program(b"/bin/cish"));
+    I64[4] c1;
+    plane.cell_box(1, c1);
+    Bool mo = plane.pin_menu_open(1, c1[0] + 30, c1[1] + 30);
+    I64 mk = plane.pin_menu_key(plane.PK_DOWN);
+    mk = plane.pin_menu_key(plane.PK_DOWN);
+    "name pinmenu-1024x768-1x-dark\n";
+    frame(1024, 740);
+    desk(2048, 1480, 2, 12);
+    I64[4] c11;
+    plane.cell_box(11, c11);
+    Bool mf = plane.pin_menu_open(11, c11[0] + 20, c11[1] + 20);
+    "name pinmenu-file-1024x768-2x-dark\n";
+    frame(2048, 1480);
+}
+// SPDX-License-Identifier: Apache-2.0

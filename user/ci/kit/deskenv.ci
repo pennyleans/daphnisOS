@@ -1,0 +1,14 @@
+// user/ci/kit/deskenv.ci: the desk terminal's mark in the environment (AM-3), apart from user/ci/kit/ondesk.ci so
+// hosted tests can reach it without the shell's host rows.
+
+U8[20] WANT = [84, 69, 82, 77, 95, 80, 82, 79, 71, 82, 65, 77, 61, 100, 97, 112, 104, 110, 105, 115];   // TERM_PROGRAM=daphnis
+
+// Whether environment entry e[0..n] is TERM_PROGRAM=daphnis.
+export Bool is_desk_entry(in U8[_] e, I64 n) {
+    if (n != 20) { return false; }
+    for k in 0..20 {
+        if (e[k] != WANT[k]) { return false; }
+    }
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

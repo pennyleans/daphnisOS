@@ -1,0 +1,59 @@
+// user/ci/mv.ci: mv [-fi] SOURCE... TARGET (docs/specs/2026-11-06-c-core.md, CT-2): each SOURCE renamed to TARGET, or
+// into TARGET when TARGET is a directory; two or more SOURCEs need a directory. -i asks before a target that exists
+// is replaced; -f never asks; the last of the two given wins. Across file systems (EXDEV) the SOURCE is copied as
+// cp -R -P copies it, over a target removed first, and removed when the copy had no failure (core/files.ci).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.path;
+import user.ci.core.files;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 EXDEV = 18;
+
+U8[4096] dst;
+I64[16] rt;
+
+void one(in U8[_] s, in U8[_] d, Bool ask) {
+    if (ask && corectl.co_stat(d, 0, rt) == 0 && !files.yes(d, b"overwrite")) { return; }
+    I64 r = corectl.co_rename(s, d);
+    if (r == 0 - EXDEV) {
+        I64 was = files.bad();
+        files.set(true, true, false, false, false);
+        if (corectl.co_stat(d, 0, rt) == 0) { files.remove(d); }
+        if (files.bad() == was) { files.clone(s, d); }
+        if (files.bad() == was) { files.remove(s); }
+    } else if (r < 0) {
+        msg.file(s, 0 - r);
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"mv");
+    args.parse(a, b"fi", b"");
+    I64 n = args.operands();
+    if (n < 2) { msg.usage(b"missing operand"); }
+    Bool ask = args.last(b"fi") == 'i';
+    I64 ts = args.op_start(n - 1);
+    I64 te = args.op_stop(a, n - 1);
+    Bool into = corectl.co_stat(a[ts..te], 1, rt) == 0 && (rt[corectl.ST_MODE] & corectl.S_IFMT) == corectl.S_IFDIR;
+    if (n > 2 && !into) {
+        msg.file(a[ts..te], 20);
+        msg.finish();
+    }
+    for i in 0..(n - 1) {
+        I64 s = args.op_start(i);
+        I64 e = args.op_stop(a, i);
+        if (into) {
+            I64 b = path.base_start(a[s..e]);
+            I64 k = path.join(a[ts..te], a[(s + b)..(s + path.base_stop(a[s..e]))], dst);
+            one(a[s..e], dst[0..k], ask);
+        } else {
+            one(a[s..e], a[ts..te], ask);
+        }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

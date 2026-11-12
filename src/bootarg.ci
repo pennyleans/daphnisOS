@@ -1,0 +1,31 @@
+// src/bootarg.ci: G-5, the loader's command line (rt/boot.c rt_boot_cmdline: QEMU's -append, GRUB's
+// multiboot line). Its own module; since M-3 every flavor that runs processes reads it (src/pool.ci).
+
+// Fills dst with the line, at most its size less one, then a NUL; returns the bytes before the NUL, 0
+// with no line.
+export extern observe I64 boot_cmdline(out U8[_] dst);
+
+// NW-5: fills dst with the value after `daphnis.net=`, at most its size less one, then a NUL; returns
+// the bytes before the NUL, 0 when absent, empty, or too long for dst.
+export extern observe I64 boot_net(out U8[_] dst);
+
+// K-6b: true when the line holds word whole, between spaces or at an end.
+export Bool has_word[n](in U8[n] word) {
+    U8[256] line;
+    I64 nbytes = boot_cmdline(line);
+    I64 i = 0;
+    while (i + n <= nbytes) {
+        if ((i == 0 || line[i - 1] == 32) && (i + n == nbytes || line[i + n] == 32)) {
+            Bool same = true;
+            for k in 0..n {
+                same = same && line[i + k] == word[k];
+            }
+            if (same) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    return false;
+}
+// SPDX-License-Identifier: Apache-2.0

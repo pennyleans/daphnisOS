@@ -1,0 +1,27 @@
+// src/main_stackover.ci: K3 hardening. With the TSS loaded and #DF, #NMI and #PF on their own
+// stacks: a stack overflow into the guard page, an int 2, a double fault (the #PF gate made not
+// present, so the CPU cannot deliver a #PF), and a plain #PF, each printed as a record.
+
+import src.serial;
+import src.trap;
+import src.cpu;
+import src.report;
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("Daphnis K3: stack overflow and interrupt stacks\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    trap.trap_probe_stack();
+    report.print_record("trap stack");
+    trap.trap_probe_nmi();
+    report.print_record("trap nmi");
+    cpu.idt_gate(14, 0, 0x0E);
+    trap.trap_probe_pf(0x50000000 as U64);
+    report.print_record("trap df");
+    cpu.idt_gate(14, 3, 0x8E);
+    trap.trap_probe_pf(0x50000000 as U64);
+    report.print_record("trap pf");
+    serial.serial_write("stackover: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

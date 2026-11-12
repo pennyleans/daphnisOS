@@ -1,0 +1,61 @@
+// user/ci/homeaside.ci: a removed account's home set aside, RS-R3 (docs/specs/2026-11-11-rs-accounts-ops.md
+// section 4), for authd and /bin/accounts. `/home/NAME` is renamed to `/home/.removed.NAME.UID`: inside /home,
+// because a directory that changes parent must be writable by the caller (src/fs.ci sys_rename, FS-2), and uid 0
+// holds no write on another's 0700 home without ring 0. A dot name is never an account's (acct.name_ok), and a
+// removed uid is never given again (acct.next_uid), so the name is free unless someone made it; then nothing moves,
+// since rename would replace what is there. Nothing is deleted, and the home's mode and owner stay. corectl's rows
+// reach a program that imports this module through its import closure (user/ci/build.sh picks rows from it).
+import user.ci.corectl;
+
+const I64 ENOENT = 2;
+const I64 EEXIST = 17;
+const I64 EINVAL = 22;
+
+U8[64] homep;
+U8[64] asidep;
+
+// The two paths for name[0..nl) and uid; the aside path's length (the home's is 6 + nl), or -1.
+I64 paths(in U8[_] name, I64 nl, I64 uid) {
+    if (nl < 1 || nl > 32 || nl > len(name) || uid < 1 || uid > 65535) { return -1; }
+    for k in 0..6 { homep[k] = b"/home/"[k]; }
+    for k in 0..15 { asidep[k] = b"/home/.removed."[k]; }
+    for k in 0..nl {
+        homep[6 + k] = name[k];
+        asidep[15 + k] = name[k];
+    }
+    I64 at = 15 + nl;
+    asidep[at] = 46;
+    U8[5] d;
+    I64 dn = 0;
+    I64 q = uid;
+    while (q > 0) {
+        d[dn] = (48 + q % 10) as U8;
+        q = q / 10;
+        dn = dn + 1;
+    }
+    for k in 0..dn { asidep[at + 1 + k] = d[dn - 1 - k]; }
+    return at + 1 + dn;
+}
+
+// The home of the account name[0..nl), whose uid was uid, set aside. 1 when it moved, 0 when there was no home,
+// -EEXIST when the aside name is there (nothing moved), or the -errno of the look or the rename (nothing moved).
+export I64 aside(in U8[_] name, I64 nl, I64 uid) {
+    I64 an = paths(name, nl, uid);
+    if (an < 0) { return 0 - EINVAL; }
+    I64[16] rec;
+    I64 st = corectl.co_stat(asidep[0..an], 0, rec);           // lstat: a link there is a name there
+    if (st == 0) { return 0 - EEXIST; }
+    if (st != 0 - ENOENT) { return st; }
+    I64 mv = corectl.co_rename(homep[0..6 + nl], asidep[0..an]);
+    if (mv == 0 - ENOENT) { return 0; }
+    if (mv < 0) { return mv; }
+    return 1;
+}
+
+// A home that aside moved, put back where it was (the store was not written); rename's answer.
+export I64 back(in U8[_] name, I64 nl, I64 uid) {
+    I64 an = paths(name, nl, uid);
+    if (an < 0) { return 0 - EINVAL; }
+    return corectl.co_rename(asidep[0..an], homep[0..6 + nl]);
+}
+// SPDX-License-Identifier: Apache-2.0

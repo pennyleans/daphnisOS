@@ -1,0 +1,425 @@
+// tests/kfz/k8_keys.ci: RS-KR (docs/specs/2026-11-11-rs-rel-s1-units.md section 2; PR 372, and the kernel's
+// wiring), key repeat through the entries. EVIOCGREP and EVIOCSREP on /dev/input/event0 (src/proc.ci
+// sys_keyrep): who may set the delay and the period, at their bounds, and what a refusal leaves. Then the repeat as
+// the desk reads it with read(2), keys from the USB keyboard (tests/kfz/xhc.ci's boot keyboard, through src/xhci.ci
+// and src/usbhid.ci) and from the PS/2 ring (machine.ci's kfz_ps2), at ticks the test holds (machine.ci's kfz_tick):
+// a held key repeats at the delay and then each period, the keyboard's own make repeat is dropped, a held modifier
+// never repeats, a release in the ring comes before a repeat due at the same read, however full the queue (KFZ-9),
+// and the desk's values take effect at once, mid-hold: a longer period pauses the repeat until its next one is due.
+
+const I64 KZ_EAGAIN = -11;
+const I64 KEY_A = 30;
+const I64 KEY_LEFTSHIFT = 42;
+const I64 KEY_CAPSLOCK = 58;
+const I64 KEY_UP = 103;
+
+// p's descriptor of /dev/input/event0 (the desk's the device, another's a tile queue).
+I64 kz_event0(I64 p) {
+    fs.set_input(true);
+    kz_put(p, KZ_RW + 3072, "/dev/input/event0");
+    I64 fd = kz_call(p, NR_OPEN, KZ_RW + 3072, 0x800, 0, 0, 0, 0);     // O_NONBLOCK: an empty read is -EAGAIN
+    assert(fd >= 3);
+    return fd;
+}
+
+// The two u32 of EVIOCSREP at va in p's memory: the delay, then the period, in ms.
+U64 kz_rep(I64 p, U64 va, U64 d, U64 per) {
+    kz_set_u32(p, va, d);
+    kz_set_u32(p, va + 4, per);
+    return va;
+}
+
+Bool kz_rep_is(I64 d, I64 per) {
+    return keyrep.delay() == d && keyrep.period() == per;
+}
+
+test "EVIOCSREP: a holder not the desk is -EPERM before arg is read; the desk -EFAULT, then -EINVAL out of range" {
+    I64 d = kz_desk();
+    I64 dfd = kz_event0(d);
+    I64 au = kz_proc(0, fs.GRANT_ALL, 0);                    // uid 0, not the tiler
+    I64 u = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 k = kz_proc(1002, fs.GRANT_ALL, fs.GRANT_KERN);      // ring 0, not the tiler
+    I64[3] who = [au, u, k];
+    kz_strings(d);
+    for w in 0..3 {
+        I64 fd = kz_event0(who[w]);
+        kz_strings(who[w]);
+        U64 ok = kz_rep(who[w], KZ_RW + 512, 250, 25);
+        assert(kz_call(who[w], NR_IOCTL, fd as U64, keyrep.EVIOCSREP, ok, 0, 0, 0) == E_PERM);
+        for b in 0..KZ_BAD_PTRS {
+            assert(kz_call(who[w], NR_IOCTL, fd as U64, keyrep.EVIOCSREP, kz_bad_ptr(b, 8), 0, 0, 0) == E_PERM);
+        }
+    }
+    fs.set_login(d, 1000, 1000, fs.GRANT_ALL);               // the tiler at another uid: no call makes it, by hand
+    assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, 250, 25), 0, 0, 0) == E_PERM);
+    fs.set_login(d, 0, 0, fs.GRANT_ALL);
+    assert(kz_rep_is(keyrep.DELAY_DEFAULT, keyrep.PERIOD_DEFAULT));
+    // the desk: a pointer it cannot read is -EFAULT; one it can (the read-only page) reads as a value out of range
+    for b in 0..KZ_BAD_PTRS {
+        I64 r = kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP, kz_bad_ptr(b, 8), 0, 0, 0);
+        if (b == 2 || b == 3 || b == 5) {
+            assert(r == E_FAULT || r == E_INVAL);
+        } else {
+            assert(r == E_FAULT);
+        }
+    }
+    U64[8] ds = [99, 2001, 500, 500, 0, 0xFFFFFFFF, 0x80000000, 100];
+    U64[8] ps = [33, 33, 9, 1001, 0, 0xFFFFFFFF, 33, 0x80000000];
+    for i in 0..8 {
+        assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, ds[i], ps[i]), 0, 0, 0)
+            == E_INVAL);
+    }
+    assert(kz_rep_is(keyrep.DELAY_DEFAULT, keyrep.PERIOD_DEFAULT));
+    // the bounds themselves take
+    assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, 100, 10), 0, 0, 0) == 0);
+    assert(kz_rep_is(100, 10));
+    assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, 2000, 1000), 0, 0, 0) == 0);
+    assert(kz_rep_is(2000, 1000));
+    // not on /dev/input/event0: the screen's descriptor sets nothing
+    assert(kz_call(d, NR_IOCTL, kz_fb_fd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, 250, 25), 0, 0, 0) != 0);
+    assert(kz_rep_is(2000, 1000));
+    kz_end(k);
+    kz_end(u);
+    kz_end(au);
+    kz_end(d);
+}
+
+test "EVIOCGREP: any holder reads the delay and the period; into memory it cannot write, -EFAULT and nothing moves" {
+    I64 d = kz_desk();
+    I64 dfd = kz_event0(d);
+    assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, 750, 40), 0, 0, 0) == 0);
+    I64 u = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 fd = kz_event0(u);
+    kz_fill(u);
+    assert(kz_call(u, NR_IOCTL, fd as U64, keyrep.EVIOCGREP, KZ_RW + 1024, 0, 0, 0) == 0);
+    assert(kz_u64(u, KZ_RW + 1024) == (750 as U64) | ((40 as U64) << 32));
+    assert(kz_kept_outside(u, KZ_RW + 1024, KZ_RW + 1032));
+    for b in 0..KZ_BAD_PTRS {
+        kz_fill(u);
+        U64 at = kz_bad_ptr(b, 8);
+        assert(kz_call(u, NR_IOCTL, fd as U64, keyrep.EVIOCGREP, at, 0, 0, 0) == E_FAULT);
+        assert(kz_kept_outside(u, at, kz_upto(at, 8)));             // Linux's put_user may write the delay first
+    }
+    assert(kz_rep_is(750, 40));
+    kz_end(u);
+    kz_end(d);
+}
+
+// The desk's read of the device at tick t: the events it got, each type | code << 16 | value << 32 (Linux's struct
+// input_event after its time); none for -EAGAIN.
+I64 kz_ev_n = 0;
+U64[16] kz_ev;
+
+void kz_read_at(I64 d, I64 fd, I64 t) {
+    machine.kfz_tick(t);
+    kz_own(d, KZ_RW + 4096, 384);
+    I64 r = kz_call(d, NR_READ, fd as U64, KZ_RW + 4096, 384, 0, 0, 0);
+    kz_ev_n = 0;
+    if (r == KZ_EAGAIN) {
+        return;
+    }
+    assert(r > 0 && r % 24 == 0);
+    kz_ev_n = r / 24;
+    for i in 0..kz_ev_n {
+        kz_ev[i] = kz_u64(d, KZ_RW + 4096 + (24 * i + 16) as U64);
+    }
+}
+
+// True when the desk's last read gave the key event of key code kc, value kv, and its EV_SYN, and nothing else.
+Bool kz_got(I64 kc, I64 kv) {
+    return kz_ev_n == 2 && kz_ev[0] == (1 as U64) | ((kc as U64) << 16) | ((kv as U64) << 32) && kz_ev[1] == 0;
+}
+
+// The desk's delay and period by EVIOCSREP: its answer.
+I64 kz_set_rep(I64 d, I64 fd, U64 delay, U64 period) {
+    return kz_call(d, NR_IOCTL, fd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, delay, period), 0, 0, 0);
+}
+
+// The USB keyboard's boot report at tick t: modifiers, then one key's usage (0 for none).
+void kz_usb_report(I64 t, U8 mods, U8 usage) {
+    machine.kfz_tick(t);
+    U8[8] r = [mods, 0, usage, 0, 0, 0, 0, 0];
+    xhc.kfz_xhc_key(1, 3, r);
+    xhci.poll();
+}
+
+// A set-1 byte from the PS/2 keyboard, or an E0 pair.
+void kz_ps2(U8 b) {
+    U8[1] one = [b];
+    machine.kfz_ps2(0, one);
+}
+
+void kz_ps2_e0(U8 b) {
+    U8[2] two = [0xE0, b];
+    machine.kfz_ps2(0, two);
+}
+
+test "RS-KR, USB: a held key repeats at the delay, then each period, by the tick; a late read one; release ends it" {
+    I64 d = kz_desk();
+    I64 fd = kz_event0(d);
+    xhc.kfz_xhc_plug(xhc.KEYBOARD, 1, 3);
+    assert(xhci.init());
+    assert(kz_set_rep(d, fd, 250, 50) == 0);
+    kz_read_at(d, fd, 1000);
+    assert(kz_ev_n == 0);
+    kz_usb_report(1000, 0, 4);                               // usage 4, the A key, down
+    kz_read_at(d, fd, 1000);
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 1024);                                 // 240 ms
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 1025);                                 // 250 ms: the first repeat, a press
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 1025);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 1029);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 1030);                                 // 300 ms
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 1050);                                 // 500 ms, three missed: one; a keyboard queues none
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 1054);
+    assert(kz_ev_n == 0);
+    kz_usb_report(1055, 0, 0);                               // let go
+    kz_read_at(d, fd, 1055);
+    assert(kz_got(KEY_A, 0));
+    kz_read_at(d, fd, 1200);
+    assert(kz_ev_n == 0);
+    assert(kz_set_rep(d, fd, 100, 200) == 0);                // a delay under the period: the first still at the delay
+    kz_usb_report(1300, 0, 4);
+    kz_read_at(d, fd, 1300);
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 1309);                                 // 90 ms
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 1310);                                 // 100 ms
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 1329);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 1330);                                 // 300 ms
+    assert(kz_got(KEY_A, 1));
+    kz_usb_report(1331, 0, 0);
+    kz_read_at(d, fd, 1331);
+    assert(kz_got(KEY_A, 0));
+    kz_usb_end();
+    machine.kfz_tick(-1);                                    // the tick runs on again for the files after
+    kz_end(d);
+}
+
+test "RS-KR, PS/2: the keyboard's own make repeat is dropped and the tick's repeat comes instead; an E0 key the same" {
+    I64 d = kz_desk();
+    I64 fd = kz_event0(d);
+    assert(kz_set_rep(d, fd, 250, 50) == 0);
+    kz_ps2(0x1E);                                            // A's make
+    kz_read_at(d, fd, 2000);
+    assert(kz_got(KEY_A, 1));
+    kz_ps2(0x1E);                                            // the keyboard's typematic, before the delay
+    kz_read_at(d, fd, 2010);
+    assert(kz_ev_n == 0);
+    kz_ps2(0x1E);
+    kz_ps2(0x1E);
+    kz_read_at(d, fd, 2025);                                 // two more of its own and the tick's: one press
+    assert(kz_got(KEY_A, 1));
+    kz_ps2(0x9E);                                            // A's break
+    kz_read_at(d, fd, 2026);
+    assert(kz_got(KEY_A, 0));
+    kz_read_at(d, fd, 2100);
+    assert(kz_ev_n == 0);
+    // a release in the ring when a repeat falls due: the ring first, so the release and no repeat
+    kz_ps2(0x1E);
+    kz_read_at(d, fd, 2200);
+    assert(kz_got(KEY_A, 1));
+    kz_ps2(0x9E);
+    kz_read_at(d, fd, 2225);
+    assert(kz_got(KEY_A, 0));
+    kz_read_at(d, fd, 2230);
+    assert(kz_ev_n == 0);
+    kz_ps2_e0(0x48);                                         // Up
+    kz_read_at(d, fd, 3000);
+    assert(kz_got(KEY_UP, 1));
+    kz_ps2_e0(0x48);
+    kz_read_at(d, fd, 3010);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 3025);
+    assert(kz_got(KEY_UP, 1));
+    kz_ps2_e0(0xC8);
+    kz_read_at(d, fd, 3026);
+    assert(kz_got(KEY_UP, 0));
+    kz_read_at(d, fd, 3100);
+    assert(kz_ev_n == 0);
+    machine.kfz_tick(-1);                                    // the tick runs on again for the files after
+    kz_end(d);
+}
+
+// The desk's read of one event at tick t: the event, or all ones for -EAGAIN.
+U64 kz_read1(I64 d, I64 fd, I64 t) {
+    machine.kfz_tick(t);
+    kz_own(d, KZ_RW + 4096, 24);
+    I64 r = kz_call(d, NR_READ, fd as U64, KZ_RW + 4096, 24, 0, 0, 0);
+    if (r == KZ_EAGAIN) {
+        return 0xFFFFFFFFFFFFFFFF;
+    }
+    assert(r == 24);
+    return kz_u64(d, KZ_RW + 4096 + 16);
+}
+
+// Every event the desk read in the KFZ-9 test, in order.
+U64[160] kd_log;
+I64 kd_n = 0;
+
+void kd_keep(U64 e) {
+    assert(kd_n < 160);
+    kd_log[kd_n] = e;
+    kd_n += 1;
+}
+
+// KFZ-9 (a review's P3-1 on PR 447; fixed by PR 450): pull() drains the keyboard's ring only while a
+// byte's events fit (4 places), a break byte too, and asks for the repeat only once the ring is read to its end, so
+// with 2 or 3 places left a release waiting in the ring is never overtaken by the held key's repeat.
+test "RS-KR, PS/2 (KFZ-9): a release waiting in the ring is never overtaken by its repeat, however full the queue" {
+    I64 d = kz_desk();
+    I64 fd = kz_event0(d);
+    assert(kz_set_rep(d, fd, 250, 50) == 0);
+    kz_read_at(d, fd, 8000);
+    assert(kz_ev_n == 0);
+    U64 a_down = (1 as U64) | ((KEY_A as U64) << 16) | ((1 as U64) << 32);
+    U64 a_up = (1 as U64) | ((KEY_A as U64) << 16);
+    for i in 0..31 {
+        kz_ps2(0x30);                                        // B typed 31 times
+        kz_ps2(0xB0);
+    }
+    kz_ps2(0x1E);                                            // then A held from 8000: its repeat is due at 8025
+    // one event read at 8000: the pull queues B's 124 events and A's press, which leaves no place past A's release's
+    // two; the read frees 1
+    kd_keep(kz_read1(d, fd, 8000));
+    kz_ps2(0x9E);                                            // A let go at 8010, before its repeat is due
+    // at 8010 1 place: A's break waits in the ring (a byte needs 4), and the read frees 1 more: 2 places
+    kd_keep(kz_read1(d, fd, 8010));
+    // from 8025, when A's repeat would be due, everything the queue and the ring hold
+    Bool more = true;
+    while (more) {
+        kz_read_at(d, fd, 8025);
+        if (kz_ev_n == 0) {
+            more = false;
+        }
+        for i in 0..kz_ev_n {
+            kd_keep(kz_ev[i]);
+        }
+    }
+    I64 a_presses = 0;
+    for i in 0..kd_n {
+        if (kd_log[i] == a_down) {
+            a_presses += 1;
+        }
+    }
+    assert(a_presses == 1);                                  // KFZ-9: no repeat of A queued ahead of its release
+    assert(kd_n == 31 * 4 + 4);                              // B's 31 strokes, A's press and release, with EV_SYNs
+    assert(kd_log[124] == a_down && kd_log[126] == a_up);
+    machine.kfz_tick(-1);
+    kz_end(d);
+}
+
+test "RS-KR: a held modifier or lock never repeats; a key typed under one repeats, and goes on after it is let go" {
+    I64 d = kz_desk();
+    I64 fd = kz_event0(d);
+    assert(kz_set_rep(d, fd, 250, 50) == 0);
+    kz_ps2(0x2A);                                            // left Shift, held
+    kz_read_at(d, fd, 4000);
+    assert(kz_got(KEY_LEFTSHIFT, 1));
+    kz_ps2(0x2A);                                            // its typematic
+    kz_read_at(d, fd, 4050);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 4100);
+    assert(kz_ev_n == 0);
+    kz_ps2(0x1E);                                            // A under it
+    kz_read_at(d, fd, 4100);
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 4125);
+    assert(kz_got(KEY_A, 1));
+    kz_ps2(0xAA);                                            // Shift let go: A goes on
+    kz_read_at(d, fd, 4126);
+    assert(kz_got(KEY_LEFTSHIFT, 0));
+    kz_read_at(d, fd, 4130);
+    assert(kz_got(KEY_A, 1));
+    kz_ps2(0x9E);
+    kz_read_at(d, fd, 4131);
+    assert(kz_got(KEY_A, 0));
+    kz_ps2(0x3A);                                            // Caps Lock, held: no repeat to turn it on and off
+    kz_read_at(d, fd, 4200);
+    assert(kz_got(KEY_CAPSLOCK, 1));
+    kz_read_at(d, fd, 4400);
+    assert(kz_ev_n == 0);
+    kz_ps2(0xBA);
+    kz_read_at(d, fd, 4401);
+    assert(kz_got(KEY_CAPSLOCK, 0));
+    // the USB keyboard's left Shift, from the modifier byte, held
+    xhc.kfz_xhc_plug(xhc.KEYBOARD, 1, 3);
+    assert(xhci.init());
+    kz_usb_report(5000, 2, 0);
+    kz_read_at(d, fd, 5000);
+    assert(kz_got(KEY_LEFTSHIFT, 1));
+    kz_read_at(d, fd, 5100);
+    assert(kz_ev_n == 0);
+    kz_usb_report(5101, 0, 0);
+    kz_read_at(d, fd, 5101);
+    assert(kz_got(KEY_LEFTSHIFT, 0));
+    kz_usb_end();
+    machine.kfz_tick(-1);                                    // the tick runs on again for the files after
+    kz_end(d);
+}
+
+test "RS-KR: the desk's EVIOCSREP takes effect mid-hold, a longer period pausing the repeat; a refused one, nothing" {
+    I64 d = kz_desk();
+    I64 fd = kz_event0(d);
+    I64 u = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 ufd = kz_event0(u);
+    xhc.kfz_xhc_plug(xhc.KEYBOARD, 1, 3);
+    assert(xhci.init());
+    assert(kz_set_rep(d, fd, 250, 50) == 0);
+    kz_usb_report(6000, 0, 4);
+    kz_read_at(d, fd, 6000);
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 6025);                                 // the first repeat, 250 ms
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 6030);                                 // the second, 300 ms
+    assert(kz_got(KEY_A, 1));
+    // refused, mid-hold: another holder's values, the desk's out of range; the repeat goes on as it was
+    assert(kz_call(u, NR_IOCTL, ufd as U64, keyrep.EVIOCSREP, kz_rep(u, KZ_RW + 512, 100, 10), 0, 0, 0) == E_PERM);
+    assert(kz_set_rep(d, fd, 99, 10) == E_INVAL);
+    assert(kz_set_rep(d, fd, 250, 1001) == E_INVAL);
+    kz_read_at(d, fd, 6034);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 6035);                                 // the third, 350 ms
+    assert(kz_got(KEY_A, 1));
+    // the period raised to 200 ms mid-hold: three were given, so the next is the fourth, due at 250 + 3 * 200 ms
+    assert(kz_set_rep(d, fd, 250, 200) == 0);
+    kz_read_at(d, fd, 6040);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 6084);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 6085);                                 // 850 ms: it resumes
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 6104);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 6105);                                 // 1,050 ms, the fifth
+    assert(kz_got(KEY_A, 1));
+    kz_usb_report(6106, 0, 0);
+    kz_read_at(d, fd, 6106);
+    assert(kz_got(KEY_A, 0));
+    // the next hold takes the values set: the first repeat at 250 ms, then each 200 ms
+    kz_usb_report(7000, 0, 4);
+    kz_read_at(d, fd, 7000);
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 7025);
+    assert(kz_got(KEY_A, 1));
+    kz_read_at(d, fd, 7044);
+    assert(kz_ev_n == 0);
+    kz_read_at(d, fd, 7045);
+    assert(kz_got(KEY_A, 1));
+    kz_usb_report(7046, 0, 0);
+    kz_read_at(d, fd, 7046);
+    assert(kz_got(KEY_A, 0));
+    kz_usb_end();
+    machine.kfz_tick(-1);                                    // the tick runs on again for the files after
+    kz_end(u);
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

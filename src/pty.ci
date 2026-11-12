@@ -1,0 +1,832 @@
+// src/pty.ci: pseudo-terminals (W-4, docs/specs/2026-11-05-w-tiler.md section 2). A pty is openpty's pair as
+// two description kinds of src/fs.ci: an open of /dev/ptmx takes a free pair and gives its master
+// (fs.KIND_PTM); TIOCGPTN names the pair's index n and an open of /dev/pts/n gives its slave (fs.KIND_PTS).
+// What the master writes goes through the line discipline to the slave's reader; what the slave writes goes
+// through output processing to the master's reader. Both directions wait as a pipe does: src/proc.ci parks
+// the caller and calls again.
+//
+// The discipline is the part of Linux's n_tty that a shell without line editing uses, and the termios a pty
+// reports holds only the bits it honors: c_iflag ICRNL (a CR from the master reads as NL); c_oflag OPOST and
+// ONLCR (an NL the slave writes reaches the master as CR NL); c_lflag ICANON (the slave reads whole lines;
+// VERASE takes back a byte, VKILL the line, VEOF ends the line without a byte, and at its start reads as an
+// end of file) and ECHO with ECHOE (the master reads back what it wrote, an erase as BS SP BS); ISIG (K-10): VINTR
+// (Ctrl-C, 0x03) and VQUIT (Ctrl-\, 0x1C) from the master, in either mode, raise SIGINT and SIGQUIT for the pair's
+// foreground group, and unless NOFLSH the line being edited, the slave's unread input and the master's unread output
+// are dropped; nothing is echoed for them (no ECHOCTL). There is no VSUSP and no stop: no job is ever stopped.
+// TCSETS keeps any termios given; only those bits act.
+// Without ICANON the slave reads whatever bytes are queued. A partial line VEOF hands over runs into the
+// next line in one read (Linux keeps them apart); no shell of the image does that.
+//
+// The master's reader gets the slave's output a write at a time: a read of the master returns bytes of one
+// write of the slave (or of the echo of one write of the master) and never runs into the next, so a reader that
+// reads once a wake does the same work however the writes were timed (the desk's tiler, W-4). A slave write of
+// at most 1,024 bytes waits until twice its length is free, so it goes in whole; a longer one takes what fits.
+// At most 32 writes wait unread: the next waits too, and echo past that joins the last.
+//
+// The pair's session (src/job.ci): a session leader with no terminal that opens the slave without O_NOCTTY, or asks
+// TIOCSCTTY of it, while the pair has no session, makes the pair its controlling terminal and its group the
+// foreground group. TIOCGPGRP names that group (on the slave only to a process the pair controls, as Linux);
+// TIOCSPGRP, from a process the pair controls, sets it to a group of the session. The session ends with its
+// leader, or when the pair is free; no SIGHUP is sent. src/proc.ci takes the signals a write raised.
+// TIOCSIGSESS (Daphnis's own, not Linux's; WB-4, docs/specs/2026-11-07-wb-window-bars.md) on the master, with a signal
+// 1 to 64 as its argument, raises that signal for every process the pair controls: the shell and every job of its
+// session, the desk's close of a terminal window.
+//
+// TIOCGWINSZ answers the pair's window, 80 x 28 cells of 8 x 16 until TIOCSWINSZ sets another; it is also
+// what isatty asks. A master whose slave was opened and closed again reads -EIO; a slave whose master is
+// closed reads 0 and writes -EIO. A pair is free again once neither end has a description open.
+//
+// Whose the slave is (the plan's P1 of 2026-11-11, src/ptyown.ci): the first open of the slave is the desk's or a
+// master holder's (the maker, or its child before execve), and the first by a process not the desk makes that
+// process's session the owner. A later open of the slave, and TCSETS, TCSETSW, TCSETSF, TIOCSWINSZ, TIOCSCTTY and
+// TIOCSPGRP on it, are the desk's, the controlling session's and the owner session's alone; any other caller gets
+// -EACCES. The master is only ever the opener's of /dev/ptmx and what it hands down: no open names an existing master. No request puts bytes in the slave's input (no TIOCSTI). A process
+// that is not the desk makes at most PTYS - 2 pairs for its uid (ptyown.room): two stay the desk's.
+
+import src.uvm;
+import src.job;
+import src.ptyown;
+
+export const I64 PTYS = 8;                  // H-3a (HX-8): a terminal a window, 8 at most
+const I64 IN_BYTES = 512;           // the slave's reader: whole lines, or bytes without ICANON
+const I64 EDIT = 255;               // the line being edited
+const I64 OUT_BYTES = 2048;         // the master's reader
+const I64 RECS = 32;                // writes the master's reader has not read
+const I64 TIO = 36;                 // struct termios as the kernel reads and writes it
+export const I64 WAIT = -1000;      // fs.WOULD_BLOCK
+const I64 EIO = 5;
+const I64 EAGAIN = 11;
+const I64 EFAULT = 14;
+const I64 ENOTTY = 25;
+const I64 ENOSPC = 28;
+const I64 EPERM = 1;
+const I64 ESRCH = 3;
+const I64 EINVAL = 22;
+const U64 TCGETS = 0x5401;
+const U64 TCSETS = 0x5402;
+const U64 TCSETSW = 0x5403;
+const U64 TCSETSF = 0x5404;
+const U64 TIOCGWINSZ = 0x5413;
+const U64 TIOCSWINSZ = 0x5414;
+const U64 TIOCGPTN = 0x80045430;
+const U64 TIOCSPTLCK = 0x40045431;
+const U64 TIOCSCTTY = 0x540E;
+const U64 TIOCGPGRP = 0x540F;
+const U64 TIOCSPGRP = 0x5410;
+const U64 TIOCSIGSESS = 0x5480;     // WB-4: a signal to the whole session
+const U64 O_NOCTTY = 0x100;
+const U64 ICRNL = 0x100;
+const U64 OPOST = 0x1;
+const U64 ONLCR = 0x4;
+const U64 ICANON = 0x2;
+const U64 ECHO = 0x8;
+const U64 ECHOE = 0x10;
+const U64 ISIG = 0x1;
+const U64 NOFLSH = 0x80;
+const I64 VINTR = 0;
+const I64 VQUIT = 1;
+export const I64 SIGINT = 2;
+export const I64 SIGQUIT = 3;
+const I64 VERASE = 2;
+const I64 VKILL = 3;
+const I64 VEOF = 4;
+
+Bool[8] used;
+I64[8] mrefs;        // descriptions of the master
+I64[8] srefs;        // descriptions of the slave
+Bool[8] opened;      // the slave was opened once
+U8[4096] inq;        // IN_BYTES a pair
+I64[8] ihead;
+I64[8] ilen;
+I64[8] eofs;         // VEOF at a line's start not yet read
+U8[2048] ed;        // EDIT + 1 a pair
+I64[8] elen;
+U8[16384] outq;      // OUT_BYTES a pair
+I64[8] ohead;
+I64[8] olen;
+I64[256] rlen;        // RECS a pair: the bytes left of each unread write
+I64[8] rhead;
+I64[8] rcount;
+U8[288] tio;        // TIO a pair
+I64[8] rows;
+I64[8] cols;
+I64[8] xpix;
+I64[8] ypix;
+I64[8] sfam;         // the session's family (src/job.ci), or -1 for none
+I64[8] ssid;         // the session
+I64[8] fgrp;         // the foreground group
+I64[8] raised;       // bit 0 SIGINT, bit 1 SIGQUIT, bit 2 sess_sig: raised by the master, not yet taken by src/proc.ci
+I64[8] sess_sig;     // WB-4: the signal TIOCSIGSESS raised for the session
+I64[8] maker;        // P1: the uid that opened /dev/ptmx
+I64[8] ofam;         // P1: the owner session's family (src/job.ci), or -1 before the slave's first open
+I64[8] osid;         // P1: the owner session
+I64[8] taken;        // DN-51 frame 25: the bytes the slave's readers took since the pair was made (FBIO_TILE_INFO 16)
+
+U64 tword(I64 i, I64 w) {
+    U64 v = 0;
+    for j in 0..4 {
+        v = v | ((tio[TIO * i + 4 * w + j] as U64) << ((8 * j) as U64));
+    }
+    return v;
+}
+
+void set_tword(I64 i, I64 w, U64 v) {
+    for j in 0..4 {
+        tio[TIO * i + 4 * w + j] = ((v >> ((8 * j) as U64)) & 0xFF) as U8;
+    }
+}
+
+I64 cc(I64 i, I64 k) {
+    return tio[TIO * i + 17 + k] as I64;
+}
+
+// A free pair as its master, made by uid (desk: the desk): the index, or -ENOSPC, none free or the uid's share held.
+export I64 alloc(I64 uid, Bool desk) {
+    I64 held = 0;
+    for j in 0..PTYS {
+        if (used[j] && maker[j] == uid) {
+            held += 1;
+        }
+    }
+    I64 r = ptyown.room(desk, held, PTYS);
+    if (r < 0) {
+        return r;
+    }
+    for i in 0..PTYS {
+        if (!used[i]) {
+            used[i] = true;
+            maker[i] = uid;
+            ofam[i] = -1;
+            osid[i] = 0;
+            taken[i] = 0;
+            mrefs[i] = 0;
+            srefs[i] = 0;
+            opened[i] = false;
+            ihead[i] = 0;
+            ilen[i] = 0;
+            eofs[i] = 0;
+            elen[i] = 0;
+            ohead[i] = 0;
+            olen[i] = 0;
+            rhead[i] = 0;
+            rcount[i] = 0;
+            sfam[i] = -1;
+            ssid[i] = 0;
+            fgrp[i] = 0;
+            raised[i] = 0;
+            for j in 0..TIO {
+                tio[TIO * i + j] = 0;
+            }
+            set_tword(i, 0, ICRNL);
+            set_tword(i, 1, OPOST | ONLCR);
+            set_tword(i, 2, 0xBF);                 // B38400 CS8 CREAD
+            set_tword(i, 3, ISIG | ICANON | ECHO | ECHOE);
+            tio[TIO * i + 17 + VINTR] = 3;
+            tio[TIO * i + 17 + VQUIT] = 0x1C;
+            tio[TIO * i + 17 + VERASE] = 0x7F;
+            tio[TIO * i + 17 + VKILL] = 0x15;
+            tio[TIO * i + 17 + VEOF] = 4;
+            tio[TIO * i + 17 + 6] = 1;             // VMIN
+            rows[i] = 28;
+            cols[i] = 80;
+            xpix[i] = 640;
+            ypix[i] = 448;
+            return i;
+        }
+    }
+    return 0 - ENOSPC;
+}
+
+// The slave of pair i may be opened: 0, or -EIO.
+export I64 slave_ok(I64 i) {
+    if (i < 0 || i >= PTYS || !used[i] || mrefs[i] == 0) {
+        return 0 - EIO;
+    }
+    return 0;
+}
+
+// A description of an end of pair i was made (+1) or let go (-1).
+export void ref(I64 i, Bool master, I64 d) {
+    if (master) {
+        mrefs[i] += d;
+    } else {
+        srefs[i] += d;
+        if (d > 0) {
+            opened[i] = true;
+        }
+    }
+    if (mrefs[i] == 0 && srefs[i] == 0) {
+        used[i] = false;
+        sfam[i] = -1;
+    }
+}
+
+// --- the session (K-10) ---
+
+// Pair i becomes the controlling terminal of pid, a session leader with none, when the pair has no session: true.
+Bool take_session(I64 pid, I64 i) {
+    if (job.session(pid) != job.group(pid) || job.terminal(pid) >= 0 || sfam[i] >= 0) {
+        return false;
+    }
+    sfam[i] = job.family(pid);
+    ssid[i] = job.session(pid);
+    fgrp[i] = job.group(pid);
+    job.set_terminal(pid, i);
+    return true;
+}
+
+// May pid (master: it holds a description of pair i's master; desk: the desk) open pair i's slave, or change it: 0 or
+// -EACCES (src/ptyown.ci).
+export I64 may(I64 pid, I64 i, Bool master, Bool desk) {
+    return ptyown.may(desk, controls(pid, i), master, ofam[i], osid[i], job.family(pid), job.session(pid));
+}
+
+// True before the first open of pair i's slave by a process not the desk: only then does may() read the master holder
+// bit, so src/fs.ci walks the caller's descriptors (holds_master) only then.
+export Bool unowned(I64 i) {
+    return ofam[i] < 0;
+}
+
+// A request on the slave that changes it: its owner's alone (ioctl below).
+Bool changes(U64 req) {
+    return req == TCSETS || req == TCSETSW || req == TCSETSF || req == TIOCSWINSZ || req == TIOCSCTTY
+        || req == TIOCSPGRP;
+}
+
+// True when a slave ioctl req on pair i reads the holder bit: a change, before the first open.
+export Bool asks_holder(I64 i, U64 req) {
+    return unowned(i) && changes(req);
+}
+
+// An open of pair i's slave by pid with flags (src/fs.ci): the first by a process not the desk makes pid's session
+// the owner; without O_NOCTTY it may take the pair.
+export void slave_opened(I64 pid, I64 i, U64 flags, Bool desk) {
+    if (ofam[i] < 0 && !desk) {
+        ofam[i] = job.family(pid);
+        osid[i] = job.session(pid);
+    }
+    if ((flags & O_NOCTTY) == 0) {
+        _ = take_session(pid, i);
+    }
+}
+
+// True when pair i is pid's controlling terminal.
+Bool controls(I64 pid, I64 i) {
+    return job.terminal(pid) == i && sfam[i] == job.family(pid) && ssid[i] == job.session(pid);
+}
+
+// pid's controlling terminal, the pair /dev/tty names (src/fs.ci), or -1.
+export I64 terminal_of(I64 pid) {
+    I64 i = job.terminal(pid);
+    if (i >= 0 && i < PTYS && controls(pid, i)) {
+        return i;
+    }
+    return -1;
+}
+
+// The session sid of family f ended with its leader: its pairs have none.
+export void session_ended(I64 f, I64 sid) {
+    for i in 0..PTYS {
+        if (sfam[i] == f && ssid[i] == sid) {
+            sfam[i] = -1;
+        }
+    }
+}
+
+// The signals raised on pair i since the last call (bit 0 SIGINT, bit 1 SIGQUIT, bit 2 session_signal(i)), now taken;
+// 0 without a session.
+export I64 take_raised(I64 i) {
+    I64 r = raised[i];
+    raised[i] = 0;
+    if (sfam[i] < 0) {
+        return 0;
+    }
+    return r;
+}
+
+export I64 session_family(I64 i) { return sfam[i]; }
+export I64 session_signal(I64 i) { return sess_sig[i]; }
+export I64 foreground(I64 i) { return fgrp[i]; }
+// DN-51 frame 25: pair i's input ready for the slave's readers and not yet read (a line still being edited is not
+// ready), and the bytes they took since the pair was made.
+export I64 unread(I64 i) { return ilen[i]; }
+export I64 taken_bytes(I64 i) { return taken[i]; }
+
+// VINTR or VQUIT taken: the signal is raised, and unless NOFLSH what is queued either way is dropped.
+void isig(I64 i, I64 bit) {
+    raised[i] = raised[i] | bit;
+    if ((tword(i, 3) & NOFLSH) != 0) {
+        return;
+    }
+    ilen[i] = 0;
+    elen[i] = 0;
+    eofs[i] = 0;
+    olen[i] = 0;
+    rcount[i] = 0;
+    _ = open_rec(i);                   // the record master_write opened for its echo, empty again
+}
+
+// A new write for the master's reader; false when RECS are unread.
+Bool open_rec(I64 i) {
+    if (rcount[i] == RECS) {
+        return false;
+    }
+    rlen[RECS * i + (rhead[i] + rcount[i]) % RECS] = 0;
+    rcount[i] += 1;
+    return true;
+}
+
+// The last write again, when nothing went into it.
+void drop_empty(I64 i) {
+    if (rcount[i] > 0 && rlen[RECS * i + (rhead[i] + rcount[i] - 1) % RECS] == 0) {
+        rcount[i] -= 1;
+    }
+}
+
+// Byte c into the last write.
+Bool put_out(I64 i, U8 c) {
+    if (olen[i] == OUT_BYTES || rcount[i] == 0) {
+        return false;
+    }
+    outq[OUT_BYTES * i + (ohead[i] + olen[i]) % OUT_BYTES] = c;
+    olen[i] += 1;
+    rlen[RECS * i + (rhead[i] + rcount[i] - 1) % RECS] += 1;
+    return true;
+}
+
+// Byte c as the slave writes it, through output processing; false when it does not fit whole.
+Bool emit(I64 i, U8 c) {
+    U64 of = tword(i, 1);
+    if (c == 10 && (of & OPOST) != 0 && (of & ONLCR) != 0) {
+        if (OUT_BYTES - olen[i] < 2) {
+            return false;
+        }
+        Bool a = put_out(i, 13);
+        return put_out(i, 10) && a;
+    }
+    return put_out(i, c);
+}
+
+void put_in(I64 i, U8 c) {
+    inq[IN_BYTES * i + (ihead[i] + ilen[i]) % IN_BYTES] = c;
+    ilen[i] += 1;
+}
+
+// The line being edited goes to the reader.
+void push_line(I64 i) {
+    for k in 0..elen[i] {
+        put_in(i, ed[(EDIT + 1) * i + k]);
+    }
+    elen[i] = 0;
+}
+
+void echo(I64 i, U8 c) {
+    if ((tword(i, 3) & ECHO) != 0) {
+        Bool r = emit(i, c);
+        if (!r) {
+            return;
+        }
+    }
+}
+
+void erase_one(I64 i) {
+    if (elen[i] == 0) {
+        return;
+    }
+    elen[i] -= 1;
+    U64 lf = tword(i, 3);
+    if ((lf & ECHO) != 0 && (lf & ECHOE) != 0) {
+        Bool a = put_out(i, 8);
+        Bool b = put_out(i, 32);
+        Bool c = put_out(i, 8);
+        if (!(a && b && c)) {
+            return;
+        }
+    }
+}
+
+// Byte c from the master through the discipline; false when the reader's queue has no room for it yet.
+Bool take(I64 i, U8 c0) {
+    U8 c = c0;
+    if (c == 13 && (tword(i, 0) & ICRNL) != 0) {
+        c = 10;
+    }
+    if ((tword(i, 3) & ISIG) != 0 && c != 0) {
+        I64 ci = c as I64;
+        if (ci == cc(i, VINTR)) {
+            isig(i, 1);
+            return true;
+        }
+        if (ci == cc(i, VQUIT)) {
+            isig(i, 2);
+            return true;
+        }
+    }
+    if ((tword(i, 3) & ICANON) == 0) {
+        if (ilen[i] == IN_BYTES) {
+            return false;
+        }
+        put_in(i, c);
+        echo(i, c);
+        return true;
+    }
+    I64 ci = c as I64;
+    if (ci == cc(i, VERASE) && ci != 0) {
+        erase_one(i);
+        return true;
+    }
+    if (ci == cc(i, VKILL) && ci != 0) {
+        while (elen[i] > 0) {
+            erase_one(i);
+        }
+        return true;
+    }
+    if (ci == cc(i, VEOF) && ci != 0) {
+        if (IN_BYTES - ilen[i] < elen[i]) {
+            return false;
+        }
+        if (elen[i] == 0) {
+            eofs[i] += 1;
+        }
+        push_line(i);
+        return true;
+    }
+    if (c == 10) {
+        if (IN_BYTES - ilen[i] < elen[i] + 1) {
+            return false;
+        }
+        push_line(i);
+        put_in(i, 10);
+        echo(i, 10);
+        return true;
+    }
+    if (elen[i] < EDIT) {
+        ed[(EDIT + 1) * i + elen[i]] = c;
+        elen[i] += 1;
+        echo(i, c);
+    }
+    return true;                       // a byte past a full line is dropped, as n_tty does
+}
+
+// write(2) on the master: the bytes the discipline took; WAIT when it took none and may wait.
+export I64 master_write(I64 pid, I64 i, U64 buf, U64 n, Bool nonblock) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    Bool rec = open_rec(i);            // the echo of this write; past RECS it joins the last
+    I64 done = master_take(pid, i, buf, n, nonblock);
+    drop_empty(i);                     // board 20261110T234031Z: also the record a VINTR (isig) opened past RECS
+    return done;
+}
+
+I64 master_take(I64 pid, I64 i, U64 buf, U64 n, Bool nonblock) {
+    I64 done = 0;
+    U8[256] b;
+    while (done as U64 < n) {
+        I64 c = (n - done as U64) as I64;
+        if (c > 256) {
+            c = 256;
+        }
+        I64 got = uvm.peek(pid, buf + done as U64, b, c);
+        if (got == 0) {
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            return done;
+        }
+        for k in 0..got {
+            if (!take(i, b[k])) {
+                if (done > 0) {
+                    return done;
+                }
+                if (nonblock) {
+                    return 0 - EAGAIN;
+                }
+                return WAIT;
+            }
+            done += 1;
+        }
+        if (got < c) {
+            return done;
+        }
+    }
+    return done;
+}
+
+// Up to n bytes of queue q (inq or outq of pair i) into pid's memory at buf; canonical stops after a NL.
+I64 drain(I64 pid, I64 i, Bool outside, U64 buf, U64 n, Bool canonical) {
+    I64 avail = ilen[i];
+    if (outside) {
+        while (rcount[i] > 1 && rlen[RECS * i + rhead[i]] == 0) {   // an empty write is never the one read
+            rhead[i] = (rhead[i] + 1) % RECS;
+            rcount[i] -= 1;
+        }
+        avail = rlen[RECS * i + rhead[i]];
+    }
+    I64 want = avail;
+    if (n < want as U64) {
+        want = n as I64;
+    }
+    if (uvm.USER_HI - buf < want as U64) {
+        want = (uvm.USER_HI - buf) as I64;
+    }
+    U8[256] b;
+    I64 k = 0;
+    Bool stop = false;
+    while (k < want && k < 256 && !stop) {
+        if (outside) {
+            b[k] = outq[OUT_BYTES * i + (ohead[i] + k) % OUT_BYTES];
+        } else {
+            b[k] = inq[IN_BYTES * i + (ihead[i] + k) % IN_BYTES];
+            stop = canonical && b[k] == 10;
+        }
+        k += 1;
+    }
+    I64 put = uvm.poke(pid, buf, b, k, true);
+    if (put == 0) {
+        return 0 - EFAULT;
+    }
+    if (outside) {
+        ohead[i] = (ohead[i] + put) % OUT_BYTES;
+        olen[i] -= put;
+        rlen[RECS * i + rhead[i]] -= put;
+        if (rlen[RECS * i + rhead[i]] == 0) {
+            rhead[i] = (rhead[i] + 1) % RECS;
+            rcount[i] -= 1;
+        }
+    } else {
+        ihead[i] = (ihead[i] + put) % IN_BYTES;
+        ilen[i] -= put;
+    }
+    return put;
+}
+
+// read(2) on the master: the slave's output, at most the rest of one write; -EIO once the slave was opened and
+// closed and all is read; else WAIT.
+export I64 master_read(I64 pid, I64 i, U64 buf, U64 n, Bool nonblock) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    if (olen[i] > 0) {
+        return drain(pid, i, true, buf, n, false);
+    }
+    if (opened[i] && srefs[i] == 0) {
+        return 0 - EIO;
+    }
+    if (nonblock) {
+        return 0 - EAGAIN;
+    }
+    return WAIT;
+}
+
+// read(2) on the slave: a line (ICANON) or the bytes queued; 0 for VEOF at a line's start or a closed
+// master; else WAIT.
+export I64 slave_read(I64 pid, I64 i, U64 buf, U64 n) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    if (ilen[i] > 0) {
+        I64 r = drain(pid, i, false, buf, n, (tword(i, 3) & ICANON) != 0);
+        if (r > 0) {
+            taken[i] += r;
+        }
+        return r;
+    }
+    if (eofs[i] > 0) {
+        eofs[i] -= 1;
+        return 0;
+    }
+    if (mrefs[i] == 0) {
+        return 0;
+    }
+    return WAIT;
+}
+
+// write(2) on the slave: through output processing; -EIO with the master closed, WAIT when nothing fits.
+export I64 slave_write(I64 pid, I64 i, U64 buf, U64 n) {
+    if (mrefs[i] == 0) {
+        return 0 - EIO;
+    }
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    if (n <= (OUT_BYTES / 2) as U64 && (OUT_BYTES - olen[i]) as U64 < 2 * n) {
+        return WAIT;                   // whole or not at all: room for every NL as CR NL
+    }
+    if (olen[i] == OUT_BYTES || !open_rec(i)) {
+        return WAIT;
+    }
+    I64 done = 0;
+    U8[256] b;
+    while (done as U64 < n) {
+        I64 c = (n - done as U64) as I64;
+        if (c > 256) {
+            c = 256;
+        }
+        I64 got = uvm.peek(pid, buf + done as U64, b, c);
+        if (got == 0) {
+            drop_empty(i);
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            return done;
+        }
+        for k in 0..got {
+            if (!emit(i, b[k])) {
+                drop_empty(i);
+                if (done == 0) {
+                    return WAIT;
+                }
+                return done;
+            }
+            done += 1;
+        }
+        if (got < c) {
+            return done;
+        }
+    }
+    return done;
+}
+
+// poll(2) on an end of pair i (E-1): POLLIN 1, POLLOUT 4, POLLERR 8, POLLHUP 16, as a read or a write of that
+// end would not wait. Nothing changes.
+export I64 revents(I64 i, Bool master) {
+    I64 r = 0;
+    if (master) {
+        if (olen[i] > 0 || (opened[i] && srefs[i] == 0)) { r = r | 1; }
+        if (opened[i] && srefs[i] == 0) { r = r | 16; }
+        if (ilen[i] < IN_BYTES) { r = r | 4; }
+        return r;
+    }
+    if (ilen[i] > 0 || eofs[i] > 0 || mrefs[i] == 0) { r = r | 1; }
+    if (mrefs[i] == 0) {
+        return r | 16;
+    }
+    if (olen[i] < OUT_BYTES && rcount[i] < RECS) { r = r | 4; }
+    return r;
+}
+
+I64 resizes = 0;
+
+// Window changes (TIOCSWINSZ) so far: a change ends a spent poll's wait in src/proc.ci (E-1).
+export I64 resize_count() {
+    return resizes;
+}
+
+// The master's output queue of pair i holds together: olen is the sum of the unread writes' lengths, and with bytes
+// queued the oldest write has some (a read takes from it). tests/pty_test.ci checks it after every step.
+export Bool queue_ok(I64 i) {
+    I64 total = 0;
+    for k in 0..rcount[i] { total += rlen[RECS * i + (rhead[i] + k) % RECS]; }
+    if (total != olen[i] || rcount[i] < 0 || rcount[i] > RECS) { return false; }
+    return olen[i] == 0 || rlen[RECS * i + rhead[i]] > 0;
+}
+
+// True when a master has bytes to read (src/tile.ci: the tiler's sync returns 3 for them).
+export Bool out_ready() {
+    for i in 0..PTYS {
+        if (used[i] && mrefs[i] > 0 && olen[i] > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+I64 put_words(I64 pid, U64 arg, in U64[4] w, I64 k, I64 bytes) {
+    U8[16] b;
+    for t in 0..k {
+        for j in 0..bytes {
+            b[bytes * t + j] = ((w[t] >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+    }
+    if (arg >= uvm.USER_HI || uvm.poke(pid, arg, b, k * bytes, true) != k * bytes) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// ioctl(2) on an end of pair i by pid (holder: it holds a description of the master, asked only when asks_holder;
+// desk: the desk).
+export I64 ioctl(I64 pid, I64 i, Bool master, U64 req, U64 arg, Bool holder, Bool desk) {
+    U64[4] w;
+    for t in 0..4 {
+        w[t] = 0;
+    }
+    if (!master && changes(req)) {
+        I64 m = may(pid, i, holder, desk);
+        if (m < 0) {
+            return m;                  // P1: a change of the slave is its owner's
+        }
+    }
+    if (req == TCGETS) {
+        U8[36] b;
+        for j in 0..TIO {
+            b[j] = tio[TIO * i + j];
+        }
+        if (arg >= uvm.USER_HI || uvm.poke(pid, arg, b, TIO, true) != TIO) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    if (req == TCSETS || req == TCSETSW || req == TCSETSF) {
+        U8[36] b;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, TIO) != TIO) {
+            return 0 - EFAULT;
+        }
+        Bool was = (tword(i, 3) & ICANON) != 0;
+        for j in 0..TIO {
+            tio[TIO * i + j] = b[j];
+        }
+        if (req == TCSETSF) {
+            ilen[i] = 0;
+            elen[i] = 0;
+            eofs[i] = 0;
+        }
+        if (was && (tword(i, 3) & ICANON) == 0 && IN_BYTES - ilen[i] >= elen[i]) {
+            push_line(i);              // the line edited so far is readable at once
+        }
+        return 0;
+    }
+    if (req == TIOCGWINSZ) {
+        w[0] = (rows[i] as U64) | ((cols[i] as U64) << 16) | ((xpix[i] as U64) << 32) | ((ypix[i] as U64) << 48);
+        return put_words(pid, arg, w, 1, 8);
+    }
+    if (req == TIOCSWINSZ) {
+        U8[8] b;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 8) != 8) {
+            return 0 - EFAULT;
+        }
+        resizes += 1;
+        rows[i] = (b[0] as I64) | ((b[1] as I64) << 8);
+        cols[i] = (b[2] as I64) | ((b[3] as I64) << 8);
+        xpix[i] = (b[4] as I64) | ((b[5] as I64) << 8);
+        ypix[i] = (b[6] as I64) | ((b[7] as I64) << 8);
+        return 0;
+    }
+    if (master && req == TIOCGPTN) {
+        w[0] = i as U64;
+        return put_words(pid, arg, w, 1, 4);
+    }
+    if (master && req == TIOCSIGSESS) {
+        if (arg < 1 || arg > 64) {
+            return 0 - EINVAL;
+        }
+        if (sfam[i] < 0) {
+            return 0 - ENOTTY;
+        }
+        sess_sig[i] = arg as I64;
+        raised[i] = raised[i] | 4;
+        return 0;
+    }
+    if (master && req == TIOCSPTLCK) {
+        return 0;                      // pairs are never locked
+    }
+    if (!master && req == TIOCSCTTY) {
+        if (controls(pid, i)) {
+            return 0;
+        }
+        if (!take_session(pid, i)) {
+            return 0 - EPERM;
+        }
+        return 0;
+    }
+    if (req == TIOCGPGRP) {
+        if ((!master && !controls(pid, i)) || sfam[i] < 0) {
+            return 0 - ENOTTY;
+        }
+        w[0] = fgrp[i] as U64;
+        return put_words(pid, arg, w, 1, 4);
+    }
+    if (req == TIOCSPGRP) {
+        U8[4] b;
+        if (!controls(pid, i)) {
+            return 0 - ENOTTY;
+        }
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 4) != 4) {
+            return 0 - EFAULT;
+        }
+        if ((b[3] & 0x80) != 0) {
+            return 0 - EINVAL;
+        }
+        I64 g = (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+        if (!job.group_used(sfam[i], g)) {
+            return 0 - ESRCH;
+        }
+        if (!job.group_in(sfam[i], ssid[i], g)) {
+            return 0 - EPERM;
+        }
+        fgrp[i] = g;
+        return 0;
+    }
+    return 0 - ENOTTY;                 // as Linux answers a request no tty takes
+}
+// SPDX-License-Identifier: Apache-2.0

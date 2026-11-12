@@ -1,0 +1,33 @@
+{
+  "id": "status-column-counts-tab-as-one",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "\t\tx",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b431b5b431b5b43"
+  ],
+  "expect": {
+    "text": "\t\tx",
+    "sel": [
+      3,
+      3
+    ],
+    "screen": [
+      "        x",
+      "",
+      "",
+      "",
+      " x                                  1:4",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

@@ -1,0 +1,144 @@
+// tests/font/proof.ci: FONT-1's proof sheet (F5; docs/specs/2026-11-07-k-kit2.md section 3e), drawn by the kit on
+// the host: the chrome's text in every role (kit/ctext.ci) and a terminal screen (kit/mtext.ci), dark and light,
+// at 1x and 2x. It prints each frame as `frame NAME W H`, then each row as runs `rgb count` in hex and decimal;
+// tools/fontproof.py writes the PNGs. Built and run by hand: cint build --root . tests/font/proof.ci.
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.mtext;
+import user.ci.kit.tokens;
+
+U32[1440] row;
+
+// Prints row[0..w] as runs of one color.
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+void ground_row(I64 w, U32 c) { for x in 0..w { row[x] = c; } }
+
+// s in face f and color c on row y, the pen from 24 px a scale step.
+I64 say(I64 y, I64 base, I64 z, in U8[_] s, U32 c, I64 f, I64 w) {
+    return ctext.text(row, y, 24 * z, base, w, s, len(s), c, f, z);
+}
+
+// One chrome line: its text, face, color (0 ink, 1 dim) and the gap above its baseline at 1x.
+I64 chrome_line(I64 k, I64 y, I64 base, I64 z, U32 ink, U32 dim, I64 w) {
+    U32 c = ink;
+    I64 f = faces.BODY;
+    I64 p = 0;
+    if (k == 0) { f = faces.LABEL; c = dim; p = say(y, base, z, b"SECTION LABEL 11 PX SEMIBOLD \xC2\xB7 RECENT FILES", c, f, w); }
+    if (k == 1) { p = say(y, base, z, b"Body 13 px: The quick brown fox jumps over the lazy dog. 0123456789", c, f, w); }
+    if (k == 2) { p = say(y, base, z, b"Latin-1: \xC3\x80\xC3\xA9\xC3\xAE\xC3\xB5\xC3\xBC \xC3\x87\xC3\x91\xC3\x9F \xC3\xA6\xC3\xB8\xC3\xA5 \xC2\xAB\xC2\xBB \xC2\xBF\xC2\xA1 \xE2\x80\x9Cquotes\xE2\x80\x9D \xE2\x80\x98single\xE2\x80\x99 \xE2\x80\x93 \xE2\x80\x94 \xE2\x82\xAC \xC2\xA3 \xC2\xA5 \xC2\xA9 \xC2\xAE \xC2\xB0", c, f, w); }
+    if (k == 3) { f = faces.NAME; p = say(y, base, z, b"Finder   Terminal   Editor   Settings   Calculator   Viewer   (13 px 500)", c, f, w); }
+    if (k == 4) { f = faces.SEARCH; p = say(y, base, z, b"Search apps, files and windows", c, f, w); }
+    if (k == 5) { f = faces.SEARCH; c = dim; p = say(y, base, z, b"No recent files", c, f, w); }
+    if (k == 6) { f = faces.TITLE; p = say(y, base, z, b"Open in Editor", c, f, w); }
+    if (k == 7) { f = faces.PATH; c = dim; p = say(y, base, z, b"/home/opt/cint/bin/cint   12.0 MB   2026-11-10 03:45", c, f, w); }
+    return p;
+}
+
+I64 gap(I64 k) {
+    if (k == 0) { return 28; }
+    if (k == 4 || k == 6) { return 34; }
+    if (k == 5) { return 26; }
+    return 24;
+}
+
+void chrome(I64 theme, I64 z) {
+    tokens.set_theme(theme);
+    U32 ground = tokens.word(tokens.PAPER);
+    U32 ink = tokens.word(tokens.INK);
+    U32 dim = tokens.word(tokens.INK_DIM);
+    I64 w = 720 * z;
+    I64 h = 248 * z;
+    if (theme == 0) { "frame chrome-dark-{z}x {w} {h}\n"; } else { "frame chrome-light-{z}x {w} {h}\n"; }
+    for y in 0..h {
+        ground_row(w, ground);
+        I64 base = 0;
+        for k in 0..8 {
+            base = base + gap(k) * z;
+            I64 p = chrome_line(k, y, base, z, ink, dim, w);
+        }
+        emit(w);
+    }
+}
+
+// Terminal line r (0 to 11) as UTF-8 bytes into line, its length; bold when r is 2.
+U8[256] line;
+I64 term_line(I64 r) {
+    I64 n = 0;
+    if (r == 0) { n = put(b"The quick brown fox jumps over the lazy dog 0123456789", 0); }
+    if (r == 1) { n = put(b"$ ls -la /home/opt/cint  \x7B\x7D[]()<>|\\/@#%&*+=-_~`'\";:,.?!", 0); }
+    if (r == 2) { n = put(b"SGR bold: The quick brown fox 0O1lI| il1 rn m w", 0); }
+    if (r == 3) { n = put(b"Latin-1: \xC3\x80\xC3\x81\xC3\x82\xC3\x83\xC3\x84\xC3\x85\xC3\x86\xC3\x87\xC3\x88\xC3\x89\xC3\x8A\xC3\x8B\xC3\x8C\xC3\x8D\xC3\x8E\xC3\x8F\xC3\x90\xC3\x91\xC3\x92\xC3\x93\xC3\x94\xC3\x95\xC3\x96\xC3\x97\xC3\x98\xC3\x99\xC3\x9A\xC3\x9B\xC3\x9C\xC3\x9D\xC3\x9E\xC3\x9F", 0); }
+    if (r == 4) { n = put(b"\xC3\xA0\xC3\xA1\xC3\xA2\xC3\xA3\xC3\xA4\xC3\xA5\xC3\xA6\xC3\xA7\xC3\xA8\xC3\xA9\xC3\xAA\xC3\xAB\xC3\xAC\xC3\xAD\xC3\xAE\xC3\xAF\xC3\xB0\xC3\xB1\xC3\xB2\xC3\xB3\xC3\xB4\xC3\xB5\xC3\xB6\xC3\xB7\xC3\xB8\xC3\xB9\xC3\xBA\xC3\xBB\xC3\xBC\xC3\xBD\xC3\xBE\xC3\xBF \xC2\xA1\xC2\xA2\xC2\xA3\xC2\xA5\xC2\xA7\xC2\xA9\xC2\xAB\xC2\xAE\xC2\xB0\xC2\xB1\xC2\xB5\xC2\xB6\xC2\xBB\xC2\xBF", 0); }
+    if (r == 5) { n = put(b"\xE2\x80\x9Cquotes\xE2\x80\x9D \xE2\x80\x98single\xE2\x80\x99 \xE2\x80\x93 en \xE2\x80\x94 em \xE2\x82\xAC \xEF\xBF\xBD", 0); }
+    if (r == 6) { n = put(b"\xE2\x94\x8C\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\xAC\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x90 \xE2\x95\x94\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x97 \xE2\x95\xAD\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x95\xAE \xE2\x96\x91\xE2\x96\x92\xE2\x96\x93\xE2\x96\x88\xE2\x96\x80\xE2\x96\x84", 0); }
+    if (r == 7) { n = put(b"\xE2\x94\x82 cell \xE2\x94\x82 grid \xE2\x94\x82 \xE2\x95\x91 dbl  \xE2\x95\x91 \xE2\x94\x82 round\xE2\x94\x82 \xE2\x96\x8C\xE2\x96\x90", 0); }
+    if (r == 8) { n = put(b"\xE2\x94\x9C\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\xBC\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\xA4 \xE2\x95\xA0\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\xA3 \xE2\x95\xB0\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x95\xAF", 0); }
+    if (r == 9) { n = put(b"\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\xB4\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x98 \xE2\x95\x9A\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x90\xE2\x95\x9D", 0); }
+    if (r == 10) { n = put(b"cish:/home$ cvim notes.txt   [+] 12:4  42%", 0); }
+    return n;
+}
+
+I64 put(in U8[_] s, I64 at) {
+    for k in 0..len(s) { line[at + k] = s[k]; }
+    return at + len(s);
+}
+
+// Code point at line[at] and its length, cp * 8 + length (well-formed input only: the proof's own strings).
+I64 cp_at(I64 at) {
+    I64 b0 = line[at] as I64;
+    if (b0 < 0x80) { return b0 * 8 + 1; }
+    if (b0 < 0xE0) { return ((b0 & 0x1F) * 64 + (line[at + 1] as I64 & 0x3F)) * 8 + 2; }
+    if (b0 < 0xF0) { return (((b0 & 0x0F) * 64 + (line[at + 1] as I64 & 0x3F)) * 64 + (line[at + 2] as I64 & 0x3F)) * 8 + 3; }
+    return ((((b0 & 0x07) * 64 + (line[at + 1] as I64 & 0x3F)) * 64 + (line[at + 2] as I64 & 0x3F)) * 64 + (line[at + 3] as I64 & 0x3F)) * 8 + 4;
+}
+
+void term(I64 light, I64 z) {
+    U32 bg = tokens.term_paper();
+    U32 fg = tokens.term_ink();
+    if (light == 1) { bg = 0x00f5f4f0; fg = 0x00141413; }
+    I64 cols = 64;
+    I64 rows = 12;
+    I64 cw = mtext.cell_w(z);
+    I64 ch = mtext.cell_h(z);
+    I64 w = (cols + 2) * cw;
+    I64 h = (rows + 1) * ch;
+    if (light == 0) { "frame term-dark-{z}x {w} {h}\n"; } else { "frame term-light-{z}x {w} {h}\n"; }
+    for y in 0..h {
+        ground_row(w, bg);
+        I64 r = y / ch - 1;
+        if (r >= 0 && r < 11) {
+            I64 n = term_line(r);
+            I64 at = 0;
+            I64 col = 0;
+            while (at < n && col < cols) {
+                I64 d = cp_at(at);
+                at = at + d % 8;
+                mtext.cell_row(row, (col + 1) * cw, y % ch, mtext.index(d / 8), r == 2, fg, bg, z);
+                col = col + 1;
+            }
+        }
+        emit(w);
+    }
+}
+
+void main() {
+    for z in 1..3 {
+        chrome(0, z);
+        chrome(1, z);
+        term(0, z);
+        term(1, z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

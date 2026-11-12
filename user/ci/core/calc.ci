@@ -1,0 +1,646 @@
+// user/ci/core/calc.ci: the calculator's arithmetic (docs/specs/2026-11-07-bp-basics.md section 3, BP-1; stage RS,
+// RS-CALC), one line at a time over core/dec.ci, so ccalc in a terminal and Calc in a window are the same arithmetic.
+// A line is an expression, `hex EXPR`, `NAME = EXPR` or `scale = N`. Integers are checked; decimals are fixed point
+// and a result cut to `scale` digits is marked (`~` when written). Names, the scale and the last value (`_`) persist
+// from line to line. Nothing is written here: line() says what the line was, and the text functions spell it.
+//
+// Operators, loosest first: | , xor, &, << >>, + -, * / %, unary - and ~, ^ (right to the left), atoms: a number
+// (decimal, or hex after 0x), ( EXPR ), sqrt( EXPR ), _, a name.
+import user.ci.core.dec;
+
+export const I64 DEPTH_MAX = 64;
+export const I64 NAMES_MAX = 64;
+export const I64 NAME_LEN = 16;
+export const I64 LINE_MAX = 65536;
+
+// line()'s answers
+export const I64 BLANK = 0;           // nothing on the line
+export const I64 VALUE = 1;           // a value: m(), s(), marked()
+export const I64 HEX = 2;             // a value to write in hex: hex_value()
+export const I64 SET = 3;             // a name or the scale was set; nothing to write
+export const I64 E_SYNTAX = -1;       // col() the column
+export const I64 E_DEPTH = -2;
+export const I64 E_NAME = -3;         // an unknown name: name_text()
+export const I64 E_NAMES = -4;        // a new name past NAMES_MAX
+export const I64 E_SCALE_SET = -5;    // `scale = N` with N not 0 to SCALE_MAX
+// a dec failure e comes back as -(10 + e): E_OVERFLOW -11, E_ZERO -12, E_INTEGER -13, E_EXPONENT -14,
+// E_NEGATIVE -15, E_SCALE -16
+export const I64 E_DEC = -10;
+
+U8[65536] src;
+I64 n = 0;
+I64 at = 0;
+I64 col_at = 0;       // the column of a syntax error, from 1
+I64 depth = 0;
+
+I64[64] vm;           // the value stack
+I64[64] vs;
+Bool[64] vc;
+I64 sp = 0;
+
+U8[1024] names;       // NAMES_MAX names of NAME_LEN bytes, NUL padded
+I64[64] nm;
+I64[64] ns;
+Bool[64] nc;
+I64 nn = 0;
+I64 last_m = 0;
+I64 last_s = 0;
+Bool last_c = false;
+I64 scale_digits = 9;
+
+I64 out_m = 0;        // what the last line gave
+I64 out_s = 0;
+Bool out_c = false;
+I64 out_hex = 0;
+I64 name_s = 0;
+I64 name_e = 0;
+
+export I64 m() { return out_m; }
+export I64 s() { return out_s; }
+export Bool marked() { return out_c; }
+export I64 hex_value() { return out_hex; }
+export I64 col() { return col_at; }
+export I64 scale() { return scale_digits; }
+
+// Where the unknown name of an E_NAME lies in the line given: [name_from(), name_to()).
+export I64 name_from() { return name_s; }
+export I64 name_to() { return name_e; }
+
+// The unknown name of an E_NAME into buf; its length.
+export I64 name_text(inout U8[_] buf) {
+    I64 k = name_e - name_s;
+    if (k > len(buf)) { k = len(buf); }
+    for i in 0..k { buf[i] = src[name_s + i]; }
+    return k;
+}
+
+// Forgets the names, the scale and the last value.
+export void forget() {
+    commit = true;
+    nn = 0;
+    last_m = 0;
+    last_s = 0;
+    last_c = false;
+    scale_digits = 9;
+}
+
+void syntax() {
+    if (col_at == 0) { col_at = at + 1; }
+    dec.raise(-1);
+}
+
+Bool going() {
+    return dec.fail() == dec.E_NONE;
+}
+
+void push(I64 mv, I64 sv, Bool c) {
+    if (sp == DEPTH_MAX) {
+        dec.raise(-2);
+        return;
+    }
+    vm[sp] = mv;
+    vs[sp] = sv;
+    vc[sp] = c;
+    sp = sp + 1;
+}
+
+U8 peek() {
+    if (at < n) { return src[at]; }
+    return 0;
+}
+
+void blanks() {
+    while (at < n && (src[at] == ' ' || src[at] == '\t')) {
+        at = at + 1;
+    }
+}
+
+Bool digit(U8 c) { return c >= '0' && c <= '9'; }
+Bool letter(U8 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+
+// The word at at (a name or a keyword) is w, whole.
+Bool word(in U8[_] w) {
+    if (at + len(w) > n) { return false; }
+    for i in 0..len(w) {
+        if (src[at + i] != w[i]) { return false; }
+    }
+    I64 e = at + len(w);
+    return e == n || !(letter(src[e]) || digit(src[e]));
+}
+
+// The top two values, b on top, popped into the operands of op and the result pushed.
+I64 am = 0;
+I64 sa = 0;
+I64 bm = 0;
+I64 sb = 0;
+Bool marks = false;
+
+void pop2() {
+    sp = sp - 2;
+    am = vm[sp];
+    sa = vs[sp];
+    bm = vm[sp + 1];
+    sb = vs[sp + 1];
+    marks = vc[sp] || vc[sp + 1];
+}
+
+void take() {
+    if (going()) { push(dec.units(), dec.scale(), marks || dec.cut()); }
+}
+
+void binary(U8 op) {
+    if (!going()) { return; }
+    pop2();
+    dec.reset();
+    if (op == '+') { dec.plus(am, sa, bm, sb); }
+    else if (op == '-') { dec.minus(am, sa, bm, sb); }
+    else if (op == '*') { dec.times(am, sa, bm, sb); }
+    else if (op == '/') { dec.quot(am, sa, bm, sb, scale_digits); }
+    else if (op == '%') { dec.rest(am, sa, bm, sb); }
+    else if (op == '^') { dec.raise_to(am, sa, bm, sb); }
+    else if (op == '<') { dec.shift(am, sa, bm, sb, true); }
+    else if (op == '>') { dec.shift(am, sa, bm, sb, false); }
+    else {
+        I64 a = dec.integer(am, sa);
+        I64 b = dec.integer(bm, sb);
+        if (!going()) { return; }
+        I64 v = 0;
+        if (op == '&') { v = a & b; }
+        else if (op == '|') { v = a | b; }
+        else { v = a ^ b; }
+        dec.trim(v, 0);
+    }
+    take();
+}
+
+I64 hexdigit(U8 c) {
+    if (digit(c)) { return (c - '0') as I64; }
+    if (c >= 'a' && c <= 'f') { return (c - 'a') as I64 + 10; }
+    if (c >= 'A' && c <= 'F') { return (c - 'A') as I64 + 10; }
+    return -1;
+}
+
+// The bytes src[s..e) are the word w.
+Bool is(I64 s0, I64 e, in U8[_] w) {
+    if (e - s0 != len(w)) { return false; }
+    for i in 0..len(w) {
+        if (src[s0 + i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+void number() {
+    I64 mv = 0;
+    I64 sv = 0;
+    if (peek() == '0' && at + 1 < n && (src[at + 1] == 'x' || src[at + 1] == 'X')) {
+        at = at + 2;
+        I64 k = 0;
+        I64 d = hexdigit(peek());
+        while (d >= 0) {
+            if (mv > (dec.M - d) / 16) {
+                dec.raise(dec.E_OVERFLOW);
+                return;
+            }
+            mv = mv * 16 + d;
+            at = at + 1;
+            k = k + 1;
+            d = hexdigit(peek());
+        }
+        if (k == 0) {
+            syntax();
+            return;
+        }
+        push(mv, 0, false);
+        return;
+    }
+    Bool point = false;
+    while (digit(peek()) || (peek() == '.' && !point)) {
+        if (peek() == '.') {
+            point = true;
+        } else {
+            I64 d = (peek() - '0') as I64;
+            if (mv > (dec.M - d) / 10) {
+                dec.raise(dec.E_OVERFLOW);
+                return;
+            }
+            mv = mv * 10 + d;
+            if (point) { sv = sv + 1; }
+            if (sv > dec.SCALE_MAX) {
+                dec.raise(dec.E_SCALE);
+                return;
+            }
+        }
+        at = at + 1;
+    }
+    push(mv, sv, false);
+}
+
+I64 find(I64 s0, I64 e) {
+    if (e - s0 > NAME_LEN) { return -1; }
+    for k in 0..nn {
+        Bool same = true;
+        for i in 0..NAME_LEN {
+            U8 c = 0;
+            if (s0 + i < e) { c = src[s0 + i]; }
+            same = same && names[k * NAME_LEN + i] == c;
+        }
+        if (same) { return k; }
+    }
+    return -1;
+}
+
+void name_end() {
+    name_s = at;
+    while (at < n && (letter(src[at]) || digit(src[at]))) {
+        at = at + 1;
+    }
+    name_e = at;
+}
+
+void atom() {
+    if (!going()) { return; }
+    blanks();
+    U8 c = peek();
+    if (c == '(') {
+        depth = depth + 1;
+        if (depth > DEPTH_MAX) {
+            dec.raise(-2);
+            return;
+        }
+        at = at + 1;
+        expr();
+        blanks();
+        if (going() && peek() != ')') {
+            syntax();
+            return;
+        }
+        at = at + 1;
+        depth = depth - 1;
+    } else if (digit(c) || c == '.') {
+        number();
+    } else if (word(b"sqrt")) {
+        at = at + 4;
+        blanks();
+        if (peek() != '(') {
+            syntax();
+            return;
+        }
+        atom();
+        if (!going()) { return; }
+        sp = sp - 1;
+        Bool c0 = vc[sp];
+        I64 mv = vm[sp];
+        I64 sv = vs[sp];
+        dec.reset();
+        dec.root(mv, sv, scale_digits);
+        marks = c0;
+        take();
+    } else if (c == '_' && (at + 1 == n || !(letter(src[at + 1]) || digit(src[at + 1])))) {
+        at = at + 1;
+        I64 mv = last_m;
+        I64 sv = last_s;
+        Bool k = last_c;
+        push(mv, sv, k);
+    } else if (letter(c)) {
+        name_end();
+        I64 k = find(name_s, name_e);
+        if (k < 0) {
+            dec.raise(-3);
+            return;
+        }
+        I64 mv = nm[k];
+        I64 sv = ns[k];
+        Bool t = nc[k];
+        push(mv, sv, t);
+    } else {
+        syntax();
+    }
+}
+
+void power() {
+    atom();
+    blanks();
+    if (going() && peek() == '^') {
+        at = at + 1;
+        unary();
+        binary('^');
+    }
+}
+
+void unary() {
+    if (!going()) { return; }
+    blanks();
+    U8 c = peek();
+    if (c == '-' || c == '~') {
+        at = at + 1;
+        unary();
+        if (!going()) { return; }
+        sp = sp - 1;
+        I64 mv = vm[sp];
+        I64 sv = vs[sp];
+        Bool k = vc[sp];
+        if (c == '-') {
+            push(0 - mv, sv, k);
+        } else {
+            dec.reset();
+            I64 v = dec.integer(mv, sv);
+            if (!going()) { return; }
+            push(~v, 0, k);
+        }
+    } else {
+        power();
+    }
+}
+
+void product() {
+    unary();
+    blanks();
+    while (going() && (peek() == '*' || peek() == '/' || peek() == '%')) {
+        U8 op = peek();
+        at = at + 1;
+        unary();
+        binary(op);
+        blanks();
+    }
+}
+
+void total() {
+    product();
+    blanks();
+    while (going() && (peek() == '+' || peek() == '-')) {
+        U8 op = peek();
+        at = at + 1;
+        product();
+        binary(op);
+        blanks();
+    }
+}
+
+void shifted() {
+    total();
+    blanks();
+    while (going() && at + 1 < n && ((src[at] == '<' && src[at + 1] == '<') || (src[at] == '>' && src[at + 1] == '>'))) {
+        U8 op = src[at];
+        at = at + 2;
+        total();
+        binary(op);
+        blanks();
+    }
+}
+
+void anded() {
+    shifted();
+    blanks();
+    while (going() && peek() == '&') {
+        at = at + 1;
+        shifted();
+        binary('&');
+        blanks();
+    }
+}
+
+void xored() {
+    anded();
+    blanks();
+    while (going() && word(b"xor")) {
+        at = at + 3;
+        anded();
+        binary('x');
+        blanks();
+    }
+}
+
+void expr() {
+    xored();
+    blanks();
+    while (going() && peek() == '|') {
+        at = at + 1;
+        xored();
+        binary('|');
+        blanks();
+    }
+}
+
+// The failure dec holds as line()'s answer.
+I64 failed() {
+    I64 e = dec.fail();
+    if (e < 0) { return e; }
+    return E_DEC - e;
+}
+
+Bool commit = true;   // false: preview(), which sets no name, no scale and no last value
+
+// One expression, statement or assignment, line[0..k): what it was (the constants above). An assignment to a new
+// name keeps the name even when its expression fails, as ccalc always has.
+export I64 line(in U8[_] text, I64 k) {
+    commit = true;
+    return run_line(text, k);
+}
+
+// What line() would answer for text[0..k), and its value, with nothing kept: no name, scale or last value changes
+// (Calc's live result while a line is typed).
+export I64 preview(in U8[_] text, I64 k) {
+    commit = false;
+    I64 r = run_line(text, k);
+    commit = true;
+    return r;
+}
+
+I64 run_line(in U8[_] text, I64 k) {
+    if (k > LINE_MAX) { return E_DEC - dec.E_OVERFLOW; }
+    for i in 0..k { src[i] = text[i]; }
+    n = k;
+    at = 0;
+    col_at = 0;
+    sp = 0;
+    depth = 0;
+    dec.reset();
+    blanks();
+    if (at == n) { return BLANK; }
+    Bool hex = false;
+    I64 target = -1;        // -1 none, -2 scale, -3 a new name in a preview, else a name being set (its index)
+    I64 save = at;
+    if (word(b"hex")) {
+        at = at + 3;
+        hex = true;
+    } else if (letter(peek())) {
+        name_end();
+        I64 e = name_e;
+        I64 s0 = name_s;
+        blanks();
+        if (peek() == '=') {
+            at = at + 1;
+            if (is(s0, e, b"scale")) {
+                target = -2;
+            } else if (e - s0 > NAME_LEN || is(s0, e, b"_") || is(s0, e, b"sqrt") || is(s0, e, b"xor") || is(s0, e, b"hex")) {
+                at = s0;
+                syntax();
+            } else {
+                target = find(s0, e);
+                if (target < 0 && !commit) {
+                    target = -3;      // a preview of a new name: its value only
+                } else if (target < 0) {
+                    if (nn == NAMES_MAX) { return E_NAMES; }
+                    for i in 0..NAME_LEN {
+                        U8 c = 0;
+                        if (s0 + i < e) { c = src[s0 + i]; }
+                        names[nn * NAME_LEN + i] = c;
+                    }
+                    target = nn;
+                    nn = nn + 1;
+                }
+            }
+        } else {
+            at = save;
+        }
+    }
+    if (going()) { expr(); }
+    blanks();
+    if (going() && at != n) { syntax(); }
+    if (!going()) { return failed(); }
+    sp = sp - 1;
+    I64 mv = vm[sp];
+    I64 sv = vs[sp];
+    Bool c = vc[sp];
+    if (target == -2) {
+        dec.reset();
+        I64 t = dec.integer(mv, sv);
+        if (!going() || t < 0 || t > dec.SCALE_MAX) { return E_SCALE_SET; }
+        if (commit) { scale_digits = t; }
+        return SET;
+    }
+    I64 r = SET;
+    if (hex) {
+        dec.reset();
+        I64 v = dec.integer(mv, sv);
+        if (!going()) { return E_DEC - dec.E_INTEGER; }
+        out_hex = v;
+        r = HEX;
+    } else if (target == -1) {
+        out_m = mv;
+        out_s = sv;
+        out_c = c;
+        r = VALUE;
+    }
+    if (!commit) { return r; }
+    if (target >= 0) {
+        nm[target] = mv;
+        ns[target] = sv;
+        nc[target] = c;
+    }
+    last_m = mv;
+    last_s = sv;
+    last_c = c;
+    return r;
+}
+
+// m / 10^sc, with `~` first when marked, into buf (at least 22 bytes); its length.
+export I64 value_text(I64 mv, I64 sc, Bool c, inout U8[_] buf) {
+    I64 k = 0;
+    if (c) {
+        buf[k] = '~';
+        k = k + 1;
+    }
+    U64 x = 0;
+    if (mv < 0) {
+        buf[k] = '-';
+        k = k + 1;
+        x = (0 - mv) as U64;
+    } else {
+        x = mv as U64;
+    }
+    U8[24] d;
+    I64 j = 0;
+    while (x > 0 || j <= sc) {
+        d[j] = ((x % 10) as U8) + '0';
+        x = x / 10;
+        j = j + 1;
+    }
+    while (j > 0) {
+        j = j - 1;
+        buf[k] = d[j];
+        k = k + 1;
+        if (j == sc && sc > 0) {
+            buf[k] = '.';
+            k = k + 1;
+        }
+    }
+    return k;
+}
+
+// v in hex, `0x` first, `-` before it when negative, into buf (at least 19 bytes); its length.
+export I64 hex_text(I64 v, inout U8[_] buf) {
+    I64 k = 0;
+    U64 x = 0;
+    if (v < 0) {
+        buf[k] = '-';
+        k = k + 1;
+        x = (0 - v) as U64;
+    } else {
+        x = v as U64;
+    }
+    buf[k] = '0';
+    buf[k + 1] = 'x';
+    k = k + 2;
+    U8[16] d;
+    I64 j = 0;
+    if (x == 0) {
+        d[0] = '0';
+        j = 1;
+    }
+    while (x > 0) {
+        U64 h = x % 16;
+        if (h < 10) { d[j] = (h as U8) + '0'; } else { d[j] = (h as U8) - 10 + 'a'; }
+        x = x / 16;
+        j = j + 1;
+    }
+    while (j > 0) {
+        j = j - 1;
+        buf[k] = d[j];
+        k = k + 1;
+    }
+    return k;
+}
+
+I64 copy_in(inout U8[_] buf, I64 k, in U8[_] w) {
+    for i in 0..len(w) { buf[k + i] = w[i]; }
+    return k + len(w);
+}
+
+// The words of failure e (a negative answer of line()) into buf (at least 64 bytes): what ccalc says; its length.
+export I64 error_text(I64 e, inout U8[_] buf) {
+    if (e == E_SYNTAX) {
+        I64 k = copy_in(buf, 0, b"syntax at column ");
+        U8[24] d;
+        I64 v = col_at;
+        I64 j = 0;
+        while (v > 0 || j == 0) {
+            d[j] = ((v % 10) as U8) + '0';
+            v = v / 10;
+            j = j + 1;
+        }
+        while (j > 0) {
+            j = j - 1;
+            buf[k] = d[j];
+            k = k + 1;
+        }
+        return k;
+    }
+    if (e == E_DEPTH) { return copy_in(buf, 0, b"limit: DEPTH_MAX"); }
+    if (e == E_NAME) {
+        I64 k = copy_in(buf, 0, b"unknown name ");
+        I64 w = name_e - name_s;
+        if (k + w > len(buf)) { w = len(buf) - k; }
+        for i in 0..w { buf[k + i] = src[name_s + i]; }
+        return k + w;
+    }
+    if (e == E_NAMES) { return copy_in(buf, 0, b"limit: NAMES_MAX"); }
+    if (e == E_SCALE_SET) { return copy_in(buf, 0, b"scale is 0 to 18"); }
+    if (e == E_DEC - dec.E_OVERFLOW) { return copy_in(buf, 0, b"overflow"); }
+    if (e == E_DEC - dec.E_ZERO) { return copy_in(buf, 0, b"division by zero"); }
+    if (e == E_DEC - dec.E_INTEGER) { return copy_in(buf, 0, b"integer expected"); }
+    if (e == E_DEC - dec.E_EXPONENT) { return copy_in(buf, 0, b"exponent or shift past 0 to 63"); }
+    if (e == E_DEC - dec.E_NEGATIVE) { return copy_in(buf, 0, b"square root of a negative"); }
+    return copy_in(buf, 0, b"limit: SCALE_MAX");
+}
+// SPDX-License-Identifier: Apache-2.0

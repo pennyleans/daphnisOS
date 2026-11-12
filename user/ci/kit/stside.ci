@@ -1,0 +1,114 @@
+// user/ci/kit/stside.ci: the Settings sidebar in DN-58's order (RS-SET0; design note 61 item 2, l 2026-11-11 17:15Z):
+// Display, Desk, Sound, Keyboard | Network, Date and Time, Storage | Accounts, Grants | About. One table of the pages:
+// their numbers, names, groups and symbols, which the desk's Settings window and every page module name a page by.
+//
+// The look is DN-34's, as the desk draws it today: a 200 px SURF2 column; 32 px pill rows from 12 px down, 4 px apart
+// (DN-40) and 12 px between groups; a 16 px symbol 12 px in and the name 10 px after it; the page shown on FILL with
+// its name in NAME_BOLD and its symbol mono in ON_FILL, the others BODY in INK with the symbol in color; the keyboard's
+// focus DN-40's ring around the shown page's pill.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.symbols;
+
+export const I64 DISPLAY = 0;
+export const I64 DESK = 1;
+export const I64 SOUND = 2;
+export const I64 KEYBOARD = 3;
+export const I64 NETWORK = 4;
+export const I64 DATETIME = 5;
+export const I64 STORAGE = 6;
+export const I64 ACCOUNTS = 7;
+export const I64 GRANTS = 8;
+export const I64 ABOUT = 9;
+export const I64 N = 10;
+
+export const I64 W = 200;
+export const I64 PILL = 32;
+
+I64[10] GROUP = [0, 0, 0, 0, 1, 1, 1, 2, 2, 3];
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// Page p's group, 0 to 3.
+export I64 group(I64 p) { return GROUP[p]; }
+
+// The top of page p's pill from y0, the content box's top: 12 in, 36 a row, 8 more a group (12 between groups).
+export I64 row_y(I64 y0, I64 p) { return y0 + 12 + 36 * p + 8 * GROUP[p]; }
+
+// Page p's name into t; its length.
+export I64 name(I64 p, inout U8[_] t) {
+    if (p == DISPLAY) { return put_name(t, b"Display"); }
+    if (p == DESK) { return put_name(t, b"Desk"); }
+    if (p == SOUND) { return put_name(t, b"Sound"); }
+    if (p == KEYBOARD) { return put_name(t, b"Keyboard"); }
+    if (p == NETWORK) { return put_name(t, b"Network"); }
+    if (p == DATETIME) { return put_name(t, b"Date and Time"); }
+    if (p == STORAGE) { return put_name(t, b"Storage"); }
+    if (p == ACCOUNTS) { return put_name(t, b"Accounts"); }
+    if (p == GRANTS) { return put_name(t, b"Grants"); }
+    return put_name(t, b"About");
+}
+
+I64 put_name(inout U8[_] t, in U8[_] s) {
+    I64 n = min(len(s), len(t));
+    for k in 0..n { t[k] = s[k]; }
+    return n;
+}
+
+// Page p's symbol in kit/symbols.ci, the mono one when mono (on FILL).
+export I64 sym(I64 p, Bool mono) {
+    I64 k = symbols.INFO;
+    if (p == DISPLAY) { k = symbols.DISPLAY; }
+    if (p == DESK) { k = symbols.WINDOW; }
+    if (p == SOUND) { k = symbols.SPEAKER; }
+    if (p == KEYBOARD) { k = symbols.KEYBOARD; }
+    if (p == NETWORK) { k = symbols.NETWORK; }
+    if (p == DATETIME) { k = symbols.CLOCK; }
+    if (p == STORAGE) { k = symbols.DISK; }
+    if (p == ACCOUNTS) { k = symbols.USERS; }
+    if (p == GRANTS) { k = symbols.KEY; }
+    if (mono) { return k + symbols.N / 2; }
+    return k;
+}
+
+// The page d rows on from p, round the ends (Up -1, Down 1).
+export I64 step(I64 p, I64 d) { return (p + d + N) % N; }
+
+// The page whose pill holds the 1x point (px, py) of a sidebar at (x0, y0), or -1.
+export I64 hit(I64 x0, I64 y0, I64 px, I64 py) {
+    if (px < x0 + 8 || px >= x0 + W - 8) { return -1; }
+    for p in 0..N {
+        I64 py0 = row_y(y0, p);
+        if (py >= py0 && py < py0 + PILL) { return p; }
+    }
+    return -1;
+}
+
+// The sidebar's 1x row y from (x0, y0) down to yb through the pen: page shown, the keyboard's focus on it or not.
+export void row_at(inout U32[_] row, I64 x0, I64 y0, I64 yb, I64 shown, Bool focus, I64 y) {
+    pen.rect(row, x0, y0, x0 + W, yb, tok(tokens.SURF2));
+    for p in 0..N {
+        I64 py = row_y(y0, p);
+        if (p == shown && focus && y >= py - 4 && y < py + PILL + 4) {   // DN-40: 4 px out
+            pen.focus_ring(row, x0 + 8, py, x0 + W - 8, py + PILL, 16, tok(tokens.SURF2), tok(tokens.ULTRAMARINE));
+        }
+        if (y >= py && y < py + PILL) {
+            U32 fg = tok(tokens.INK);
+            I64 f = faces.BODY;
+            Bool mono = false;
+            if (p == shown) {
+                pen.round(row, x0 + 8, py, x0 + W - 8, py + PILL, 16, tok(tokens.FILL));
+                fg = tok(tokens.ON_FILL);
+                f = faces.NAME_BOLD;       // DN-23: a chosen name is 600
+                mono = true;               // DN-34: on FILL the mono symbol in ON_FILL
+            }
+            symbols.row_at(row, pen.row_y(), pen.x(x0 + 20), pen.y(py + 8), sym(p, mono), pen.zoom(), fg, tokens.theme(),
+                           256);
+            U8[16] t;
+            I64 tn = name(p, t);
+            I64 e = pen.text(row, x0 + 46, py + 21, x0 + W - 12, t, tn, fg, f);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

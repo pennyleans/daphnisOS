@@ -1,0 +1,66 @@
+// src/main_hyb.ci: H-2, the kernel's placement (docs/specs/2026-11-05-h-hybrid.md section 5 item 2 and section 7).
+// The tile flavor's kernel and image with another main: `tiler --place` starts mcifb in three tiles of the 2 x 2
+// grid and places each window before it starts: client 0 at 2x, its client area showing the top left quarter of
+// its surface; client 1 at 1x in two rectangles, the area less its bottom right quarter; client 2 hidden, no
+// rectangles. tools/check-tiler.py --place checks each private surface against the pattern and the screen
+// against the tiler's frame with the three windows composed by the same rule.
+
+import src.serial;
+import src.trap;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.surface;
+import src.input;
+import src.tile;
+import src.pool;
+
+void main() {
+    serial.serial_write("Daphnis H: placement\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    user.user_init();
+    fs.init();
+    if (user.fb_init() > 0) {
+        fs.set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        serial.serial_write("daphnis: framebuffer ");
+        proc.put_dec(user.fb_word(0) as I64);
+        serial.serial_write("x");
+        proc.put_dec(user.fb_word(1) as I64);
+        serial.serial_write(" stride ");
+        proc.put_dec(user.fb_word(2) as I64);
+        serial.serial_write("\n");
+    } else {
+        serial.serial_write("daphnis: no framebuffer\n");
+    }
+    pit.pic_remap();
+    pit.pit_start(11932);
+    if (input.devices_on()) {
+        serial.serial_write("daphnis: keyboard and mouse on\n");
+    } else {
+        serial.serial_write("daphnis: keyboard on, no mouse\n");
+    }
+    fs.set_input(true);
+    serial.serial_write("daphnis: image ");
+    proc.put_dec(user.initrd_size());
+    serial.serial_write(" bytes from the loader module\n");
+    proc.push_arg("--place");
+    proc.push_arg("--start");
+    proc.push_arg("mcifb");
+    proc.push_arg("--start");
+    proc.push_arg("mcifb");
+    proc.push_arg("--start");
+    proc.push_arg("mcifb");
+    proc.run_device(1, "tiler");
+    surface.print();
+    if (tile.dropped() != 0) {
+        serial.serial_write("daphnis: input dropped\n");
+        input.say_dropped(tile.dropped());
+    }
+    proc.report_pool();
+    serial.serial_write("daphnis: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

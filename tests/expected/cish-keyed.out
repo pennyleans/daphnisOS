@@ -1,0 +1,30 @@
+keyed: start: @> 
+keyed: Ctrl+L: .[2J.[H.@> echo c''lear.[J
+keyed: Enter: .clear..
+keyed: echo: .hist..
+keyed: Up: .@> echo h''ist.[J
+keyed: Up, then typing: .hist2..
+keyed: Up Up Down: .hist2..
+keyed: Ctrl+A: .edit..
+keyed: Ctrl+B Ctrl+F Ctrl+E: .f-b!..
+keyed: Left Right Backspace: .aXY..
+keyed: Delete: .zR..
+keyed: Ctrl+W: .kill..
+keyed: Ctrl+U: .uk..
+keyed: Ctrl+Left Ctrl+K: .kk..
+keyed: Tab, a directory: .@> cd kd/.[J
+keyed: OSC 2: kd.@> 
+keyed: Tab, a shared prefix: .@> echo alp.[J
+keyed: Tab Tab, the list: .alpha           alps.
+keyed: Tab, a file: .alpha..
+keyed: Tab, a command: .@> echo .[J
+keyed: the command: .cmd..
+keyed: Ctrl+C: ^C.
+keyed: status: .s=130..
+keyed: PS2: .> 
+keyed: Ctrl+C at PS2: ^C.
+keyed: status: .p=130..
+keyed: a long line: .v wwwwwwww
+keyed: prompt: @> 
+keyed: the shell ended
+status 0

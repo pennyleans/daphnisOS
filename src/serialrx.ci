@@ -1,0 +1,28 @@
+// src/serialrx.ci: the receiving side of COM1 for the K5 kernel, beside src/serial.ci (which the
+// older flavors share and which stays as it was). The FIFOs are off, so a byte of the scripted input
+// that the UART already holds when the kernel starts (QEMU hands it over before the kernel runs) is
+// not cleared by the initialization, and the UART holds the next byte back until this one is read:
+// no byte of the script is lost.
+
+import src.portio;
+
+const U16 COM1 = 0x3F8;
+
+export void serial_init_rx() {
+    portio.port_out8((COM1 + 1) as U16, 0 as U8);
+    portio.port_out8((COM1 + 3) as U16, 0x80 as U8);
+    portio.port_out8(COM1, 1 as U8);
+    portio.port_out8((COM1 + 1) as U16, 0 as U8);
+    portio.port_out8((COM1 + 3) as U16, 3 as U8);
+    portio.port_out8((COM1 + 2) as U16, 0 as U8);
+    portio.port_out8((COM1 + 4) as U16, 0x0B as U8);
+}
+
+// A byte if one is waiting, else -1 (polled).
+export I64 serial_getc() {
+    if ((portio.port_in8((COM1 + 5) as U16) & 1) == 0) {
+        return -1;
+    }
+    return portio.port_in8(COM1) as I64;
+}
+// SPDX-License-Identifier: Apache-2.0

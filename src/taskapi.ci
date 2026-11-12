@@ -1,0 +1,48 @@
+// src/taskapi.ci: the task mechanism of rt/task.c and arch/x86_64/task.S, as externs. The
+// policy (who runs next, for how long) is cint code in src/sched.ci.
+
+// Creates task id (0 to 2) with a capability mask (1 console.input, 2 console.raw), fixed from
+// now on. The task runs the program's main with the decimal id + 1 as its argument.
+export extern unrestricted I64 task_create(I64 id, I64 caps);
+// Runs the task until it yields (0), ends (1), is preempted (2) or faults (3); -1 if it cannot.
+export extern unrestricted I64 task_run(I64 id);
+export extern unrestricted void task_yield();
+// Turns on preemption: a task's turn ends after this many timer ticks (needs the PIT).
+export extern unrestricted void task_preempt_on(I64 ticks);
+export extern observe I64 task_preemptions();
+// The bytes a task wrote with console.write.
+export extern observe I64 task_out_len(I64 id);
+export extern observe U8 task_out_byte(I64 id, I64 i);
+// 0 for the cooperative build, 1 for the preemptive one (an rt build constant, docs/runtime.md).
+export extern observe I64 task_mode();
+
+// K4.5 (docs/runtime.md). The fuel quantum: a task's turn ends at the first host call after it
+// has used this many fuel units since its last turn ended (0 turns it off). Fuel is charged by
+// cint's semantics, so the same turn ends at the same count on every compiler.
+export extern unrestricted void task_quantum(I64 fuel);
+// The network the next tasks are created for: it becomes the second digit of their argument.
+export extern unrestricted void task_net(I64 net);
+// The address of the first of the two guard pages under a task's stack; 0 if there is no such task.
+export extern observe U64 task_guard(I64 id);
+// The fuel a task has used so far.
+export extern observe I64 task_fuel(I64 id);
+// Channels: id (0 to 3), one sender task and one receiver task, fixed here. Returns 0, or -1.
+export extern unrestricted I64 chan_open(I64 id, I64 sender, I64 receiver);
+// Closes channel id (and drops what it holds).
+export extern unrestricted void chan_close(I64 id);
+// How many bytes of its stack (from the top) a task made next may use; 0 for all of it. 64 is the least:
+// the task's first call then falls in its guard pages, before its program has begun.
+export extern unrestricted void task_stack_budget(I64 bytes);
+// A send blocks while the channel holds 2 values; a receive blocks while it is empty. A task
+// that is not the sender (receiver) of the channel faults with host.error.chan_send (chan_recv).
+export extern unrestricted void chan_send(I64 id, I64 value);
+export extern unrestricted I64 chan_recv(I64 id);
+// The control: takes a value from whichever of two channels has one (the first if both do).
+// What it returns depends on the schedule, so a network must not use it.
+export extern unrestricted I64 chan_recv_any(I64 a, I64 b);
+// An event of the running task, for its log (the part of its behavior the world can see).
+export extern unrestricted void emit(I64 kind, I64 value);
+export extern observe I64 log_len(I64 id);
+export extern observe I64 log_kind(I64 id, I64 i);
+export extern observe I64 log_val(I64 id, I64 i);
+// SPDX-License-Identifier: Apache-2.0

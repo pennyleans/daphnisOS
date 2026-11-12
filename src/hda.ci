@@ -1,0 +1,537 @@
+// src/hda.ci: the Intel High Definition Audio controller (AU-2, ruling AU-1 A, docs/specs/2026-11-06-au-audio.md
+// sections 3, 5 and 7): found by class 04:03:00, its registers through src/mmio.ci, polled, no interrupt.
+//
+// Commands go to the codecs through the CORB and come back through the RIRB, one at a time; both rings share one
+// pool frame. The codec walk takes the first audio function group with an analog output pin (line out, then
+// speaker, then headphone; digital pins skipped), finds a path from it to a DAC through mixers and selectors, powers
+// the path, unmutes its amplifiers at 0 dB and enables the pin. One output stream plays a ring of RING_BYTES (8
+// buffer descriptors of a pool frame each) of 16-bit stereo at 48 kHz; src/dsp.ci writes the ring ahead of the
+// position the controller reports. Nothing the device does enters the canonical state: the position decides only
+// where the next frames are written.
+
+import src.serial;
+import src.text;
+import src.phys;
+import src.frames;
+import src.trap;
+import src.pci;
+import src.mmio;
+
+export const I64 RING_BYTES = 32768;   // 8,192 frames, about 170 ms
+const I64 RING_FRAMES = 8;             // pool frames of the ring, one buffer descriptor each
+const U32 CLASS_HDA = 0x040300;
+const I64 WAIT_TICKS = 50;             // about 0.5 s of the 100 Hz timer for any one wait
+const I64 WAIT_READS = 300000;         // HW-4 board: and at most this many register reads (about 0.3 s on a board),
+                                       // since dsp.init runs before interrupts are on and the ticks do not move
+const I64 FMT = 0x0011;                // 48 kHz base, 16 bits, 2 channels
+const I64 TAG = 1;                     // the stream tag the DAC listens for
+const I64 NODES = 128;                 // widget node ids the walk keeps
+const I64 CONNS = 16;                  // connections kept per widget
+
+// registers, offsets from BAR 0
+const I64 GCAP = 0x00;
+const I64 GCTL = 0x08;
+const I64 STATESTS = 0x0E;
+const I64 INTCTL = 0x20;
+const I64 CORBLBASE = 0x40;
+const I64 CORBUBASE = 0x44;
+const I64 CORBWP = 0x48;
+const I64 CORBRP = 0x4A;
+const I64 CORBCTL = 0x4C;
+const I64 CORBSIZE = 0x4E;
+const I64 RIRBLBASE = 0x50;
+const I64 RIRBUBASE = 0x54;
+const I64 RIRBWP = 0x58;
+const I64 RINTCNT = 0x5A;
+const I64 RIRBCTL = 0x5C;
+const I64 RIRBSTS = 0x5D;
+const I64 RIRBSIZE = 0x5E;
+
+U64 bar = 0;
+I64 sd = 0;            // the output stream descriptor's offset
+I64 cmd_frame = -1;    // CORB at 0 (256 x 4 bytes), RIRB at 2048 (256 x 8 bytes)
+I64 bdl_frame = -1;
+I64 ring_frame = -1;
+I64 corb_wp = 0;
+I64 rirb_rp = 0;
+Bool up = false;
+I64 cad = 0;           // the codec, its audio function group, the DAC and the pin the walk chose
+I64 afg = 0;
+I64 dac = -1;
+I64 pin = -1;
+I64 path_len = 0;
+I64[8] path_node;      // pin first, DAC last
+I64[8] path_pick;      // the connection index each node takes to the next
+I64 afg_out_amp = 0;   // the function group's default amplifier capabilities
+I64 afg_in_amp = 0;
+
+I64[128] w_caps;
+I64[128] w_pincap;
+I64[128] w_cfg;
+I64[128] w_nconn;
+U8[2048] w_conn;       // node ids; one at NODES or past it is kept as 0, which no path takes
+
+U32 rd32(I64 off) {
+    return mmio.mmio_in32(bar + off as U64);
+}
+
+U16 rd16(I64 off) {
+    return mmio.mmio_in16(bar + off as U64);
+}
+
+U8 rd8(I64 off) {
+    return mmio.mmio_in8(bar + off as U64);
+}
+
+void wr32(I64 off, I64 v) {
+    mmio.mmio_out32(bar + off as U64, (v & 0xFFFFFFFF) as U32);
+}
+
+void wr16(I64 off, I64 v) {
+    mmio.mmio_out16(bar + off as U64, (v & 0xFFFF) as U16);
+}
+
+void wr8(I64 off, I64 v) {
+    mmio.mmio_out8(bar + off as U64, (v & 0xFF) as U8);
+}
+
+// Waits until (the byte at off & mask) == want; false after WAIT_TICKS.
+Bool wait8(I64 off, I64 mask, I64 want) {
+    I64 t0 = trap.timer_ticks();
+    I64 reads = 0;
+    while (((rd8(off) as I64) & mask) != want) {
+        reads += 1;
+        if (trap.timer_ticks() - t0 > WAIT_TICKS || reads > WAIT_READS) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Bool wait32(I64 off, I64 mask, I64 want) {
+    I64 t0 = trap.timer_ticks();
+    I64 reads = 0;
+    while (((rd32(off) as I64) & mask) != want) {
+        reads += 1;
+        if (trap.timer_ticks() - t0 > WAIT_TICKS || reads > WAIT_READS) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void put_le32(U64 at, I64 v) {
+    U8[4] b;
+    for k in 0..4 {
+        b[k] = ((v >> (8 * k)) & 0xFF) as U8;
+    }
+    phys.phys_write8(at, b);
+}
+
+I64 get_le32(U64 at) {
+    U8[4] b;
+    phys.phys_read8(at, b);
+    return (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+}
+
+// One command through the CORB and its response through the RIRB; -1 when none came.
+I64 command(I64 verb) {
+    U64 base = frames.frame_addr(cmd_frame) as U64;
+    corb_wp = (corb_wp + 1) % 256;
+    put_le32(base + (4 * corb_wp) as U64, verb);
+    wr16(CORBWP, corb_wp);
+    I64 t0 = trap.timer_ticks();
+    I64 reads = 0;
+    while (((rd16(RIRBWP) as I64) & 0xFF) == rirb_rp) {
+        reads += 1;
+        if (trap.timer_ticks() - t0 > WAIT_TICKS || reads > WAIT_READS) {
+            return -1;
+        }
+    }
+    rirb_rp = (rirb_rp + 1) % 256;
+    I64 r = get_le32(base + (2048 + 8 * rirb_rp) as U64);
+    wr8(RIRBSTS, 0x05);                // response and overrun flags cleared: the controller takes the next command
+    return r;
+}
+
+// A 12-bit verb with an 8-bit payload, and a 4-bit verb with a 16-bit payload, to node nid.
+I64 verb12(I64 nid, I64 v, I64 payload) {
+    return command((cad << 28) | (nid << 20) | (v << 8) | (payload & 0xFF));
+}
+
+I64 verb4(I64 nid, I64 v, I64 payload) {
+    return command((cad << 28) | (nid << 20) | (v << 16) | (payload & 0xFFFF));
+}
+
+I64 param(I64 nid, I64 p) {
+    return verb12(nid, 0xF00, p);
+}
+
+// Resets the controller, takes it out of reset and starts the command rings. False on a timeout.
+Bool start_controller() {
+    wr32(INTCTL, 0);
+    wr8(CORBCTL, 0);
+    wr8(RIRBCTL, 0);
+    _ = wait8(CORBCTL, 2, 0);
+    _ = wait8(RIRBCTL, 2, 0);
+    wr32(GCTL, 0);
+    if (!wait32(GCTL, 1, 0)) {
+        return false;
+    }
+    wr32(GCTL, 1);
+    if (!wait32(GCTL, 1, 1)) {
+        return false;
+    }
+    I64 t0 = trap.timer_ticks();       // the codecs say they are there within 521 us of the reset's end
+    I64 reads = 0;
+    while (((rd16(STATESTS) as I64) & 0x7FFF) == 0) {
+        reads += 1;
+        if (trap.timer_ticks() - t0 > WAIT_TICKS || reads > WAIT_READS) {
+            return false;
+        }
+    }
+    U64 base = frames.frame_addr(cmd_frame) as U64;
+    wr8(CORBSIZE, 2);                  // 256 entries
+    wr32(CORBLBASE, (base & 0xFFFFFFFF) as I64);
+    wr32(CORBUBASE, (base >> 32) as I64);
+    wr16(CORBRP, 0x8000);              // the read pointer to 0: set, seen set (not on every controller), cleared
+    I64 t1 = trap.timer_ticks();
+    I64 r1 = 0;
+    while (((rd16(CORBRP) as I64) & 0x8000) == 0 && trap.timer_ticks() - t1 < 2 && r1 < 20000) {
+        r1 += 1;
+    }
+    wr16(CORBRP, 0);
+    _ = wait8(CORBRP + 1, 0x80, 0);
+    wr16(CORBWP, 0);
+    corb_wp = 0;
+    wr8(RIRBSIZE, 2);
+    wr32(RIRBLBASE, ((base + 2048) & 0xFFFFFFFF) as I64);
+    wr32(RIRBUBASE, ((base + 2048) >> 32) as I64);
+    wr16(RIRBWP, 0x8000);              // the write pointer to 0
+    rirb_rp = 0;
+    wr16(RINTCNT, 1);                  // a response flag after every response; command() clears it
+    wr8(RIRBCTL, 0x03);                // DMA on, the flag on (the controller's interrupt stays off: INTCTL 0)
+    wr8(CORBCTL, 0x02);
+    return wait8(CORBCTL, 2, 2);
+}
+
+// The connections of widget nid (short and long forms, ranges expanded), up to CONNS.
+void read_conns(I64 nid) {
+    I64 cl = param(nid, 0x0E);
+    if (cl < 0) {
+        return;
+    }
+    Bool long_form = (cl & 0x80) != 0;
+    I64 n = cl & 0x7F;
+    I64 per = 4;
+    I64 bits = 8;
+    if (long_form) {
+        per = 2;
+        bits = 16;
+    }
+    I64 mask = (1 << (bits - 1)) - 1;
+    I64 got = 0;
+    I64 prev = 0;
+    I64 i = 0;
+    while (i < n && got < CONNS) {
+        I64 r = verb12(nid, 0xF02, i);
+        if (r < 0) {
+            return;
+        }
+        for k in 0..per {
+            if (i + k < n && got < CONNS) {
+                I64 e = (r >> (bits * k)) & ((1 << bits) - 1);
+                I64 id = e & mask;
+                if ((e & (mask + 1)) != 0 && prev > 0) {
+                    I64 j = prev + 1;
+                    while (j <= id && got < CONNS) {
+                        w_conn[nid * CONNS + got] = (j < NODES ? j : 0) as U8;
+                        got += 1;
+                        j += 1;
+                    }
+                } else {
+                    w_conn[nid * CONNS + got] = (id < NODES ? id : 0) as U8;
+                    got += 1;
+                }
+                prev = id;
+            }
+        }
+        i += per;
+    }
+    w_nconn[nid] = got;
+}
+
+I64 wtype(I64 nid) {
+    return (w_caps[nid] >> 20) & 0xF;
+}
+
+// A path from node nid down to a DAC through mixers (2) and selectors (3), depth d of path_node; true when found.
+Bool find_path(I64 nid, I64 d) {
+    path_node[d] = nid;
+    if (wtype(nid) == 0) {
+        path_len = d + 1;
+        return true;
+    }
+    if (d == 7) {
+        return false;
+    }
+    for k in 0..w_nconn[nid] {
+        I64 c = w_conn[nid * CONNS + k] as I64;
+        if (c > 0 && c < NODES) {
+            I64 t = wtype(c);
+            if (t == 0 || t == 2 || t == 3) {
+                path_pick[d] = k;
+                if (find_path(c, d + 1)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// The rank of an output pin: line out 0, speaker 1, headphone 2, another analog output 3; -1 for no output, a
+// digital pin (HDMI, DisplayPort, S/PDIF) or one wired to nothing.
+I64 pin_rank(I64 nid) {
+    I64 pc = w_pincap[nid];
+    if ((pc & 0x10) == 0 || (pc & 0x80) != 0 || (pc & 0x1000000) != 0 || (w_caps[nid] & 0x200) != 0) {
+        return -1;
+    }
+    I64 cfg = w_cfg[nid];
+    if (((cfg >> 30) & 3) == 1) {
+        return -1;
+    }
+    I64 devt = (cfg >> 20) & 0xF;
+    if (devt == 4 || devt == 5 || devt == 6) {
+        return -1;
+    }
+    if (devt <= 2) {
+        return devt;
+    }
+    return 3;
+}
+
+// Walks codec c's audio function group; true when it has an output pin with a path to a DAC.
+Bool walk_codec(I64 c) {
+    cad = c;
+    I64 sub = param(0, 4);
+    if (sub < 0) {
+        return false;
+    }
+    I64 start = (sub >> 16) & 0xFF;
+    I64 fgs = sub & 0xFF;
+    afg = -1;
+    for f in start..start + fgs {
+        if (afg < 0 && (param(f, 5) & 0xFF) == 1) {
+            afg = f;
+        }
+    }
+    if (afg < 0) {
+        return false;
+    }
+    _ = verb12(afg, 0x705, 0);         // D0
+    afg_out_amp = param(afg, 0x12);
+    afg_in_amp = param(afg, 0x0D);
+    I64 ws = param(afg, 4);
+    I64 first = (ws >> 16) & 0xFF;
+    I64 n = ws & 0xFF;
+    for nid in 0..NODES {
+        w_caps[nid] = 0;
+        w_pincap[nid] = 0;
+        w_cfg[nid] = 0;
+        w_nconn[nid] = 0;
+    }
+    for nid in first..first + n {
+        if (nid < NODES) {
+            w_caps[nid] = param(nid, 9);
+            if ((w_caps[nid] & 0x100) != 0) {
+                read_conns(nid);
+            }
+            if (wtype(nid) == 4) {
+                w_pincap[nid] = param(nid, 0x0C);
+                w_cfg[nid] = verb12(nid, 0xF1C, 0);
+            }
+        }
+    }
+    for rank in 0..4 {
+        for nid in first..first + n {
+            if (pin < 0 && nid < NODES && wtype(nid) == 4 && pin_rank(nid) == rank) {
+                path_len = 0;
+                if (find_path(nid, 0)) {
+                    pin = nid;
+                    dac = path_node[path_len - 1];
+                }
+            }
+        }
+    }
+    return pin >= 0;
+}
+
+// Powers the path, selects its connections, unmutes its amplifiers at 0 dB, enables the pin and points the DAC at
+// the stream.
+void set_path() {
+    for i in 0..path_len {
+        I64 nid = path_node[i];
+        _ = verb12(nid, 0x705, 0);
+        I64 caps = w_caps[nid];
+        I64 out_caps = afg_out_amp;
+        I64 in_caps = afg_in_amp;
+        if ((caps & 0x8) != 0) {
+            out_caps = param(nid, 0x12);
+            in_caps = param(nid, 0x0D);
+        }
+        if (i + 1 < path_len) {
+            I64 k = path_pick[i];
+            if (wtype(nid) != 2 && w_nconn[nid] > 1) {
+                _ = verb12(nid, 0x701, k);
+            }
+            if ((caps & 0x2) != 0 && wtype(nid) == 2) {
+                _ = verb4(nid, 0x3, 0x7000 | (k << 8) | (in_caps & 0x7F));   // input amp k, both sides, unmuted
+            }
+        }
+        if ((caps & 0x4) != 0) {
+            _ = verb4(nid, 0x3, 0xB000 | (out_caps & 0x7F));                 // output amp, both sides, unmuted
+        }
+    }
+    I64 ctl = 0x40;
+    if (((w_cfg[pin] >> 20) & 0xF) == 2) {
+        ctl = 0xC0;
+    }
+    _ = verb12(pin, 0x707, ctl);
+    if ((w_pincap[pin] & 0x10000) != 0) {
+        _ = verb12(pin, 0x70C, 0x02);
+    }
+    _ = verb4(dac, 0x2, FMT);
+    _ = verb12(dac, 0x706, TAG << 4);
+}
+
+// The ring, its descriptors and the first output stream, then run.
+Bool start_stream() {
+    I64 gcap = rd16(GCAP) as I64;
+    I64 iss = (gcap >> 8) & 0xF;
+    if (((gcap >> 12) & 0xF) == 0) {
+        return false;
+    }
+    sd = 0x80 + 0x20 * iss;
+    wr8(sd, 0);
+    _ = wait8(sd, 2, 0);
+    wr8(sd, 1);
+    _ = wait8(sd, 1, 1);
+    wr8(sd, 0);
+    if (!wait8(sd, 1, 0)) {
+        return false;
+    }
+    U64 ring = frames.frame_addr(ring_frame) as U64;
+    U64 bdl = frames.frame_addr(bdl_frame) as U64;
+    U64[512] zero;
+    for k in 0..RING_FRAMES {
+        phys.phys_write64(ring + (4096 * k) as U64, zero);
+    }
+    phys.phys_write64(bdl, zero);
+    U64[2] e;
+    for k in 0..RING_FRAMES {
+        e[0] = ring + (4096 * k) as U64;
+        e[1] = 4096;                   // the length; the interrupt-on-completion word 0
+        phys.phys_write64(bdl + (16 * k) as U64, e);
+    }
+    wr32(sd + 0x08, RING_BYTES);
+    wr16(sd + 0x0C, RING_FRAMES - 1);
+    wr16(sd + 0x12, FMT);
+    wr32(sd + 0x18, (bdl & 0xFFFFFFFF) as I64);
+    wr32(sd + 0x1C, (bdl >> 32) as I64);
+    wr8(sd + 2, TAG << 4);
+    wr8(sd + 3, 0x1C);                 // the status bits cleared
+    wr8(sd, 0x02);
+    return wait8(sd, 2, 2);
+}
+
+void put_hex(I64 v, I64 digits) {
+    for k in 0..digits {
+        serial.serial_putc(text.hex_digit(((v >> (4 * (digits - 1 - k))) & 0xF) as U8));
+    }
+}
+
+void put_dec(I64 v) {
+    U8[20] d;
+    I64 n = text.dec_digits(v, d);
+    serial.serial_write(d[0..n]);
+}
+
+// Finds the controller and starts the stream: 1, 0 without a controller (nothing printed), or -1 when one was
+// found but could not be set up (one line says where it stopped).
+export I64 init() {
+    I64 dev = pci.find_class(CLASS_HDA);
+    if (dev == pci.NONE) {
+        return 0;
+    }
+    I64 id = pci.read32(dev, 0) as I64;
+    serial.serial_write("audio: hda ");
+    put_hex(id & 0xFFFF, 4);
+    serial.serial_putc(58);
+    put_hex((id >> 16) & 0xFFFF, 4);
+    bar = pci.mem_bar(dev);
+    U64 bar_len = pci.mem_bar_size(dev);
+    if (bar == 0 || bar_len < 0x200 || mmio.mmio_map(bar, bar_len) != 0) {
+        serial.serial_write(" refused: BAR 0\n");
+        return -1;
+    }
+    pci.enable_mem_dma(dev);
+    cmd_frame = frames.alloc(1);
+    bdl_frame = frames.alloc(1);
+    ring_frame = frames.alloc(RING_FRAMES);
+    if (cmd_frame < 0 || bdl_frame < 0 || ring_frame < 0) {
+        serial.serial_write(" refused: the pool\n");
+        return -1;
+    }
+    U64[512] zero;
+    phys.phys_write64(frames.frame_addr(cmd_frame) as U64, zero);
+    if (!start_controller()) {
+        serial.serial_write(" refused: reset\n");
+        return -1;
+    }
+    I64 codecs = (rd16(STATESTS) as I64) & 0x7FFF;
+    Bool found = false;
+    for c in 0..15 {
+        if (!found && (codecs & (1 << c)) != 0 && walk_codec(c)) {
+            found = true;
+        }
+    }
+    if (!found) {
+        serial.serial_write(" refused: no analog output\n");
+        return -1;
+    }
+    I64 vid = param(0, 0);
+    serial.serial_write(" codec ");
+    put_dec(cad);
+    serial.serial_putc(32);
+    put_hex((vid >> 16) & 0xFFFF, 4);
+    serial.serial_putc(58);
+    put_hex(vid & 0xFFFF, 4);
+    serial.serial_write(" pin ");
+    put_dec(pin);
+    serial.serial_write(" dac ");
+    put_dec(dac);
+    set_path();
+    if (!start_stream()) {
+        serial.serial_write(" refused: stream\n");
+        return -1;
+    }
+    serial.serial_write(" 48000 Hz\n");
+    up = true;
+    return 1;
+}
+
+export Bool running() {
+    return up;
+}
+
+// The controller's position in the ring, in bytes (0..RING_BYTES-1).
+export I64 position() {
+    return (rd32(sd + 0x04) as I64) % RING_BYTES;
+}
+
+// Writes b at byte off of the ring; off + len(b) must not pass RING_BYTES.
+export void put[n](I64 off, in U8[n] b) {
+    phys.phys_write8((frames.frame_addr(ring_frame) + off) as U64, b);
+}
+// SPDX-License-Identifier: Apache-2.0

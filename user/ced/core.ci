@@ -1,0 +1,411 @@
+import state;
+import buf;
+import undo;
+import cur;
+import keys;
+import edit;
+import keymap;
+import view;
+import term;
+
+export void init(inout I64[_] r, inout U8[_] t, I64 rows, I64 cols) {
+    for i in 0..len(r) {
+        r[i] = 0;
+    }
+    buf.reset(r, t);
+    undo.reset(r);
+    r[state.R_ROWS] = max(rows, 3);
+    r[state.R_COLS] = max(cols, 1);
+    r[state.R_GOAL] = -1;
+}
+
+export I64 load(inout I64[_] r, inout U8[_] t, inout U8[_] name, in U8[_] bytes, in U8[_] nm,
+                Bool new_file) {
+    if (len(bytes) > len(t) / 2) {
+        return state.E_TOO_LARGE;
+    }
+    for i in 0..len(bytes) {
+        if (bytes[i] == 0) {
+            return state.E_NUL;
+        }
+    }
+    if (!keys.valid_utf8(bytes)) {
+        return state.E_NOT_UTF8;
+    }
+    buf.reset(r, t);
+    assert(buf.insert(r, t, 0, bytes));
+    undo.reset(r);
+    cur.go(r, 0, false);
+    r[state.R_INDENT_TAB] = 0;
+    if (cur.indented_with_tab(r, t)) {
+        r[state.R_INDENT_TAB] = 1;
+    }
+    I64 n = min(len(nm), len(name));
+    for i in 0..n {
+        name[i] = nm[i];
+    }
+    r[state.R_NAME_LEN] = n;
+    r[state.R_NEW_FILE] = 0;
+    r[state.R_CREATED] = 0;
+    if (new_file) {
+        r[state.R_NEW_FILE] = 1;
+        r[state.R_CREATED] = 1;
+    }
+    return state.OK;
+}
+
+export void draw(inout I64[_] r, inout U8[_] t, in U8[_] name, in U8[_] f, inout I64[_] grid,
+                 inout U8[_] o) {
+    view.render(r, t, name, f, grid);
+    r[state.R_OUT_LEN] = term.frame(r[state.R_ROWS], r[state.R_COLS], r[state.R_CUR_ROW], r[state.R_CUR_COL], grid, o);
+}
+
+void paste_prompt(inout I64[_] r, inout U8[_] t, inout I64[_] u, inout U8[_] ub, inout U8[_] clip,
+                  inout U8[_] f, in U8[_] p) {
+    if (r[state.R_MODE] == state.MODE_REPLACE_ASK) {
+        r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+        return;
+    }
+    I64[2] k;
+    I64 i = 0;
+    while (i < len(p)) {
+        I64 used = keys.decode(p, i, k);
+        if (used == 0) {
+            return;
+        }
+        i += used;
+        if (k[0] >= 32 && k[0] < keys.K_UP) {
+            keymap.dispatch(r, t, u, ub, clip, f, k[0], r[state.R_ROWS]);
+        }
+    }
+}
+
+void paste_bytes(inout I64[_] r, inout U8[_] t, inout I64[_] u, inout U8[_] ub, inout U8[_] clip,
+                 inout U8[_] f, in U8[_] p) {
+    if (r[state.R_MODE] != state.MODE_EDIT) {
+        paste_prompt(r, t, u, ub, clip, f, p);
+        return;
+    }
+    U8[4096] s;
+    I64 n = 0;
+    I64 i = 0;
+    while (i < len(p)) {
+        U8 c = p[i];
+        if (c == 13) {
+            c = 10;
+            if (i + 1 < len(p) && p[i + 1] == 10) {
+                i += 1;
+            }
+        }
+        s[n] = c;
+        n += 1;
+        i += 1;
+        if (n == len(s) || i == len(p)) {
+            edit.paste_block(r, t, u, ub, s[0..n]);
+            n = 0;
+        }
+    }
+}
+
+export Bool esc_pending(in I64[_] r, in U8[_] input) {
+    I64 n = len(input);
+    return r[state.R_PASTE] == 0 && n > 0 && input[n - 1] == 27;
+}
+
+export void idle(inout I64[_] r, I64 ms) {
+    r[state.R_HELD_AGE] += ms;
+    r[state.R_ESC_AGE] += ms;
+    if (r[state.R_ESC_AGE] >= state.ESC_WINDOW) {
+        r[state.R_ESC_OPEN] = 0;
+    }
+    if (r[state.R_PASTE] == 1 && r[state.R_HELD_AGE] >= state.ESC_WINDOW) {
+        r[state.R_PASTE] = 0;
+    }
+}
+
+export Bool held_expired(in I64[_] r) {
+    return r[state.R_PASTE] == 0 && r[state.R_HELD_AGE] >= state.ESC_WINDOW;
+}
+
+void act(inout I64[_] r, inout U8[_] t, inout I64[_] u, inout U8[_] ub, inout U8[_] clip,
+         inout U8[_] f, I64 k) {
+    if (k == keys.K_PASTE) {
+        r[state.R_PASTE] = 1;
+        r[state.R_PASTE_GROUP] = 0;
+        r[state.R_QUIT_ARMED] = 0;
+        r[state.R_MSG] = state.MSG_NONE;
+    } else if (k == keys.K_NONE) {
+        r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+    } else {
+        keymap.dispatch(r, t, u, ub, clip, f, k, r[state.R_ROWS]);
+    }
+}
+
+export I64 step(inout I64[_] r, inout U8[_] t, inout I64[_] u, inout U8[_] ub, inout U8[_] clip,
+                in U8[_] name, inout U8[_] f, inout I64[_] grid, inout U8[_] o, in U8[_] input) {
+    I64 i = 0;
+    I64[2] k;
+    if (len(input) > 0) {
+        r[state.R_HELD_AGE] = 0;
+    }
+    if (r[state.R_ESC_OPEN] == 1 && len(input) > 0) {
+        r[state.R_ESC_OPEN] = 0;
+        i = keys.tail(input, k);
+        if (i > 0) {
+            act(r, t, u, ub, clip, f, k[0]);
+        }
+    }
+    while (i < len(input)) {
+        if (r[state.R_PASTE] == 1) {
+            I64 n = keys.paste_len(input, i, k);
+            I64 body = n;
+            if (k[0] == 1) {
+                body = n - 6;
+                r[state.R_PASTE] = 0;
+            }
+            paste_bytes(r, t, u, ub, clip, f, input[i..i + body]);
+            i += n;
+            if (k[0] == 0) {
+                break;
+            }
+            continue;
+        }
+        I64 used = keys.decode(input, i, k);
+        if (used == 0) {
+            break;
+        }
+        i += used;
+        act(r, t, u, ub, clip, f, k[0]);
+        if (k[0] == keys.K_ESC) {
+            r[state.R_ESC_OPEN] = 1;
+            r[state.R_ESC_AGE] = 0;
+        }
+    }
+    if (len(input) - i > keys.HELD_MAX) {
+        r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+        i = len(input);
+    }
+    draw(r, t, name, f, grid, o);
+    return i;
+}
+
+export void resize(inout I64[_] r, inout U8[_] t, in U8[_] name, in U8[_] f, inout I64[_] grid,
+                   inout U8[_] o, I64 rows, I64 cols) {
+    r[state.R_ROWS] = max(rows, 3);
+    r[state.R_COLS] = max(cols, 1);
+    draw(r, t, name, f, grid, o);
+}
+
+export void desk(inout I64[_] r, Bool on) {
+    r[state.R_DESK] = 0;
+    if (on) {
+        r[state.R_DESK] = 1;
+    }
+}
+
+export Bool modified(in I64[_] r) {
+    return undo.modified(r);
+}
+
+export I64 size_mib(I64 bytes) {
+    return (bytes + state.MIB - 1) / state.MIB;
+}
+
+export I64 text_out(in I64[_] r, in U8[_] t, inout U8[_] dst) {
+    I64 n = buf.copy_out(r, t, dst);
+    if (r[state.R_CREATED] == 1 && n > 0 && n < len(dst) && dst[n - 1] != 10) {
+        dst[n] = 10;
+        return n + 1;
+    }
+    return n;
+}
+
+// no file: untitled; save asks for a name
+export void untitled(inout I64[_] r) {
+    r[state.R_UNTITLED] = 1;
+    r[state.R_NEW_FILE] = 0;
+    r[state.R_CREATED] = 1;
+    r[state.R_ASK_LEN] = 0;
+}
+
+// the name was not taken: ask again
+export void ask_again(inout I64[_] r, I64 msg) {
+    r[state.R_MODE] = state.MODE_SAVE_AS;
+    r[state.R_MSG] = msg;
+}
+
+// saved under the typed name
+export void named(inout I64[_] r) {
+    r[state.R_UNTITLED] = 0;
+}
+
+export void saved(inout I64[_] r, Bool ok) {
+    if (ok) {
+        undo.mark_saved(r);
+        r[state.R_NEW_FILE] = 0;
+        r[state.R_MSG] = state.MSG_SAVED;
+    } else {
+        r[state.R_MSG] = state.MSG_SAVE_FAILED;
+    }
+}
+
+test "a short session" {
+    I64[64] r;
+    U8[64] t;
+    I64[900] u;
+    U8[256] ub;
+    U8[64] clip;
+    U8[16] name;
+    U8[16] f;
+    I64[60] grid;
+    U8[2048] o;
+    init(r, t, 5, 12);
+    U8[0] empty;
+    U8[3] nm = b"a.c";
+    assert(load(r, t, name, empty, nm, true) == state.OK);
+    U8[13] in1 = b"hi\ryo\x1b[1;2D\x18x";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, in1) == 13);
+    U8[6] want = b"hi\nyx\n";
+    U8[64] got;
+    I64 n = text_out(r, t, got);
+    assert(n == 6);
+    for j in 0..6 {
+        assert(got[j] == want[j]);
+    }
+    assert(undo.modified(r));
+    U8[1] save = b"\x13";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, save) == 1);
+    assert((r[state.R_REQ] & state.REQ_SAVE) != 0);
+    saved(r, true);
+    assert(!undo.modified(r));
+    U8[3] cut = b"\x1b[1";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, cut) == 0);
+}
+
+test "a key's tail after a timed-out Esc, only while the window is open" {
+    I64[64] r;
+    U8[64] t;
+    I64[900] u;
+    U8[256] ub;
+    U8[64] clip;
+    U8[16] name;
+    U8[16] f;
+    I64[60] grid;
+    U8[2048] o;
+    U8[1] esc = b"\x1b";
+    U8[2] left = b"[D";
+    init(r, t, 5, 12);
+    U8[3] ab = b"abc";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, ab) == 3);
+    assert(step(r, t, u, ub, clip, name, f, grid, o, esc) == 1);
+    idle(r, state.ESC_WINDOW - 1);
+    assert(step(r, t, u, ub, clip, name, f, grid, o, left) == 2);
+    assert(buf.length(r, t) == 3);
+    assert(r[state.R_HEAD] == 2);
+    assert(step(r, t, u, ub, clip, name, f, grid, o, esc) == 1);
+    idle(r, state.ESC_WINDOW);
+    assert(step(r, t, u, ub, clip, name, f, grid, o, left) == 2);
+    assert(buf.length(r, t) == 5);
+    assert(step(r, t, u, ub, clip, name, f, grid, o, esc) == 1);
+    U8[1] x = b"x";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, x) == 1);
+    assert(step(r, t, u, ub, clip, name, f, grid, o, left) == 2);
+    assert(buf.length(r, t) == 8);
+}
+
+test "bytes held for a split key wait out read timeouts, then expire" {
+    I64[64] r;
+    U8[64] t;
+    I64[900] u;
+    U8[256] ub;
+    U8[64] clip;
+    U8[16] name;
+    U8[16] f;
+    I64[60] grid;
+    U8[2048] o;
+    U8[2] csi = b"\x1b[";
+    init(r, t, 5, 12);
+    assert(step(r, t, u, ub, clip, name, f, grid, o, csi) == 0);
+    idle(r, state.ESC_WINDOW - 1);
+    assert(!held_expired(r));
+    idle(r, 1);
+    assert(held_expired(r));
+    assert(step(r, t, u, ub, clip, name, f, grid, o, csi) == 0);
+    assert(!held_expired(r));
+}
+
+test "a paste with no end marker ends after the window with no input" {
+    I64[64] r;
+    U8[64] t;
+    I64[900] u;
+    U8[256] ub;
+    U8[64] clip;
+    U8[16] name;
+    U8[16] f;
+    I64[60] grid;
+    U8[2048] o;
+    U8[8] start = b"\x1b[200~ab";
+    init(r, t, 5, 12);
+    _ = step(r, t, u, ub, clip, name, f, grid, o, start);
+    assert(r[state.R_PASTE] == 1);
+    idle(r, state.ESC_WINDOW - 1);
+    assert(r[state.R_PASTE] == 1);
+    idle(r, 1);
+    assert(r[state.R_PASTE] == 0);
+    assert(held_expired(r));
+}
+
+test "a paste disarms the quit, as any key does" {
+    I64[64] r;
+    U8[64] t;
+    I64[900] u;
+    U8[256] ub;
+    U8[64] clip;
+    U8[16] name;
+    U8[16] f;
+    I64[60] grid;
+    U8[2048] o;
+    init(r, t, 5, 12);
+    U8[2] in1 = b"x\x11";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, in1) == 2);
+    assert(r[state.R_QUIT_ARMED] == 1);
+    U8[13] p = b"\x1b[200~y\x1b[201~";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, p) == 13);
+    assert(r[state.R_QUIT_ARMED] == 0);
+    assert(buf.length(r, t) == 2);
+}
+
+test "a refused size rounds up, so it never reads as under the limit" {
+    assert(size_mib(state.MIB) == 1);
+    assert(size_mib(8388608) == 8);
+    assert(size_mib(8388609) == 9);
+    assert(size_mib(8499999) == 9);
+    assert(size_mib(17064773) == 17);
+}
+
+test "a file that is not UTF-8 is refused" {
+    I64[64] r;
+    U8[64] t;
+    U8[16] name;
+    init(r, t, 5, 12);
+    U8[2] bad = b"\xffa";
+    U8[1] nm = b"x";
+    assert(load(r, t, name, bad, nm, false) == state.E_NOT_UTF8);
+}
+
+test "a bracketed paste goes in as text, CR as LF" {
+    I64[64] r;
+    U8[64] t;
+    I64[900] u;
+    U8[256] ub;
+    U8[64] clip;
+    U8[16] name;
+    U8[16] f;
+    I64[60] grid;
+    U8[2048] o;
+    init(r, t, 5, 12);
+    U8[15] p = b"\x1b[200~a\rb\x1b[201~";
+    assert(step(r, t, u, ub, clip, name, f, grid, o, p) == 15);
+    assert(buf.length(r, t) == 3);
+    assert(buf.at(r, t, 1) == 10);
+}

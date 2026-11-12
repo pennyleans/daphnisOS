@@ -1,0 +1,53 @@
+// src/k12.ci: K-12 (docs/specs/2026-11-07-ds-desk-speed.md section 4), the speed bar's measurement lines. Off unless
+// the boot line holds daphnis.k12=1 (the flavor's main sets it), so no gate's transcript moves. Each line carries the
+// kernel's clock, microseconds since the PIT started (us_now, rt/trap.c), never a digest:
+//   k12 key US CODE     a key press, stamped at its interrupt (rt/ps2.c)
+//   k12 mark WHAT US    the tiler's FBIO_TILE_MARK: 1 a drain drawn, 2 a switcher frame drawn
+//   k12 frame SLOT US   a timed copy of a placed window whose pages were written ended (a frame shown)
+// tools/k12.py reads them.
+import src.serial;
+import src.text;
+
+// Microseconds since the PIT started (rt/trap.c rt_us_now, a row of the user image only).
+extern observe I64 us_now();
+
+Bool on = false;
+
+// On when the boot line holds the word daphnis.k12=1 (the flavor's main asks src/bootarg.ci).
+export void set(Bool v) { on = v; }
+
+export Bool active() { return on; }
+
+void num(I64 v) {
+    U8[20] d;
+    I64 n = text.dec_digits(v, d);
+    for i in 0..n { serial.serial_putc(d[i]); }
+}
+
+export void key(I64 code, I64 us) {
+    if (!on) { return; }
+    serial.serial_write("k12 key ");
+    num(us);
+    serial.serial_putc(32);
+    num(code);
+    serial.serial_putc(10);
+}
+
+export void mark(I64 what) {
+    if (!on) { return; }
+    serial.serial_write("k12 mark ");
+    num(what);
+    serial.serial_putc(32);
+    num(us_now());
+    serial.serial_putc(10);
+}
+
+export void frame(I64 slot) {
+    if (!on) { return; }
+    serial.serial_write("k12 frame ");
+    num(slot);
+    serial.serial_putc(32);
+    num(us_now());
+    serial.serial_putc(10);
+}
+// SPDX-License-Identifier: Apache-2.0

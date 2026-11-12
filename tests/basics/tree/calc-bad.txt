@@ -1,0 +1,5 @@
+scale = 19
+bad(
+undefined_name * 2
+3
+sqrt = 4

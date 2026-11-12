@@ -1,0 +1,94 @@
+// tests/rs/stnet_test.ci: hosted tests of RS-SET3, Settings' Network page (user/ci/kit/stnet.ci, frame 35).
+// Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+import user.ci.kit.stnet;
+
+U32[1600] row;
+
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+U8[6] MAC = [0x52 as U8, 0x54 as U8, 0x00 as U8, 0x12 as U8, 0x34 as U8, 0xab as U8];
+U8[4] ADDR = [10 as U8, 0 as U8, 2 as U8, 15 as U8];
+U8[4] MASK = [255 as U8, 255 as U8, 255 as U8, 0 as U8];
+U8[4] GW = [10 as U8, 0 as U8, 2 as U8, 2 as U8];
+U8[4] DNS = [10 as U8, 0 as U8, 2 as U8, 3 as U8];
+U8[4] NONE = [0 as U8, 0 as U8, 0 as U8, 0 as U8];
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for k in 0..n { if (a[k] != b[k]) { return false; } }
+    return true;
+}
+
+test "frame 35: the record's fields read as the frame writes them" {
+    stnet.set_record(true, MAC, ADDR, MASK, GW, DNS, stnet.DHCP);
+    U8[24] t;
+    assert(same(t, stnet.value_of(stnet.R_STATUS, t), b"Connected"));
+    assert(same(t, stnet.value_of(stnet.R_CONFIGURED, t), b"Automatic"));
+    assert(same(t, stnet.value_of(stnet.R_ADDRESS, t), b"10.0.2.15"));
+    assert(same(t, stnet.value_of(stnet.R_MASK, t), b"255.255.255.0"));
+    assert(same(t, stnet.value_of(stnet.R_DNS, t), b"10.0.2.3"));
+    assert(same(t, stnet.value_of(stnet.R_MAC, t), b"52:54:00:12:34:ab"));
+    assert(same(t, stnet.label_of(stnet.R_MAC, t), b"Hardware Address"));
+    stnet.set_record(false, MAC, ADDR, MASK, GW, DNS, stnet.BOOT);
+    assert(same(t, stnet.value_of(stnet.R_STATUS, t), b"Disconnected"));
+    assert(same(t, stnet.value_of(stnet.R_CONFIGURED, t), b"Manual"));
+}
+
+test "frame 31's rule: Copy Details writes the rows as Label: value lines, leaving out what the record lacks" {
+    stnet.set_record(true, MAC, ADDR, MASK, NONE, DNS, stnet.DHCP);
+    assert(!stnet.shows(stnet.R_GATEWAY) && stnet.shows(stnet.R_DNS));
+    U8[256] t;
+    I64 n = stnet.details(t);
+    U8[136] want = b"Status: Connected\nConfigured: Automatic\nAddress: 10.0.2.15\nSubnet Mask: 255.255.255.0\nDNS: 10.0.2.3\nHardware Address: 52:54:00:12:34:ab\n";
+    assert(same(t, n, want));
+}
+
+test "frame 35: rows 32 high, 41 apart; the dot green when the link is up" {
+    tokens.set_theme(1);
+    stnet.set_record(true, MAC, ADDR, MASK, GW, DNS, stnet.DHCP);
+    I64 ry = Y0 + stpage.BODY + stpage.LAB;
+    assert(ry == Y0 + 85);
+    I64 y = ry + 16;
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stnet.row_at(row, CX, Y0, CR, YB, y);
+    I64 vx = CR - stpage.tw(b"Connected", 9, 1);
+    assert(row[vx - 12] == 0x003f7d3a as U32);                                             // note 62's light green
+    y = ry + stnet.S_PITCH - 5;
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stnet.row_at(row, CX, Y0, CR, YB, y);
+    assert(row[CX + 100] == tokens.word(tokens.SURF1));                                    // the rule
+    tokens.set_theme(0);
+}
+
+test "no record: the title alone, Copy Details at 40 percent and inert" {
+    stnet.no_record();
+    assert(!stnet.shows(stnet.R_STATUS) && !stnet.shows(stnet.R_MAC));
+    U8[64] t;
+    assert(stnet.details(t) == 0);
+    assert(stnet.click(CX, Y0, CR, YB, CR - 20, Y0 + 30) == stpage.NONE);
+    assert(!stnet.enter() && !stnet.enter_last());                                       // no stop: the sidebar
+    assert(stnet.key(stpage.K_ENTER) == stpage.NONE && stnet.key(stpage.K_TAB) == stpage.BACK);
+}
+
+test "the desk's Tab order: Copy Details, the page's one stop, then the sidebar; a press copies" {
+    stnet.set_record(true, MAC, ADDR, MASK, GW, DNS, stnet.DHCP);
+    stnet.open();
+    assert(stnet.click(CX, Y0, CR, YB, CR - 20, Y0 + 30) == stnet.COPY);
+    assert(stnet.click(CX, Y0, CR, YB, CX + 20, Y0 + 100) == stpage.NONE);
+    stnet.open();
+    assert(stnet.key(stpage.K_DOWN) == stpage.DRAW && stnet.focused() == 1);            // an arrow: the ring shows
+    assert(stnet.key(stpage.K_SPACE) == stnet.COPY);
+    assert(stnet.key(stpage.K_LEFT) == stpage.DRAW && stnet.focused() == 1);            // no arrow leaves it
+    assert(stnet.key(stpage.K_TAB) == stpage.BACK && stnet.focused() == 0);
+    assert(stnet.enter() && stnet.focused() == 1 && stnet.key(stpage.K_BACKTAB) == stpage.BACK);
+    assert(stnet.enter_last() && stnet.focused() == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

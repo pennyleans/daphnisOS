@@ -1,0 +1,187 @@
+// tests/hw/usbscsi_test.ci: hosted tests of src/usbscsi.ci (HW-4m), the bulk-only wrappers, the SCSI commands and
+// the walk of a configuration descriptor for the storage interface.
+// cint test --root . tests/hw/usbscsi_test.ci
+
+import src.usbscsi;
+
+test "a CBW: signature, tag, length, direction, the command" {
+    U8[16] c;
+    assert(usbscsi.cdb_rw(c, false, 0x01020304, 8) == 10);
+    U8[31] b;
+    usbscsi.cbw(b, 0x11223344, 4096, true, c, 10);
+    assert(b[0] == 0x55 && b[1] == 0x53 && b[2] == 0x42 && b[3] == 0x43);       // USBC
+    assert(b[4] == 0x44 && b[5] == 0x33 && b[6] == 0x22 && b[7] == 0x11);
+    assert(b[8] == 0 && b[9] == 0x10 && b[10] == 0 && b[11] == 0);
+    assert(b[12] == 0x80 && b[13] == 0 && b[14] == 10);
+    assert(b[15] == 0x28 && b[17] == 1 && b[18] == 2 && b[19] == 3 && b[20] == 4);
+    assert(b[22] == 0 && b[23] == 8 && b[24] == 0 && b[25] == 0 && b[30] == 0);
+    assert(usbscsi.cdb_rw(c, true, 8184, 8) == 10);
+    usbscsi.cbw(b, 2, 4096, false, c, 10);
+    assert(b[12] == 0 && b[15] == 0x2A && b[19] == 0x1F && b[20] == 0xF8);
+    assert(usbscsi.cdb_test_unit_ready(c) == 6);
+    usbscsi.cbw(b, 3, 0, false, c, 6);
+    assert(b[8] == 0 && b[14] == 6 && b[15] == 0 && b[21] == 0);               // the write's bytes are gone
+}
+
+test "the short commands" {
+    U8[16] c;
+    assert(usbscsi.cdb_inquiry(c) == 6 && c[0] == 0x12 && c[4] == 36);
+    assert(usbscsi.cdb_request_sense(c) == 6 && c[0] == 0x03 && c[4] == 18);
+    assert(usbscsi.cdb_read_capacity(c) == 10 && c[0] == 0x25 && c[4] == 0);
+    // SYNCHRONIZE CACHE (10) of the whole medium, IMMED clear: its CSW comes once the cache is down (the read of PR 489)
+    assert(usbscsi.cdb_rw(c, true, 0x01020304, 8) == 10);
+    assert(usbscsi.cdb_sync_cache(c) == 10 && c[0] == 0x35);
+    for k in 1..16 {
+        assert(c[k] == 0);                                  // IMMED, the LBA and the count: 0; nothing of the WRITE
+    }
+}
+
+test "a CSW: passed, failed, phase error, and what is not one" {
+    U8[13] s = [0x55, 0x53, 0x42, 0x53, 0x44, 0x33, 0x22, 0x11, 0, 0, 0, 0, 0];
+    assert(usbscsi.csw_status(s, 0x11223344) == usbscsi.PASSED && usbscsi.csw_residue(s) == 0);
+    s[12] = 1;
+    s[9] = 2;
+    assert(usbscsi.csw_status(s, 0x11223344) == usbscsi.FAILED && usbscsi.csw_residue(s) == 512);
+    s[12] = 2;
+    assert(usbscsi.csw_status(s, 0x11223344) == usbscsi.PHASE);
+    s[12] = 3;
+    assert(usbscsi.csw_status(s, 0x11223344) == -1);       // a reserved status
+    s[12] = 0;
+    assert(usbscsi.csw_status(s, 0x11223345) == -1);       // another command's tag
+    s[3] = 0x43;
+    assert(usbscsi.csw_status(s, 0x11223344) == -1);       // a CBW's signature
+}
+
+test "a data stage agrees with its CSW, or the transport is reset" {
+    assert(usbscsi.agrees(4096, 4096, 0));                 // a full block
+    assert(usbscsi.agrees(36, 32, 4));                     // a short INQUIRY the CSW owns up to
+    assert(usbscsi.agrees(4096, 0, 4096));                 // a stalled data stage, nothing moved, the CSW says so
+    assert(usbscsi.agrees(0, 0, 0));                       // no data stage
+    assert(!usbscsi.agrees(4096, 512, 0));                 // a short packet with residue 0: not a full block (P2)
+    assert(!usbscsi.agrees(4096, 4096, 512));              // all came, the CSW says some did not
+    assert(!usbscsi.agrees(4096, 0, 5000));                // a residue past the length
+    assert(!usbscsi.agrees(4096, -1, 4097));
+}
+
+test "READ CAPACITY: 512-byte sectors only" {
+    U8[8] b = [0, 0, 0x1F, 0xFF, 0, 0, 2, 0];
+    assert(usbscsi.capacity_sectors(b) == 8192);
+    b[6] = 0x10;
+    assert(usbscsi.capacity_sectors(b) == -1);             // 4 KiB blocks
+    U8[8] big = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 2, 0];
+    assert(usbscsi.capacity_sectors(big) == -1);           // past READ (10)
+    U8[8] top = [0xFF, 0xFF, 0xFF, 0xFE, 0, 0, 2, 0];
+    assert(usbscsi.capacity_sectors(top) == 4294967295);
+}
+
+void product(inout U8[36] inq, in U8[_] name, I64 n) {
+    for k in 0..36 { inq[k] = 32; }
+    inq[0] = 0;
+    for k in 0..n { inq[16 + k] = name[k]; }
+}
+
+test "the model as the boot line names it" {
+    U8[36] inq;
+    U8[16] m;
+    product(inq, "QEMU HARDDISK", 13);
+    assert(usbscsi.is_disk(inq));
+    assert(usbscsi.model(inq, m) == 13);
+    assert(m[0] == 81 && m[4] == 95 && m[5] == 72 && m[12] == 75 && m[13] == 0);
+    assert(usbscsi.names("daphnis.disk.write=QEMU_HARDDISK", 32, "daphnis.disk.write=", m, 13));
+    assert(usbscsi.names("daphnis.pool=max daphnis.disk.write=QEMU_HARDDISK daphnis.k12=1", 63,
+        "daphnis.disk.write=", m, 13));
+    assert(!usbscsi.names("daphnis.disk.write=QEMU_HARDDISK2", 33, "daphnis.disk.write=", m, 13));
+    assert(!usbscsi.names("daphnis.disk.write=QEMU_HARDDIS", 31, "daphnis.disk.write=", m, 13));
+    assert(!usbscsi.names("xdaphnis.disk.write=QEMU_HARDDISK", 33, "daphnis.disk.write=", m, 13));
+    assert(!usbscsi.names("daphnis.pool=max", 16, "daphnis.disk.write=", m, 13));
+    product(inq, "USB DISK 2.0", 12);
+    assert(usbscsi.model(inq, m) == 12 && m[3] == 95 && m[8] == 95 && m[10] == 46);
+    product(inq, "", 0);
+    assert(usbscsi.model(inq, m) == 0);
+    assert(!usbscsi.names("daphnis.disk.write=", 19, "daphnis.disk.write=", m, 0));   // a blank model is never named
+    // HW-12: a GUID word never names a raw device's model, even one of sixteen bytes that begins it
+    product(inq, "6461706E-6869-73", 16);
+    assert(usbscsi.model(inq, m) == 16);
+    assert(!usbscsi.names("daphnis.disk.write=6461706E-6869-7300-0000-000000000005", 55, "daphnis.disk.write=", m, 16));
+    assert(!usbscsi.names("daphnis.disk.write=6461706e-6869-7300-0000-000000000005", 55, "daphnis.disk.write=", m, 16));
+    assert(usbscsi.names("daphnis.disk.write=6461706E-6869-73", 35, "daphnis.disk.write=", m, 16));
+    inq[0] = 5;
+    assert(!usbscsi.is_disk(inq));                         // a CD drive
+    inq[0] = 0x7F;
+    assert(!usbscsi.is_disk(inq));                         // no unit
+}
+
+test "sense data" {
+    U8[18] b = [0x70, 0, 6, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0x29, 0, 0, 0, 0, 0];
+    assert(usbscsi.sense(b) == 6 * 65536 + 0x29 * 256);    // unit attention, power on
+    b[0] = 0xF0;
+    b[2] = 0x25;
+    b[12] = 0x3A;
+    b[13] = 1;
+    assert(usbscsi.sense(b) == 5 * 65536 + 0x3A * 256 + 1);
+    b[0] = 0x72;
+    assert(usbscsi.sense(b) == -1);                        // descriptor format: not read
+}
+
+// QEMU's usb-storage at high speed: one interface 08:06:50, bulk IN 0x81 and bulk OUT 0x02, 512 bytes each.
+U8[32] high = [
+    9, 2, 32, 0, 1, 1, 0, 0x80, 50,
+    9, 4, 0, 0, 2, 8, 6, 0x50, 0,
+    7, 5, 0x81, 2, 0, 2, 0,
+    7, 5, 0x02, 2, 0, 2, 0
+];
+
+// At SuperSpeed: 1024 bytes, each endpoint with its companion (max burst 15).
+U8[44] super = [
+    9, 2, 44, 0, 1, 1, 0, 0x80, 50,
+    9, 4, 0, 0, 2, 8, 6, 0x50, 0,
+    7, 5, 0x81, 2, 0, 4, 0,
+    6, 0x30, 15, 0, 0, 0,
+    7, 5, 0x02, 2, 0, 4, 0,
+    6, 0x30, 15, 0, 0, 0
+];
+
+// A keyboard interface first, then storage on interface 1 with an interrupt endpoint between the bulk pair.
+U8[55] mixed = [
+    9, 2, 55, 0, 2, 1, 0, 0x80, 50,
+    9, 4, 0, 0, 1, 3, 1, 1, 0,
+    7, 5, 0x83, 3, 8, 0, 10,
+    9, 4, 1, 0, 3, 8, 6, 0x50, 0,
+    7, 5, 0x04, 2, 64, 0, 0,
+    7, 5, 0x85, 3, 2, 0, 9,
+    7, 5, 0x86, 2, 64, 0, 0
+];
+
+test "the storage interface and its bulk pair" {
+    I64[7] g;
+    assert(usbscsi.find_bulk(high, 32, g));
+    assert(g[0] == 0 && g[1] == 0x02 && g[2] == 512 && g[3] == 0 && g[4] == 0x81 && g[5] == 512 && g[6] == 0);
+    assert(usbscsi.find_bulk(super, 44, g));
+    assert(g[1] == 0x02 && g[2] == 1024 && g[3] == 15 && g[4] == 0x81 && g[5] == 1024 && g[6] == 15);
+    assert(usbscsi.find_bulk(mixed, 55, g));
+    assert(g[0] == 1 && g[1] == 0x04 && g[2] == 64 && g[4] == 0x86 && g[5] == 64);
+}
+
+test "descriptors that are not a storage device, or lie" {
+    I64[7] g;
+    assert(!usbscsi.find_bulk(mixed, 25, g));              // the keyboard alone
+    assert(!usbscsi.find_bulk(high, 25, g));               // cut after the first endpoint
+    assert(!usbscsi.find_bulk(high, 31, g));               // the second endpoint runs past the end
+    assert(!usbscsi.find_bulk(high, 0, g));
+    U8[32] bad = high;
+    bad[16] = 0x62;                                        // UAS, not bulk-only
+    assert(!usbscsi.find_bulk(bad, 32, g));
+    bad = high;
+    bad[9] = 0;                                            // a length of 0 would never end
+    assert(!usbscsi.find_bulk(bad, 32, g));
+    bad = high;
+    bad[25] = 200;                                         // a length past the end
+    assert(!usbscsi.find_bulk(bad, 32, g));
+    bad = high;
+    bad[27] = 0x82;                                        // two IN endpoints, no OUT
+    assert(!usbscsi.find_bulk(bad, 32, g));
+    bad = high;
+    bad[27] = 0x00;                                        // endpoint 0 is the control endpoint
+    assert(!usbscsi.find_bulk(bad, 32, g));
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,127 @@
+// src/acpitab.ci: HW-2, what src/acpi.ci reads out of a table's bytes, pure so the hosted test runs it on fake tables
+// (tests/hw/acpi_test.ci): a little-endian field, the FADT's ACPI mode handshake and the DSDT's \_S5 package. No AML
+// is interpreted: \_S5 is found by its bytes, as a laptop's firmware compiles it.
+
+// The little-endian value of width bytes of b at at.
+export U64 le[n](in U8[n] b, I64 at, I64 width) {
+    U64 v = 0;
+    for k in 0..width {
+        v |= (b[at + k] as U64) << (8 * k);
+    }
+    return v;
+}
+
+// The FADT's SMI_CMD (offset 48, 4 bytes) and ACPI_ENABLE (offset 52), the n bytes of f read (ACPI 6.5 table 5.9):
+// the port and the value that take a machine the firmware handed over in legacy mode (SCI_EN clear) to ACPI mode
+// (section 4.8.3.2.1). 0 for both on a machine that is always in ACPI mode, or a FADT too short to hold them.
+export U64 smi_cmd[m](in U8[m] f, I64 n) {
+    if (n < 53) {
+        return 0;
+    }
+    return le(f, 48, 4);
+}
+
+export U64 acpi_enable[m](in U8[m] f, I64 n) {
+    if (n < 53) {
+        return 0;
+    }
+    return f[52] as U64;
+}
+
+// An I/O block the FADT names: the 32-bit port at legacy, or its X_ form's (a Generic Address Structure at gas, ACPI
+// 6.5 table 5.1) when the table holds it, its space is SystemIO (1) and its address is set, as ACPICA prefers the X_
+// form. 0 for none: a table too short, or a block in memory space only.
+export U64 io_block[m](in U8[m] f, I64 n, I64 legacy, I64 gas) {
+    U64 port = 0;
+    if (n >= legacy + 4) {
+        port = le(f, legacy, 4);
+    }
+    if (n >= gas + 12 && f[gas] == 1 && le(f, gas + 4, 8) != 0) {
+        port = le(f, gas + 4, 8);
+    }
+    return port;
+}
+
+// A block length byte of the FADT at at (PM1_EVT_LEN 88, GPE0_BLK_LEN 92, GPE1_BLK_LEN 93); 0 past the table.
+export I64 block_len[m](in U8[m] f, I64 n, I64 at) {
+    if (n < at + 1) {
+        return 0;
+    }
+    return f[at] as I64;
+}
+
+// An AML integer at d[p], before lim: Zero (0x00), One (0x01), Ones (0xFF), or BytePrefix (0x0A), WordPrefix (0x0B),
+// DWordPrefix (0x0C) or QWordPrefix (0x0E) and its 1, 2, 4 or 8 bytes. The bytes it takes, its value in v[0]; 0 when
+// the byte at p starts none, or its bytes run past lim.
+export I64 integer[n](in U8[n] d, I64 p, I64 lim, inout U64[1] v) {
+    if (p >= lim) {
+        return 0;
+    }
+    U8 op = d[p];
+    if (op == 0x00 || op == 0x01) {
+        v[0] = op as U64;
+        return 1;
+    }
+    if (op == 0xFF) {
+        v[0] = 0;
+        v[0] = ~v[0];
+        return 1;
+    }
+    I64 w = 0;
+    if (op == 0x0A) { w = 1; }
+    if (op == 0x0B) { w = 2; }
+    if (op == 0x0C) { w = 4; }
+    if (op == 0x0E) { w = 8; }
+    if (w == 0 || p + 1 + w > lim) {
+        return 0;
+    }
+    v[0] = le(d, p + 1, w);
+    return 1 + w;
+}
+
+// \_S5 at d[at], before lim: "_S5_", PackageOp (0x12), its PkgLength (1 to 4 bytes: bits 7 and 6 of the first byte
+// count the bytes after it), NumElements, then SLP_TYPa and SLP_TYPb as AML integers. A package of one element holds
+// both, SLP_TYPa in its low byte and SLP_TYPb in the next, as ACPICA reads it. True with typ set when the bytes are
+// one and both values fit SLP_TYP's three bits; a reference to _S5_ (Return (\_S5)), or a package of anything else,
+// is no match, so a scan goes on to the next.
+export Bool s5_at[n](in U8[n] d, I64 at, I64 lim, inout I64[2] typ) {
+    if (at + 5 > lim || d[at] != 95 || d[at + 1] != 83 || d[at + 2] != 53 || d[at + 3] != 95 || d[at + 4] != 0x12) {
+        return false;
+    }
+    I64 p = at + 5;
+    if (p >= lim) { return false; }
+    p += 1 + (d[p] >> 6) as I64;              // the PkgLength
+    if (p >= lim) { return false; }
+    I64 elems = d[p] as I64;                  // NumElements
+    p += 1;
+    if (elems == 0) { return false; }
+    U64[1] v;
+    I64 k = integer(d, p, lim, v);
+    if (k == 0) { return false; }
+    U64 a = v[0];
+    U64 b = 0;
+    if (elems == 1) {
+        b = (a >> 8) & 0xFF;
+        a = a & 0xFF;
+    } else {
+        if (integer(d, p + k, lim, v) == 0) { return false; }
+        b = v[0];
+    }
+    if (a > 7 || b > 7) {
+        return false;
+    }
+    typ[0] = a as I64;
+    typ[1] = b as I64;
+    return true;
+}
+
+// The first \_S5 that starts in d[0..stop] and ends before lim (a piece of the DSDT and the bytes after it).
+export Bool s5_find[n](in U8[n] d, I64 stop, I64 lim, inout I64[2] typ) {
+    for k in 0..stop {
+        if (d[k] == 95 && s5_at(d, k, lim, typ)) {
+            return true;
+        }
+    }
+    return false;
+}
+// SPDX-License-Identifier: Apache-2.0

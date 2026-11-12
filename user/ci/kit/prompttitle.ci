@@ -1,0 +1,105 @@
+// user/ci/kit/prompttitle.ci: the title of the approval prompt (frame 17) for the window that asks, AC-T
+// (docs/specs/2026-11-11-ac-t-prompt-title.md; DN-60; plan call AC-R1). Pure. The title is always a name from
+// kit/apps.ci, chosen by the desk's own record of what it opened the window for. AC-T2 (edition 3): what the
+// window's first process runs is the kernel's record of the image it loaded (FBIO_TILE_INFO kind 13,
+// src/exepath.ci), which no call of a process writes; it only withdraws the desk's choice and is never drawn.
+//   opened for app A with exec, and the first process runs the image member that is A's program: A's name
+//   anything else: Console's name, which is true of every terminal the desk opens and says nothing of what runs
+// So a program can lower its own window's title to Console and nothing more. The comm is read nowhere: a program
+// sets it (prctl PR_SET_NAME), and on Daphnis an image member's comm is its whole member name (`bin/ced`).
+// The record itself (`record`) is made only for a line the shell can read one way (kit/shquote.ci plain): `exec`,
+// the app's program and plain or single-quoted words. A line with anything more (a redirection that fails, then
+// `;exec x`) can leave another program as the window's first process, so it records no app.
+import user.ci.kit.apps;
+import user.ci.kit.launch;
+import user.ci.kit.shquote;   // AC-Q: plain, the one rule for a line the desk types
+
+const I64 REC = 64;                    // AC-T2's record (src/exepath.ci RECORD_BYTES)
+const I64 PATH_AT = 16;
+const I64 PATH_MAX = 33;               // `/` and the 32 bytes the kernel keeps
+const I64 CONSOLE_ICON = 1;            // kit/icons3.ci TERMINAL, Console's glyph in kit/apps.ci
+
+// Console's name into dst; its length.
+I64 console(inout U8[_] dst) {
+    I64 c = apps.by_program(b"/bin/cish");
+    if (c != apps.NONE) { return apps.field(c, 0, dst); }
+    U8[7] w = b"Console";
+    I64 n = 7;
+    if (n > len(dst)) { n = len(dst); }
+    for k in 0..n { dst[k] = w[k]; }
+    return n;
+}
+
+I64 u32(in U8[_] r, I64 at) {
+    return r[at] as I64 | (r[at + 1] as I64 << 8) | (r[at + 2] as I64 << 16) | (r[at + 3] as I64 << 24);
+}
+
+// AC-T2: the path of the image member a record of FBIO_TILE_INFO kind 13 or 14 names, into dst; its length. 0
+// unless the record is whole and the program came from the image (source 0): a length of 1 to 33, a path that
+// begins with `/` and holds only printable ASCII, then nothing but NULs to the record's end. A program from the
+// volume (source 1), a record the kernel did not give and a short buffer are no image member.
+export I64 image(in U8[_] rec, inout U8[_] dst) {
+    if (len(rec) < REC || u32(rec, 4) != 0 || u32(rec, 12) != 0) { return 0; }
+    I64 n = u32(rec, 8);
+    if (n < 1 || n > PATH_MAX || n > len(dst) || rec[PATH_AT] != '/') { return 0; }
+    for k in PATH_AT..PATH_AT + n {
+        if (rec[k] < 32 || rec[k] > 126) { return 0; }
+    }
+    for k in PATH_AT + n..REC {
+        if (rec[k] != 0) { return 0; }
+    }
+    for k in 0..n { dst[k] = rec[PATH_AT + k]; }
+    return n;
+}
+
+// Whether rec names the image member that is app's program, its whole `/bin/PROGRAM`. An app with no program
+// has no image.
+Bool runs(I64 app, in U8[_] rec) {
+    U8[40] p;
+    I64 pn = image(rec, p);
+    return app >= 0 && pn > 0 && apps.by_program(p[0..pn]) == app;
+}
+
+// The desk's record for a window it has just typed cmd into (kit/launch.ci typed): the number of the app whose
+// program takes the shell's place, plus 1; 0 for a shell, a command, and a line that is not plain. 0 is also what
+// a record nothing has written holds.
+export I64 record(in U8[_] cmd) {
+    if (!launch.replaces(cmd) || !shquote.plain(cmd)) { return 0; }
+    U8[72] p;
+    I64 pn = launch.program(cmd, p);
+    return apps.by_program(p[0..pn]) + 1;
+}
+
+// The prompt's title for a window into dst; its length. app is the app of kit/apps.ci the desk opened the window
+// for by typing `exec` and its program (kit/launch.ci), apps.NONE for a shell or a command. rec is AC-T2's record
+// of the window's first process (FBIO_TILE_INFO kind 13), all zero when the kernel gave none.
+export I64 title(I64 app, in U8[_] rec, inout U8[_] dst) {
+    if (app >= 0 && app < apps.N && runs(app, rec)) { return apps.field(app, 0, dst); }
+    return console(dst);
+}
+
+// AC-V: the prompt's icon for the same window, the icon of the app whose name `title` gives (kit/apps.ci's
+// glyph, an icons3 number); Console's when the table has no Console. Never chosen by a byte of `rec` beyond
+// what `title` reads.
+export I64 icon(I64 app, in U8[_] rec) {
+    if (app >= 0 && app < apps.N && runs(app, rec)) { return apps.icon(app); }
+    I64 c = apps.by_program(b"/bin/cish");
+    if (c != apps.NONE) { return apps.icon(c); }
+    return CONSOLE_ICON;
+}
+
+// AC-V-R1 with AC-T2 (docs/specs/2026-11-11-ac-v-prompt-words.md edition 3): frame 17's subject from the record of
+// the process that asks, into dst; its length. The app's name when its image is that app's program, else the
+// image's own path (`/bin/grant`), which always begins with `/` and so is never an app's name. 0 when the record
+// names no image member, and the desk keeps its own record instead. Cut to dst.
+export I64 subject(in U8[_] rec, inout U8[_] dst) {
+    U8[40] p;
+    I64 pn = image(rec, p);
+    if (pn == 0) { return 0; }
+    I64 a = apps.by_program(p[0..pn]);
+    if (a != apps.NONE) { return apps.field(a, 0, dst); }
+    if (pn > len(dst)) { pn = len(dst); }
+    for k in 0..pn { dst[k] = p[k]; }
+    return pn;
+}
+// SPDX-License-Identifier: Apache-2.0

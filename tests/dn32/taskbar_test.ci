@@ -1,0 +1,28 @@
+// tests/dn32/taskbar_test.ci: DN-46 (c), the one pin store (user/ci/kit/taskbar.ci): the key both sides compute, and
+// Index's copy as the desk's EV_PIN records build it. Run by check.sh.
+import user.ci.kit.taskbar;
+
+test "a path's key is the same each time, differs by path, and fits an i32" {
+    I64 a = taskbar.key(b"/home/notes.txt");
+    assert(a == taskbar.key(b"/home/notes.txt") && a != taskbar.key(b"/home/notes.tx"));
+    assert(a >= 0 && a < 2147483648 && taskbar.key(b"") == 5381);
+}
+
+test "the desk's push: clear, then each pin; a pin made anywhere reads as pinned, an unpin as not" {
+    I64 n = taskbar.key(b"/home/notes.txt");
+    I64 d = taskbar.key(b"/home/docs");
+    taskbar.apply(taskbar.PIN_CLEAR, 0);
+    assert(!taskbar.has(n) && taskbar.held() == 0);
+    taskbar.apply(taskbar.PIN_ADD, n);                 // pinned from the plane
+    taskbar.apply(taskbar.PIN_ADD, d);                 // pinned from another Index
+    assert(taskbar.has(n) && taskbar.has(d) && taskbar.held() == 2);
+    taskbar.apply(taskbar.PIN_CLEAR, 0);               // the next push, after an unpin
+    taskbar.apply(taskbar.PIN_ADD, d);
+    assert(!taskbar.has(n) && taskbar.has(d));
+    taskbar.apply(taskbar.PIN_ADD, d);                 // a repeated key is held once
+    assert(taskbar.held() == 1);
+    assert(!taskbar.full());
+    for k in 0..40 { taskbar.apply(taskbar.PIN_ADD, 100 + k); }
+    assert(taskbar.held() == taskbar.HELD && taskbar.HELD == 28 && taskbar.full());   // DN-49: never past its 28
+}
+// SPDX-License-Identifier: Apache-2.0

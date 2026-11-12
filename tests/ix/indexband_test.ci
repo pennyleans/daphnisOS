@@ -1,0 +1,246 @@
+// tests/ix/indexband_test.ci: the rubber band, the drop ring and the cut (frame 32; user/ci/kit/indexband.ci),
+// hosted: every box against kit/indexbody.ci's hit in the Grid and the List, the band's slop, what it touches and adds,
+// its range and edges, the drag's slop and its target, the free names, and the pixels of the band, the ring and a cut
+// cell. Run by check.sh with every tests/ix/*_test.ci.
+import user.ci.kit.indexband;
+import user.ci.kit.indexbody;
+import user.ci.kit.finder;
+import user.ci.kit.opener;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+
+U32[1024] row;
+
+// Kept entries at /home/ci: folders f00 .. f(d-1), then files a00 ..; folders come first.
+void home(I64 d, I64 n) {
+    I64 r = opener.load_default();
+    assert(finder.go(b"/home/ci"));
+    finder.begin();
+    U8[8] nm;
+    for k in 0..n {
+        nm[0] = 'a';
+        if (k < d) { nm[0] = 'f'; }
+        nm[1] = ('0' as I64 + k / 10) as U8;
+        nm[2] = ('0' as I64 + k % 10) as U8;
+        assert(finder.add(nm[0..3], k < d, 100, -1, opener.NOTHING, false));
+    }
+    finder.end();
+}
+
+void grid() {
+    indexbody.set_list(false);
+    indexbody.set_box(184, 48, 958, 639);                     // frame 4's body: entry 0's cell at (200, 60)
+    indexband.set_grid(200, 60, indexbody.cols(), finder.kept());
+    indexband.set_clip(184, 48, 958, 639);
+}
+
+void list() {
+    indexbody.set_list(true);
+    indexbody.set_box(184, 48, 958, 639);                     // the first row at (192, 48 + 4 + 28 + 2)
+    indexband.set_list(192, 82, 950, finder.kept());
+    indexband.set_clip(184, 48, 958, 639);
+}
+
+// The List's boxes from indexbody's origin after its scroll, as the program sets them.
+void geom() {
+    indexband.set_list(indexbody.origin_x(), indexbody.origin_y(), indexbody.row_x1(), finder.kept());
+    indexband.set_clip(184, 48, 958, 639);
+}
+
+I64 want(I64 h) {
+    if (h < 0) { return -1; }
+    return h;
+}
+
+test "every box is where kit/indexbody.ci hits, in the Grid and the List" {
+    home(4, 20);
+    grid();
+    I64 y = 48;
+    while (y < 639) {
+        I64 x = 184;
+        while (x < 958) {
+            assert(indexband.at(x, y) == want(indexbody.hit(x, y)));
+            x = x + 3;
+        }
+        y = y + 3;
+    }
+    list();
+    y = 48;
+    while (y < 639) {
+        I64 x = 184;
+        while (x < 958) {
+            assert(indexband.at(x, y) == want(indexbody.hit(x, y)));
+            x = x + 5;
+        }
+        y = y + 2;
+    }
+}
+
+test "a press on the space becomes a band past 4 px; it chooses what it touches, Ctrl adds" {
+    home(4, 20);
+    grid();
+    indexband.press(316, 50, false);                          // the gap right of cell 0, above it
+    assert(!indexband.move(319, 52) && !indexband.banding());
+    assert(!indexband.touched(0));
+    assert(indexband.move(300, 175));                         // into cell 0 (row 0) and cell 6's top (row 1)
+    assert(indexband.touched(0) && indexband.touched(6) && !indexband.touched(1) && !indexband.touched(7));
+    assert(indexband.first() == 0 && indexband.last() == 12);
+    assert(indexband.move(320, 175));                         // past cell 0's right edge into cell 1
+    assert(indexband.touched(1) && indexband.touched(7));
+    finder.select(15);
+    indexband.press(316, 50, true);
+    assert(indexband.move(300, 100));
+    assert(indexband.picks(0) && indexband.picks(15) && !indexband.picks(1));
+    indexband.press(316, 50, false);
+    assert(indexband.move(300, 100) && !indexband.picks(15));
+    assert(indexband.release() && !indexband.banding() && !indexband.touched(0));
+    indexband.press(316, 50, false);
+    assert(!indexband.release());                             // never moved: a click on the space
+}
+
+test "the band in the List touches rows, and asks to scroll past the body's top or foot" {
+    home(4, 20);
+    list();
+    indexband.press(900, 82 + 3 * 30 + 29, false);            // the gap under row 3
+    assert(indexband.move(900, 82 + 30 + 5));
+    assert(!indexband.touched(0) && indexband.touched(1) && indexband.touched(3) && !indexband.touched(4));
+    assert(indexband.edge() == indexband.INSIDE);
+    assert(indexband.move(900, 40) && indexband.edge() == indexband.ABOVE && indexband.touched(0));
+    assert(indexband.move(900, 650) && indexband.edge() == indexband.BELOW && indexband.touched(18));
+    assert(!indexband.touched(19) && indexband.last() == 19);
+    indexband.set_list(192, 82 - 30, 950, finder.kept());     // the body scrolled a row: the anchor keeps its entry
+    assert(indexband.move(900, 82 + 5) && indexband.touched(2) && indexband.touched(3) && !indexband.touched(4));
+    assert(indexband.release());
+}
+
+test "a drag of chosen entries: past 4 px the folder under it that is not moved takes the ring" {
+    home(4, 20);
+    grid();
+    finder.select(5);                                         // a file
+    finder.toggle(2);                                         // a folder, moved with it
+    indexband.drag_press(700, 100);
+    assert(!indexband.drag_move(702, 101) && indexband.drop() == -1);
+    assert(indexband.drag_move(260, 100) && indexband.drop() == 0);
+    assert(indexband.drag_move(500, 100) && indexband.drop() == -1);   // folder 2 is moved
+    assert(indexband.drag_move(620, 100) && indexband.drop() == 3);
+    assert(indexband.drag_move(700, 100) && indexband.drop() == -1);   // entry 4 is a file
+    assert(indexband.drag_move(380, 100) && indexband.drop() == 1);
+    indexband.no_drop();
+    assert(indexband.drop() == -1);
+    assert(indexband.drag_move(260, 100));
+    assert(indexband.drag_release() == 0 && !indexband.dragging_now() && indexband.drop() == -1);
+    indexband.drag_press(700, 100);
+    assert(indexband.drag_release() == -1);
+}
+
+test "a moved entry never lands on a taken name: NAME, STEM 2.EXT, STEM 3.EXT; a dot name has no ending" {
+    U8[300] t;
+    I64 n = indexband.candidate(b"notes.txt", 9, 1, t);
+    assert(n == 9 && t[0] == 'n');
+    n = indexband.candidate(b"notes.txt", 9, 2, t);
+    assert(n == 11 && t[5] == ' ' && t[6] == '2' && t[7] == '.');
+    n = indexband.candidate(b"kit", 3, 12, t);
+    assert(n == 6 && t[3] == ' ' && t[4] == '1' && t[5] == '2');
+    n = indexband.candidate(b".profile", 8, 3, t);
+    assert(n == 10 && t[8] == ' ' && t[9] == '3');
+    U8[255] long;
+    for k in 0..255 { long[k] = 'x'; }
+    assert(indexband.candidate(long, 255, 2, t) == -1);
+}
+
+test "drawn: a cut cell at 40 percent, the drop target SURF1 under a 2 px ring, the band at 25 percent" {
+    tokens.set_theme(tokens.DARK);
+    home(4, 20);
+    grid();
+    U32 paper = tokens.word(tokens.PAPER);
+    U32 u = tokens.word(tokens.ULTRAMARINE);
+    indexband.cut_clear();
+    indexband.cut_mark(1);
+    assert(indexband.is_cut(1) && !indexband.is_cut(0));
+    draw.paint(row, 0, 1024, tokens.word(tokens.INK));
+    indexband.over_row(row, 100);
+    assert(row[330] == blend_ink() && row[250] == tokens.word(tokens.INK));
+    indexband.cut_clear();
+    finder.select(5);
+    assert(indexband.drag_move(0, 0) == false);
+    indexband.drag_press(700, 100);
+    assert(indexband.drag_move(260, 100) && indexband.drop() == 0);
+    draw.paint(row, 0, 1024, paper);
+    indexband.under_row(row, 100, 0);
+    assert(row[200] == tokens.word(tokens.SURF1) && row[311] == tokens.word(tokens.SURF1) && row[312] == paper);
+    indexband.under_row(row, 100, 1);
+    assert(row[330] == paper);
+    draw.paint(row, 0, 1024, paper);
+    indexband.over_row(row, 100);
+    assert(row[198] == u && row[199] == u && row[200] == paper && row[313] == u && row[314] == paper);
+    assert(indexband.drag_release() == 0);
+    draw.paint(row, 0, 1024, paper);
+    indexband.press(316, 50, false);
+    assert(indexband.move(400, 120));
+    indexband.over_row(row, 50);
+    assert(row[316] == paper && row[317] == u && row[399] == u && row[400] == paper);
+    draw.paint(row, 0, 1024, paper);
+    indexband.over_row(row, 80);
+    assert(row[316] == u && row[400] == u && row[350] != paper && row[350] != u);
+    draw.paint(row, 0, 1024, paper);
+    assert(indexband.move(400, 20));                          // the band now crosses the body's top at 48
+    indexband.over_row(row, 30);
+    assert(row[350] == paper && row[316] == paper);
+    indexband.over_row(row, 48);
+    assert(row[350] != paper && row[316] == u);
+    assert(indexband.release());
+}
+
+U32 blend_ink() {
+    U32[1] one;
+    one[0] = tokens.word(tokens.INK);
+    U32 p = tokens.word(tokens.PAPER);
+    I64 r = (one[0] as I64 >> 16) & 255;
+    I64 g = (one[0] as I64 >> 8) & 255;
+    I64 b = one[0] as I64 & 255;
+    I64 pr = (p as I64 >> 16) & 255;
+    I64 pg = (p as I64 >> 8) & 255;
+    I64 pb = p as I64 & 255;
+    r = r - (((r - pr) * 154) >> 8);
+    g = g - (((g - pg) * 154) >> 8);
+    b = b - (((b - pb) * 154) >> 8);
+    return ((r << 16) | (g << 8) | b) as U32;
+}
+test "a band held near the body's top or foot scrolls it a row each wait, quicker deeper in; it chooses as it goes" {
+    home(0, 40);
+    list();
+    indexbody.scroll_top();
+    geom();
+    indexband.press(900, 82 + 3 * 30 + 29, false);            // the gap under row 3
+    assert(indexband.move(900, 300));
+    assert(indexband.edge() == indexband.INSIDE && indexband.step_ms() == 0 && indexband.tick(0) == 0);
+    // The zone: 24 px in from the foot (639), and past it.
+    assert(indexband.move(900, 639 - 24 - 1) && indexband.edge() == indexband.INSIDE);
+    assert(indexband.move(900, 639 - 24) && indexband.edge() == indexband.BELOW);
+    assert(indexband.step_ms() == indexband.STEP_SLOW);
+    assert(indexband.move(900, 639 - 24 + 30) && indexband.step_ms() == indexband.STEP_SLOW - 60);
+    assert(indexband.move(900, 639 - 24 + 60) && indexband.step_ms() == indexband.STEP_FAST);
+    assert(indexband.move(900, 1000) && indexband.step_ms() == indexband.STEP_FAST);
+    assert(indexband.move(900, 48 + 24) && indexband.edge() == indexband.INSIDE);
+    assert(indexband.move(900, 48 + 23) && indexband.edge() == indexband.ABOVE);
+    assert(indexband.step_ms() == indexband.STEP_SLOW);
+    // The wait: it starts when the pointer comes into the zone, a row each step_ms after.
+    assert(indexband.move(900, 639 - 24) && indexband.tick(1000) == 0);
+    assert(indexband.tick(1000 + indexband.STEP_SLOW - 1) == 0);
+    assert(indexband.tick(1000 + indexband.STEP_SLOW) == indexband.BELOW);
+    assert(indexband.tick(1000 + indexband.STEP_SLOW + 1) == 0);
+    assert(indexband.tick(1000 + 2 * indexband.STEP_SLOW) == indexband.BELOW);
+    assert(indexband.move(900, 300) && indexband.tick(5000) == 0);   // out of the zone: the wait ends
+    assert(indexband.move(900, 639 - 24) && indexband.tick(5001) == 0);
+    // A row scrolled under a still pointer: the anchor keeps entry 3, the far corner stays under the pointer.
+    assert(indexband.move(900, 639 - 5));
+    I64 far = indexband.at(900, 639 - 5);
+    assert(!indexband.touched(3) && indexband.touched(4) && indexband.touched(far) && !indexband.touched(far + 1));
+    assert(indexbody.scroll(1));
+    geom();
+    assert(!indexband.touched(3) && indexband.touched(4) && indexband.touched(far + 1) && !indexband.touched(far + 2));
+    assert(indexband.at(900, 639 - 5) == far + 1);
+    assert(indexband.release() && indexband.tick(9000) == 0 && indexband.edge() == indexband.INSIDE);
+}
+
+// SPDX-License-Identifier: Apache-2.0

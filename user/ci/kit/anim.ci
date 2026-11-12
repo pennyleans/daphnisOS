@@ -1,0 +1,92 @@
+// user/ci/kit/anim.ci: MS-2 (docs/specs/2026-11-10-ms-motion-shadows.md, laws 3 and 4, section 4), the desk's
+// animations. An animation is a start time, a duration, a curve and the two values it runs between; each frame
+// draws value(an, t) at the time of that frame, so a slow frame skips ahead and never stretches the motion (law 3).
+// Section 4's two curves are cubic Beziers; times are nanoseconds: the caller passes CLOCK_BOOTTIME (user/ci/wall.ci) or, on the gates' stepped clock (SP-3),
+// steps(n), 10 ms a step; this file reads no clock, so the hosted tests run it as it is. The curves are
+// user/ci/kit/ease.ci's tables (tools/ease.py); tools/check-hdesk.py's progress and value are the twin.
+
+import user.ci.kit.ease;
+
+export const I64 OUT = 0;           // (.2, .8, .2, 1): hover, press, the pill, plate open, window motion, the switch, a message in
+export const I64 IN = 1;            // (.4, 0, 1, 1): plate close, a message out
+export const I64 MS = 1000000;      // nanoseconds a millisecond
+export const I64 STEP = 10000000;   // SP-3: one stepped frame (a Shift press of the gates) is 10 ms
+
+export struct Anim {
+    I64 t0;      // the start, in nanoseconds
+    I64 dur;     // the duration in nanoseconds; 0 is at the end at once
+    I64 from;
+    I64 to;
+    I64 curve;   // OUT or IN
+}
+
+// n milliseconds, and n stepped frames, in nanoseconds.
+export I64 ms(I64 n) {
+    return n * MS;
+}
+
+export I64 steps(I64 n) {
+    return n * STEP;
+}
+
+// Curve k at e nanoseconds into dur, in thousandths: 0 at or before the start, 1000 at or after the end, else
+// the table's two entries around e * 64 / dur and the straight line between them, rounded down. The entries never
+// fall, so no step is negative.
+export I64 progress(I64 k, I64 e, I64 dur) {
+    if (dur <= 0 || e >= dur) {
+        return 1000;
+    }
+    if (e <= 0) {
+        return 0;
+    }
+    I64 p = e * 64;
+    I64 i = p / dur;
+    I64 a = ease.at(k, i);
+    I64 b = ease.at(k, i + 1);
+    return a + ((b - a) * (p % dur)) / dur;
+}
+
+// The value of an at time t: from, moved toward to by the curve's progress, rounded toward from.
+export I64 value(Anim an, I64 t) {
+    I64 c = progress(an.curve, t - an.t0, an.dur);
+    if (an.to >= an.from) {
+        return an.from + ((an.to - an.from) * c) / 1000;
+    }
+    return an.from - ((an.from - an.to) * c) / 1000;
+}
+
+// At rest at v: not running, value v at every time.
+export Anim rest(I64 v) {
+    Anim an;
+    an.t0 = 0;
+    an.dur = 0;
+    an.from = v;
+    an.to = v;
+    an.curve = OUT;
+    return an;
+}
+
+// A new motion of the same thing toward to, from where an stands at t (section 4), over dur on curve k. With
+// animations off (on false) it is at to at once (law 4).
+export Anim toward(Anim an, I64 t, I64 to, I64 dur, I64 k, Bool on) {
+    Anim n = rest(to);
+    if (!on || dur <= 0) {
+        return n;
+    }
+    n.t0 = t;
+    n.dur = dur;
+    n.from = value(an, t);
+    n.curve = k;
+    return n;
+}
+
+// True while an moves at t: started and not yet at its end.
+export Bool running(Anim an, I64 t) {
+    return an.dur > 0 && t - an.t0 < an.dur;
+}
+
+// an at its end now (a desktop switched away, animations turned off).
+export Anim done(Anim an) {
+    return rest(an.to);
+}
+// SPDX-License-Identifier: Apache-2.0

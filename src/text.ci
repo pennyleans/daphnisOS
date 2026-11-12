@@ -1,0 +1,41 @@
+// kernel/text.ci: pure text helpers. No externs, so the hosted tests run the same code
+// that the kernel runs.
+
+// The lowercase hex digit of the low four bits of v.
+export U8 hex_digit(U8 v) {
+    I64 n = (v & 15) as I64;
+    I64 ch = 48 + n;
+    if (n >= 10) {
+        ch = 87 + n;
+    }
+    return ch as U8;
+}
+
+// Writes the 2 * n hex digits of src[0..n) to dst[0..2n).
+export void hex_bytes[s, d](in U8[s] src, I64 n, inout U8[d] dst) {
+    for i in 0..n {
+        dst[2 * i] = hex_digit(src[i] >> 4);
+        dst[2 * i + 1] = hex_digit(src[i]);
+    }
+}
+
+// Writes the decimal digits of v (v >= 0) to dst[0..k) and returns k.
+export I64 dec_digits[d](I64 v, inout U8[d] dst) {
+    U8[20] rev;
+    I64 k = 0;
+    I64 rest = v;
+    if (rest == 0) {
+        rev[0] = 48;
+        k = 1;
+    }
+    while (rest > 0) {
+        rev[k] = (48 + rest % 10) as U8;
+        rest = rest / 10;
+        k += 1;
+    }
+    for i in 0..k {
+        dst[i] = rev[k - 1 - i];
+    }
+    return k;
+}
+// SPDX-License-Identifier: Apache-2.0

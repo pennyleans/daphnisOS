@@ -1,0 +1,357 @@
+// user/ci/cish.ci: cish, the Daphnis shell (docs/specs/2026-11-06-cish-shell.md), edition CS-4:
+//   cish                       commands from standard input, read a byte at a time so a child reads the rest
+//   cish -c TEXT [NAME ARG...]  commands from TEXT, $0 NAME (else cish), the arguments $1 on
+//   cish FILE [ARG...]          commands from FILE, $0 FILE
+// Each complete command is read, parsed and run before the next is read. The status is the last command's; a
+// syntax error, a refusal or a limit ends cish with status 2. A complete command that defines a function keeps its
+// text, tokens and tree (lex.keep, parse.keep); any other is dropped once it has run.
+// CS-4: commands from standard input on a terminal make cish interactive: before each command it puts back the
+// terminal's settings as they were at its start (a program may have left raw mode), reaps the `&` children that
+// ended, and writes PS1 (default `# ` for user 0, else `$ `) to descriptor 2, PS2 (`> `) before a continued line;
+// a syntax error, a refusal or a limit is said and the text dropped, and cish goes on. Prompts are not expanded.
+// K-10: an interactive cish ignores SIGINT and SIGQUIT; when Ctrl-C ends a foreground job (ctl.INTR) the rest of the
+// text is dropped, a newline goes to descriptor 2 and $? is 130.
+// K-9: an interactive cish reads each line through the CSH-3 line editor (user/ci/cish/edit.ci), which draws the
+// prompt, and writes OSC 2 with the working directory before each PS1. Ctrl-C at the prompt drops the text so far
+// and $? is 130.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.sigctl;
+import user.ci.viewctl;
+import user.ci.cish.limits;
+import user.ci.cish.lex;
+import user.ci.cish.parse;
+import user.ci.cish.vars;
+import user.ci.cish.msg;
+import user.ci.cish.pattern;
+import user.ci.cish.arith;
+import user.ci.cish.expand;
+import user.ci.cish.ctl;
+import user.ci.cish.cond;
+import user.ci.cish.fmt;
+import user.ci.cish.glob;
+import user.ci.cish.input;
+import user.ci.cish.builtin;
+import user.ci.cish.edit;
+import user.ci.cish.run;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 FROM_STDIN = 0;
+const I64 FROM_TEXT = 1;
+const I64 FROM_FILE = 2;
+
+U8[4096] line;
+U8[4096] fbuf;      // the script file's bytes not yet taken
+I64 fhave = 0;
+I64 fat = 0;
+I64 ffd = -1;
+I64 from = 0;
+I64 tat = 0;        // FROM_TEXT: the next byte of the -c text in args
+I64 tend = 0;
+Bool inter = false; // interactive
+U8[128] tios;       // the terminal's settings at the start
+I64 ntios = 0;
+
+// The next byte of the input, or -1 at its end.
+I64 next_byte(in U8[_] args) {
+    if (from == FROM_TEXT) {
+        if (tat >= tend) { return -1; }
+        tat = tat + 1;
+        return args[tat - 1] as I64;
+    }
+    if (from == FROM_FILE) {
+        if (fat == fhave) {
+            fhave = shctl.fd_read(ffd, fbuf);
+            fat = 0;
+            if (fhave <= 0) {
+                fhave = 0;
+                return -1;
+            }
+        }
+        fat = fat + 1;
+        return fbuf[fat - 1] as I64;
+    }
+    U8[1] b;
+    if (shctl.fd_read(0, b) != 1) { return -1; }
+    return b[0] as I64;
+}
+
+// The n bytes of line appended to the text; false for none.
+Bool take(I64 got) {
+    I64 n = got;
+    if (n == 0) { return false; }
+    if (line[n - 1] != 10 && n < limits.LINE) {
+        line[n] = 10;   // the input ended inside a line: end it, so a last here-document delimiter counts (CS-5)
+        n = n + 1;
+    }
+    if (!lex.append(line[0..n])) {
+        msg.say_limit(b"SRC", limits.SRC);
+        if (!inter) { dev.exit_now(2); }
+        lex.begin();
+    }
+    return true;
+}
+
+// The next line (with its newline, if any) appended to the text; false at the end of the input with no byte.
+Bool next_line(in U8[_] args) {
+    I64 n = 0;
+    Bool going = true;
+    while (going) {
+        I64 c = next_byte(args);
+        if (c < 0) {
+            going = false;
+        } else {
+            if (n == limits.LINE) {
+                msg.say_limit(b"LINE", limits.LINE);
+                if (!inter) { dev.exit_now(2); }
+                while (c >= 0 && c != 10) { c = next_byte(args); }
+                n = 0;
+                lex.begin();
+                if (c < 0) { return false; }
+            } else {
+                line[n] = c as U8;
+                n = n + 1;
+                if (c == 10) { going = false; }
+            }
+        }
+    }
+    return take(n);
+}
+
+// Interactive, before a line is read: the restore, the reaping and OSC 2 (first), and PS1 (first) or PS2 into ps.
+U8[256] ps;
+I64 pn = 0;
+
+void prompt(Bool first) {
+    if (first) {
+        if (ntios > 0) { _ = shctl.sh_tcset(0, tios[0..ntios]); }
+        while (shctl.sh_wait(-1, 1) >= 0) { }
+        edit.title();
+    }
+    I64 v = vars.lookup(b"PS2");
+    if (first) { v = vars.lookup(b"PS1"); }
+    if (vars.has_value(v)) {
+        pn = vars.value_len(v);
+        if (pn > 256) { pn = 256; }
+        for k in 0..pn { ps[k] = vars.value_at(v, k); }
+    } else {
+        ps[0] = '>';
+        if (first) {
+            ps[0] = '$';
+            if (shctl.sh_geteuid() == 0) { ps[0] = '#'; }
+        }
+        ps[1] = ' ';
+        pn = 2;
+    }
+}
+
+// A text that cannot run, from the loop below: said; it ends cish unless cish is interactive.
+void bad(I64 why, I64 t) {
+    if (why == parse.P_UNSUP) {
+        msg.say_unsupported(t);
+    } else if (why == parse.P_FULL) {
+        msg.say_limit(b"NODES", limits.NODES);
+    } else if (why == parse.P_MORE) {
+        msg.say_limit(b"TOKENS", limits.TOKENS);
+    } else {
+        msg.say_syntax(t);
+    }
+    if (!inter) { dev.exit_now(2); }
+    expand.set_status(2);
+}
+
+
+// Argument k (from 0) of args: its first byte, or -1 past the last; its end is the next NUL.
+I64 arg_at(in U8[_] args, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(args)) { return -1; }
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return -1; }
+    return at;
+}
+
+I64 arg_end(in U8[_] args, I64 at) {
+    I64 e = at;
+    while (e < len(args) && args[e] != 0) { e = e + 1; }
+    return e;
+}
+
+void import_environment() {
+    U8[8192] e;
+    I64 i = 0;
+    Bool going = true;
+    while (going) {
+        I64 n = shctl.sh_environ(i, e);
+        if (n < 0) {
+            going = false;
+        } else {
+            I64 eq = 0;
+            while (eq < n && e[eq] != '=') { eq = eq + 1; }
+            if (eq > 0 && eq < n) {
+                _ = vars.set(e[0..eq], e[eq + 1..n]);
+                _ = vars.mark_export(e[0..eq]);
+            }
+            i = i + 1;
+        }
+    }
+}
+
+void main(in U8[_] args) {
+    expand.set_pid(shctl.sh_getpid());
+    import_environment();
+    vars.set_zero(b"cish");
+    I64 a0 = arg_at(args, 0);
+    I64 rest = 1;
+    if (a0 >= 0 && arg_end(args, a0) == a0 + 2 && args[a0] == '-' && args[a0 + 1] == 'c') {
+        I64 t = arg_at(args, 1);
+        if (t < 0) {
+            msg.begin();
+            msg.text(b"-c: needs a command text");
+            msg.send();
+            dev.exit_now(2);
+        }
+        from = FROM_TEXT;
+        tat = t;
+        tend = arg_end(args, t);
+        I64 z = arg_at(args, 2);
+        if (z >= 0) { vars.set_zero(args[z..arg_end(args, z)]); }
+        rest = 3;
+    } else if (a0 >= 0) {
+        I64 e = arg_end(args, a0);
+        ffd = shctl.sh_open(args[a0..e], 0, 0);
+        if (ffd < 0) {
+            msg.begin();
+            msg.text(b"cannot open ");
+            msg.text(args[a0..e]);
+            msg.text(b": ");
+            msg.reason(0 - ffd);
+            msg.send();
+            dev.exit_now(127);
+        }
+        from = FROM_FILE;
+        vars.set_zero(args[a0..e]);
+        rest = 1;
+    }
+    vars.clear_positional();
+    if (a0 >= 0) {
+        I64 k = rest;
+        I64 at = arg_at(args, k);
+        while (at >= 0) {
+            if (!vars.add_positional(args[at..arg_end(args, at)])) {
+                msg.begin();
+                msg.text(b"limit: POSITIONAL ");
+                msg.num(limits.POSITIONAL);
+                msg.send();
+                dev.exit_now(2);
+            }
+            k = k + 1;
+            at = arg_at(args, k);
+        }
+    }
+    if (from == FROM_STDIN) {
+        I64 t = shctl.sh_tcget(0, tios);
+        if (t > 0) {
+            ntios = t;
+            inter = true;
+            run.set_interactive(true);
+            _ = sigctl.sig_set(2, 1);
+            _ = sigctl.sig_set(3, 1);
+        }
+    }
+    lex.begin();
+    I64 pos = lex.first_token();   // the first token not yet run
+    Bool kept = false;             // a command of this text defined a function
+    Bool going = true;
+    while (going) {
+        Bool got = false;
+        Bool intr = false;   // Ctrl-C at the prompt
+        if (inter) {
+            prompt(lex.text_len() == 0);
+            I64 r = edit.read_line(ps[0..pn], line);
+            if (r == edit.INTR) {
+                intr = true;
+            } else if (r > 0) {
+                got = take(r);
+            }
+        } else {
+            got = next_line(args);
+        }
+        if (intr) {
+            expand.set_status(130);
+            if (kept) {
+                lex.keep();
+            } else {
+                lex.begin();
+            }
+            kept = false;
+            pos = lex.first_token();
+        } else if (!got && lex.text_len() == 0) {
+            going = false;
+        } else {
+            I64 lr = lex.lex();
+            Bool more = false;
+            Bool drop = false;
+            if (lr == lex.MORE) {
+                if (!got) {
+                    bad(parse.P_SYNTAX, lex.tokens());
+                    drop = true;
+                }
+                more = true;
+            } else if (lr == lex.FULL) {
+                bad(parse.P_MORE, 0);
+                drop = true;
+            }
+            while (!more && !drop && lex.kind(pos) != lex.T_END) {
+                I64 pr = parse.parse(pos);
+                if (pr == parse.P_MORE) {
+                    if (!got) {
+                        bad(parse.P_SYNTAX, parse.bad_token());
+                        drop = true;
+                    } else if (lex.token_base() > pos) {
+                        // eval or `.` defined a function, so its text is kept after this one: this one cannot
+                        // grow by another line
+                        msg.begin();
+                        msg.text(b"not supported: a command going on past a line where eval or . defined a function");
+                        msg.send();
+                        if (!inter) { dev.exit_now(2); }
+                        drop = true;
+                    }
+                    more = true;
+                } else if (pr == parse.P_SYNTAX || pr == parse.P_UNSUP || pr == parse.P_FULL) {
+                    bad(pr, parse.bad_token());
+                    drop = true;
+                } else if (pr == parse.P_EMPTY) {
+                    pos = parse.position();
+                } else {
+                    if (parse.defined_function()) {
+                        parse.keep();
+                        kept = true;
+                    }
+                    pos = parse.position();
+                    I64 st = run.list(parse.root());
+                    expand.set_status(st);
+                    if (ctl.pending() == ctl.INTR) {
+                        ctl.clear();
+                        _ = msg.write_all(2, b"\n");
+                        drop = true;
+                    }
+                }
+            }
+            if (!more || drop) {
+                if (kept) {
+                    lex.keep();
+                } else {
+                    lex.begin();
+                }
+                kept = false;
+                pos = lex.first_token();
+            }
+            if (!got) { going = false; }
+        }
+    }
+    dev.exit_now(expand.status());
+}
+// SPDX-License-Identifier: Apache-2.0

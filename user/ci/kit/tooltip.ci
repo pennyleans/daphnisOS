@@ -1,0 +1,26 @@
+// user/ci/kit/tooltip.ci: the desk's one tooltip (DN-44, provisional): the same dark plate in both themes,
+// #282a2c, its text #f3efe6 in Inter 13 (faces.BODY), 24 px high, radius 6, 8 px each side of the text, no border
+// and no ring. Shadow Low (MS-3 level 1) comes with the shadow kit where the branch has it. Every tooltip draws here,
+// so a change of look is one edit. Device pixels: the 1x values times the UI scale u; the text at zoom 2 at most.
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;
+
+export const I64 H = 24;
+export const I64 R = 6;
+export const I64 PAD = 8;
+export const U32 GROUND = 2632236 as U32;   // #282a2c
+export const U32 INK = 15986662 as U32;     // #f3efe6
+
+// The plate's width in device pixels for text t[0..n] at UI scale u.
+export I64 width(in U8[_] t, I64 n, I64 u) { return (2 * PAD + ctext.width(t, n, faces.BODY, 1)) * u; }
+
+// Row y (device) of the tooltip with its top left at (x0, y0) and width wd, text t[0..n], at UI scale u, over row.
+export void row_at(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 wd, in U8[_] t, I64 n, I64 u) {
+    I64 hgt = H * u;
+    if (y < y0 || y >= y0 + hgt) { return; }
+    shape.rounded(row, y, x0, y0, x0 + wd, y0 + hgt, R * u, GROUND);
+    I64 z = min(u, 2);
+    I64 e = ctext.text(row, y, x0 + PAD * u, y0 + (hgt - 24 * z) / 2 + 16 * z, x0 + wd, t, n, INK, faces.BODY, z);
+}
+// SPDX-License-Identifier: Apache-2.0

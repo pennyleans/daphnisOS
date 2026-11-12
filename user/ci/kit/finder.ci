@@ -1,0 +1,585 @@
+// user/ci/kit/finder.ci: the Finder app's model (FF-6a, docs/specs/2026-11-07-ff-super-plane.md section 3f). One
+// directory at a time: the program reads it (getdents64 and stat) and offers each entry with add(); end() orders
+// folders first, then files, each by name in byte order, and applies the filter. The filter keeps the names that hold
+// it as a subsequence (kit/match.ci), in that order. The window's history (back, forward, up), the selection over the
+// kept entries, and the texts of the grid, the table and the status line. It reads no file and no device, so
+// tests/ff/finder_test.ci tests it hosted (check.sh).
+//
+// Bounds: ENTRIES entries a directory, POOL bytes of names (a name to NAME bytes), a path to PATH - 1 bytes (PATH
+// counts the ending 0 a call adds, as Linux's PATH_MAX does), HIST places of history, the filter to match.QMAX bytes.
+import user.ci.kit.match;
+import user.ci.kit.opener;
+
+export const I64 ENTRIES = 1024;
+export const I64 NAME = 255;
+export const I64 PATH = 4096;
+const I64 POOL = 65536;
+const I64 HIST = 16;
+export const I64 NONE = -1;
+
+U8[4096] path;              // the directory shown, no trailing slash but on "/"
+I64 pn = 0;
+
+U8[65536] pool;             // the names, back to back
+I64 pooled = 0;
+I64[1024] e_at;
+I64[1024] e_len;
+Bool[1024] e_dir;
+I64[1024] e_size;           // a file's bytes
+I64[1024] e_items;          // a folder's entries, or -1 unread
+I64[1024] e_open;           // opener.kind_of: DIR, a rule, TEXT or NOTHING
+I64[1024] e_mtime;          // DN-55: the modified time, seconds since 1970 (0: none)
+Bool[1024] e_pick;          // DN-55: chosen (click, Ctrl+click, Shift+click)
+Bool[1024] e_prog;          // a file any may execute (a mode's x bit)
+I64 en = 0;
+Bool cut = false;           // more entries than the table holds
+
+I64[1024] order;            // folders first, then files, each by name
+I64[1024] shown;            // the entries the filter keeps, in order
+I64 sn = 0;
+I64 sel = 0;                // the focused kept entry: Enter opens it, the arrows move it
+I64 anchor = 0;             // where a Shift+click's range starts
+
+U8[32] q;
+I64 qn = 0;
+
+U8[65536] hist;             // HIST paths, PATH bytes each, as places visited
+I64[16] h_len;
+I64 hn = 0;
+I64 hat = -1;               // the place shown among them
+
+// --- the path and the history ---
+
+export I64 path_of(inout U8[_] dst) {
+    for k in 0..pn { dst[k] = path[k]; }
+    return pn;
+}
+
+export I64 path_len() { return pn; }
+
+// p made absolute against the folder shown (when it is relative) and clean: no empty name, no `.`, no `..` (none
+// above /), no slash at the end but on /; into dst, its length, or -1 at PATH bytes or past. go() keeps every path
+// this way, so an entry's path is one the Trash takes (`finder notes` or a `..` once made every Move to Trash fail).
+export I64 resolve(in U8[_] p, inout U8[_] dst) {
+    U8[8192] j;
+    I64 jn = 0;
+    if (len(p) == 0 || p[0] != '/') {
+        for k in 0..pn { j[k] = path[k]; }
+        jn = pn;
+        j[jn] = '/';
+        jn = jn + 1;
+    }
+    if (jn + len(p) > 8192) { return -1; }
+    for k in 0..len(p) { j[jn + k] = p[k]; }
+    jn = jn + len(p);
+    I64 n = 0;
+    I64 s = 0;
+    while (s < jn) {
+        while (s < jn && j[s] == '/') { s = s + 1; }
+        I64 e = s;
+        while (e < jn && j[e] != '/') { e = e + 1; }
+        I64 l = e - s;
+        if (l == 2 && j[s] == '.' && j[s + 1] == '.') {
+            while (n > 0 && dst[n - 1] != '/') { n = n - 1; }
+            if (n > 0) { n = n - 1; }
+        } else if (l > 0 && !(l == 1 && j[s] == '.')) {
+            if (n + 1 + l >= PATH || n + 1 + l > len(dst)) { return -1; }
+            dst[n] = '/';
+            for k in 0..l { dst[n + 1 + k] = j[s + k]; }
+            n = n + 1 + l;
+        }
+        s = e;
+    }
+    if (n == 0) {
+        dst[0] = '/';
+        n = 1;
+    }
+    return n;
+}
+
+void set_path(in U8[_] p) {
+    I64 n = len(p);
+    while (n > 1 && p[n - 1] == '/') { n = n - 1; }
+    for k in 0..n { path[k] = p[k]; }
+    pn = n;
+}
+
+void remember() {
+    if (hat + 1 < hn) { hn = hat + 1; }             // a new place drops the forward part
+    if (hn == HIST) {
+        for h in 1..HIST {
+            for k in 0..h_len[h] { hist[PATH * (h - 1) + k] = hist[PATH * h + k]; }
+            h_len[h - 1] = h_len[h];
+        }
+        hn = HIST - 1;
+    }
+    for k in 0..pn { hist[PATH * hn + k] = path[k]; }
+    h_len[hn] = pn;
+    hat = hn;
+    hn = hn + 1;
+}
+
+// Goes to directory p (the program then lists it), the filter cleared: false when p is empty or at PATH bytes or past.
+export Bool go(in U8[_] p) {
+    if (len(p) == 0) { return false; }
+    U8[4096] c;
+    I64 n = resolve(p, c);
+    if (n < 0) { return false; }
+    set_path(c[0..n]);
+    remember();
+    qn = 0;
+    return true;
+}
+
+// Back or forward (d -1 or 1) in the history, the filter cleared: false at its end.
+export Bool step(I64 d) {
+    I64 t = hat + d;
+    if (t < 0 || t >= hn) { return false; }
+    hat = t;
+    set_path(hist[PATH * t..PATH * t + h_len[t]]);
+    qn = 0;
+    return true;
+}
+
+export Bool can_step(I64 d) { return hat + d >= 0 && hat + d < hn; }
+
+// The parent of the path shown: false at "/".
+export Bool up() {
+    if (pn <= 1) { return false; }
+    I64 b = pn - 1;
+    while (b > 0 && path[b] != '/') { b = b - 1; }
+    U8[4096] p;
+    I64 n = b;
+    if (n == 0) { n = 1; }
+    for k in 0..n { p[k] = path[k]; }
+    return go(p[0..n]);
+}
+
+// The crumbs of the path: "/" then each component. crumb(k, dst) its text, crumb_path(k, dst) the path it goes to.
+export I64 crumbs() {
+    if (pn <= 1) { return 1; }
+    I64 c = 1;
+    for k in 1..pn {
+        if (path[k] == '/') { c = c + 1; }
+    }
+    return c + 1;
+}
+
+// The byte where crumb k (1 or more) starts in the path, and its end.
+I64 crumb_start(I64 k) {
+    I64 c = 0;
+    for i in 0..pn {
+        if (path[i] == '/') {
+            c = c + 1;
+            if (c == k) { return i + 1; }
+        }
+    }
+    return pn;
+}
+
+I64 crumb_end(I64 at) {
+    I64 e = at;
+    while (e < pn && path[e] != '/') { e = e + 1; }
+    return e;
+}
+
+export I64 crumb(I64 k, inout U8[_] dst) {
+    if (k == 0) {
+        dst[0] = '/';
+        return 1;
+    }
+    I64 a = crumb_start(k);
+    I64 e = crumb_end(a);
+    for i in a..e { dst[i - a] = path[i]; }
+    return e - a;
+}
+
+export I64 crumb_path(I64 k, inout U8[_] dst) {
+    if (k == 0) {
+        dst[0] = '/';
+        return 1;
+    }
+    I64 e = crumb_end(crumb_start(k));
+    for i in 0..e { dst[i] = path[i]; }
+    return e;
+}
+
+// --- the listing ---
+
+// A new listing of the path shown: the entries, the filter's keeps and the selection emptied (the filter kept).
+export void begin() {
+    pooled = 0;
+    en = 0;
+    sn = 0;
+    sel = 0;
+    cut = false;
+}
+
+// DN-57 (design note 60, 2026-11-11): Index hides every name that begins with a dot (`.`, `..` among them), in the
+// grid, the list, the counts and search, with no toggle. The one rule: the program counts a folder's items by it too,
+// and the Trash place is the only way into `.trash`; a typed path still goes into a dot folder.
+export Bool hidden(in U8[_] name) { return len(name) > 0 && name[0] == '.'; }
+
+// An entry: its name, a folder or not, a file's bytes, a folder's entries (-1 unread), opener.kind_of's answer,
+// a program or not (an executable file).
+// False when the table or the pool is full (cut() then says so), or the name is empty, hidden (DN-57) or past NAME.
+export Bool add(in U8[_] name, Bool dir, I64 bytes, I64 items, I64 open, Bool prog) {
+    I64 n = len(name);
+    if (n == 0 || n > NAME || hidden(name)) { return false; }
+    if (en == ENTRIES || pooled + n > POOL) {
+        cut = true;
+        return false;
+    }
+    for k in 0..n { pool[pooled + k] = name[k]; }
+    e_at[en] = pooled;
+    e_len[en] = n;
+    e_dir[en] = dir;
+    e_size[en] = bytes;
+    e_items[en] = items;
+    e_open[en] = open;
+    e_mtime[en] = 0;
+    e_pick[en] = false;
+    e_prog[en] = prog && !dir;
+    pooled = pooled + n;
+    en = en + 1;
+    return true;
+}
+
+export Bool cut_short() { return cut; }
+
+// DN-55: the modified time of the entry add() took last, seconds since 1970 (0: none; MODIFIED shows nothing).
+export void stamp(I64 s) {
+    if (en > 0) { e_mtime[en - 1] = s; }
+}
+
+// DN-35, DN-55: the sort, Index's Sort and its List's columns (NAME, TYPE, SIZE, MODIFIED): folders first always, then
+// by name, by the TYPE column's words, by size (a file's bytes, a folder's entries) smallest first, or by modified
+// time newest first; a tie goes by name.
+export const I64 BY_NAME = 0;
+export const I64 BY_TYPE = 1;
+export const I64 BY_SIZE = 2;
+export const I64 BY_MODIFIED = 3;
+export const I64 KEYS = 4;
+I64 skey = 0;
+U8[32] kind_a;
+U8[32] kind_b;
+
+export I64 sort_key() { return skey; }
+
+// The listing sorted by k (BY_NAME, BY_TYPE, BY_SIZE) again, the selection kept on its entry.
+export void sort_by(I64 k) {
+    skey = k;
+    end();
+}
+
+// Entry a before entry b: folders first, then by the sort, then by name in byte order.
+Bool before(I64 a, I64 b) {
+    if (e_dir[a] != e_dir[b]) { return e_dir[a]; }
+    if (skey == BY_TYPE) {
+        I64 na = kind_text(a, kind_a);
+        I64 nb = kind_text(b, kind_b);
+        I64 m = na;
+        if (nb < m) { m = nb; }
+        for k in 0..m {
+            if (kind_a[k] != kind_b[k]) { return kind_a[k] < kind_b[k]; }
+        }
+        if (na != nb) { return na < nb; }
+    }
+    if (skey == BY_SIZE) {
+        I64 sa = e_size[a];
+        I64 sb = e_size[b];
+        if (e_dir[a]) {
+            sa = e_items[a];
+            sb = e_items[b];
+        }
+        if (sa != sb) { return sa < sb; }
+    }
+    if (skey == BY_MODIFIED && e_mtime[a] != e_mtime[b]) { return e_mtime[a] > e_mtime[b]; }
+    return by_name(a, b);
+}
+
+Bool by_name(I64 a, I64 b) {
+    I64 n = e_len[a];
+    if (e_len[b] < n) { n = e_len[b]; }
+    for k in 0..n {
+        U8 x = pool[e_at[a] + k];
+        U8 y = pool[e_at[b] + k];
+        if (x != y) { return x < y; }
+    }
+    return e_len[a] < e_len[b];
+}
+
+// The listing ordered and filtered.
+export void end() {
+    for i in 0..en {
+        I64 at = i;
+        while (at > 0 && before(i, order[at - 1])) {
+            order[at] = order[at - 1];
+            at = at - 1;
+        }
+        order[at] = i;
+    }
+    refilter();
+}
+
+void refilter() {
+    I64 was = NONE;
+    if (sel < sn) { was = shown[sel]; }
+    match.begin(q[0..qn]);
+    sn = 0;
+    for k in 0..en {
+        I64 i = order[k];
+        if (qn == 0 || match.score(pool[e_at[i]..e_at[i] + e_len[i]]) != match.NONE) {
+            shown[sn] = i;
+            sn = sn + 1;
+        }
+    }
+    sel = 0;
+    for k in 0..sn {
+        if (shown[k] == was) { sel = k; }
+    }
+    if (sn > 0 && picks() == 0) { e_pick[shown[sel]] = true; }   // something kept is always chosen: the focus
+    if (anchor >= sn) { anchor = sel; }
+}
+
+export I64 entries() { return en; }
+
+export I64 folders() {
+    I64 f = 0;
+    for i in 0..en {
+        if (e_dir[i]) { f = f + 1; }
+    }
+    return f;
+}
+
+export I64 files() { return en - folders(); }
+
+// The kept entries: count, and the k-th as an entry number.
+export I64 kept() { return sn; }
+export I64 kept_at(I64 k) { return shown[k]; }
+
+// The kept folders come first: how many, so the grid holds them and the table the files after them.
+export I64 kept_folders() {
+    I64 f = 0;
+    for k in 0..sn {
+        if (e_dir[shown[k]]) { f = f + 1; }
+    }
+    return f;
+}
+
+export I64 name_of(I64 i, inout U8[_] dst) {
+    for k in 0..e_len[i] { dst[k] = pool[e_at[i] + k]; }
+    return e_len[i];
+}
+
+export Bool is_dir(I64 i) { return e_dir[i]; }
+export I64 size_of(I64 i) { return e_size[i]; }
+export I64 items_of(I64 i) { return e_items[i]; }
+export I64 open_of(I64 i) { return e_open[i]; }
+export Bool is_prog(I64 i) { return e_prog[i]; }
+export I64 mtime_of(I64 i) { return e_mtime[i]; }
+
+// The path of entry i (the path shown, a slash, its name): its length, or -1 at PATH bytes or past.
+export I64 entry_path(I64 i, inout U8[_] dst) {
+    I64 n = pn;
+    if (pn == 1) { n = 0; }
+    if (n + 1 + e_len[i] >= PATH) { return -1; }
+    for k in 0..n { dst[k] = path[k]; }
+    dst[n] = '/';
+    for k in 0..e_len[i] { dst[n + 1 + k] = pool[e_at[i] + k]; }
+    return n + 1 + e_len[i];
+}
+
+// --- the selection ---
+
+export I64 selected() {
+    if (sel >= sn) { return NONE; }
+    return sel;
+}
+
+export I64 selected_entry() {
+    if (sel >= sn) { return NONE; }
+    return shown[sel];
+}
+
+I64 bounded(I64 k) {
+    if (k >= sn) { return sn - 1; }
+    if (k < 0) { return 0; }
+    return k;
+}
+
+// The selection to kept entry k (clamped) alone: a click, an arrow.
+export void select(I64 k) {
+    if (sn == 0) { return; }
+    for i in 0..en { e_pick[i] = false; }
+    sel = bounded(k);
+    anchor = sel;
+    e_pick[shown[sel]] = true;
+}
+
+// DN-55: Ctrl+click: kept entry k in or out of the selection, the focus on it.
+export void toggle(I64 k) {
+    if (sn == 0) { return; }
+    sel = bounded(k);
+    anchor = sel;
+    e_pick[shown[sel]] = !e_pick[shown[sel]];
+}
+
+// DN-55: Shift+click: the kept entries from the anchor to k chosen, the rest not, the focus on k.
+export void extend(I64 k) {
+    if (sn == 0) { return; }
+    sel = bounded(k);
+    for i in 0..en { e_pick[i] = false; }
+    I64 a = anchor;
+    I64 b = sel;
+    if (b < a) {
+        a = sel;
+        b = anchor;
+    }
+    for j in a..b + 1 { e_pick[shown[j]] = true; }
+}
+
+// Frame 32's band: kept entry k chosen (on) or not, the focus where it was.
+export void set_pick(I64 k, Bool on) {
+    if (k >= 0 && k < sn) { e_pick[shown[k]] = on; }
+}
+
+// Whether kept entry k is chosen, and how many kept entries are.
+export Bool picked(I64 k) { return k >= 0 && k < sn && e_pick[shown[k]]; }
+
+export I64 picks() {
+    I64 c = 0;
+    for k in 0..sn {
+        if (e_pick[shown[k]]) { c = c + 1; }
+    }
+    return c;
+}
+
+// The selection moved by d kept entries, alone (the program gives the grid's row as its columns).
+export void move(I64 d) { select(sel + d); }
+
+// --- the filter ---
+
+export I64 filter(inout U8[_] dst) {
+    for k in 0..qn { dst[k] = q[k]; }
+    return qn;
+}
+
+export Bool typed(U8 c) {
+    if (qn == match.QMAX || c < 32 || c > 126) { return false; }
+    q[qn] = c;
+    qn = qn + 1;
+    refilter();
+    return true;
+}
+
+export Bool erase() {
+    if (qn == 0) { return false; }
+    qn = qn - 1;
+    refilter();
+    return true;
+}
+
+export Bool clear_filter() {
+    if (qn == 0) { return false; }
+    qn = 0;
+    refilter();
+    return true;
+}
+
+// --- texts ---
+
+I64 put(inout U8[_] dst, I64 at, in U8[_] s) {
+    for k in 0..len(s) { dst[at + k] = s[k]; }
+    return at + len(s);
+}
+
+I64 num(inout U8[_] dst, I64 at, I64 v) {
+    U8[32] t;
+    I64 n = 0;
+    I64 x = v;
+    if (x < 0) { x = 0; }
+    if (x == 0) {
+        t[0] = '0';
+        n = 1;
+    }
+    while (x > 0) {
+        t[n] = (48 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    for k in 0..n { dst[at + k] = t[n - 1 - k]; }
+    return at + n;
+}
+
+// A short size: `N KiB` (rounded up) from 1 KiB, `N.D MiB` from 1 MiB, `N.D GiB` from 1 GiB (Index audit: past
+// 100 GiB a MiB count overran the List's SIZE column), else `N B`.
+export I64 size_short(I64 bytes, inout U8[_] dst) {
+    if (bytes >= 1073741824) {
+        I64 t = bytes / 107374182;             // tenths of a GiB
+        I64 n = num(dst, 0, t / 10);
+        dst[n] = '.';
+        dst[n + 1] = (48 + t % 10) as U8;
+        return put(dst, n + 2, b" GiB");
+    }
+    if (bytes >= 1048576) { return mib(bytes, dst); }
+    if (bytes >= 1024) { return put(dst, num(dst, 0, (bytes + 1023) / 1024), b" KiB"); }
+    return put(dst, num(dst, 0, bytes), b" B");
+}
+
+I64 mib(I64 bytes, inout U8[_] dst) {
+    I64 t = bytes * 10 / 1048576;
+    I64 n = num(dst, 0, t / 10);
+    dst[n] = '.';
+    dst[n + 1] = (48 + t % 10) as U8;
+    return put(dst, n + 2, b" MiB");
+}
+
+// DN-55: the SIZE column: a folder's `N items` (`folder` unread), a file's short size.
+export I64 size_text(I64 i, inout U8[_] dst) {
+    if (!e_dir[i]) { return size_short(e_size[i], dst); }
+    if (e_items[i] < 0) { return put(dst, 0, b"folder"); }
+    I64 n = num(dst, 0, e_items[i]);
+    if (e_items[i] == 1) { return put(dst, n, b" item"); }
+    return put(dst, n, b" items");
+}
+
+Bool ext_is(I64 i, in U8[_] e) {
+    I64 n = e_len[i];
+    if (n <= len(e)) { return false; }
+    for k in 0..len(e) {
+        U8 c = pool[e_at[i] + n - len(e) + k];
+        if (c >= 65 && c <= 90) { c = c + 32; }
+        if (c != e[k]) { return false; }
+    }
+    return true;
+}
+
+// The TYPE column (DN-41 (b), DN-55's words): Folder, cint Source, Image, Game Data, Text or Program by extension and
+// content, else File.
+export I64 kind_text(I64 i, inout U8[_] dst) {
+    if (e_dir[i]) { return put(dst, 0, b"Folder"); }
+    if (ext_is(i, b".ci")) { return put(dst, 0, b"cint Source"); }
+    if (ext_is(i, b".png") || ext_is(i, b".qoi") || ext_is(i, b".ppm")) { return put(dst, 0, b"Image"); }
+    if (ext_is(i, b".wad")) { return put(dst, 0, b"Game Data"); }
+    if (ext_is(i, b".txt") || ext_is(i, b".md") || ext_is(i, b".sh")) { return put(dst, 0, b"Text"); }
+    if (e_open[i] == opener.TEXT) { return put(dst, 0, b"Text"); }
+    if (e_prog[i]) { return put(dst, 0, b"Program"); }
+    return put(dst, 0, b"File");
+}
+
+// The OPEN WITH column: `/bin/PROG` of the open table (`editor`, $EDITOR, as it is), `editor` for text with no
+// extension, else nothing.
+export I64 open_text(I64 i, inout U8[_] dst) {
+    I64 r = e_open[i];
+    if (r == opener.TEXT) { return put(dst, 0, b"editor"); }
+    if (r < 0) { return 0; }
+    U8[64] p;
+    I64 pl = opener.prog_of(r, p);
+    I64 n = 0;
+    if (pl != 6 || p[0] != 'e' || p[5] != 'r') { n = put(dst, 0, b"/bin/"); }   // `editor` is $EDITOR, as typed
+    for k in 0..pl { dst[n + k] = p[k]; }
+    return n + pl;
+}
+
+// SPDX-License-Identifier: Apache-2.0

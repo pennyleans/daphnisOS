@@ -1,0 +1,20 @@
+// src/memstate.ci: the allocator-state hash, over the frame allocator and the heap together:
+// SHA-256 of the frame digest followed by the heap digest. Extern-free, tested hosted.
+
+import src.frames;
+import src.heap;
+import src.sha256;
+
+export void hash(inout U8[32] result) {
+    U8[64] both;
+    U8[32] f;
+    U8[32] h;
+    frames.digest(f);
+    heap.digest(h);
+    for i in 0..32 {
+        both[i] = f[i];
+        both[32 + i] = h[i];
+    }
+    sha256.sha_digest(both, 0, 64, result);
+}
+// SPDX-License-Identifier: Apache-2.0

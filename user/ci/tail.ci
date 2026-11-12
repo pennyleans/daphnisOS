@@ -1,0 +1,233 @@
+// user/ci/tail.ci: tail [-f] [-n [+]N | -c [+]N | -N | +N] [FILE...] (docs/specs/2026-11-06-c-core.md, CT-1; POSIX XCU
+// tail): the last N lines (default 10), or with -c the last N bytes, of each FILE (`-` or none: descriptor 0); +N
+// starts at line (byte) N instead. -N and +N as the first argument are the old forms (`tail -1`); -c wins over -n.
+// A FILE that can seek is read backward from its end; a pipe is held in TAIL_MAX bytes, past which `tail: limit:
+// TAIL_MAX` and status 2. Every FILE is opened first; when two or more open, each comes after `==> FILE <==`
+// (busybox; XCU names one FILE), every one but the first after an empty line. -f follows one regular FILE as it grows, once a second; on a pipe, or with
+// two or more FILEs, -f is refused by name.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+
+const I64 TAIL_MAX = 65536;
+U8[4096] buf;
+U8[65536] ring;     // a pipe's last TAIL_MAX bytes
+I64 want = 10;
+Bool by_byte = false;
+Bool from_start = false;
+Bool follow = false;
+
+// Copies fd from where it stands to its end.
+void rest(I64 fd, in U8[_] name) {
+    Bool going = true;
+    while (going) {
+        I64 r = get.read(fd, buf);
+        if (r < 0) {
+            msg.file(name, 0 - r);
+            going = false;
+        } else if (r == 0) {
+            going = false;
+        } else {
+            put.bytes(buf[0..r]);
+        }
+    }
+}
+
+// +N: skips N - 1 lines (bytes), then copies the rest.
+void skip_then_rest(I64 fd, in U8[_] name) {
+    I64 left = want - 1;
+    while (left > 0) {
+        I64 r = get.read(fd, buf);
+        if (r < 0) {
+            msg.file(name, 0 - r);
+            return;
+        }
+        if (r == 0) { return; }
+        I64 k = 0;
+        while (k < r && left > 0) {
+            if (by_byte || buf[k] == '\n') { left = left - 1; }
+            k = k + 1;
+        }
+        put.bytes(buf[k..r]);
+    }
+    rest(fd, name);
+}
+
+// The last N lines (bytes) of a file that can seek, size bytes long: where they start.
+I64 start_of(I64 fd, I64 fsize) {
+    if (by_byte) {
+        if (want >= fsize) { return 0; }
+        return fsize - want;
+    }
+    I64 need = want;
+    if (need == 0) { return fsize; }
+    I64 pos = fsize;
+    Bool last = true;   // the final byte, a newline, ends the last line and is not counted
+    while (pos > 0) {
+        I64 b = pos - 4096;
+        if (b < 0) { b = 0; }
+        _ = corectl.co_lseek(fd, b, 0);
+        I64 got = 0;
+        while (got < pos - b) {
+            I64 r = shctl.fd_read(fd, buf[got..pos - b]);
+            if (r <= 0) { return 0; }
+            got = got + r;
+        }
+        I64 k = pos - b;
+        while (k > 0) {
+            k = k - 1;
+            if (buf[k] == '\n') {
+                if (last && b + k == fsize - 1) {
+                    last = false;
+                } else {
+                    need = need - 1;
+                    if (need == 0) { return b + k + 1; }
+                }
+            }
+        }
+        last = false;
+        pos = b;
+    }
+    return 0;
+}
+
+// The last N lines (bytes) of a pipe, held in the ring.
+void last_of_pipe(I64 fd, in U8[_] name) {
+    I64 total = 0;
+    Bool going = true;
+    while (going) {
+        I64 r = get.read(fd, buf);
+        if (r < 0) {
+            msg.file(name, 0 - r);
+            going = false;
+        } else if (r == 0) {
+            going = false;
+        } else {
+            for k in 0..r { ring[(total + k) % TAIL_MAX] = buf[k]; }
+            total = total + r;
+        }
+    }
+    I64 held = total;
+    if (held > TAIL_MAX) { held = TAIL_MAX; }
+    I64 from = total - held;   // the first byte held
+    I64 start = total;
+    if (by_byte) {
+        start = total - want;
+        if (start < 0) { start = 0; }
+    } else if (want > 0) {
+        I64 need = want;
+        I64 p = total;
+        Bool found = false;
+        while (!found && p > from) {
+            p = p - 1;
+            if (ring[p % TAIL_MAX] == '\n' && p != total - 1) {
+                need = need - 1;
+                if (need == 0) { found = true; }
+            }
+        }
+        if (found) { start = p + 1; } else { start = from; }
+        if (!found && from > 0) { msg.limit(b"TAIL_MAX"); }
+    }
+    if (start < from) { msg.limit(b"TAIL_MAX"); }
+    for p in start..total { put.byte(ring[p % TAIL_MAX]); }
+}
+
+void pour(I64 fd, in U8[_] name) {
+    if (from_start) {
+        skip_then_rest(fd, name);
+        return;
+    }
+    I64 fsize = corectl.co_lseek(fd, 0, 2);
+    if (fsize < 0) {
+        last_of_pipe(fd, name);
+        return;
+    }
+    I64 at = start_of(fd, fsize);
+    _ = corectl.co_lseek(fd, at, 0);
+    rest(fd, name);
+}
+
+// -f: one regular FILE, read again once a second as it grows.
+void track(I64 fd, in U8[_] name) {
+    while (true) {
+        put.flush();
+        _ = corectl.co_sleep(1000000000);
+        rest(fd, name);
+    }
+}
+
+I64[2048] fds;    // each FILE opened, as busybox: the headers count only these
+
+void one(in U8[_] name, I64 fd, Bool lead, Bool named) {
+    if (named) {
+        if (lead) { put.byte('\n'); }
+        put.bytes(b"==> ");
+        put.bytes(name);
+        put.bytes(b" <==\n");
+    }
+    if (follow && corectl.co_lseek(fd, 0, 1) < 0) { msg.refuse('f'); }
+    pour(fd, name);
+    if (follow) { track(fd, name); }
+    get.close(fd);
+}
+
+// N of -n or -c: a leading '+' counts from the start.
+void set_count(in U8[_] a, U8 c) {
+    I64 s = args.val_start(c);
+    I64 e = args.val_stop(c);
+    from_start = s < e && a[s] == '+';
+    want = args.count_of(a, s, e, b"bad count");
+}
+
+void run(in U8[_] a) {
+    args.parse(a, b"f", b"cn");
+    follow = args.has('f');
+    if (args.has('n')) { set_count(a, 'n'); }
+    if (args.has('c')) {
+        set_count(a, 'c');
+        by_byte = true;
+    }
+    I64 n = args.operands();
+    if (follow && n > 1) { msg.refuse('f'); }
+    if (n == 0) {
+        if (follow) { msg.refuse('f'); }
+        pour(0, b"-");
+    }
+    I64 opened = 0;
+    for i in 0..n {
+        fds[i] = get.open(a[args.op_start(i)..args.op_stop(a, i)]);
+        if (fds[i] >= 0) { opened = opened + 1; }
+    }
+    Bool lead = false;
+    for i in 0..n {
+        if (fds[i] >= 0) {
+            one(a[args.op_start(i)..args.op_stop(a, i)], fds[i], lead, opened > 1);
+            lead = true;
+        }
+    }
+}
+
+// The length of a's first argument when it is the old form -N or +N (want, from_start set); else 0.
+I64 old_form(in U8[_] a) {
+    if (len(a) < 3 || (a[0] != '-' && a[0] != '+') || a[1] < '0' || a[1] > '9') { return 0; }
+    I64 e = 1;
+    while (a[e] != 0) {
+        if (a[e] < '0' || a[e] > '9') { return 0; }
+        e = e + 1;
+    }
+    want = args.count_of(a, 1, e, b"bad count");
+    from_start = a[0] == '+';
+    return e + 1;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"tail");
+    I64 k = old_form(a);
+    run(a[k..len(a)]);
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

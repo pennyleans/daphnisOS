@@ -1,0 +1,6 @@
+// user/ci/peakctl.ci: the peak row of cib --self (user/ci/host.c, CI_ROWS_SH; docs/specs/2026-11-07-bu4-toolchain.md,
+// unit BU-4h2), its own module so no other program's import table moves.
+//   sh_maxrss(): the ru_maxrss, in KiB, wait4 gave for the child shctl.sh_wait last reaped; under Daphnis the most
+//     frames the child held since its last execve (the count its quota bounds), times 4
+export extern unrestricted I64 sh_maxrss();
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,22 @@
+{
+  "id": "undo-backspace-stops-at-line",
+  "rules": [
+    "UNDO-2"
+  ],
+  "text": "a\nbc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    4,
+    4
+  ],
+  "chunks": [
+    "7f7f7f",
+    "1a"
+  ],
+  "expect": {
+    "text": "a\n"
+  }
+}

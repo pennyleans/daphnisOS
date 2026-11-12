@@ -1,0 +1,28 @@
+{
+  "id": "new-file-final-lf-after-save",
+  "rules": [
+    "TEXT-1"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "new": true,
+  "chunks": [
+    "6869",
+    "13",
+    "796f"
+  ],
+  "expect": {
+    "text": "hiyo\n",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

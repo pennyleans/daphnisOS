@@ -1,0 +1,38 @@
+// tests/am/about_proof.ci: DN-43's proof, the About sheet over a window's body (no dim, DN-69), drawn by the kit
+// (kit/about.ci) at 2x on theme th (the argument: 0 dark, 1 light). Prints `frame W H` and each row as runs
+// `r rgb count`. Run: cint run --root . tests/am/about_proof.ci -- TH
+import user.ci.kit.about;
+import user.ci.kit.tokens;
+import user.ci.kit.icons3;
+
+U32[1040] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    tokens.set_theme(th);
+    "frame 1040 840\n";
+    // a 520 x 420 window at 2x: its body as it is, the sheet centered over it, OK with the keyboard's ring
+    about.open(4, 0, 0, 520, 420, icons3.EDITOR, b"Edit", 4, b"0.1.0", 5,
+               b"The desk's text editor for plain files: undo for every change, find and replace, and an atomic save every time it writes.", 120, true);
+    for y in 0..840 {
+        for x in 0..1040 { row[x] = tokens.word(tokens.PAPER); }
+        about.row_at(row, y, 2, th);
+        emit(1040);
+    }
+    about.close();
+}
+// SPDX-License-Identifier: Apache-2.0

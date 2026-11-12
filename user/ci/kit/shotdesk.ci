@@ -1,0 +1,130 @@
+// user/ci/kit/shotdesk.ci: the desk's side of RS-SHOT (docs/handoff/20261111-rs-shot-wiring.md; spec stage RS,
+// docs/specs/2026-11-11-rs-rel-s1-units.md), as numbers: which key takes which shot, who may take one, the focused
+// window's frame cut to the screen, the shots running (four at most, each its child's pid), which shot's plate is
+// shown, and the 20 s a child may take. hdesk.ci makes the calls (fb_hold, shot_as, shot_end, the reap); this file
+// reads no clock and makes no call, so the hosted tests run it as it is.
+//
+// Keys: Print (KEY_SYSRQ) the whole screen, Alt+Print the focused window's frame (its bar included, its shadow left
+// out), Super+Shift+S an area (kit/shotsel.ci). The desk takes them before any other use, on every screen; they act
+// only for a logged-in account with no account screen up whose ceiling holds Disk (fs.GRANT_DISK): an account that
+// cannot write its home has nowhere to save. Every refusal is silent.
+//
+// The plate: each shot is numbered as it is taken; the newest shot's plate is the one made (kit/shotsel.ci keeps one
+// picture), and a plate shows only when that shot's child ends with status 0 and its name came back. An older shot
+// that ends later shows nothing, nor does any shot taken before forget() (the lock, a logout, a new session, a
+// screen of another size).
+
+export const I64 NONE = 0;
+export const I64 SCREEN = 1;
+export const I64 WINDOW = 2;
+export const I64 AREA = 3;
+
+export const I64 KEY_S = 31;
+export const I64 KEY_SYSRQ = 99;        // Print
+export const I64 DISK = 1;              // src/fs.ci GRANT_DISK
+export const I64 SLOTS = 4;             // host.c SHOT_SLOTS: a fifth shot_as gets -EBUSY
+export const I64 WAIT_MS = 20000;       // a child past this is stopped (signal 9), reaped and its name dropped
+
+I64[4] pid;                             // a running shot's child, 0 for a free slot
+I64[4] seq;                             // its number
+I64[4] t0;                              // when it began, ms
+Bool[4] stopped;                        // stopped past WAIT_MS, not yet reaped
+I64 taken = 0;                          // shots numbered so far
+I64 made = 0;                           // the shot whose plate is made and not yet shown, 0 none
+
+// The shot code asks for with these modifiers held, or NONE: the desk takes such a key whatever it then does.
+export I64 which(I64 code, Bool alt, Bool meta, Bool shift) {
+    if (code == KEY_SYSRQ && alt) { return WINDOW; }
+    if (code == KEY_SYSRQ) { return SCREEN; }
+    if (code == KEY_S && meta && shift) { return AREA; }
+    return NONE;
+}
+
+// Whether a shot may be taken: an account's session, no login, lock or first-boot screen up, Disk in its ceiling.
+export Bool may(Bool session, Bool screen_up, I64 ceil) {
+    return session && !screen_up && (ceil & DISK) != 0;
+}
+
+// The frame (x, y, w, h) cut to a screen sw x sh into r as x, y, w, h; false when none of it is on the screen.
+export Bool clip(I64 x, I64 y, I64 w, I64 h, I64 sw, I64 sh, inout I64[_] r) {
+    I64 x0 = max(0, x);
+    I64 y0 = max(0, y);
+    I64 x1 = min(sw, x + w);
+    I64 y1 = min(sh, y + h);
+    if (x1 <= x0 || y1 <= y0) { return false; }
+    r[0] = x0;
+    r[1] = y0;
+    r[2] = x1 - x0;
+    r[3] = y1 - y0;
+    return true;
+}
+
+// Shot child p began at t ms and its plate is the one made now (a newer shot replaces any plate made or shown);
+// its number, or 0 when no slot is free (shot_as gave -EBUSY first: four run).
+export I64 began(I64 p, I64 t) {
+    for i in 0..SLOTS {
+        if (pid[i] == 0) {
+            taken = taken + 1;
+            pid[i] = p;
+            seq[i] = taken;
+            t0[i] = t;
+            stopped[i] = false;
+            made = taken;
+            return taken;
+        }
+    }
+    return 0;
+}
+
+export Bool running() {
+    for i in 0..SLOTS {
+        if (pid[i] != 0) { return true; }
+    }
+    return false;
+}
+
+// The pid of running shot k (0 to SLOTS - 1), 0 for none: the desk reaps each.
+export I64 child(I64 k) { return pid[k]; }
+
+// Shot child p reaped with status st, named when shot_end gave its name: whether its plate shows now (status 0,
+// named, and still the newest made). Its slot is free.
+export Bool ended(I64 p, I64 st, Bool named) {
+    for i in 0..SLOTS {
+        if (pid[i] == p && p != 0) {
+            pid[i] = 0;
+            Bool show = st == 0 && named && !stopped[i] && seq[i] == made;
+            if (seq[i] == made) { made = 0; }
+            return show;
+        }
+    }
+    return false;
+}
+
+// A running shot past WAIT_MS at t: its pid, once (the desk stops it with signal 9 and reaps it), else 0.
+export I64 late(I64 t) {
+    for i in 0..SLOTS {
+        if (pid[i] != 0 && !stopped[i] && t - t0[i] >= WAIT_MS) {
+            stopped[i] = true;
+            return pid[i];
+        }
+    }
+    return 0;
+}
+
+// No shot running now shows a plate.
+export void forget() { made = 0; }
+
+// s into dst from n: the length after it.
+I64 put(inout U8[_] dst, I64 n, in U8[_] s) {
+    for k in 0..len(s) { dst[n + k] = s[k]; }
+    return n + len(s);
+}
+
+// "/home/" and the account's name into dst: the home shot_as takes; its length.
+export I64 home(in U8[_] name, inout U8[_] dst) { return put(dst, put(dst, 0, b"/home/"), name); }
+
+// The saved file's path, /home/NAME/Pictures/FILE, into dst: what the plate's click opens; its length.
+export I64 path(in U8[_] name, in U8[_] file, inout U8[_] dst) {
+    return put(dst, put(dst, home(name, dst), b"/Pictures/"), file);
+}
+// SPDX-License-Identifier: Apache-2.0

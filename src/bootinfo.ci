@@ -1,0 +1,11 @@
+// src/bootinfo.ci: the loader's information block, as cint sees it (docs/memory.md, Multiboot 2
+// information). rt/boot.c copies the block once at boot, before main; this one extern reads the
+// copy. Its own module, so the flavors that do not read it keep their program revision.
+
+// Fills dst with as much of the copy as fits and returns the protocol, 1 (Multiboot 1: 128 bytes
+// of the fixed structure) or 2 (Multiboot 2: the whole block, total_size bytes; a block larger than
+// dst comes fitted: every tag the kernel reads, others while they fit, then the end tag), or a
+// negative status with dst untouched: -1 no loader block, -3 the tags the kernel reads do not fit
+// (the kernel halts; rt/boot.c, RT_BOOT_INFO_BYTES 65536).
+export extern observe I64 boot_info(out U8[_] dst);
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,305 @@
+// user/ci/kit/stgrant.ci: Settings' Grants page (frame 21, DN-48: builds as drawn; GV-2 of
+// docs/specs/2026-11-11-gv-revoke.md, GV-R3; design's answers of 2026-11-12), a page module on
+// kit/stpage.ci. Under the title, one 40 px line a grant, the windows in the order of their oldest grant and a
+// window's grants oldest first: an 8 px dot in the grant's color (disk OCHRE, network SIENNA, ring 0 CADMIUM); a 150
+// px column, the window's name in NAME over the kind in SMALL, INK_DIM, 6 apart (a window's next lines: the kind
+// alone, centered); the object in PATH, INK_DIM, one line cut with "...": the request text the desk said yes to, or
+// for a grant the desk asked nothing for, the window's variable as the bar shows it (frame 21: example.org,
+// /home/ci/notes.txt); the time it was given as the bar's clock words it, 8 before Revoke; Revoke, 28 px, on the
+// window's first line only. A 1 px SURF1 rule 4 under a window's last line and 4 over the next window's first; none
+// between a window's own lines (GV-R3: one window number, one Revoke). Revoke All, 32 px, at the page's foot at the
+// right (24 under the list when the list is longer), so a Revoke leaves it in place. With no grant, the line "None
+// active" and Revoke All at 40 percent. No sentence anywhere (DN-46).
+//
+// Revoke returns REVOKE with arg() the host's window number; Revoke All returns REVOKE_ALL. The host takes the bits
+// back (revoke, 1008, for disk and network; FBIO_TILE_KERN 3 for ring 0) and tells the lines again.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+
+export const I64 REVOKE = 16;          // stpage.ACT + 0
+export const I64 REVOKE_ALL = 17;
+
+export const I64 LINES = 16;
+export const I64 LINE = 40;
+export const I64 SEP = 9;              // 4, the rule, 4: between two windows
+export const I64 NAME_W = 150;
+export const I64 SMALL_H = 28;         // Revoke
+
+export const I64 DISK = 1;             // the grant word's bits
+export const I64 NET = 2;
+export const I64 KERN = 8;
+
+I64[16] lwin;
+I64[16] lbit;
+U8[256] lname;                         // 16 bytes a line
+I64[16] lnn;
+U8[256] ltime;
+I64[16] ltn;
+U8[896] lobj;                          // 56 bytes a line (the kernel's copy of a request is 56 at most)
+I64[16] lon;
+I64 n_lines = 0;
+
+I64 fs = 0;                            // the focused stop, 1 up: a window's Revoke in order, then Revoke All
+Bool kbd = false;
+I64 act_arg = -1;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- what the host tells ---
+
+export void lines_clear() { n_lines = 0; }
+
+// One line: window w (the host's number), its name, grant bit b, the time t and the object o; false when full.
+export Bool line(I64 w, in U8[_] name, I64 nn, I64 b, in U8[_] t, I64 tn, in U8[_] o, I64 on) {
+    if (n_lines >= LINES) { return false; }
+    I64 k = n_lines;
+    lwin[k] = w;
+    lbit[k] = b;
+    lnn[k] = max(0, min(nn, min(16, len(name))));
+    for q in 0..lnn[k] { lname[16 * k + q] = name[q]; }
+    ltn[k] = max(0, min(tn, min(16, len(t))));
+    for q in 0..ltn[k] { ltime[16 * k + q] = t[q]; }
+    lon[k] = max(0, min(on, min(56, len(o))));
+    for q in 0..lon[k] { lobj[56 * k + q] = o[q]; }
+    n_lines = k + 1;
+    return true;
+}
+
+// The lines are told: a focus past the stops falls back.
+export void refreshed() {
+    if (fs > stops()) { fs = stops(); }
+}
+
+export I64 lines() { return n_lines; }
+export I64 arg() { return act_arg; }
+
+export void open() {
+    fs = 0;
+    kbd = false;
+}
+
+// Whether line k starts its window's lines.
+export Bool first(I64 k) { return k == 0 || lwin[k] != lwin[k - 1]; }
+
+// The windows (stops before Revoke All), and the line of window stop s (0 up).
+export I64 windows() {
+    I64 n = 0;
+    for k in 0..n_lines {
+        if (first(k)) { n = n + 1; }
+    }
+    return n;
+}
+
+I64 line_of(I64 s) {
+    I64 n = 0;
+    for k in 0..n_lines {
+        if (first(k)) {
+            if (n == s) { return k; }
+            n = n + 1;
+        }
+    }
+    return -1;
+}
+
+I64 stops() { return windows() + 1; }
+
+// --- geometry, from the page's top y0 ---
+
+// Line k's top.
+export I64 line_y(I64 y0, I64 k) {
+    I64 y = y0 + stpage.BODY;
+    for q in 1..k + 1 {
+        y = y + LINE;
+        if (q < n_lines && first(q)) { y = y + SEP; }
+    }
+    return y;
+}
+
+I64 list_end(I64 y0) {
+    if (n_lines == 0) { return y0 + stpage.BODY + LINE; }
+    return line_y(y0, n_lines - 1) + LINE;
+}
+
+I64 all_y(I64 y0) { return list_end(y0) + stpage.GAP; }
+
+// Frame 21: Revoke All at the page's foot, FOOT over the box's bottom yb, or under the list when the list is longer;
+// a Revoke leaves it where it was.
+I64 foot_y(I64 y0, I64 yb) { return max(all_y(y0), yb - stpage.FOOT - stpage.BTN); }
+I64 all_w() { return stpage.bw(b"Revoke All", 10, faces.NAME); }
+I64 rv_w() { return stpage.tw(b"Revoke", 6, faces.NAME) + 24; }
+
+// Frame 48: the page's height from y0; a box less tall scrolls it (kit/stbox.ci).
+export I64 tall() { return all_y(0) + stpage.BTN + stpage.FOOT; }
+
+export I64 focused() { return fs; }
+
+// The focused stop's top and bottom from the page's top (y0 = 0), -1 while the keyboard is not in the page.
+export I64 focus_top() {
+    if (!kbd || fs == 0) { return -1; }
+    if (fs == stops()) { return all_y(0); }
+    return line_y(0, line_of(fs - 1)) + (LINE - SMALL_H) / 2;
+}
+
+export I64 focus_bottom() {
+    if (!kbd || fs == 0) { return -1; }
+    if (fs == stops()) { return all_y(0) + stpage.BTN; }
+    return line_y(0, line_of(fs - 1)) + (LINE + SMALL_H) / 2;
+}
+
+// --- drawing ---
+
+U32 dot_of(I64 b) {
+    if (b == DISK) { return tok(tokens.OCHRE); }
+    if (b == KERN) { return tok(tokens.CADMIUM); }
+    return tok(tokens.SIENNA);
+}
+
+I64 kind_text(I64 b, inout U8[_] t) {
+    if (b == DISK) { return stpage.put(t, 0, b"Disk"); }
+    if (b == KERN) { return stpage.put(t, 0, b"Ring 0"); }
+    return stpage.put(t, 0, b"Network");
+}
+
+// The object of line k, cut with "..." to wd 1x pixels in PATH, into t; the length.
+export I64 object_fit(I64 k, I64 wd, inout U8[_] t) {
+    I64 n = lon[k];
+    for q in 0..n { t[q] = lobj[56 * k + q]; }
+    if (stpage.tw(t, n, faces.PATH) <= wd) { return n; }
+    I64 dw = stpage.tw(b"...", 3, faces.PATH);
+    while (n > 0 && stpage.tw(t, n, faces.PATH) + dw > wd) { n = n - 1; }
+    while (n > 0 && t[n - 1] == ' ') { n = n - 1; }
+    return stpage.put(t, n, b"...");
+}
+
+// The 1x row y of the page from (cx, y0) to (cr, yb), through the pen.
+export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
+    stpage.title(row, cx, y0, cr, b"Grants", 6, y);
+    if (n_lines == 0) {
+        I64 ly = y0 + stpage.BODY;
+        if (stpage.on(y, ly, LINE)) {
+            I64 e = pen.text(row, cx, stpage.base(ly, LINE), cr, b"None active", 11, tok(tokens.INK_DIM), faces.BODY);
+        }
+    }
+    I64 rx = cr - rv_w();
+    I64 s = 0;
+    U8[16] kt;
+    U8[64] ot;
+    for k in 0..n_lines {
+        I64 ly = line_y(y0, k);
+        Bool f1 = first(k);
+        if (f1) { s = s + 1; }
+        if (f1 && k > 0 && stpage.on(y, ly - 5, 1)) { stpage.rule(row, cx, ly - 5, cr); }
+        if (stpage.on(y, ly, LINE)) {
+            I64 my = ly + LINE / 2;
+            if (stpage.on(y, my - 4, 8)) { pen.round(row, cx, my - 4, cx + 8, my + 4, 4, dot_of(lbit[k])); }
+            I64 nx = cx + 20;
+            I64 kn = kind_text(lbit[k], kt);
+            if (f1) {
+                I64 e = pen.text(row, nx, ly + 16, nx + NAME_W, lname[16 * k..16 * k + lnn[k]], lnn[k], tok(tokens.INK),
+                                 faces.NAME);
+                e = pen.text(row, nx, ly + 34, nx + NAME_W, kt, kn, tok(tokens.INK_DIM), faces.SMALL);
+            } else {                   // a window's next grant: the kind alone, centered on its line
+                I64 e = pen.text(row, nx, stpage.base(ly, LINE), nx + NAME_W, kt, kn, tok(tokens.INK_DIM), faces.SMALL);
+            }
+            I64 tw = stpage.tw(ltime[16 * k..16 * k + ltn[k]], ltn[k], faces.PATH);
+            I64 tr = rx - 12 - 8;
+            if (ltn[k] > 0) {
+                I64 e = pen.text_right(row, tr, stpage.base(ly, LINE), ltime[16 * k..16 * k + ltn[k]], ltn[k],
+                                       tok(tokens.INK_DIM), faces.PATH);
+            }
+            I64 ox = nx + NAME_W + 12;
+            I64 on = object_fit(k, tr - tw - 12 - ox, ot);
+            if (on > 0) {
+                I64 e = pen.text(row, ox, stpage.base(ly, LINE), tr - tw - 12, ot, on, tok(tokens.INK_DIM), faces.PATH);
+            }
+            if (f1) {
+                I64 bt = ly + (LINE - SMALL_H) / 2;
+                if (stpage.on(y, bt, SMALL_H)) {
+                    stpage.button(row, rx, bt, rv_w(), SMALL_H, b"Revoke", 6, tok(tokens.INK), faces.NAME);
+                }
+                if (kbd && fs == s) { stpage.focus(row, rx, bt, cr, bt + SMALL_H, stpage.R_CTRL); }
+            }
+        }
+    }
+    I64 ay = foot_y(y0, yb);
+    I64 ax = cr - all_w();
+    if (stpage.on(y, ay, stpage.BTN)) {
+        stpage.button(row, ax, ay, all_w(), stpage.BTN, b"Revoke All", 10, tok(tokens.INK), faces.NAME);
+        if (n_lines == 0) { stpage.fade(row, ax, cr); }
+    }
+    if (kbd && n_lines > 0 && fs == stops()) { stpage.focus(row, ax, ay, cr, ay + stpage.BTN, stpage.R_CTRL); }
+}
+
+// --- the pointer and the keyboard ---
+
+I64 can() {
+    if (n_lines == 0) { return 0; }
+    return (1 << stops()) - 1;
+}
+
+Bool tab(I64 d) {
+    fs = stpage.tab_to(fs - 1, d, stops(), can()) + 1;
+    return fs > 0;
+}
+
+export Bool enter() {
+    kbd = true;
+    fs = 0;
+    return tab(1);
+}
+
+export Bool enter_last() {
+    kbd = true;
+    fs = 0;
+    return tab(-1);
+}
+
+// The action of stop s (1 up): a window's Revoke, or Revoke All.
+I64 press(I64 s) {
+    if (n_lines == 0 || s <= 0) { return stpage.NONE; }
+    if (s == stops()) { return REVOKE_ALL; }
+    act_arg = lwin[line_of(s - 1)];
+    return REVOKE;
+}
+
+export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    kbd = false;
+    if (n_lines == 0) { return stpage.NONE; }
+    I64 ay = foot_y(y0, yb);
+    if (py >= ay && py < ay + stpage.BTN && px >= cr - all_w() && px < cr) {
+        fs = stops();
+        return REVOKE_ALL;
+    }
+    if (px < cr - rv_w() || px >= cr) { return stpage.NONE; }
+    for s in 0..windows() {
+        I64 bt = line_y(y0, line_of(s)) + (LINE - SMALL_H) / 2;
+        if (py >= bt && py < bt + SMALL_H) {
+            fs = s + 1;
+            return press(fs);
+        }
+    }
+    return stpage.NONE;
+}
+
+// A key: Tab and Shift+Tab move through each window's Revoke and Revoke All and on to the sidebar (BACK); Up and Down
+// move within the page; Enter or Space presses.
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
+    if (stpage.is_tab(code)) {
+        if (tab(stpage.tab_d(code))) { return stpage.DRAW; }
+        return stpage.BACK;
+    }
+    if (stpage.is_arrow(code)) {
+        I64 d = 1;
+        if (code == stpage.K_UP || code == stpage.K_LEFT) { d = -1; }
+        I64 was = fs;
+        if (!tab(d)) { fs = was; }
+        if (fs == 0) { Bool t = tab(1); }
+        return stpage.DRAW;
+    }
+    if (stpage.is_press(code)) { return press(fs); }
+    return stpage.NONE;
+}
+// SPDX-License-Identifier: Apache-2.0

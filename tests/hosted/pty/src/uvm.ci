@@ -1,0 +1,21 @@
+// tests/hosted/pty/src/uvm.ci: the hosted stand-in for src/uvm.ci under tests/pty_test.ci: one flat user memory a
+// process, the calls src/pty.ci makes. Not a kernel module.
+export const U64 USER_HI = 0x800000000000;
+U8[65536] mem;           // every process's memory, at va % 65536 (the test keeps buffers apart)
+I64 poke_limit = 65536;  // a poke copies at most this many bytes (a short copy, as a fault part way would)
+
+export void set_poke_limit(I64 n) { poke_limit = n; }
+export U8 at(U64 va) { return mem[(va % 65536) as I64]; }
+export void put(U64 va, U8 c) { mem[(va % 65536) as I64] = c; }
+
+export I64 peek[n](I64 pid, U64 va, inout U8[n] dst, I64 k) {
+    for i in 0..k { dst[i] = mem[((va + i as U64) % 65536) as I64]; }
+    return k;
+}
+
+export I64 poke[n](I64 pid, U64 va, in U8[n] src, I64 k, Bool check) {
+    I64 m = min(k, poke_limit);
+    for i in 0..m { mem[((va + i as U64) % 65536) as I64] = src[i]; }
+    return m;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,279 @@
+// user/ci/argon2.ci: Argon2id, version 0x13 (RFC 9106), in cint. AC-1b (docs/specs/2026-11-08-ac-accounts.md
+// section 6): authd's passphrase function, DS-6 (m = 64 MiB, t = 3, one lane). Any number of lanes is computed, one
+// after another, slice by slice, which RFC 9106 section 3.4 allows: lanes depend on each other only across slices.
+// Words are U64 and the algorithm's arithmetic is modulo 2^64, so it uses `+%` and `<<%`; BlaMka's product of two
+// 32-bit halves fits a U64 exactly and stays checked. Memory is the caller's: mem holds the blocks, 128 words each,
+// lane by lane (block j of lane l at word (l * lane_len + j) * 128), so a large m is a frame local of the caller.
+
+import user.ci.blake2b;
+
+export const I64 BLOCK_WORDS = 128;
+export const I64 BLOCK_BYTES = 1024;
+export const I64 VERSION = 0x13;
+export const I64 TYPE_ID = 2;          // Argon2id
+
+U64 r32(U64 x) { return (x >> 32) | (x <<% 32); }
+U64 r24(U64 x) { return (x >> 24) | (x <<% 40); }
+U64 r16(U64 x) { return (x >> 16) | (x <<% 48); }
+U64 r63(U64 x) { return (x >> 63) | (x <<% 1); }
+
+// BlaMka (RFC 9106 section 3.6): x + y + 2 * lo(x) * lo(y), modulo 2^64.
+U64 bla(U64 x, U64 y) {
+    U64 m = (x & 0xffffffff) * (y & 0xffffffff);
+    return x +% y +% (m <<% 1);
+}
+
+void gb(inout U64[_] v, I64 a, I64 b, I64 c, I64 d) {
+    v[a] = bla(v[a], v[b]);
+    v[d] = r32(v[d] ^ v[a]);
+    v[c] = bla(v[c], v[d]);
+    v[b] = r24(v[b] ^ v[c]);
+    v[a] = bla(v[a], v[b]);
+    v[d] = r16(v[d] ^ v[a]);
+    v[c] = bla(v[c], v[d]);
+    v[b] = r63(v[b] ^ v[c]);
+}
+
+// The permutation P (RFC 9106 section 3.6) on the sixteen words v[ix[0]] .. v[ix[15]].
+void pround(inout U64[_] v, in I64[_] ix) {
+    gb(v, ix[0], ix[4], ix[8], ix[12]);
+    gb(v, ix[1], ix[5], ix[9], ix[13]);
+    gb(v, ix[2], ix[6], ix[10], ix[14]);
+    gb(v, ix[3], ix[7], ix[11], ix[15]);
+    gb(v, ix[0], ix[5], ix[10], ix[15]);
+    gb(v, ix[1], ix[6], ix[11], ix[12]);
+    gb(v, ix[2], ix[7], ix[8], ix[13]);
+    gb(v, ix[3], ix[4], ix[9], ix[14]);
+}
+
+// The compression function G (RFC 9106 section 3.5) within m: m[next] = G(m[prev], m[ref]), or with with_xor (passes
+// after the first, version 0x13) m[next] ^= G(m[prev], m[ref]). next may equal ref or prev: both are read first.
+void fill_block(inout U64[_] m, I64 prev, I64 ref, I64 next, Bool with_xor) {
+    U64[128] r;
+    U64[128] tmp;
+    I64[16] ix;
+    for k in 0..BLOCK_WORDS {
+        r[k] = m[ref + k] ^ m[prev + k];
+        tmp[k] = r[k];
+    }
+    if (with_xor) {
+        for k in 0..BLOCK_WORDS {
+            tmp[k] = tmp[k] ^ m[next + k];
+        }
+    }
+    for i in 0..8 {
+        for k in 0..16 {
+            ix[k] = 16 * i + k;
+        }
+        pround(r, ix);
+    }
+    for i in 0..8 {
+        for k in 0..16 {
+            ix[k] = 2 * i + (k % 2) + 16 * (k / 2);
+        }
+        pround(r, ix);
+    }
+    for k in 0..BLOCK_WORDS {
+        m[next + k] = tmp[k] ^ r[k];
+    }
+}
+
+// H' (RFC 9106 section 3.3): the tlen-byte hash of x[0..xlen) into dst[0..tlen).
+export void hprime(in U8[_] x, I64 xlen, inout U8[_] dst, I64 tlen) {
+    blake2b.Blake2b[1] s;
+    U8[0] nokey;
+    U8[64] v;
+    U8[64] w;
+    if (tlen <= 64) {
+        blake2b.b2_init(s, tlen, nokey, 0);
+        blake2b.b2_le32(s, tlen);
+        blake2b.b2_update(s, x, 0, xlen);
+        blake2b.b2_final(s, v);
+        for i in 0..tlen {
+            dst[i] = v[i];
+        }
+        return;
+    }
+    I64 r = (tlen + 31) / 32 - 2;
+    blake2b.b2_init(s, 64, nokey, 0);
+    blake2b.b2_le32(s, tlen);
+    blake2b.b2_update(s, x, 0, xlen);
+    blake2b.b2_final(s, v);
+    for i in 0..32 {
+        dst[i] = v[i];
+    }
+    for k in 2..r + 1 {
+        blake2b.b2_digest(v, 64, nokey, 0, w, 64);
+        for i in 0..64 {
+            v[i] = w[i];
+        }
+        for i in 0..32 {
+            dst[32 * (k - 1) + i] = v[i];
+        }
+    }
+    I64 last = tlen - 32 * r;
+    blake2b.b2_digest(v, 64, nokey, 0, w, last);
+    for i in 0..last {
+        dst[32 * r + i] = w[i];
+    }
+}
+
+// Block j of lane l from H'^1024(h0 || LE32(j) || LE32(l)) (RFC 9106 section 3.4, steps 3 and 4).
+void first_block(inout U64[_] mem, I64 at, in U8[_] h0, I64 j, I64 l) {
+    U8[72] x;
+    U8[1024] b;
+    for i in 0..64 {
+        x[i] = h0[i];
+    }
+    for k in 0..4 {
+        x[64 + k] = ((j >> (8 * k)) & 255) as U8;
+        x[68 + k] = ((l >> (8 * k)) & 255) as U8;
+    }
+    hprime(x, 72, b, BLOCK_BYTES);
+    for w in 0..BLOCK_WORDS {
+        U64 v = 0;
+        for k in 0..8 {
+            v = v | ((b[8 * w + k] as U64) << (8 * k));
+        }
+        mem[at + w] = v;
+    }
+}
+
+// The reference block's column in its lane (RFC 9106 section 3.4.1.2) for block i of the segment, from J1.
+I64 ref_column(I64 pass, I64 slice, I64 i, U64 j1, Bool same_lane, I64 seg, I64 lane_len) {
+    I64 area = 0;
+    if (pass == 0) {
+        if (slice == 0) {
+            area = i - 1;
+        } else if (same_lane) {
+            area = slice * seg + i - 1;
+        } else if (i == 0) {
+            area = slice * seg - 1;
+        } else {
+            area = slice * seg;
+        }
+    } else if (same_lane) {
+        area = lane_len - seg + i - 1;
+    } else if (i == 0) {
+        area = lane_len - seg - 1;
+    } else {
+        area = lane_len - seg;
+    }
+    U64 x = (j1 * j1) >> 32;
+    U64 a = area as U64;
+    I64 rel = (a - 1 - ((a * x) >> 32)) as I64;
+    I64 start = 0;
+    if (pass != 0 && slice != 3) {
+        start = (slice + 1) * seg;
+    }
+    return (start + rel) % lane_len;
+}
+
+// The words Argon2id needs in mem for m_kib KiB and lanes lanes: m' = 4 * lanes * floor(m / (4 * lanes)) blocks.
+export I64 words_needed(I64 m_kib, I64 lanes) {
+    return 4 * lanes * (m_kib / (4 * lanes)) * BLOCK_WORDS;
+}
+
+// Argon2id (RFC 9106 section 3.2) of pwd[0..plen) with salt[0..slen), secret key[0..klen) and associated data
+// ad[0..xlen): t passes over m_kib KiB in lanes lanes, the tlen-byte tag into tag. mem has words_needed words or more.
+export void argon2id(in U8[_] pwd, I64 plen, in U8[_] salt, I64 slen, in U8[_] key, I64 klen, in U8[_] ad,
+                     I64 xlen, I64 t, I64 m_kib, I64 lanes, inout U64[_] mem, inout U8[_] tag, I64 tlen) {
+    assert(lanes >= 1 && t >= 1 && tlen >= 4 && m_kib >= 8 * lanes && slen >= 8);
+    assert(len(mem) >= words_needed(m_kib, lanes));
+    blake2b.Blake2b[1] s;
+    U8[0] nokey;
+    U8[64] h0;
+    blake2b.b2_init(s, 64, nokey, 0);
+    blake2b.b2_le32(s, lanes);
+    blake2b.b2_le32(s, tlen);
+    blake2b.b2_le32(s, m_kib);
+    blake2b.b2_le32(s, t);
+    blake2b.b2_le32(s, VERSION);
+    blake2b.b2_le32(s, TYPE_ID);
+    blake2b.b2_le32(s, plen);
+    blake2b.b2_update(s, pwd, 0, plen);
+    blake2b.b2_le32(s, slen);
+    blake2b.b2_update(s, salt, 0, slen);
+    blake2b.b2_le32(s, klen);
+    blake2b.b2_update(s, key, 0, klen);
+    blake2b.b2_le32(s, xlen);
+    blake2b.b2_update(s, ad, 0, xlen);
+    blake2b.b2_final(s, h0);
+
+    I64 blocks = words_needed(m_kib, lanes) / BLOCK_WORDS;
+    I64 lane_len = blocks / lanes;
+    I64 seg = lane_len / 4;
+    for l in 0..lanes {
+        first_block(mem, (l * lane_len) * BLOCK_WORDS, h0, 0, l);
+        first_block(mem, (l * lane_len + 1) * BLOCK_WORDS, h0, 1, l);
+    }
+
+    // The address scratch of the data-independent half: zero block, input block Z, address block.
+    U64[384] sc;
+    for pass in 0..t {
+        for slice in 0..4 {
+            for l in 0..lanes {
+                Bool indep = pass == 0 && slice < 2;
+                if (indep) {
+                    for k in 0..384 {
+                        sc[k] = 0;
+                    }
+                    sc[128] = pass as U64;
+                    sc[129] = l as U64;
+                    sc[130] = slice as U64;
+                    sc[131] = blocks as U64;
+                    sc[132] = t as U64;
+                    sc[133] = TYPE_ID as U64;
+                }
+                I64 first = 0;
+                if (pass == 0 && slice == 0) {
+                    first = 2;
+                    if (indep) {
+                        sc[134] = sc[134] + 1;
+                        fill_block(sc, 0, 128, 256, false);
+                        fill_block(sc, 0, 256, 256, false);
+                    }
+                }
+                for i in first..seg {
+                    I64 col = slice * seg + i;
+                    I64 cur = (l * lane_len + col) * BLOCK_WORDS;
+                    I64 prev = cur - BLOCK_WORDS;
+                    if (col == 0) {
+                        prev = (l * lane_len + lane_len - 1) * BLOCK_WORDS;
+                    }
+                    U64 pr = 0;
+                    if (indep) {
+                        if (i % BLOCK_WORDS == 0) {
+                            sc[134] = sc[134] + 1;
+                            fill_block(sc, 0, 128, 256, false);
+                            fill_block(sc, 0, 256, 256, false);
+                        }
+                        pr = sc[256 + i % BLOCK_WORDS];
+                    } else {
+                        pr = mem[prev];
+                    }
+                    I64 rl = ((pr >> 32) % (lanes as U64)) as I64;
+                    if (pass == 0 && slice == 0) {
+                        rl = l;
+                    }
+                    I64 rc = ref_column(pass, slice, i, pr & 0xffffffff, rl == l, seg, lane_len);
+                    I64 ref = (rl * lane_len + rc) * BLOCK_WORDS;
+                    fill_block(mem, prev, ref, cur, pass > 0);
+                }
+            }
+        }
+    }
+
+    U8[1024] c;
+    for w in 0..BLOCK_WORDS {
+        U64 v = 0;
+        for l in 0..lanes {
+            v = v ^ mem[(l * lane_len + lane_len - 1) * BLOCK_WORDS + w];
+        }
+        for k in 0..8 {
+            c[8 * w + k] = (v >> (8 * k)) as% U8;
+        }
+    }
+    hprime(c, BLOCK_BYTES, tag, tlen);
+}
+// SPDX-License-Identifier: Apache-2.0

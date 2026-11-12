@@ -1,0 +1,227 @@
+// user/ci/cvim/blk.ci: Visual block (Ctrl+V) operators (docs/specs/2026-11-07-cv-cvim.md section 5, CV-2b): the block
+// is lines l0 to l1 and screen columns c0 to c1, c1 END for "to each line's end" ($). Vim's block_prep cuts each line:
+// the characters whose column is in the block; a line narrower than c0 is short and holds none of it. A character is
+// one column (section 3) and a tab its tabstop's, as text.ci counts them; a tab across the block's edge is not split.
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.edit;
+import user.ci.cvim.reg;
+import user.ci.cvim.op;
+
+export const I64 END = 1099511627776;
+
+// The first character of line l at or past column vc; the line feed when none.
+export I64 pos_at(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l, I64 vc) {
+    I64 q = text.lstart(x, orig, add, l);
+    I64 e = text.lend(x, orig, add, l);
+    I64 c = 0;
+    while (q < e && c < vc) {
+        if (text.ch(x, orig, add, q) == '\t') { c += text.TS - c % text.TS; } else { c += 1; }
+        q = text.nextc(x, orig, add, q);
+    }
+    return q;
+}
+
+// Line l's width in columns.
+export I64 width(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    return text.vcol(x, orig, add, text.lend(x, orig, add, l));
+}
+
+I64 seg_end(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l, I64 c1) {
+    if (c1 >= END) { return text.lend(x, orig, add, l); }
+    return pos_at(x, orig, add, l, c1 + 1);
+}
+
+// The widest column the block reaches: c1, or with END the last column of its widest line.
+export I64 last_col(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l0, I64 l1, I64 c1) {
+    if (c1 < END) { return c1; }
+    I64 w = 0;
+    for l in l0..l1 + 1 { w = max(w, width(x, orig, add, l)); }
+    return max(w - 1, 0);
+}
+
+// The block into the registers cmd writes (y, d, c): each line's part, a line feed between.
+export Bool yank(inout I64[_] r, in I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, in I64[_] u, I64 cmd,
+                 I64 l0, I64 l1, I64 c0, I64 c1) {
+    I64 spans = l1 - l0;
+    I64 pad = 0;
+    if (c1 < END) { pad = c1 - c0 + 1; }
+    for l in l0..l1 + 1 {
+        I64 s = pos_at(x, orig, add, l, c0);
+        spans += edit.span_cost(x, s, seg_end(x, orig, add, l, c1) - s) + 1;
+    }
+    if (!edit.reserve(r, x, add, sp, u, 1 + pad, spans, 0, 0)) { return false; }
+    I64 off = r[state.R_ST_ADD];
+    add[off] = '\n';
+    // A line too short to reach the block yanks as blanks of the block's width (Vim's block_prep endspaces).
+    for b in 0..pad { add[off + 1 + b] = ' '; }
+    r[state.R_ST_ADD] = off + 1 + pad;
+    I64 from = r[state.R_SPTOP];
+    for l in l0..l1 + 1 {
+        if (l > l0) {
+            I64 t = r[state.R_SPTOP];
+            sp[t * buf.SPAN] = buf.SRC_ADD;
+            sp[t * buf.SPAN + 1] = off;
+            sp[t * buf.SPAN + 2] = 1;
+            r[state.R_SPTOP] = t + 1;
+        }
+        I64 s = pos_at(x, orig, add, l, c0);
+        I64 e = seg_end(x, orig, add, l, c1);
+        if (pad > 0 && width(x, orig, add, l) < c0) {
+            I64 t = r[state.R_SPTOP];
+            sp[t * buf.SPAN] = buf.SRC_ADD;
+            sp[t * buf.SPAN + 1] = off + 1;
+            sp[t * buf.SPAN + 2] = pad;
+            r[state.R_SPTOP] = t + 1;
+        } else if (e > s) {
+            I64 to = buf.spans(x, s, e - s, sp, r[state.R_SPTOP]);
+            if (to < 0) { r[state.R_FULL] = 1; r[state.R_BELL] = 1; return false; }
+            r[state.R_SPTOP] = to;
+        }
+    }
+    I64 w = last_col(x, orig, add, l0, l1, c1) - c0 + 1;
+    reg.store(r, add, sp, cmd, from, r[state.R_SPTOP], state.KIND_BLOCK, w, l1 > l0, false);
+    return true;
+}
+
+// Each line's part taken out, the last line first; the cursor to the block's top left.
+export Bool delete(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                   I64 l0, I64 l1, I64 c0, I64 c1) {
+    I64 spans = 0;
+    for l in l0..l1 + 1 {
+        I64 s = pos_at(x, orig, add, l, c0);
+        spans += edit.span_cost(x, s, seg_end(x, orig, add, l, c1) - s);
+    }
+    if (!edit.reserve(r, x, add, sp, u, 0, spans, l1 - l0 + 1, 2 * (l1 - l0 + 1))) { return false; }
+    for j in 0..l1 - l0 + 1 {
+        I64 l = l1 - j;
+        I64 s = pos_at(x, orig, add, l, c0);
+        I64 e = seg_end(x, orig, add, l, c1);
+        if (e > s) { if (!edit.del(r, x, orig, add, sp, u, s, e - s)) { return false; } }
+    }
+    r[state.R_CUR] = text.normal_pos(x, orig, add, pos_at(x, orig, add, l0, c0));
+    r[state.R_WANT] = -1;
+    return true;
+}
+
+// g~ gu gU (cmd) or r (cmd 'r' with character c) over each line's part; the cursor to the top left.
+export Bool change_chars(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                         inout I64[_] u, I64 cmd, I64 c, I64 l0, I64 l1, I64 c0, I64 c1) {
+    I64[4] need;
+    for i in 0..4 { need[i] = 0; }
+    for l in l0..l1 + 1 {
+        I64 s = pos_at(x, orig, add, l, c0);
+        I64 e = seg_end(x, orig, add, l, c1);
+        if (e > s) { op.change_need(x, orig, add, cmd, c, s, e, need); }
+    }
+    if (!edit.reserve(r, x, add, sp, u, need[0], need[1], need[2], need[3])) { return false; }
+    for l in l0..l1 + 1 {
+        I64 s = pos_at(x, orig, add, l, c0);
+        I64 e = seg_end(x, orig, add, l, c1);
+        if (e <= s) { continue; }
+        if (cmd == 'r') { if (!op.replace_range(r, x, orig, add, sp, u, c, s, e)) { return false; } }
+        else if (!op.recase_range(r, x, orig, add, sp, u, cmd, s, e)) { return false; }
+    }
+    r[state.R_CUR] = text.normal_pos(x, orig, add, pos_at(x, orig, add, l0, c0));
+    r[state.R_WANT] = -1;
+    return true;
+}
+
+// > and < on a block (Vim's shift_block, with expandtab): > puts amount shiftwidths of blanks before the first
+// non-blank at or after the block's left edge; < takes up to that many blanks from the left edge. A line too short
+// for the block, or with nothing after its blanks, is left.
+export Bool shift(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                  I64 cmd, I64 l0, I64 l1, I64 c0, I64 amount) {
+    I64 n = amount * text.TS;
+    I64 lines = l1 - l0 + 1;
+    I64 spans = 0;
+    for l in l0..l1 + 1 {
+        I64 s0 = pos_at(x, orig, add, l, c0);
+        spans += edit.span_cost(x, s0, min(n, text.lend(x, orig, add, l) - s0));
+    }
+    I64 bytes = 0;
+    if (cmd == '>') { bytes = n * lines; }
+    if (!edit.reserve(r, x, add, sp, u, bytes, spans, lines * (1 + edit.blank_ops(n)),
+                      lines * (2 + edit.blank_cost(x, n)))) { return false; }
+    for l in l0..l1 + 1 {
+        if (width(x, orig, add, l) < c0) { continue; }
+        I64 s0 = pos_at(x, orig, add, l, c0);
+        I64 e = text.lend(x, orig, add, l);
+        I64 q = s0;
+        while (q < e && text.white(text.ch(x, orig, add, q))) { q += 1; }
+        if (cmd == '>') {
+            if (q == e) { continue; }
+            if (!edit.blanks(r, x, orig, add, u, q, n)) { return false; }
+        } else {
+            I64 k = min(q - s0, n);
+            if (k > 0) { if (!edit.del(r, x, orig, add, sp, u, s0, k)) { return false; } }
+        }
+    }
+    r[state.R_CUR] = text.normal_pos(x, orig, add, pos_at(x, orig, add, l0, c0));
+    r[state.R_WANT] = -1;
+    return true;
+}
+
+// Room for a block's yank and delete together, before either changes anything.
+export Bool room(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, in I64[_] sp, in I64[_] u,
+                 I64 l0, I64 l1, I64 c0, I64 c1) {
+    I64 spans = l1 - l0;
+    for l in l0..l1 + 1 {
+        I64 s0 = pos_at(x, orig, add, l, c0);
+        spans += 2 * edit.span_cost(x, s0, seg_end(x, orig, add, l, c1) - s0) + 1;
+    }
+    I64 pad = 0;
+    if (c1 < END) { pad = c1 - c0 + 1; }
+    return edit.reserve(r, x, add, sp, u, 1 + pad, spans, l1 - l0 + 1, 2 * (l1 - l0 + 1));
+}
+
+// After the first line's Insert session of I, A or c: the text it typed put on the other lines (Vim's block_insert),
+// in the same undo step.
+export void finish(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                   inout I64[_] u) {
+    I64 cmd = r[state.R_BI_CMD];
+    r[state.R_BI_CMD] = 0;
+    I64 l0 = r[state.R_BI_L0];
+    I64 l1 = r[state.R_BI_L1];
+    I64 vc = r[state.R_BI_VCOL];
+    I64 pos = r[state.R_BI_POS];
+    if (l0 >= text.nlines(x) || l1 >= text.nlines(x)) { return; }
+    I64 n = text.lend(x, orig, add, l0) - text.lstart(x, orig, add, l0) - r[state.R_BI_LEN];
+    Bool one_line = text.lineof(x, orig, add, r[state.R_CUR]) == l0 && pos >= text.lstart(x, orig, add, l0)
+        && pos + n <= text.lend(x, orig, add, l0);
+    if (n > 0 && one_line) {
+        I64 spans = edit.span_cost(x, pos, n);
+        I64 most = 0;
+        if (cmd == 'A') { most = vc; }
+        I64 lines = l1 - l0;
+        if (!edit.reserve(r, x, add, sp, u, most * lines, spans, lines * (2 + edit.blank_ops(most)),
+                          lines * (2 + buf.chunks(x, n) + edit.blank_cost(x, most)) + spans)) { return; }
+        I64 from = r[state.R_SPTOP];
+        I64 to = buf.spans(x, pos, n, sp, from);
+        if (to < 0) { r[state.R_FULL] = 1; r[state.R_BELL] = 1; return; }
+        r[state.R_SPTOP] = to;
+        if (r[state.R_U_AT] > 0) { r[state.R_U_OPEN] = 1; }
+        I64 keep = r[state.R_CUR];
+        for l in l0 + 1..l1 + 1 {
+            I64 w = width(x, orig, add, l);
+            I64 p = 0;
+            if (cmd == '$') { p = text.lend(x, orig, add, l); }
+            else if (cmd == 'A') {
+                if (w < vc) { if (!edit.blanks(r, x, orig, add, u, text.lend(x, orig, add, l), vc - w)) { break; } }
+                p = pos_at(x, orig, add, l, vc);
+            } else {
+                if (w < vc) { continue; }
+                p = pos_at(x, orig, add, l, vc);
+            }
+            if (!edit.put(r, x, orig, add, sp, u, p, from, to)) { break; }
+        }
+        r[state.R_U_OPEN] = 0;
+        r[state.R_CUR] = keep;
+    }
+    if (cmd != 'c') {
+        r[state.R_CUR] = text.normal_pos(x, orig, add, pos_at(x, orig, add, l0, r[state.R_BI_END]));
+    }
+    r[state.R_WANT] = -1;
+}
+// SPDX-License-Identifier: Apache-2.0

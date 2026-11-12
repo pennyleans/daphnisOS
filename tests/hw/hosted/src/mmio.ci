@@ -1,0 +1,403 @@
+// tests/hw/hosted/src/mmio.ci: src/mmio.ci's rows for the hosted I219-V tests (tests/hw/i219_test.ci), over a model
+// of the MSI board's I219-V. The model is written from Linux v6.12's e1000e and the probe record
+// (docs/hw/i219-v-probe-2026-11-11.md), never from src/e1000.ci, and it counts what a test asks about:
+//   - any BAR 0 access in the 20 ms after a write of CTRL.RST (ich8lan.c:4830: a flush there hangs the hardware);
+//   - a PHY access over MDIC without EXTCNF_CTRL.SWFLAG held, or at the wrong PHY address for its page (phy.c:3022);
+//   - a write to a multicast word past the PCH's 32, or to a receive address past RAR0;
+//   - whether ULP_CONFIG1's eight ULP bits (0x1D74) were cleared and then committed by a write with START.
+// After CTRL.RST the NVM's autoload takes 60 ms here, longer than all the fixed waits after a reset (20, 10 and 10 ms), and
+// RAR0 reads as no address until it is done: only a wait on STATUS.LAN_INIT_DONE sees the MAC address.
+// The PHY answers MDIC only when it is out of ULP and the MAC's CTRL_EXT.FORCE_SMBUS matches its own SMBus mode.
+// LANPHYPC toggled power-cycles it: out of ULP, and in SMBus mode exactly when ULP_CONFIG1.RESET_TO_SMBUS is set
+// (that is the bit's name; it is also how Linux's two comments on the toggle, ich8lan.c:1378 and :410, agree).
+// The MAC address in the model is a locally administered one, 02:00:5e:10:00:01, never the board's.
+
+import src.pit;
+
+const U64 BAR = 0xF7100000;
+const U64 NVM_RAL = 0x105E0002;        // 02:00:5e:10
+const U64 NVM_RAH = 0x0100;            // :00:01
+
+// registers kept as written, the rest
+U64[128] g_off;
+U64[128] g_val;
+I64 g_n = 0;
+
+U64 ctrl = 0;
+U64 ctrl_ext = 0;
+U64 extcnf = 0;
+U64 fwsm = 0;
+U64 h2me = 0;
+U64 tdlen0 = 0;
+U64 ral0 = 0;
+U64 rah0 = 0;
+U64 mdic_v = 0;
+I64 mdic_done_at = 0;
+Bool status_init = false;              // STATUS.LAN_INIT_DONE as a write left it
+I64 init_at = -1;                      // when the NVM autoload after a reset reports done
+Bool phyra = false;
+Bool cable = true;
+I64 slu_at = -1;
+I64 rst_at = -1000000;
+Bool lpc_low = false;                  // CTRL.LANPHYPC_OVERRIDE set with LANPHYPC_VALUE clear
+I64 lpcd_at = -1;
+Bool swflag_deny = false;
+Bool me = false;                       // ME firmware valid
+I64 ulp_done_at = -1;
+
+// the PHY
+Bool phy_ulp = false;
+Bool phy_smbus = false;
+Bool phy_dead = false;
+U64 page = 0;
+U64 cv_smb = 0;
+U64 hv_pm = 0;
+U64 ulp_cfg1 = 0;
+U64 port_gen = 0x10;
+
+// what a test asks about
+I64 quiet_touches = 0;
+I64 unlocked = 0;
+I64 wrong_addr = 0;
+I64 outside = 0;
+I64 resets = 0;
+Bool ulp_cleared = false;
+Bool ulp_committed = false;
+
+export void model(Bool ulp, Bool mac_forced, Bool phy_in_smbus, U64 cfg1) {
+    pit.reset_clock(true);
+    g_n = 0;
+    ctrl = 0x00180240;                 // the probe's values (the record's table)
+    ctrl_ext = 0x815A1827;
+    if (!mac_forced) {
+        ctrl_ext = ctrl_ext & (0xFFFFFFFF ^ 0x800);
+    }
+    extcnf = 0x00300089;
+    fwsm = 0x60000040;
+    h2me = 0;
+    tdlen0 = 0;
+    ral0 = NVM_RAL;
+    rah0 = NVM_RAH | 0x80000000;
+    mdic_v = 0x14302180;
+    mdic_done_at = 0;
+    status_init = true;
+    init_at = -1;
+    phyra = true;
+    cable = true;
+    slu_at = -1;
+    rst_at = -1000000;
+    lpc_low = false;
+    lpcd_at = -1;
+    swflag_deny = false;
+    me = false;
+    ulp_done_at = -1;
+    phy_ulp = ulp;
+    phy_smbus = phy_in_smbus;
+    phy_dead = false;
+    page = 0;
+    cv_smb = 0;
+    if (phy_in_smbus) {
+        cv_smb = 1;
+    }
+    hv_pm = 0;
+    ulp_cfg1 = cfg1;
+    port_gen = 0x10;
+    quiet_touches = 0;
+    unlocked = 0;
+    wrong_addr = 0;
+    outside = 0;
+    resets = 0;
+    ulp_cleared = false;
+    ulp_committed = false;
+}
+
+export void no_cable() { cable = false; }
+export void dead_phy() { phy_dead = true; }
+export void set_tdlen0(U64 v) { tdlen0 = v; }
+export void with_me() {
+    me = true;
+    fwsm = fwsm | 0x8000 | 0x400;      // FW_VALID, ULP_CFG_DONE
+}
+
+export I64 quiet_touches_count() { return quiet_touches; }
+export I64 unlocked_count() { return unlocked; }
+export I64 wrong_addr_count() { return wrong_addr; }
+export I64 outside_count() { return outside; }
+export I64 resets_count() { return resets; }
+export Bool ulp_disarmed() { return ulp_committed && (ulp_cfg1 & 0x1D74) == 0; }
+export Bool mac_smbus() { return (ctrl_ext & 0x800) != 0; }
+export Bool phy_smbus_now() { return phy_smbus; }
+export Bool enforce_left() { return (h2me & 0x1000) != 0; }
+export U64 rar0_high() { return rah0; }
+
+I64 now() { return pit.now_us(); }
+
+void touch() {
+    pit.advance(1);
+    if (now() - rst_at < 20000) {
+        quiet_touches += 1;
+    }
+}
+
+U64 kept(U64 off) {
+    for k in 0..g_n {
+        if (g_off[k] == off) {
+            return g_val[k];
+        }
+    }
+    return 0;
+}
+
+void keep(U64 off, U64 v) {
+    for k in 0..g_n {
+        if (g_off[k] == off) {
+            g_val[k] = v;
+            return;
+        }
+    }
+    if (g_n < 128) {
+        g_off[g_n] = off;
+        g_val[g_n] = v;
+        g_n += 1;
+    }
+}
+
+// LANPHYPC power cycle: out of ULP; SMBus mode exactly when RESET_TO_SMBUS (0x100) is set; LPCD after 10 ms.
+void power_cycle() {
+    phy_ulp = false;
+    phy_smbus = (ulp_cfg1 & 0x100) != 0;
+    cv_smb = 0;
+    if (phy_smbus) {
+        cv_smb = 1;
+    }
+    page = 0;
+    lpcd_at = now() + 10000;
+}
+
+void phy_reset_done() {
+    page = 0;
+    port_gen = 0x10;                   // the host wake-up bit comes back with a PHY reset
+}
+
+// One MDIC transaction, judged at the write; it is ready 20 us later.
+void mdic_write(U64 v) {
+    U64 data = v & 0xFFFF;
+    U64 reg_n = (v >> 16) & 0x1F;
+    U64 addr = (v >> 21) & 0x1F;
+    Bool rd = (v & 0x08000000) != 0;
+    Bool ok = true;
+    if ((extcnf & 0x20) == 0) {
+        unlocked += 1;
+    }
+    if (phy_dead || phy_ulp || ((ctrl_ext & 0x800) != 0) != phy_smbus) {
+        ok = false;
+    }
+    U64 got = 0;
+    if (ok && reg_n == 31) {
+        if (addr != 1 || rd) {
+            wrong_addr += 1;
+            ok = false;
+        } else {
+            page = data >> 5;
+        }
+    } else if (ok) {
+        U64 pg = 0;
+        if (reg_n > 15) {
+            pg = page;
+        }
+        U64 want = 2;
+        if (pg >= 768) {
+            want = 1;
+        }
+        if (addr != want) {
+            wrong_addr += 1;
+            ok = false;
+        } else if (pg == 0 && reg_n == 2) {
+            got = 0x0154;
+        } else if (pg == 0 && reg_n == 3) {
+            got = 0x03A2;
+        } else if (pg == 0 && reg_n <= 15) {
+            got = 0x1140;
+        } else if (pg == 769 && reg_n == 23) {
+            if (!rd) {
+                cv_smb = data;
+                if ((data & 1) == 0) {
+                    phy_smbus = false;
+                }
+            }
+            got = cv_smb;
+        } else if (pg == 769 && reg_n == 17) {
+            if (!rd) {
+                port_gen = data;
+            }
+            got = port_gen;
+        } else if (pg == 770 && reg_n == 17) {
+            if (!rd) {
+                hv_pm = data;
+            }
+            got = hv_pm;
+        } else if (pg == 779 && reg_n == 16) {
+            if (!rd) {
+                if ((data & 1) == 0) {
+                    ulp_cleared = (data & 0x1D74) == 0;
+                } else if (ulp_cleared && (data & 0x1D74) == 0) {
+                    ulp_committed = true;
+                }
+                ulp_cfg1 = data & 0xFFFE;
+            }
+            got = ulp_cfg1;
+        } else {
+            ok = false;
+        }
+    }
+    mdic_done_at = now() + 20;
+    mdic_v = (reg_n << 16) | (addr << 21) | got | 0x10000000;
+    if (!ok) {
+        mdic_v = mdic_v | 0x40000000;
+    }
+}
+
+// The NVM's autoload, when its time has come: LAN_INIT_DONE, and RAR0 loaded.
+void settle() {
+    if (init_at >= 0 && now() >= init_at) {
+        status_init = true;
+        init_at = -1;
+        ral0 = NVM_RAL;
+        rah0 = NVM_RAH | 0x80000000;
+    }
+}
+
+U64 status() {
+    U64 s = 0x40080080;
+    if (status_init) {
+        s = s | 0x200;
+    }
+    if (phyra) {
+        s = s | 0x400;
+    }
+    if ((ctrl & 0x4) != 0) {
+        s = s & (0xFFFFFFFF ^ 0x80000);        // GIO_MASTER_ENABLE goes once CTRL.GIO_MASTER_DISABLE is set
+    }
+    if (cable && slu_at >= 0 && now() - slu_at >= 2000000) {
+        s = s | 0x2;
+    }
+    return s;
+}
+
+export I64 mmio_map(U64 base, U64 nbytes) {
+    if (base == BAR) {
+        return 0;
+    }
+    return -1;
+}
+
+export U32 mmio_in32(U64 addr) {
+    touch();
+    settle();
+    U64 off = addr - BAR;
+    U64 v = 0;
+    if (off == 0x0000) {
+        v = ctrl;
+    } else if (off == 0x0008) {
+        v = status();
+    } else if (off == 0x0018) {
+        v = ctrl_ext & (0xFFFFFFFF ^ 0x4);
+        if (lpcd_at >= 0 && now() >= lpcd_at) {
+            v = v | 0x4;
+        }
+    } else if (off == 0x0020) {
+        v = mdic_v;
+        if (now() < mdic_done_at) {
+            v = v & (0xFFFFFFFF ^ 0x50000000);
+        }
+    } else if (off == 0x00C0) {
+        v = 0;
+    } else if (off == 0x0F00) {
+        v = extcnf;
+    } else if (off == 0x3808) {
+        v = tdlen0;
+    } else if (off == 0x5400) {
+        v = ral0;
+    } else if (off == 0x5404) {
+        v = rah0;
+    } else if (off == 0x5B50) {
+        v = h2me;
+    } else if (off == 0x5B54) {
+        if (ulp_done_at >= 0 && now() >= ulp_done_at) {
+            fwsm = fwsm & (0xFFFFFFFF ^ 0x400);
+        }
+        v = fwsm;
+    } else {
+        v = kept(off);
+    }
+    return (v & 0xFFFFFFFF) as U32;
+}
+
+export void mmio_out32(U64 addr, U32 val) {
+    touch();
+    U64 off = addr - BAR;
+    U64 v = val as U64;
+    if (off == 0x0000) {
+        if ((v & 0x04000000) != 0) {           // CTRL.RST: the MAC, and the PHY with PHY_RST; SWFLAG cleared
+            resets += 1;
+            rst_at = now();
+            ctrl = 0x00180200;
+            extcnf = extcnf & (0xFFFFFFFF ^ 0x20);
+            status_init = false;
+            init_at = now() + 60000;
+            ral0 = 0xFFFFFFFF;
+            rah0 = 0xFFFF;
+            if ((v & 0x80000000) != 0) {
+                phyra = true;
+                phy_reset_done();
+            }
+            return;
+        }
+        if ((v & 0x10000) != 0 && (v & 0x20000) == 0) {
+            lpc_low = true;
+        } else if ((v & 0x10000) == 0 && lpc_low) {
+            lpc_low = false;
+            power_cycle();
+        }
+        if ((ctrl & 0x80000000) != 0 && (v & 0x80000000) == 0) {
+            phyra = true;
+            phy_reset_done();
+        }
+        if ((v & 0x40) != 0 && (ctrl & 0x40) == 0) {
+            slu_at = now();
+        }
+        ctrl = v;
+    } else if (off == 0x0008) {
+        status_init = (v & 0x200) != 0;
+        phyra = (v & 0x400) != 0;
+    } else if (off == 0x0018) {
+        ctrl_ext = v;
+    } else if (off == 0x0020) {
+        mdic_write(v);
+    } else if (off == 0x0F00) {
+        if ((v & 0x20) != 0 && swflag_deny) {
+            v = v & (0xFFFFFFFF ^ 0x20);
+        }
+        extcnf = v;
+    } else if (off == 0x3808) {
+        tdlen0 = v;
+    } else if (off == 0x5400) {
+        ral0 = v;
+    } else if (off == 0x5404) {
+        rah0 = v;
+    } else if (off == 0x5B50) {
+        if (me && (v & 0x1000) != 0 && (h2me & 0x1000) == 0) {
+            ulp_done_at = now() + 30000;
+        }
+        h2me = v;
+    } else {
+        if (off >= 0x5280 && off < 0x5400) {
+            outside += 1;                      // a multicast word past the PCH's 32
+        }
+        if (off >= 0x5408 && off < 0x5480) {
+            outside += 1;                      // a receive address past RAR0
+        }
+        keep(off, v);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

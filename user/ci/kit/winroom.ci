@@ -1,0 +1,55 @@
+// user/ci/kit/winroom.ci: the windows the person has, and the bar message when the desk has no room for another
+// terminal (DN-6 frame 9, DN-28), counted in those windows (RG-1, PR 479). A terminal takes a place in the desk's
+// table (hdesk.ci WINDOWS) and one of the kernel's ptys (src/pty.ci PTYS, 8). An app in its own window takes a pty
+// and two places: its host's (lx_host, a terminal never shown) and its window's. The room runs out at a different
+// count for each mix, so the message names the windows the person has, the most that mix allows: the login Console
+// and 7 apps in their own windows fill both, `No free window. 8 of 8 are open.` Raising the limit is the kernel's
+// (more ptys) with a larger table, after 0.1.0.
+
+const I64 NONE = 0;                    // hdesk.ci's free place
+
+// Whether a place of the desk's table is a window the person has: any but a free one and a host (hdesk.ci listed).
+export Bool has(I64 kind, Bool host) { return kind != NONE && !host; }
+
+// The windows the person has in the first n places.
+export I64 seen(in I64[_] kind, in Bool[_] host, I64 n) {
+    I64 c = 0;
+    for i in 0..n {
+        if (has(kind[i], host[i])) { c = c + 1; }
+    }
+    return c;
+}
+
+I64 put(inout U8[_] t, I64 at, in U8[_] w) {
+    for k in 0..len(w) { t[at + k] = w[k]; }
+    return at + len(w);
+}
+
+I64 num(inout U8[_] t, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 q = v;
+    if (q <= 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { t[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// The message into t (40 bytes or more), its length: `No free window. ` when no place is free (place_full), else
+// `No free Console. ` (no pty is), then `N of N are open.` for the n windows the person has.
+export I64 full(Bool place_full, I64 n, inout U8[_] t) {
+    I64 e = 0;
+    if (place_full) { e = put(t, 0, b"No free window. "); } else { e = put(t, 0, b"No free Console. "); }
+    e = num(t, e, n);
+    e = put(t, e, b" of ");
+    e = num(t, e, n);
+    return put(t, e, b" are open.");
+}
+// SPDX-License-Identifier: Apache-2.0

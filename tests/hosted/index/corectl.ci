@@ -1,0 +1,16 @@
+// tests/hosted/index/corectl.ci: user/ci/corectl.ci's words and the call that user/ci/kit/index.ci and
+// user/ci/core/path.ci make, over the memfs (a link is never made, so follow does not matter).
+import user.ci.memfs;
+
+export const I64 ST_DEV = 0;
+export const I64 ST_INO = 1;
+export const I64 ST_MODE = 2;
+export const I64 ST_SIZE = 7;
+export const I64 ST_MTIME = 12;
+export const I64 ST_WORDS = 16;
+export const I64 S_IFMT = 0xF000;
+export const I64 S_IFDIR = 0x4000;
+export const I64 S_IFREG = 0x8000;
+
+export I64 co_stat(in U8[_] path, I64 follow, inout I64[_] rec) { return memfs.stat(path, rec); }
+// SPDX-License-Identifier: Apache-2.0

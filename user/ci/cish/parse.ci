@@ -1,0 +1,647 @@
+// user/ci/cish/parse.ci: the tokens of lex into one tree of nodes, linked by index in fixed pools (docs/specs/
+// 2026-11-06-cish-shell.md sections 4 and 6). The grammar (POSIX XCU 2.10, the subset of section 6):
+//   complete  := list (NL | END)
+//   list      := and_or ((';' | '&') and_or)* [';' | '&']
+//   clist     := NL* and_or ((';' | '&' | NL+) and_or)* [';' | '&' | NL+]   up to a terminator
+//   and_or    := pipeline (('&&' | '||') NL* pipeline)*
+//   pipeline  := ['!'] command ('|' NL* command)*
+//   command   := compound redirection* | NAME '(' ')' NL* compound redirection* | simple
+//   compound  := '{' clist '}' | '(' clist ')' | if | while | until | for | case
+//   if        := 'if' clist 'then' clist ('elif' clist 'then' clist)* ['else' clist] 'fi'
+//   while     := ('while' | 'until') clist 'do' clist 'done'
+//   for       := 'for' NAME NL* ['in' word* (';' | NL)] NL* 'do' clist 'done'   ('for NAME;' as without 'in')
+//   case      := 'case' word NL* 'in' NL* (['('] word ('|' word)* ')' [clist] [';;'] NL*)* 'esac'
+//   simple    := (assignment | redirection)* (word | redirection)*
+// The text and the tokens are lex's stacks; the nodes and items are this module's, from a base that keep()
+// raises when the complete command defined a function, so the function's tree outlives the command.
+import user.ci.cish.limits;
+import user.ci.cish.lex;
+
+export const I64 N_SIMPLE = 1;     // a: first item
+export const I64 N_PIPE = 2;       // a: first command (chained by next); b: 1 with '!'
+export const I64 N_AND = 3;        // a, b: the two sides
+export const I64 N_OR = 4;
+export const I64 N_LIST = 5;       // a: first and_or (chained by next, each with its '&' flag)
+export const I64 N_BRACE = 6;      // a: the list
+export const I64 N_SUBSHELL = 7;   // a: the list
+export const I64 N_IF = 8;         // a: condition; b: then; c: else (a list, an N_IF for elif, or -1)
+export const I64 N_WHILE = 9;      // a: condition; b: body; c: 1 for until
+export const I64 N_FOR = 10;       // tok: the name; a: first word item (-1 for none); b: body; c: 1 with 'in'
+export const I64 N_CASE = 11;      // tok: the word; a: first N_ITEM (chained by next)
+export const I64 N_ITEM = 12;      // a: first pattern item; b: body list or -1
+export const I64 N_FUNC = 13;      // tok: the name; a: the body command
+
+export const I64 I_WORD = 1;
+export const I64 I_ASSIGN = 2;
+export const I64 I_REDIR = 3;
+
+export const I64 P_OK = 0;
+export const I64 P_EMPTY = 1;   // a blank line or a comment
+export const I64 P_MORE = 2;    // the command goes on past the text
+export const I64 P_SYNTAX = 3;  // unexpected token `bad`
+export const I64 P_UNSUP = 4;   // token `bad` names syntax outside the subset
+export const I64 P_FULL = 5;    // past NODES
+
+I64[4096] nk;
+I64[4096] na;
+I64[4096] nb;
+I64[4096] nc;
+I64[4096] ntk;
+I64[4096] nred;
+I64[4096] nnext;
+Bool[4096] nbg;
+I64 nn = 0;
+I64[4096] ik;
+I64[4096] itok;
+I64[4096] iop;
+I64[4096] ifd;
+I64[4096] inext;
+I64 ni = 0;
+I64 nbase = 0;
+I64 ibase = 0;
+
+I64 p = 0;        // the token being read
+I64 status = 0;   // P_OK while parsing goes on
+I64 bad = 0;
+I64 top = -1;
+Bool defines = false;
+
+export I64 kind(I64 n) { return nk[n]; }
+export I64 left(I64 n) { return na[n]; }
+export I64 right(I64 n) { return nb[n]; }
+export I64 third(I64 n) { return nc[n]; }
+export I64 token(I64 n) { return ntk[n]; }
+export I64 redirs(I64 n) { return nred[n]; }
+export I64 next(I64 n) { return nnext[n]; }
+export Bool background(I64 n) { return nbg[n]; }
+export I64 item_kind(I64 i) { return ik[i]; }
+export I64 item_token(I64 i) { return itok[i]; }
+export I64 item_op(I64 i) { return iop[i]; }
+export I64 item_fd(I64 i) { return ifd[i]; }
+export I64 item_next(I64 i) { return inext[i]; }
+export I64 root() { return top; }
+export I64 bad_token() { return bad; }
+export I64 position() { return p; }
+export Bool defined_function() { return defines; }
+
+export void keep() {
+    nbase = nn;
+    ibase = ni;
+}
+
+// CS-4: the kept bases, so eval and `.` can parse after the command running and then drop their nodes again.
+export I64 node_base() { return nbase; }
+export I64 item_base() { return ibase; }
+export void set_base(I64 n, I64 i) {
+    nbase = n;
+    ibase = i;
+}
+
+I64 node(I64 k, I64 a, I64 b) {
+    if (nn == limits.NODES) {
+        fail(P_FULL, p);
+        return -1;
+    }
+    nk[nn] = k;
+    na[nn] = a;
+    nb[nn] = b;
+    nc[nn] = -1;
+    ntk[nn] = -1;
+    nred[nn] = -1;
+    nnext[nn] = -1;
+    nbg[nn] = false;
+    nn = nn + 1;
+    return nn - 1;
+}
+
+I64 item(I64 k, I64 t, I64 o, I64 d) {
+    if (ni == limits.NODES) {
+        fail(P_FULL, p);
+        return -1;
+    }
+    ik[ni] = k;
+    itok[ni] = t;
+    iop[ni] = o;
+    ifd[ni] = d;
+    inext[ni] = -1;
+    ni = ni + 1;
+    return ni - 1;
+}
+
+void fail(I64 s, I64 t) {
+    if (status == P_OK) {
+        status = s;
+        bad = t;
+    }
+}
+
+// A token that ends the text where more is needed asks for more; any other is a syntax error.
+void unexpected(I64 t) {
+    if (lex.kind(t) == lex.T_END) {
+        fail(P_MORE, t);
+    } else {
+        fail(P_SYNTAX, t);
+    }
+}
+
+Bool redir_op(I64 k) { return k >= lex.T_LESS && k <= lex.T_DLESSDASH; }
+
+Bool name_start(U8 c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+Bool name_char(U8 c) { return name_start(c) || (c >= '0' && c <= '9'); }
+
+// The word t is a name.
+Bool is_name(I64 t) {
+    if (lex.kind(t) != lex.T_WORD) { return false; }
+    I64 a = lex.start(t);
+    if (!name_start(lex.at(a))) { return false; }
+    for i in a + 1..lex.stop(t) {
+        if (!name_char(lex.at(i))) { return false; }
+    }
+    return true;
+}
+
+// The word t is an assignment: a name, then `=`.
+Bool assignment(I64 t) {
+    I64 a = lex.start(t);
+    I64 b = lex.stop(t);
+    if (!name_start(lex.at(a))) { return false; }
+    I64 i = a + 1;
+    while (i < b) {
+        U8 d = lex.at(i);
+        if (d == '=') { return true; }
+        if (!name_char(d)) { return false; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Constructs outside the subset: refused by name, never misread. CS-3 takes here-documents; `<<<` and arrays
+// (`name=(...)`) are refused.
+Bool unsupported(I64 t) {
+    return lex.is(t, b"[[") || lex.is(t, b"]]") || lex.is(t, b"function") || lex.is(t, b"select");
+}
+
+// A reserved word that ends a compound list where it stands at a command's start.
+Bool closer(I64 t) {
+    return lex.is(t, b"then") || lex.is(t, b"else") || lex.is(t, b"elif") || lex.is(t, b"fi") || lex.is(t, b"do")
+        || lex.is(t, b"done") || lex.is(t, b"esac") || lex.is_byte(t, 125);
+}
+
+Bool terminator(I64 t) {
+    I64 k = lex.kind(t);
+    return k == lex.T_RPAR || k == lex.T_DSEMI || k == lex.T_END || closer(t);
+}
+
+void skip_newlines() {
+    while (lex.kind(p) == lex.T_NL) { p = p + 1; }
+}
+
+// Takes reserved word s at p, or fails there.
+Bool expect(in U8[_] s) {
+    if (status != P_OK) { return false; }
+    if (lex.is(p, s)) {
+        p = p + 1;
+        return true;
+    }
+    unexpected(p);
+    return false;
+}
+
+// One redirection at p: its item, or -1.
+I64 redirection() {
+    I64 k = lex.kind(p);
+    if (lex.kind(p + 1) != lex.T_WORD) {
+        unexpected(p + 1);
+        return -1;
+    }
+    I64 it = item(I_REDIR, p + 1, k, lex.fd(p));
+    p = p + 2;
+    return it;
+}
+
+// Redirections after a compound command onto node n.
+void trailing_redirs(I64 n) {
+    I64 last = -1;
+    while (status == P_OK && redir_op(lex.kind(p))) {
+        I64 it = redirection();
+        if (it < 0) { return; }
+        if (last < 0) {
+            nred[n] = it;
+        } else {
+            inext[last] = it;
+        }
+        last = it;
+    }
+}
+
+I64 simple() {
+    I64 first = -1;
+    I64 last = -1;
+    Bool words = false;
+    Bool going = true;
+    while (going && status == P_OK) {
+        I64 k = lex.kind(p);
+        I64 it = -1;
+        if (k == lex.T_TLESS) {
+            fail(P_UNSUP, p);
+            return -1;
+        }
+        if (k == lex.T_WORD) {
+            if (!words && unsupported(p)) {
+                fail(P_UNSUP, p);
+                return -1;
+            }
+            if (!words && assignment(p) && lex.kind(p + 1) == lex.T_LPAR && lex.start(p + 1) == lex.stop(p)
+                    && lex.at(lex.stop(p) - 1) == '=') {
+                fail(P_UNSUP, p);   // an array: name=( ... )
+                return -1;
+            }
+            if (!words && assignment(p)) {
+                it = item(I_ASSIGN, p, 0, -1);
+            } else {
+                words = true;
+                it = item(I_WORD, p, 0, -1);
+            }
+            p = p + 1;
+        } else if (redir_op(k)) {
+            it = redirection();
+            if (it < 0) { return -1; }
+        } else {
+            going = false;
+        }
+        if (it >= 0) {
+            if (first < 0) {
+                first = it;
+            } else {
+                inext[last] = it;
+            }
+            last = it;
+        }
+    }
+    if (status != P_OK) { return -1; }
+    if (first < 0) {
+        unexpected(p);
+        return -1;
+    }
+    return node(N_SIMPLE, first, 0);
+}
+
+// A compound list up to a terminator: its N_LIST node, or -1 (an empty list is a syntax error).
+I64 clist() {
+    skip_newlines();
+    I64 first = -1;
+    I64 last = -1;
+    Bool going = true;
+    while (going && status == P_OK) {
+        if (terminator(p)) {
+            going = false;
+        } else {
+            I64 a = and_or();
+            if (a < 0) { return -1; }
+            if (first < 0) {
+                first = a;
+            } else {
+                nnext[last] = a;
+            }
+            last = a;
+            I64 k = lex.kind(p);
+            if (k == lex.T_SEMI || k == lex.T_AMP) {
+                nbg[a] = k == lex.T_AMP;
+                p = p + 1;
+                skip_newlines();
+            } else if (k == lex.T_NL) {
+                skip_newlines();
+            } else {
+                going = false;
+            }
+        }
+    }
+    if (status != P_OK) { return -1; }
+    if (first < 0) {
+        unexpected(p);
+        return -1;
+    }
+    return node(N_LIST, first, 0);
+}
+
+I64 if_() {
+    p = p + 1;
+    I64 c = clist();
+    if (!expect(b"then")) { return -1; }
+    I64 t = clist();
+    if (t < 0) { return -1; }
+    I64 n = node(N_IF, c, t);
+    if (n < 0) { return -1; }
+    if (lex.is(p, b"elif")) {
+        nc[n] = if_();   // the inner if takes the fi
+        if (nc[n] < 0) { return -1; }
+        return n;
+    }
+    if (lex.is(p, b"else")) {
+        p = p + 1;
+        nc[n] = clist();
+        if (nc[n] < 0) { return -1; }
+    }
+    if (!expect(b"fi")) { return -1; }
+    return n;
+}
+
+I64 do_group() {
+    if (!expect(b"do")) { return -1; }
+    I64 b = clist();
+    if (b < 0) { return -1; }
+    if (!expect(b"done")) { return -1; }
+    return b;
+}
+
+I64 while_(I64 until) {
+    p = p + 1;
+    I64 c = clist();
+    if (c < 0) { return -1; }
+    I64 b = do_group();
+    if (b < 0) { return -1; }
+    I64 n = node(N_WHILE, c, b);
+    if (n >= 0) { nc[n] = until; }
+    return n;
+}
+
+I64 for_() {
+    p = p + 1;
+    if (!is_name(p)) {
+        unexpected(p);
+        return -1;
+    }
+    I64 name = p;
+    p = p + 1;
+    I64 first = -1;
+    I64 has_in = 0;
+    if (lex.kind(p) == lex.T_SEMI) {
+        p = p + 1;
+    } else {
+        skip_newlines();
+        if (lex.is(p, b"in")) {
+            has_in = 1;
+            p = p + 1;
+            I64 last = -1;
+            while (lex.kind(p) == lex.T_WORD) {
+                I64 it = item(I_WORD, p, 0, -1);
+                if (it < 0) { return -1; }
+                if (first < 0) {
+                    first = it;
+                } else {
+                    inext[last] = it;
+                }
+                last = it;
+                p = p + 1;
+            }
+            if (lex.kind(p) != lex.T_SEMI && lex.kind(p) != lex.T_NL) {
+                unexpected(p);
+                return -1;
+            }
+            p = p + 1;
+        }
+    }
+    skip_newlines();
+    I64 b = do_group();
+    if (b < 0) { return -1; }
+    I64 n = node(N_FOR, first, b);
+    if (n >= 0) {
+        ntk[n] = name;
+        nc[n] = has_in;
+    }
+    return n;
+}
+
+I64 case_() {
+    p = p + 1;
+    if (lex.kind(p) != lex.T_WORD) {
+        unexpected(p);
+        return -1;
+    }
+    I64 word = p;
+    p = p + 1;
+    skip_newlines();
+    if (!expect(b"in")) { return -1; }
+    skip_newlines();
+    I64 first = -1;
+    I64 last = -1;
+    while (status == P_OK && !lex.is(p, b"esac")) {
+        if (lex.kind(p) == lex.T_LPAR) { p = p + 1; }
+        I64 pf = -1;
+        I64 pl = -1;
+        Bool going = true;
+        while (going) {
+            if (lex.kind(p) != lex.T_WORD) {
+                unexpected(p);
+                return -1;
+            }
+            I64 it = item(I_WORD, p, 0, -1);
+            if (it < 0) { return -1; }
+            if (pf < 0) {
+                pf = it;
+            } else {
+                inext[pl] = it;
+            }
+            pl = it;
+            p = p + 1;
+            if (lex.kind(p) == lex.T_PIPE) {
+                p = p + 1;
+            } else {
+                going = false;
+            }
+        }
+        if (lex.kind(p) != lex.T_RPAR) {
+            unexpected(p);
+            return -1;
+        }
+        p = p + 1;
+        skip_newlines();
+        I64 body = -1;
+        if (lex.kind(p) != lex.T_DSEMI && !lex.is(p, b"esac")) {
+            body = clist();
+            if (body < 0) { return -1; }
+        }
+        I64 ci = node(N_ITEM, pf, body);
+        if (ci < 0) { return -1; }
+        if (first < 0) {
+            first = ci;
+        } else {
+            nnext[last] = ci;
+        }
+        last = ci;
+        if (lex.kind(p) == lex.T_DSEMI) {
+            p = p + 1;
+            skip_newlines();
+        } else if (!lex.is(p, b"esac")) {
+            unexpected(p);
+            return -1;
+        }
+    }
+    if (!expect(b"esac")) { return -1; }
+    I64 n = node(N_CASE, first, 0);
+    if (n >= 0) { ntk[n] = word; }
+    return n;
+}
+
+Bool starts_compound(I64 t) {
+    return lex.kind(t) == lex.T_LPAR || lex.is_byte(t, 123) || lex.is(t, b"if") || lex.is(t, b"while")
+        || lex.is(t, b"until") || lex.is(t, b"for") || lex.is(t, b"case");
+}
+
+// A compound command at p (its first token says which): its node with its redirections, or -1.
+I64 compound() {
+    I64 n = -1;
+    if (lex.kind(p) == lex.T_LPAR) {
+        p = p + 1;
+        I64 l = clist();
+        if (l < 0) { return -1; }
+        if (lex.kind(p) != lex.T_RPAR) {
+            unexpected(p);
+            return -1;
+        }
+        p = p + 1;
+        n = node(N_SUBSHELL, l, 0);
+    } else if (lex.is_byte(p, 123)) {
+        p = p + 1;
+        I64 l = clist();
+        if (l < 0) { return -1; }
+        if (!lex.is_byte(p, 125)) {
+            unexpected(p);
+            return -1;
+        }
+        p = p + 1;
+        n = node(N_BRACE, l, 0);
+    } else if (lex.is(p, b"if")) {
+        n = if_();
+    } else if (lex.is(p, b"while")) {
+        n = while_(0);
+    } else if (lex.is(p, b"until")) {
+        n = while_(1);
+    } else if (lex.is(p, b"for")) {
+        n = for_();
+    } else {
+        n = case_();
+    }
+    if (n < 0 || status != P_OK) { return -1; }
+    trailing_redirs(n);
+    if (status != P_OK) { return -1; }
+    return n;
+}
+
+I64 command() {
+    if (starts_compound(p)) { return compound(); }
+    if (closer(p)) {
+        fail(P_SYNTAX, p);
+        return -1;
+    }
+    if (is_name(p) && lex.kind(p + 1) == lex.T_LPAR) {
+        if (lex.kind(p + 2) != lex.T_RPAR) {
+            unexpected(p + 2);
+            return -1;
+        }
+        I64 name = p;
+        p = p + 3;
+        skip_newlines();
+        if (!starts_compound(p)) {
+            unexpected(p);
+            return -1;
+        }
+        I64 body = compound();
+        if (body < 0) { return -1; }
+        I64 n = node(N_FUNC, body, 0);
+        if (n >= 0) {
+            ntk[n] = name;
+            defines = true;
+        }
+        return n;
+    }
+    return simple();
+}
+
+I64 pipeline() {
+    Bool bang = false;
+    if (lex.is(p, b"!")) {
+        bang = true;
+        p = p + 1;
+    }
+    I64 first = command();
+    if (first < 0) { return -1; }
+    I64 last = first;
+    while (lex.kind(p) == lex.T_PIPE) {
+        p = p + 1;
+        skip_newlines();
+        I64 c = command();
+        if (c < 0) { return -1; }
+        nnext[last] = c;
+        last = c;
+    }
+    I64 b = 0;
+    if (bang) { b = 1; }
+    return node(N_PIPE, first, b);
+}
+
+I64 and_or() {
+    I64 l = pipeline();
+    if (l < 0) { return -1; }
+    while (lex.kind(p) == lex.T_AND || lex.kind(p) == lex.T_OR) {
+        I64 k = N_AND;
+        if (lex.kind(p) == lex.T_OR) { k = N_OR; }
+        p = p + 1;
+        skip_newlines();
+        I64 r = pipeline();
+        if (r < 0) { return -1; }
+        l = node(k, l, r);
+        if (l < 0) { return -1; }
+    }
+    return l;
+}
+
+// One complete command from token `from`: P_OK with root() and position() after its newline, or another status.
+// The nodes start again from the kept base.
+export I64 parse(I64 from) {
+    nn = nbase;
+    ni = ibase;
+    p = from;
+    status = P_OK;
+    bad = 0;
+    top = -1;
+    defines = false;
+    if (lex.kind(p) == lex.T_NL) {
+        p = p + 1;
+        return P_EMPTY;
+    }
+    if (lex.kind(p) == lex.T_END) { return P_EMPTY; }
+    I64 first = -1;
+    I64 last = -1;
+    Bool going = true;
+    while (going && status == P_OK) {
+        I64 a = and_or();
+        if (a < 0) { return status; }
+        if (first < 0) {
+            first = a;
+        } else {
+            nnext[last] = a;
+        }
+        last = a;
+        I64 k = lex.kind(p);
+        if (k == lex.T_SEMI || k == lex.T_AMP) {
+            nbg[a] = k == lex.T_AMP;
+            p = p + 1;
+            k = lex.kind(p);
+            if (k == lex.T_NL || k == lex.T_END) { going = false; }
+        } else {
+            going = false;
+        }
+    }
+    I64 e = lex.kind(p);
+    if (e == lex.T_NL) {
+        p = p + 1;
+    } else if (e != lex.T_END) {
+        fail(P_SYNTAX, p);
+        return status;
+    }
+    top = node(N_LIST, first, 0);
+    return status;
+}
+// SPDX-License-Identifier: Apache-2.0

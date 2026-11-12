@@ -1,0 +1,38 @@
+{
+  "id": "find-seed-enter-wraps",
+  "rules": [
+    "FIND-2"
+  ],
+  "text": "abc abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "6263",
+    "0d",
+    "06",
+    "0d",
+    "0d"
+  ],
+  "expect": {
+    "text": "abc abc",
+    "sel": [
+      1,
+      3
+    ],
+    "screen": [
+      "abc abc",
+      "",
+      "",
+      "",
+      " x  wrapped                         1:4",
+      "find: bc"
+    ]
+  }
+}

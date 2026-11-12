@@ -1,0 +1,253 @@
+// user/ci/core/run.ci: a core tool's environment and the programs it runs (CT-4: env, xargs, find -exec;
+// docs/specs/2026-11-06-c-core.md sections 4 and 5). The environment is a block of NUL-ended NAME=VALUE strings,
+// loaded from the start environment and changed as musl's putenv changes it: a NAME already held keeps its place.
+// A program is found as musl's execvp finds it: a name holding a slash is a path; any other is tried in each
+// directory of the block's PATH (unset: /usr/local/bin:/bin:/usr/bin), an empty directory meaning the working
+// directory, past ENOENT, ENOTDIR and EACCES; EACCES stands if no directory held it.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.runctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+
+const I64 ENV_BYTES = 65536;
+const I64 ENV_MAX = 1024;
+const I64 ENOENT = 2;
+const I64 ENOTDIR = 20;
+const I64 EACCES = 13;
+const I64 ENAMETOOLONG = 36;
+
+U8[65536] env;
+I64 envn = 0;      // the bytes the block holds
+I64 envc = 0;      // its strings
+U8[65536] spare;   // the block as env_set builds it again
+U8[4096] cand;     // a directory of PATH joined with the name
+
+// The start environment, in its order; past ENV_BYTES or ENV_MAX, `TOOL: limit: ENV_MAX`.
+export void env_load() {
+    envn = 0;
+    envc = 0;
+    I64 i = 0;
+    Bool going = true;
+    while (going) {
+        if (envn >= ENV_BYTES - 1) { msg.limit(b"ENV_MAX"); }
+        I64 k = shctl.sh_environ(i, env[envn..ENV_BYTES - 1]);
+        if (k == 0 - ENOENT) {
+            going = false;
+        } else if (k < 0) {
+            msg.limit(b"ENV_MAX");
+        } else {
+            env[envn + k] = 0;
+            envn = envn + k + 1;
+            envc = envc + 1;
+            if (envc > ENV_MAX) { msg.limit(b"ENV_MAX"); }
+            i = i + 1;
+        }
+    }
+}
+
+export void env_clear() {
+    envn = 0;
+    envc = 0;
+}
+
+// The length of NAME in s (the bytes before its first '='), or len(s) when it holds none.
+I64 name_len(in U8[_] s) {
+    for i in 0..len(s) {
+        if (s[i] == '=') { return i; }
+    }
+    return len(s);
+}
+
+// True when the block's string at [a, e) has the NAME s[0..k] followed by '='.
+Bool same_name(I64 a, I64 e, in U8[_] s, I64 k) {
+    if (e - a <= k || env[a + k] != '=') { return false; }
+    for i in 0..k {
+        if (env[a + i] != s[i]) { return false; }
+    }
+    return true;
+}
+
+// Sets s, NAME=VALUE with NAME not empty, as putenv: in the place of the string with that NAME, else at the end.
+export void env_set(in U8[_] s) {
+    I64 k = name_len(s);
+    I64 m = 0;
+    I64 c = 0;
+    Bool placed = false;
+    I64 a = 0;
+    while (a < envn) {
+        I64 e = a;
+        while (env[e] != 0) { e = e + 1; }
+        Bool mine = !placed && same_name(a, e, s, k);
+        I64 w = e - a;
+        if (mine) { w = len(s); }
+        if (m + w + 1 > ENV_BYTES) { msg.limit(b"ENV_MAX"); }
+        if (mine) {
+            for i in 0..w { spare[m + i] = s[i]; }
+            placed = true;
+        } else {
+            for i in 0..w { spare[m + i] = env[a + i]; }
+        }
+        spare[m + w] = 0;
+        m = m + w + 1;
+        c = c + 1;
+        a = e + 1;
+    }
+    if (!placed) {
+        if (m + len(s) + 1 > ENV_BYTES || c + 1 > ENV_MAX) { msg.limit(b"ENV_MAX"); }
+        for i in 0..len(s) { spare[m + i] = s[i]; }
+        spare[m + len(s)] = 0;
+        m = m + len(s) + 1;
+        c = c + 1;
+    }
+    for i in 0..m { env[i] = spare[i]; }
+    envn = m;
+    envc = c;
+}
+
+// Writes each string of the block and then end (env: '\n').
+export void env_print(U8 end) {
+    I64 a = 0;
+    while (a < envn) {
+        I64 e = a;
+        while (env[e] != 0) { e = e + 1; }
+        put.bytes(env[a..e]);
+        put.byte(end);
+        a = e + 1;
+    }
+}
+
+// The start and end in the block of PATH's value, as (start << 32) | end; -1 when PATH is unset.
+I64 path_span() {
+    I64 a = 0;
+    while (a < envn) {
+        I64 e = a;
+        while (env[e] != 0) { e = e + 1; }
+        if (same_name(a, e, b"PATH", 4)) { return ((a + 5) << 32) | e; }
+        a = e + 1;
+    }
+    return -1;
+}
+
+U8[4096] pathv;    // PATH's value, or the default
+I64 pn = 0;
+
+void path_fill(in U8[_] d) {
+    for i in 0..len(d) { pathv[i] = d[i]; }
+    pn = len(d);
+}
+
+void path_load() {
+    I64 span = path_span();
+    if (span < 0) {
+        path_fill(b"/usr/local/bin:/bin:/usr/bin");
+        return;
+    }
+    I64 a = span >> 32;
+    I64 e = span & 0xFFFFFFFF;
+    if (e - a > 4095) { e = a + 4095; }   // musl reads at most PATH_MAX - 1 bytes of it
+    for i in a..e { pathv[i - a] = env[i]; }
+    pn = e - a;
+}
+
+// Runs argv (NUL-ended strings, the first the program) with the block as its environment. Returns only on a
+// failure: its errno.
+export I64 exec(in U8[_] argv) {
+    I64 k = 0;
+    Bool slash = false;
+    while (argv[k] != 0) {
+        if (argv[k] == '/') { slash = true; }
+        k = k + 1;
+    }
+    if (k == 0) { return ENOENT; }
+    if (slash) { return 0 - runctl.co_exec(argv[0..k], argv, env[0..envn]); }
+    if (k > 255) { return ENAMETOOLONG; }
+    path_load();
+    Bool denied = false;
+    I64 p = 0;
+    Bool going = true;
+    while (going) {
+        I64 z = p;
+        while (z < pn && pathv[z] != ':') { z = z + 1; }
+        I64 d = z - p;
+        for i in 0..d { cand[i] = pathv[p + i]; }
+        I64 j = d;
+        if (d > 0) {
+            cand[d] = '/';
+            j = d + 1;
+        }
+        for i in 0..k { cand[j + i] = argv[i]; }
+        I64 e = 0 - runctl.co_exec(cand[0..j + k], argv, env[0..envn]);
+        if (e == EACCES) {
+            denied = true;
+        } else if (e != ENOENT && e != ENOTDIR) {
+            return e;
+        }
+        if (z == pn) {
+            going = false;
+        } else {
+            p = z + 1;
+        }
+    }
+    if (denied) { return EACCES; }
+    return ENOENT;
+}
+
+// `TOOL: NAME: reason` for a program that could not run (NAME is argv's first string); the status is the caller's.
+export void say(in U8[_] argv, I64 e) {
+    I64 k = 0;
+    while (argv[k] != 0) { k = k + 1; }
+    msg.begin();
+    msg.text(argv[0..k]);
+    msg.text(b": ");
+    msg.reason(e);
+    msg.send();
+}
+
+// The status of a program that could not run: 127 when not found, else 126 (XCU 2.8.2).
+export I64 status_of(I64 e) {
+    if (e == ENOENT) { return 127; }
+    return 126;
+}
+
+// Runs argv in a child and waits for it, descriptor 1 flushed first: the child's raw wait status, or -errno when
+// it could not run (the errno comes back over a close-on-exec pipe) or could not be made.
+export I64 spawn(in U8[_] argv) {
+    put.flush();
+    I64 pp = shctl.sh_pipe();
+    if (pp < 0) { return pp; }
+    I64 r0 = pp >> 32;
+    I64 w0 = pp & 0xFFFFFFFF;
+    I64 r = shctl.sh_dupfd(r0, 3);
+    I64 w = shctl.sh_dupfd(w0, 3);
+    _ = shctl.fd_close(r0);
+    _ = shctl.fd_close(w0);
+    if (r < 0 || w < 0) {
+        if (r >= 0) { _ = shctl.fd_close(r); }
+        if (w >= 0) { _ = shctl.fd_close(w); }
+        if (r < 0) { return r; }
+        return w;
+    }
+    I64 pid = shctl.sh_fork();
+    if (pid < 0) {
+        _ = shctl.fd_close(r);
+        _ = shctl.fd_close(w);
+        return pid;
+    }
+    if (pid == 0) {
+        _ = shctl.fd_close(r);
+        I64 e = exec(argv);
+        U8[1] b;
+        b[0] = (e & 0xFF) as U8;
+        _ = shctl.fd_write(w, b);
+        dev.exit_now(127);
+    }
+    _ = shctl.fd_close(w);
+    U8[1] got;
+    I64 k = shctl.fd_read(r, got);
+    _ = shctl.fd_close(r);
+    I64 st = shctl.sh_wait(pid, 0);
+    if (k == 1) { return 0 - (got[0] as I64); }
+    return st;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,67 @@
+// user/ci/rev.ci: rev [FILE...] (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C; busybox and util-linux rev, no
+// POSIX page): each line of each FILE (`-` or none: descriptor 0) with its bytes in reverse order. A last line
+// without a newline stays without one. A line past LINE_MAX is the limit.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+
+U8[4096] buf;
+U8[65536] line;
+I64 held = 0;
+
+void spill(Bool nl) {
+    I64 k = held;
+    while (k > 0) {
+        k = k - 1;
+        put.byte(line[k]);
+    }
+    if (nl) { put.byte('\n'); }
+    held = 0;
+}
+
+void pour(I64 fd, in U8[_] name) {
+    Bool more = true;
+    while (more) {
+        I64 r = get.read(fd, buf);
+        if (r < 0) {
+            msg.file(name, 0 - r);
+            more = false;
+        } else if (r == 0) {
+            more = false;
+        } else {
+            for k in 0..r {
+                if (buf[k] == '\n') {
+                    spill(true);
+                } else {
+                    if (held == len(line)) { msg.limit(b"LINE_MAX"); }
+                    line[held] = buf[k];
+                    held = held + 1;
+                }
+            }
+        }
+    }
+    if (held > 0) { spill(false); }
+}
+
+void one(in U8[_] name) {
+    I64 fd = get.open(name);
+    if (fd >= 0) {
+        pour(fd, name);
+        get.close(fd);
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"rev");
+    args.parse(a, b"", b"");
+    I64 n = args.operands();
+    if (n == 0) { pour(0, b"-"); }
+    for i in 0..n {
+        one(a[args.op_start(i)..args.op_stop(a, i)]);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

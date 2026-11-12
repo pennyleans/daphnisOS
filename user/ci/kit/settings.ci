@@ -1,0 +1,224 @@
+// user/ci/kit/settings.ci: U-SET (docs/specs/2026-11-11-u-set.md), an account's settings. Pure: the store is the text
+// of the account's settings file as it will be written, one `key=value` line a setting, in the order first set.
+// The store knows no key: each page brings its own. kit/setfile.ci reads and writes the file.
+//   read(f): the store from a file's bytes. A line that is not key=value is dropped (dropped() counts them);
+//     a key set twice keeps its last value. Never fails: the store holds what it could keep.
+//   get(key, val): the value's length, as much of it as fits in val; -1 when the key is not set.
+//   num(key, dflt): the value as a decimal, or dflt when it is not set or not a decimal.
+//   set(key, val), set_num(key, v): 0, or E_KEY, E_VALUE, E_FULL; a failure leaves the store as it was. set_num
+//     takes -NUM_MAX to NUM_MAX.
+//   drop(key): whether the key was set.
+//   text(o): the file's bytes in o, their length; E_FULL when o cannot hold them.
+// A key is 1 to KEY_MAX of a-z, 0-9, '.', '-' and '_', first a letter. A value is 0 to VALUE_MAX bytes with no NUL,
+// CR or LF. A line ends at LF (one CR before it is dropped) or at the end of the text.
+
+export const I64 SIZE = 8192;        // the most bytes the store, and the file, hold
+export const I64 KEY_MAX = 48;
+export const I64 VALUE_MAX = 4096;   // a path
+export const I64 NUM_MAX = 999999999999999999;   // 18 digits, either sign: what num() reads and set_num() writes
+export const I64 E_KEY = -201;        // the failures sit below -200, apart from every -errno kit/setfile.ci returns
+export const I64 E_VALUE = -202;
+export const I64 E_FULL = -203;
+
+U8[8192] t;          // the text
+I64 tn = 0;
+I64 bad = 0;         // lines dropped by the last read
+I64 at_s = 0;        // the line find() found: its start, its end past the LF, its value's start and end
+I64 at_e = 0;
+I64 at_v = 0;
+I64 at_ve = 0;
+
+export void clear() {
+    tn = 0;
+    bad = 0;
+}
+
+export I64 dropped() { return bad; }
+
+export I64 entries() {
+    I64 k = 0;
+    for i in 0..tn {
+        if (t[i] == '\n') { k = k + 1; }
+    }
+    return k;
+}
+
+Bool key_ok(in U8[_] k, I64 a, I64 b) {
+    if (b - a < 1 || b - a > KEY_MAX) { return false; }
+    for i in a..b {
+        U8 c = k[i];
+        Bool letter = c >= 'a' && c <= 'z';
+        if (i == a && !letter) { return false; }
+        if (!letter && !(c >= '0' && c <= '9') && c != '.' && c != '-' && c != '_') { return false; }
+    }
+    return true;
+}
+
+Bool value_ok(in U8[_] v, I64 a, I64 b) {
+    if (b - a > VALUE_MAX) { return false; }
+    for i in a..b {
+        if (v[i] == 0 || v[i] == '\n' || v[i] == '\r') { return false; }
+    }
+    return true;
+}
+
+// The line of key k[a .. b) into at_s, at_e, at_v, at_ve; false when no line holds it.
+Bool find(in U8[_] k, I64 a, I64 b) {
+    I64 p = 0;
+    while (p < tn) {
+        I64 e = p;
+        while (t[e] != '\n') { e = e + 1; }
+        Bool same = e - p > b - a && t[p + b - a] == '=';
+        I64 i = 0;
+        while (same && i < b - a) {
+            same = t[p + i] == k[a + i];
+            i = i + 1;
+        }
+        if (same) {
+            at_s = p;
+            at_e = e + 1;
+            at_v = p + b - a + 1;
+            at_ve = e;
+            return true;
+        }
+        p = e + 1;
+    }
+    return false;
+}
+
+// Replaces t[s .. e) with the line k[a .. b) = v[c .. d), or with nothing when b == a.
+I64 splice(I64 s, I64 e, in U8[_] k, I64 a, I64 b, in U8[_] v, I64 c, I64 d) {
+    I64 nl = 0;
+    if (b > a) { nl = (b - a) + 1 + (d - c) + 1; }
+    I64 dl = nl - (e - s);
+    if (tn + dl > SIZE) { return E_FULL; }
+    if (dl > 0) {
+        I64 i = tn;
+        while (i > e) {
+            i = i - 1;
+            t[i + dl] = t[i];
+        }
+    } else if (dl < 0) {
+        for i in e..tn { t[i + dl] = t[i]; }
+    }
+    if (b > a) {
+        I64 o = s;
+        for i in a..b {
+            t[o] = k[i];
+            o = o + 1;
+        }
+        t[o] = '=';
+        o = o + 1;
+        for i in c..d {
+            t[o] = v[i];
+            o = o + 1;
+        }
+        t[o] = '\n';
+    }
+    tn = tn + dl;
+    return 0;
+}
+
+// key k[a .. b) to v[c .. d), checked.
+I64 put(in U8[_] k, I64 a, I64 b, in U8[_] v, I64 c, I64 d) {
+    if (!key_ok(k, a, b)) { return E_KEY; }
+    if (!value_ok(v, c, d)) { return E_VALUE; }
+    I64 s = tn;
+    I64 e = tn;
+    if (find(k, a, b)) {
+        s = at_s;
+        e = at_e;
+    }
+    return splice(s, e, k, a, b, v, c, d);
+}
+
+export I64 read(in U8[_] f) {
+    clear();
+    I64 n = len(f);
+    I64 p = 0;
+    while (p < n) {
+        I64 e = p;
+        while (e < n && f[e] != '\n') { e = e + 1; }
+        I64 end = e;
+        if (end > p && f[end - 1] == '\r') { end = end - 1; }
+        I64 q = p;
+        while (q < end && f[q] != '=') { q = q + 1; }
+        Bool kept = false;
+        if (q < end) { kept = put(f, p, q, f, q + 1, end) == 0; }
+        if (!kept && e > p) { bad = bad + 1; }
+        p = e + 1;
+    }
+    return entries();
+}
+
+export I64 get(in U8[_] key, inout U8[_] val) {
+    if (!find(key, 0, len(key))) { return -1; }
+    I64 n = at_ve - at_v;
+    for i in 0..n {
+        if (i < len(val)) { val[i] = t[at_v + i]; }
+    }
+    return n;
+}
+
+export I64 num(in U8[_] key, I64 dflt) {
+    if (!find(key, 0, len(key))) { return dflt; }
+    I64 p = at_v;
+    Bool neg = p < at_ve && t[p] == '-';
+    if (neg) { p = p + 1; }
+    if (p == at_ve || at_ve - p > 18) { return dflt; }
+    I64 v = 0;
+    for i in p..at_ve {
+        if (t[i] < '0' || t[i] > '9') { return dflt; }
+        v = v * 10 + (t[i] - '0') as I64;
+    }
+    if (neg) { return 0 - v; }
+    return v;
+}
+
+export I64 set(in U8[_] key, in U8[_] val) {
+    return put(key, 0, len(key), val, 0, len(val));
+}
+
+export I64 set_num(in U8[_] key, I64 v) {
+    if (v > NUM_MAX || v < 0 - NUM_MAX) { return E_VALUE; }
+    U8[24] d;
+    U8[24] o;
+    I64 k = 0;
+    I64 x = v;
+    if (x < 0) { x = 0 - x; }
+    if (x == 0) {
+        d[0] = '0';
+        k = 1;
+    }
+    while (x > 0) {
+        d[k] = ((x % 10) as U8) + 48;
+        x = x / 10;
+        k = k + 1;
+    }
+    I64 n = 0;
+    if (v < 0) {
+        o[0] = '-';
+        n = 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        o[n] = d[k];
+        n = n + 1;
+    }
+    return set(key, o[0..n]);
+}
+
+export Bool drop(in U8[_] key) {
+    if (!find(key, 0, len(key))) { return false; }
+    I64 s = at_s;
+    I64 e = at_e;
+    _ = splice(s, e, key, 0, 0, key, 0, 0);
+    return true;
+}
+
+export I64 text(inout U8[_] o) {
+    if (len(o) < tn) { return E_FULL; }
+    for i in 0..tn { o[i] = t[i]; }
+    return tn;
+}
+// SPDX-License-Identifier: Apache-2.0

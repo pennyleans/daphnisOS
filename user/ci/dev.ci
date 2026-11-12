@@ -1,0 +1,8 @@
+// user/ci/dev.ci: the externs of a cint program in ring 3 (user/ci/host.c), stage R-1.
+export extern unrestricted I64 fb_open();
+export extern observe U64 fb_word(I64 i);
+export extern unrestricted void fb_row(I64 y, in U8[_] px);
+export extern unrestricted I64 ev_read(out U8[_] ev);
+export extern observe I64 clock_ns();
+export extern unrestricted void exit_now(I64 code);
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only

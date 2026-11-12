@@ -1,0 +1,76 @@
+$ hello
+hellostatus 0
+$ "a\\nb\\n"
+a
+b
+status 0
+$ "%s-%s\\n" a b c
+a-b
+c-
+status 0
+$ "%d\\n" 42 -7
+42
+-7
+status 0
+$ "%5d]%-5d]\\n" 3 4
+    3]4    ]
+status 0
+$ "%05d\\n" 42
+00042
+status 0
+$ "%x %X %o\\n" 255 255 8
+ff FF 10
+status 0
+$ "%c\\n" abc
+a
+status 0
+$ "%%\\n"
+%
+status 0
+$ "%10s]\\n" hi
+        hi]
+status 0
+$ "%-10s]\\n" hi
+hi        ]
+status 0
+$ "%.2s\\n" abcdef
+ab
+status 0
+$ "%b\\n" "x\\ty"
+x	y
+status 0
+$ "%s\\n"
+
+status 0
+$ "%d\\n"
+0
+status 0
+$ "%d\\n" 0x10
+16
+status 0
+$ "%d\\n" "'A"
+65
+status 0
+$ "%d\\n" 12abc
+0
+-- stderr
+cish: printf: invalid number '12abc'
+status 1
+$ "\\101\\n"
+A
+status 0
+$ "%u\\n" 7
+7
+status 0
+$ "%f\\n" 1
+-- stderr
+cish: printf: %f: not supported (no floating point)
+status 1
+$ "%e\\n" 1
+-- stderr
+cish: printf: %e: not supported (no floating point)
+status 1
+$ 
+-- stderr
+cish: printf: usage: printf FORMAT [ARGUMENT...]
+status 2

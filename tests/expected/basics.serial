@@ -1,0 +1,271 @@
+Daphnis CS: cish
+daphnis: image 4227536 bytes from the loader module
+daphnis: input 713 bytes
+daphnis: run cish pid 1
+line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8
+line 9
+line 10
+line 11
+line 12
+line 13
+line 14
+line 15
+line 16
+line 17
+line 18
+line 19
+line 20
+line 21
+line 22
+line 23
+line 24
+line 25
+line 26
+line 27
+line 28
+line 29
+line 30
+line 31
+line 32
+line 33
+line 34
+line 35
+line 36
+line 37
+line 38
+line 39
+line 40
+line 41
+line 42
+line 43
+line 44
+line 45
+line 46
+line 47
+line 48
+line 49
+line 50
+line 51
+line 52
+line 53
+line 54
+line 55
+line 56
+line 57
+line 58
+line 59
+line 60
+line 61
+line 62
+line 63
+line 64
+line 65
+line 66
+line 67
+line 68
+line 69
+line 70
+line 71
+line 72
+line 73
+line 74
+line 75
+line 76
+line 77
+line 78
+line 79
+line 80
+line 81
+line 82
+line 83
+line 84
+line 85
+line 86
+line 87
+line 88
+line 89
+line 90
+line 91
+line 92
+line 93
+line 94
+line 95
+line 96
+line 97
+line 98
+line 99
+line 100
+tab	here
+ctlandébyte
+cless: missing.txt: No such file or directory
+status 1
+4611686018427387905
+~0.333333333
+2
+12.5
+13.5
+~0.142
+~0.142857142857142857
+~3
+0x1000
+87.0000
+ccalc: scale is 0 to 18
+ccalc: unknown name bad
+ccalc: unknown name undefined_name
+3
+ccalc: syntax at column 1
+status 1
+cview: img/png-c6-d16-i1.png 13x7 rgba d8287bc4e4237cb5578ae7ca2d6f62ef9149240a53955751ed99e618c1dd796b
+cview: img/png-c3-d4-i0.png 13x7 rgba 5b0d79567cd23faa3cd90e5dd0075ea5f561fc70b8f01bfbd7d3bb0c0e94270e
+cview: img/png-trns-rgb.png 9x9 rgba 1cf86675b4dda3835a2ce0b277da6734beca8b442f78adb6a73f8e2102009248
+cview: img/png-wide.png 300x2 rgba 8378f48f040057591baeac41351741523a528c61666b711893d96e71c54e77f3
+cview: img/qoi-rgba.qoi 23x11 rgba e906bf8acdc71e39a469250c1fef3bb34c93241abfd65220970a35262e697690
+cview: img/pnm-p6-16.ppm 3x2 rgba ade9c3673f507c6a09bc3a69dc7c0176f02fc5203c8c1f5c709630cf4a8e494a
+cview: img/bad-crc.png: a chunk's CRC differs
+status 1
+daphnis: state 46e2a465c70f9acfb87807f0017e8bbc011aede6ef0fa9c026a67e0c0ac342b2
+daphnis: exit 0
+daphnis: pid 1 forked 18
+daphnis: run cish pid 2
+line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8
+line 9
+line 10
+line 11
+line 12
+line 13
+line 14
+line 15
+line 16
+line 17
+line 18
+line 19
+line 20
+line 21
+line 22
+line 23
+line 24
+line 25
+line 26
+line 27
+line 28
+line 29
+line 30
+line 31
+line 32
+line 33
+line 34
+line 35
+line 36
+line 37
+line 38
+line 39
+line 40
+line 41
+line 42
+line 43
+line 44
+line 45
+line 46
+line 47
+line 48
+line 49
+line 50
+line 51
+line 52
+line 53
+line 54
+line 55
+line 56
+line 57
+line 58
+line 59
+line 60
+line 61
+line 62
+line 63
+line 64
+line 65
+line 66
+line 67
+line 68
+line 69
+line 70
+line 71
+line 72
+line 73
+line 74
+line 75
+line 76
+line 77
+line 78
+line 79
+line 80
+line 81
+line 82
+line 83
+line 84
+line 85
+line 86
+line 87
+line 88
+line 89
+line 90
+line 91
+line 92
+line 93
+line 94
+line 95
+line 96
+line 97
+line 98
+line 99
+line 100
+tab	here
+ctlandébyte
+cless: missing.txt: No such file or directory
+status 1
+4611686018427387905
+~0.333333333
+2
+12.5
+13.5
+~0.142
+~0.142857142857142857
+~3
+0x1000
+87.0000
+ccalc: scale is 0 to 18
+ccalc: unknown name bad
+ccalc: unknown name undefined_name
+3
+ccalc: syntax at column 1
+status 1
+cview: img/png-c6-d16-i1.png 13x7 rgba d8287bc4e4237cb5578ae7ca2d6f62ef9149240a53955751ed99e618c1dd796b
+cview: img/png-c3-d4-i0.png 13x7 rgba 5b0d79567cd23faa3cd90e5dd0075ea5f561fc70b8f01bfbd7d3bb0c0e94270e
+cview: img/png-trns-rgb.png 9x9 rgba 1cf86675b4dda3835a2ce0b277da6734beca8b442f78adb6a73f8e2102009248
+cview: img/png-wide.png 300x2 rgba 8378f48f040057591baeac41351741523a528c61666b711893d96e71c54e77f3
+cview: img/qoi-rgba.qoi 23x11 rgba e906bf8acdc71e39a469250c1fef3bb34c93241abfd65220970a35262e697690
+cview: img/pnm-p6-16.ppm 3x2 rgba ade9c3673f507c6a09bc3a69dc7c0176f02fc5203c8c1f5c709630cf4a8e494a
+cview: img/bad-crc.png: a chunk's CRC differs
+status 1
+daphnis: state 46e2a465c70f9acfb87807f0017e8bbc011aede6ef0fa9c026a67e0c0ac342b2
+daphnis: exit 0
+daphnis: pid 2 forked 18
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 19 frames held
+daphnis: pool frames free 16364 of 16383
+cish: done

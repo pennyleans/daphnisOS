@@ -1,0 +1,181 @@
+// user/ci/kit/appmenu.ci: AM-2 (docs/specs/2026-11-10-am-app-menu.md section 4, AM-R1 B, design note 43), a program's
+// side of the app menu: what it declares and how a chosen item comes back. A program declares About's name, version
+// and text (the system gives the icon) and, when it has one, a Settings item; its own items come after 0.1.0. The desk
+// draws About APP, Settings, View and Exit.
+//   A pixel program: record() then tilewin.win_menu(the record) (FBIO_TILE_MENU); a chosen Settings comes back as an
+//   input record of type EV_MENU, its code the item's id (chosen()).
+//   A terminal program: write osc_about() and osc_settings() to its terminal (OSC 7770); a chosen Settings comes back
+//   on its input as `ESC ] 7770 ; chose ; ID BEL` (chosen_osc()).
+
+export const I64 EV_MENU = 7;
+export const I64 K_ABOUT = 0;          // About's name
+export const I64 K_SETTINGS = 1;
+export const I64 K_VERSION = 3;
+export const I64 K_TEXT = 4;           // About's text, in records of 24 bytes, 60 bytes kept
+export const I64 K_DIRTY = 5;          // AM section 7: unsaved work, its id word 1 or 0
+
+void put32(inout U8[_] b, I64 at, I64 v) {
+    for k in 0..4 { b[at + k] = ((v >> (8 * k)) & 255) as U8; }
+}
+
+void rec(inout U8[_] b, I64 r, I64 id, I64 kd, in U8[_] s, I64 from, I64 n) {
+    I64 at = 4 + 32 * r;
+    for k in 0..32 { b[at + k] = 0; }
+    put32(b, at, id);
+    put32(b, at + 4, kd);
+    for k in 0..n {
+        if (k < 24) { b[at + 8 + k] = s[from + k]; }
+    }
+}
+
+// The FBIO_TILE_MENU record into buf (516 bytes at most): About's name, version and text (60 bytes kept), and the
+// Settings item's id (-1 none); its length.
+export I64 record(inout U8[_] buf, in U8[_] name, in U8[_] version, in U8[_] text, I64 settings_id) {
+    I64 r = 0;
+    rec(buf, r, 0, K_ABOUT, name, 0, min(len(name), 24));
+    r = r + 1;
+    rec(buf, r, 0, K_VERSION, version, 0, min(len(version), 16));
+    r = r + 1;
+    I64 tl = min(len(text), 60);
+    I64 at = 0;
+    while (at < tl) {
+        rec(buf, r, 0, K_TEXT, text, at, min(tl - at, 24));
+        r = r + 1;
+        at = at + 24;
+    }
+    if (settings_id >= 0) {
+        U8[1] none;
+        rec(buf, r, settings_id, K_SETTINGS, none, 0, 0);
+        r = r + 1;
+    }
+    put32(buf, 0, r);
+    return 4 + 32 * r;
+}
+
+// Plan ruling A (2026-11-12, frame 41): an app with no settings of its own yet declares Settings dimmed, so the row
+// stands where every app menu has it, at 35 percent, taking no input. In a record: the Settings record's kind becomes
+// K_SETTINGS | DIM << 8 (DIM as MENU_ITEM's marks, kernel B's layout); FBIO_TILE_INFO kind 8 byte 4 bit 1 reads it.
+export const I64 DIM = 4;
+
+export void settings_dim(inout U8[_] buf) {
+    I64 r = (buf[0] as I64) | ((buf[1] as I64) << 8);
+    for k in 0..min(r, 16) {
+        I64 at = 4 + 32 * k + 4;
+        if ((buf[at] as I64) == K_SETTINGS && buf[at + 1] == 0) { buf[at + 1] = DIM as U8; }
+    }
+}
+
+// AM-4 section 5 (kernel B's layout, 2026-11-12): an own row after the record's About and Settings: MENU_ITEM
+// {id | parent << 16, 2 | marks << 8, label[24]}, then MENU_KEYS {id, 6, keys[16]} when it has keys. id 1 to 65535,
+// never the Settings id; parent 0 or an earlier parent-0 row's id; marks 1 a divider before it, 2 the dot, 4 dimmed;
+// the label 1 to 24 bytes, the keys up to 16. At most 16 rows and 38 records in all (ROWS_BYTES). The new length.
+export const I64 K_ITEM = 2;
+export const I64 K_KEYS = 6;
+export const I64 ROWS_BYTES = 1220;
+
+export I64 item(inout U8[_] buf, I64 id, I64 parent, in U8[_] label, in U8[_] keys, I64 marks) {
+    I64 r = (buf[0] as I64) | ((buf[1] as I64) << 8);
+    rec(buf, r, id | (parent << 16), K_ITEM | (marks << 8), label, 0, min(len(label), 24));
+    r = r + 1;
+    if (len(keys) > 0) {
+        rec(buf, r, id, K_KEYS, keys, 0, min(len(keys), 16));
+        r = r + 1;
+    }
+    put32(buf, 0, r);
+    return 4 + 32 * r;
+}
+
+// AM section 7: the FBIO_TILE_MENU declaration of one dirty record into buf (36 bytes): unsaved work (on) or none.
+// Alone it changes only the flag; About and Settings stay as declared. Its length.
+export I64 dirty(inout U8[_] buf, Bool on) {
+    U8[1] none;
+    I64 v = 0;
+    if (on) { v = 1; }
+    rec(buf, 0, v, K_DIRTY, none, 0, 0);
+    put32(buf, 0, 1);
+    return 36;
+}
+
+I64 put(inout U8[_] buf, I64 at, in U8[_] s, I64 n) {
+    for k in 0..n { buf[at + k] = s[k]; }
+    return at + n;
+}
+
+I64 put_num(inout U8[_] buf, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 q = v;
+    if (q == 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { buf[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// The OSC 7770 a terminal program writes for About: `ESC ] 7770 ; about ; NAME ; VERSION ; TEXT BEL`; its length.
+export I64 osc_about(inout U8[_] buf, in U8[_] name, in U8[_] version, in U8[_] text) {
+    I64 n = put(buf, 0, b"\x1b]7770;about;", 13);
+    n = put(buf, n, name, len(name));
+    buf[n] = ';';
+    n = put(buf, n + 1, version, len(version));
+    buf[n] = ';';
+    n = put(buf, n + 1, text, len(text));
+    buf[n] = 7;
+    return n + 1;
+}
+
+// The OSC 7770 for a Settings item: `ESC ] 7770 ; settings ; ID BEL`; its length.
+export I64 osc_settings(inout U8[_] buf, I64 id) {
+    I64 n = put(buf, 0, b"\x1b]7770;settings;", 16);
+    n = put_num(buf, n, id);
+    buf[n] = 7;
+    return n + 1;
+}
+
+// Plan ruling A: Settings declared dimmed by a terminal program: `ESC ] 7770 ; settings ; ID ; d BEL`; its length.
+export I64 osc_settings_dim(inout U8[_] buf, I64 id) {
+    I64 n = osc_settings(buf, id) - 1;
+    n = put(buf, n, b";d", 2);
+    buf[n] = 7;
+    return n + 1;
+}
+
+// AM section 7: the OSC 7770 a terminal program writes when its unsaved state changes: `ESC ] 7770 ; dirty ; 1 BEL`
+// or `; 0`; its length. Only in a desk terminal (section 7.2).
+export I64 osc_dirty(inout U8[_] buf, Bool on) {
+    I64 n = put(buf, 0, b"\x1b]7770;dirty;", 13);
+    buf[n] = '0';
+    if (on) { buf[n] = '1'; }
+    buf[n + 1] = 7;
+    return n + 2;
+}
+
+// A pixel program's input record (type, code): the chosen item's id, or -1 when it is not the app menu's.
+export I64 chosen(I64 ev_type, I64 code) {
+    if (ev_type == EV_MENU) { return code; }
+    return -1;
+}
+
+// A terminal program's input s[0..n]: the id of the `ESC ] 7770 ; chose ; ID BEL` it holds, or -1.
+export I64 chosen_osc(in U8[_] s, I64 n) {
+    U8[13] head = b"\x1b]7770;chose;";
+    if (n < 15) { return -1; }
+    for k in 0..13 {
+        if (s[k] != head[k]) { return -1; }
+    }
+    I64 v = 0;
+    I64 k = 13;
+    while (k < n && s[k] >= '0' && s[k] <= '9') {
+        v = v * 10 + (s[k] - '0') as I64;
+        k = k + 1;
+    }
+    if (k >= n || s[k] != 7 || k == 13) { return -1; }
+    return v;
+}
+// SPDX-License-Identifier: Apache-2.0

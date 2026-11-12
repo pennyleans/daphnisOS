@@ -1,0 +1,45 @@
+// tests/ff/icons_test.ci: hosted tests of the desk's icons (FF-0, user/ci/kit/icons.ci from tools/icons.py; docs/
+// specs/2026-11-07-ff-super-plane.md section 3a). Run by check.sh: cint test --root . tests/ff/icons_test.ci
+
+import user.ci.kit.icons;
+
+test "an icon is found by its name" {
+    assert(icons.named("terminal") == icons.TERMINAL);
+    assert(icons.named("finder") == icons.FINDER);
+    assert(icons.named("wad") == icons.WAD);
+    assert(icons.named("find") == -1);
+    assert(icons.named("") == -1);
+}
+
+test "a pixel is the drawing's token at 32 and at 64" {
+    assert(icons.tok(icons.FINDER, 32, 0, 0) == icons.CLEAR);
+    assert(icons.tok(icons.FINDER, 32, 2, 2) == icons.INK);
+    assert(icons.tok(icons.FINDER, 32, 3, 3) == icons.PAPER);
+    assert(icons.tok(icons.FINDER, 32, 17, 3) == icons.ULTRAMARINE);
+    assert(icons.tok(icons.FINDER, 32, 23, 10) == icons.OCHRE);
+    assert(icons.tok(icons.TERMINAL, 64, 4, 32) == icons.INK);
+    assert(icons.tok(icons.TERMINAL, 64, 23, 32) == icons.ULTRAMARINE);
+    assert(icons.tok(icons.TERMINAL, 64, 0, 0) == icons.CLEAR);
+}
+
+test "outside an icon, or at another size, is clear" {
+    assert(icons.tok(icons.FINDER, 32, 32, 2) == icons.CLEAR);
+    assert(icons.tok(icons.FINDER, 32, 2, -1) == icons.CLEAR);
+    assert(icons.tok(icons.FINDER, 16, 2, 2) == icons.CLEAR);
+    assert(icons.tok(icons.N, 32, 2, 2) == icons.CLEAR);
+}
+
+U32[64] row;
+U32[7] pal = [0, 0x111111, 0x222222, 0x333333, 0x444444, 0x555555, 0x666666];
+
+test "icon_at colors tokens by the palette and leaves clear pixels" {
+    for i in 0..64 { row[i] = 7; }
+    icons.icon_at(row, 13, 10, 10, icons.FINDER, 32, pal);
+    assert(row[10] == 7);
+    assert(row[12] == 0x222222);
+    assert(row[13] == 0x111111);
+    assert(row[27] == 0x333333);
+    icons.icon_at(row, 9, 0, 10, icons.FINDER, 32, pal);
+    assert(row[2] == 7);
+}
+// SPDX-License-Identifier: Apache-2.0

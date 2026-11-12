@@ -1,0 +1,47 @@
+// src/ptyown.ci: whose a pty's slave is (the plan's P1 of 2026-11-11; docs/user.md section 19), pure so the hosted test
+// runs it (tests/pty/own_test.ci). A pair takes its maker's uid at the open of /dev/ptmx, and its owner, a session
+// (src/job.ci's family and session), at the first open of its slave by a process that is not the desk. An open of
+// /dev/pts/n, and a change asked of the slave (TCSETS, TCSETSW, TCSETSF, TIOCSWINSZ, TIOCSCTTY, TIOCSPGRP; src/pty.ci),
+// is allowed to the desk, to a process the pair controls, and to a process of the owner session (its foreground and
+// its background jobs alike); before the first open, to a process that holds a description of the pair's master: the
+// maker, or its child before execve (the master is the desk's O_CLOEXEC; P3 of the kernel read, board
+// 20261111T213032Z: a uid alone let any uid 0 window take a desk pair in the gap). Any other caller gets -EACCES:
+// another account's process, or the same account's in another session, can neither read what is typed in a window
+// nor write to its screen. Linux checks only the slave's mode (0620, its owner the maker's uid); sessions are never
+// reused within a family (src/proc.ci's pids only grow), so the owner session cannot be taken by a later process.
+// How many pairs a uid may make (room): a process that is not the desk makes a pair only while fewer than PTYS - 2 of
+// the pairs in use are its uid's, so the desk always has two for a Console, whatever a program of an
+// account that logged out left running (a log out sends SIGTERM, which a program may ignore; user/ci/hdesk.ci's
+// logout). The desk's own pairs are uid 0's, so they count for a uid 0 process that is not the desk.
+
+const I64 EACCES = 13;
+const I64 ENOSPC = 28;
+
+// 0 when the caller may open pair's slave or change it, else -EACCES. desk: the caller is the desk (the tiler, uid 0);
+// ctty: the pair is the caller's controlling terminal; master: the caller holds a description of the pair's master;
+// ofam and osid: the owner session, ofam -1 before the first open; fam and sid: the caller's.
+export I64 may(Bool desk, Bool ctty, Bool master, I64 ofam, I64 osid, I64 fam, I64 sid) {
+    if (desk || ctty) {
+        return 0;
+    }
+    if (ofam < 0) {
+        if (master) {
+            return 0;
+        }
+        return 0 - EACCES;
+    }
+    if (fam == ofam && sid == osid) {
+        return 0;
+    }
+    return 0 - EACCES;
+}
+
+// 0 when a caller may make one more pair, else -ENOSPC. desk: the caller is the desk, which may take any free pair;
+// held: the pairs in use that the caller's uid made; pairs: how many the kernel has.
+export I64 room(Bool desk, I64 held, I64 pairs) {
+    if (desk || held < pairs - 2) {
+        return 0;
+    }
+    return 0 - ENOSPC;
+}
+// SPDX-License-Identifier: Apache-2.0

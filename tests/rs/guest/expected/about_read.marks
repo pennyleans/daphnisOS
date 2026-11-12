@@ -1,0 +1,12 @@
+# DN-43, review on PR 272: the About sheet over Read (cless /rs/read.txt; exit 7). With the sheet up, q and Enter
+# are the sheet's: Enter closes it while Read is still open (q never reached it), and the next q ends Read, then
+# the terminal with the 7 its line exits with (1792).
+hdesk: screen 1920x1080 plane 1920x
+hdesk: terminal 1 slot 1
+hdesk: app menu open
+~hdesk: app menu chose [0-9]+ \|About .+\|
+=hdesk: about 1
+-hdesk: terminal 1 ended
+=hdesk: about closed
+=hdesk: terminal 1 ended, status 1792
+=hdesk: shell ended, status 0

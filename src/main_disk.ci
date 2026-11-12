@@ -1,0 +1,116 @@
+// src/main_disk.ci: stage P's flavor (docs/specs/2026-11-05-p-disk.md sections 2 and 5): the user flavor's
+// kernel with another main, booted by check-disk.sh with the test volume of tools/mkdisk.sh as a virtio disk
+// (or without one). P-1: the volume's digest is read through the device at boot; the write probe writes a
+// pattern over the last 8 sectors, reads it back and puts the first bytes back. P-2: the volume is mounted
+// read only on /home, hello runs, and busybox sh runs the scripted input (tests/image/disk.txt: listings,
+// contents, a symlink, the indirect maps, stat), checked by tools/check-disk.py against Linux on a debugfs
+// dump of the same volume and against debugfs's own inodes. The digest is read again at the end and must be
+// the boot's: nothing wrote.
+
+import src.serial;
+import src.serialrx;
+import src.trap;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.fs;
+import src.proc;
+import src.pool;
+import src.blk;
+import src.xhci;
+import src.ext2;
+
+void main() {
+    serialrx.serial_init_rx();   // not serial_init: its FIFO clear would drop the first byte of the input
+    serial.serial_write("Daphnis P: the block device\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    _ = xhci.init();          // HW-4m: a USB disk, when there is an xHCI (prints only then)
+    user.user_init();
+    fs.init();
+    pit.pic_remap();
+    pit.pit_start(11932);
+    // the scripted input, read once up to a byte 0x04 or two seconds without a byte (as main_user.ci)
+    Bool more = true;
+    I64 quiet = trap.timer_ticks();
+    while (more) {
+        I64 c = serialrx.serial_getc();
+        if (c == 4) {
+            more = false;
+        } else if (c >= 0) {
+            fs.stdin_push(c as U8);
+            quiet = trap.timer_ticks();
+        } else if (trap.timer_ticks() - quiet > 200) {
+            more = false;
+        }
+    }
+    serial.serial_write("daphnis: input ");
+    proc.put_dec(fs.stdin_len());
+    serial.serial_write(" bytes\n");
+    I64 n = blk.init();
+    Bool mounted = false;
+    if (n == 0) {
+        serial.serial_write("daphnis: no disk\n");
+    } else if (n < 0) {
+        serial.serial_write("daphnis: disk found, not set up\n");
+    } else {
+        if (blk.is_usb()) {
+            serial.serial_write("daphnis: disk usb-storage, ");   // HW-4m
+        } else {
+            serial.serial_write("daphnis: disk virtio-blk, ");
+        }
+        proc.put_dec(n);
+        serial.serial_write(" sectors, ");
+        proc.put_dec(blk.frames_held());
+        serial.serial_write(" frames held\n");
+        blk.print_digest();
+        I64 w = blk.write_probe();
+        if (w == 1) {
+            serial.serial_write("daphnis: disk write probe: the pattern read back equal, the sectors restored\n");
+        } else if (w == 0) {
+            serial.serial_write("daphnis: disk write probe: the pattern read back DIFFERENT\n");
+        } else {
+            serial.serial_write("daphnis: disk write probe: a request failed\n");
+        }
+        mounted = fs.mount_disk();
+        if (mounted) {
+            serial.serial_write("daphnis: /home mounted, ext2, block ");
+            proc.put_dec(ext2.block_size());
+            serial.serial_write(", cache ");
+            proc.put_dec(ext2.cache_frames());
+            serial.serial_write(" frames, writes need the disk grant\n");
+        } else {
+            serial.serial_write("daphnis: /home not mounted: not an ext2 volume this kernel reads\n");
+        }
+    }
+    proc.run_alone(1, "hello");
+    if (mounted) {
+        proc.run_alone(2, "sh");
+    }
+    // K13 (BU-4e): when the session left the image's msha on the volume, both run alone; their output and
+    // state digest must be one (tools/check-disk.py --write)
+    if (mounted && proc.on_volume("msha")) {
+        proc.run_alone(3, "msha");
+        proc.run_volume(4, "msha");
+    }
+    // BU-4c (docs/specs/2026-11-07-bu4-toolchain.md section 2): what cib built on the volume of tools/mkcintvol.sh
+    // runs alone, twice each; check-build.sh holds each to Linux's output (C2) and its two state digests to one (C3)
+    if (mounted && proc.on_volume("out/msha")) {
+        proc.run_volume(5, "out/msha");
+        proc.run_volume(6, "out/msha");
+    }
+    if (mounted && proc.on_volume("out/mci")) {
+        proc.run_volume(7, "out/mci");
+        proc.run_volume(8, "out/mci");
+    }
+    if (n > 0) {
+        blk.print_digest();
+        serial.serial_write("daphnis: disk requests ");
+        proc.put_dec(blk.requests_done());
+        serial.serial_write("\n");
+    }
+    proc.report_pool();
+    serial.serial_write("daphnis: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

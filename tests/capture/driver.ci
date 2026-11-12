@@ -1,0 +1,188 @@
+import src.capture_api;
+import src.capture_format;
+import src.capture;
+
+extern unrestricted void fixture_report(in U8[_] bytes);
+extern unrestricted I64 fixture_slot(I64 writer, I64 variant);
+U8[64] header;
+U8[32] revision;
+U8[16] stream;
+U8[4096] source;
+U8[4096] decoded;
+U8[4144] first;
+U8[4144] second;
+U8[4144] alternate;
+U8[48] last;
+
+void start_writer(inout capture.Stream[1] writer) {
+    writer[0] = capture.empty();
+    assert(capture.begin(writer, fixture_slot(1, 0), header, revision, true));
+}
+
+void start_reader(inout capture.Stream[1] reader, I64 variant) {
+    reader[0] = capture.empty();
+    assert(capture.begin(reader, fixture_slot(0, variant), header, revision, false));
+}
+
+void sentinel() {
+    for i in 0..4096 { decoded[i] = 0xA5; }
+}
+
+void unchanged() {
+    for i in 0..4096 { assert(decoded[i] == 0xA5); }
+}
+
+void roundtrip(I64 n) {
+    capture.Stream[1] writer;
+    capture.Stream[1] reader;
+    start_writer(writer);
+    assert(capture.seal(writer, source[0..n], false, first) == n + 48);
+    assert(capture.seal(writer, source[0..n], false, second) == n + 48);
+    assert(capture.seal(writer, source[0..0], true, last) == 48);
+    assert(capture.finish(writer));
+    assert(capture.seal(writer, source[0..n], false, first) == -1);
+    start_reader(reader, 0);
+    sentinel();
+    assert(capture.open_frame(reader, first[0..n + 48], decoded) == n);
+    assert(capture_format.same(source[0..n], decoded[0..n]));
+    for i in n..4096 { assert(decoded[i] == 0xA5); }
+    assert(capture.open_frame(reader, second[0..n + 48], decoded) == n);
+    assert(capture.open_frame(reader, last, decoded) == 0);
+    assert(capture.finish(reader));
+}
+
+void main() {
+    capture.Stream[1] writer;
+    capture.Stream[1] reader;
+    for i in 0..16 { stream[i] = i as U8; }
+    for i in 0..32 { revision[i] = (32 + i) as U8; }
+    for i in 0..4096 { source[i] = (i & 255) as U8; }
+    assert(capture_format.header(stream, revision, header) == 64);
+    roundtrip(1);
+    roundtrip(63);
+    roundtrip(64);
+    roundtrip(65);
+    roundtrip(4095);
+    roundtrip(4096);
+    fixture_report(b"capture: six payload boundaries pass\n");
+
+    start_writer(writer);
+    assert(capture.seal(writer, source[0..65], false, first) == 113);
+    assert(capture.seal(writer, source[0..65], false, second) == 113);
+    assert(capture.seal(writer, source[0..0], true, last) == 48);
+    // Every byte of the authenticated frame is covered, including its prefix.
+    for j in 0..113 {
+        U8 saved = first[j];
+        first[j] = saved ^ 128;
+        start_reader(reader, 0);
+        sentinel();
+        I64 result = capture.open_frame(reader, first[0..113], decoded);
+        assert(result < 0);
+        unchanged();
+        assert(!capture.finish(reader));
+        first[j] = saved;
+    }
+    fixture_report(b"capture: 113 frame-byte mutations rejected\n");
+
+    for j in 0..64 {
+        U8 saved = header[j];
+        header[j] = saved ^ 128;
+        reader[0] = capture.empty();
+        I64 slot = fixture_slot(0, 0);
+        assert(!capture.begin(reader, slot, header, revision, false));
+        capture_api.capture_release(slot);
+        header[j] = saved;
+    }
+    for j in 0..32 {
+        header[32 + j] = header[32 + j] ^ 128;
+        revision[j] = revision[j] ^ 128;
+        start_reader(reader, 0);
+        sentinel();
+        assert(capture.open_frame(reader, first[0..113], decoded) == -1);
+        unchanged();
+        header[32 + j] = header[32 + j] ^ 128;
+        revision[j] = revision[j] ^ 128;
+    }
+    fixture_report(b"capture: header identity and authenticated revision reject changes\n");
+
+    // A second valid stream has a different first frame, but the same sequence 1.
+    // Synthetic fixtures intentionally reuse identities to isolate chain checking.
+    start_writer(writer);
+    source[0] = source[0] ^ 128;
+    assert(capture.seal(writer, source[0..65], false, alternate) == 113);
+    source[0] = source[0] ^ 128;
+    assert(capture.seal(writer, source[0..65], false, alternate) == 113);
+    capture.abort(writer);
+    start_reader(reader, 0);
+    assert(capture.open_frame(reader, first[0..113], decoded) == 65);
+    sentinel();
+    assert(capture.open_frame(reader, alternate[0..113], decoded) == -1);
+    unchanged();
+    fixture_report(b"capture: valid frame from a different chain rejected\n");
+
+    for j in 0..113 {
+        start_reader(reader, 0);
+        sentinel();
+        assert(capture.open_frame(reader, first[0..j], decoded) == -2);
+        unchanged();
+        assert(capture.open_frame(reader, first[0..113], decoded) == 65);
+        capture.abort(reader);
+    }
+    start_reader(reader, 0);
+    sentinel();
+    assert(capture.open_frame(reader, first[0..113], decoded[0..64]) == -1);
+    unchanged();
+    assert(capture.open_frame(reader, first[0..113], decoded) == 65);
+    assert(!capture.finish(reader));
+    fixture_report(b"capture: truncation and short output are atomic\n");
+
+    start_reader(reader, 1);
+    sentinel();
+    assert(capture.open_frame(reader, first[0..113], decoded) == -1);
+    unchanged();
+    start_reader(reader, 0);
+    assert(capture.open_frame(reader, second[0..113], decoded) == -1);
+    start_reader(reader, 0);
+    assert(capture.open_frame(reader, first[0..113], decoded) == 65);
+    sentinel();
+    assert(capture.open_frame(reader, first[0..113], decoded) == -1);
+    unchanged();
+    start_reader(reader, 0);
+    assert(capture.open_frame(reader, first[0..114], decoded) == -1);
+    start_reader(reader, 0);
+    assert(capture.open_frame(reader, first[0..113], decoded) == 65);
+    assert(capture.open_frame(reader, second[0..113], decoded) == 65);
+    assert(capture.open_frame(reader, last, decoded) == 0);
+    assert(capture.finish(reader));
+    sentinel();
+    assert(capture.open_frame(reader, last, decoded) == -1);
+    unchanged();
+    assert(!capture.finish(reader));
+    fixture_report(b"capture: wrong key, order, duplicate, trailing data rejected\n");
+
+    start_writer(writer);
+    first[0] = 77;
+    assert(capture.seal(writer, source[0..0], false, first) == -1);
+    assert(capture.seal(writer, source[0..1], true, first) == -1);
+    assert(capture.seal(writer, source[0..65], false, first[0..112]) == -1);
+    assert(first[0] == 77);
+    capture.Stream[1] stale;
+    stale[0] = writer[0];
+    assert(capture.seal(writer, source[0..65], false, first) == 113);
+    second[0] = 77;
+    assert(capture.seal(stale, source[0..65], false, second) == -1);
+    assert(second[0] == 77);
+    assert(!capture.finish(stale));
+    assert(capture.seal(writer, source[0..65], false, second) == -1);
+    fixture_report(b"capture: restored writer metadata cannot reuse a nonce\n");
+
+    start_writer(writer);
+    assert(capture.seal(writer, source[0..0], true, last) == 48);
+    start_reader(reader, 0);
+    assert(capture.open_frame(reader, last, decoded) == 0);
+    assert(capture.finish(reader));
+    start_reader(reader, 0);
+    assert(!capture.finish(reader));
+    fixture_report(b"capture: authenticated empty stream and incomplete end pass\n");
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,77 @@
+// tests/ac/argon2_test.ci: hosted tests of Argon2id (AC-1b, user/ci/argon2.ci). The first is RFC 9106 section 5.3;
+// the others are tools/ac-vectors.py's plain-Python Argon2id, which reproduces that vector, at one lane and two.
+// Sizes where a segment needs more than one address block (1 MiB and up, one lane) are tests/ac/authd.sh's.
+// Run by check.sh: cint test --root . tests/ac/argon2_test.ci
+
+import user.ci.argon2;
+import user.ci.blake2b;
+
+I64 nib(U8 c) {
+    if (c >= 48 && c <= 57) { return (c - 48) as I64; }
+    return (c - 87) as I64;
+}
+
+Bool same(in U8[_] got, I64 n, in U8[_] hex) {
+    if (len(hex) != 2 * n) { return false; }
+    for i in 0..n {
+        I64 want = nib(hex[2 * i]) * 16 + nib(hex[2 * i + 1]);
+        if ((got[i] as I64) != want) { return false; }
+    }
+    return true;
+}
+
+void count_salt(inout U8[_] salt) {
+    for i in 0..16 {
+        salt[i] = i as U8;
+    }
+}
+
+test "rfc 9106 section 5.3: argon2id, 32 KiB, 3 passes, 4 lanes, secret and associated data" {
+    U8[32] pwd;
+    U8[16] salt;
+    U8[8] sec;
+    U8[12] ad;
+    for i in 0..32 { pwd[i] = 1; }
+    for i in 0..16 { salt[i] = 2; }
+    for i in 0..8 { sec[i] = 3; }
+    for i in 0..12 { ad[i] = 4; }
+    U64[4096] mem;
+    U8[32] tag;
+    argon2.argon2id(pwd, 32, salt, 16, sec, 8, ad, 12, 3, 32, 4, mem, tag, 32);
+    assert(same(tag, 32, "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"));
+}
+
+test "one lane, 256 KiB, 3 passes, and the AC-D9 verifier" {
+    U8[16] salt;
+    U8[0] none;
+    count_salt(salt);
+    U64[32768] mem;
+    U8[32] tag;
+    U8[32] ver;
+    argon2.argon2id("daphnis-pass-1", 14, salt, 16, none, 0, none, 0, 3, 256, 1, mem, tag, 32);
+    assert(same(tag, 32, "705c3f47d19ff2fdcc7d8a9977ad08546bf95d0371cd745e6eddd3f2bec15a86"));
+    blake2b.b2_digest("daphnis-verify", 14, tag, 32, ver, 32);
+    assert(same(ver, 32, "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386"));
+}
+
+test "two lanes, the 64 KiB floor, one pass" {
+    U8[16] salt;
+    U8[0] none;
+    count_salt(salt);
+    U64[8192] mem;
+    U8[32] tag;
+    argon2.argon2id("ab", 2, salt, 16, none, 0, none, 0, 1, 64, 2, mem, tag, 32);
+    assert(same(tag, 32, "f80a708b7df543e189244bf7d7e2b3f50fe799d23605172588db5e1e0a28d524"));
+}
+
+test "h-prime of abc at 100 and 1024 bytes (the second through its 32-byte BLAKE2b)" {
+    U8[1024] a;
+    U8[32] d;
+    U8[0] nokey;
+    argon2.hprime("abc", 3, a, 100);
+    assert(same(a, 100, "4c9ba23bcafae5e571a5d41673bb8084a4a1de2688416ed390f669d33d364f3d4d9bfa7fe762680c6b2362711c4ce5b2c60ddcd14c1277ec1369c79f44c2896698a2b0773a3ce2e410532fa7c72f0bb61ccca0c24c362f337555cbf2998f2d3601be70d1"));
+    argon2.hprime("abc", 3, a, 1024);
+    blake2b.b2_digest(a, 1024, nokey, 0, d, 32);
+    assert(same(d, 32, "7bbf104dcc973b384db820690ddd114578ae5859d6d291d479e687dcbe3f4134"));
+}
+// SPDX-License-Identifier: Apache-2.0

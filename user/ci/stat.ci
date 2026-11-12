@@ -1,0 +1,271 @@
+// user/ci/stat.ci: stat [-L] [-c FORMAT | -t] FILE... (docs/specs/2026-11-06-c-core.md, CT-1; busybox's stat, which XCU
+// does not name): each FILE's record, in busybox's default form, its terse form (-t) or FORMAT followed by a
+// newline. -L follows a symbolic link. A directive is %[-0][WIDTH][.PREC]C, the width and precision applied as
+// printf applies them; C is one of: a (mode bits, octal) A (as ls) b (blocks) B (512) d D (device, decimal and
+// hex) f (raw mode, hex) F (file type) g G (group, number and name) h (links) i (inode) n N (name) o (I/O block)
+// s (size) t T (major and minor, hex) u U (owner, number and name) x X y Y z Z (access, modify, change: as
+// `yyyy-mm-dd hh:mm:ss.nnnnnnnnn -0500` in the machine's zone (RS-TZc), and in seconds) and % itself; any other
+// prints itself. Daphnis has no user database, so a name is UNKNOWN, as busybox prints for an owner it cannot name.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.zonefile;
+import user.ci.kit.clocktext;
+
+I64[16] rec;
+U8[4096] tmp;      // one directive's text before its padding
+I64 tn = 0;
+I64 zone = -2;     // RS-TZc: the machine's zone, read at the first time shown (-1 UTC)
+
+void t_byte(U8 b) {
+    if (tn < 4096) {
+        tmp[tn] = b;
+        tn = tn + 1;
+    }
+}
+
+void t_text(in U8[_] s) {
+    for i in 0..len(s) { t_byte(s[i]); }
+}
+
+void t_num(I64 v, I64 base) {
+    U8[16] hexd = b"0123456789abcdef";
+    U8[24] d;
+    I64 k = 0;
+    I64 x = v;
+    if (x < 0) {
+        t_byte('-');
+        x = 0 - x;
+    }
+    while (x > 0 || k == 0) {
+        d[k] = hexd[x % base];
+        x = x / base;
+        k = k + 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        t_byte(d[k]);
+    }
+}
+
+void t_zero(I64 v, I64 width) {
+    I64 k = 1;
+    I64 x = v;
+    while (x >= 10) {
+        x = x / 10;
+        k = k + 1;
+    }
+    while (k < width) {
+        t_byte('0');
+        k = k + 1;
+    }
+    t_num(v, 10);
+}
+
+I64 ftype() {
+    return rec[corectl.ST_MODE] & corectl.S_IFMT;
+}
+
+void t_kind() {
+    I64 t = ftype();
+    if (t == corectl.S_IFREG) {
+        if (rec[corectl.ST_SIZE] == 0) { t_text(b"regular empty file"); } else { t_text(b"regular file"); }
+    }
+    else if (t == corectl.S_IFDIR) { t_text(b"directory"); }
+    else if (t == corectl.S_IFBLK) { t_text(b"block special file"); }
+    else if (t == corectl.S_IFCHR) { t_text(b"character special file"); }
+    else if (t == corectl.S_IFIFO) { t_text(b"fifo"); }
+    else if (t == corectl.S_IFLNK) { t_text(b"symbolic link"); }
+    else if (t == corectl.S_IFSOCK) { t_text(b"socket"); }
+    else { t_text(b"weird file"); }
+}
+
+void t_mode() {
+    I64 t = ftype();
+    I64 m = rec[corectl.ST_MODE];
+    U8 c = '?';
+    if (t == corectl.S_IFREG) { c = '-'; }
+    else if (t == corectl.S_IFDIR) { c = 'd'; }
+    else if (t == corectl.S_IFLNK) { c = 'l'; }
+    else if (t == corectl.S_IFCHR) { c = 'c'; }
+    else if (t == corectl.S_IFBLK) { c = 'b'; }
+    else if (t == corectl.S_IFIFO) { c = 'p'; }
+    else if (t == corectl.S_IFSOCK) { c = 's'; }
+    t_byte(c);
+    U8[9] rwx = b"rwxrwxrwx";
+    for k in 0..9 {
+        U8 b = '-';
+        if (((m >> (8 - k)) & 1) == 1) { b = rwx[k]; }
+        if (k == 2 && (m & 0x800) != 0) {
+            b = 'S';
+            if ((m & 0x40) != 0) { b = 's'; }
+        }
+        if (k == 5 && (m & 0x400) != 0) {
+            b = 'S';
+            if ((m & 0x8) != 0) { b = 's'; }
+        }
+        if (k == 8 && (m & 0x200) != 0) {
+            b = 'T';
+            if ((m & 0x1) != 0) { b = 't'; }
+        }
+        t_byte(b);
+    }
+}
+
+void t_time(I64 sec, I64 ns) {
+    if (zone == -2) { zone = zonefile.city(); }
+    U8[24] b;
+    I64 n = clocktext.iso(b, 0, zone, sec);
+    t_text(b[0..n]);
+    t_byte('.');
+    t_zero(ns, 9);
+    t_byte(' ');
+    n = clocktext.hhmm(b, 0, zone, sec);
+    t_text(b[0..n]);
+}
+
+I64 major_of(I64 rd) {
+    return ((rd >> 8) & 0xFFF) | ((rd >> 32) & 0xFFFFF000);
+}
+
+I64 minor_of(I64 rd) {
+    return (rd & 0xFF) | ((rd >> 12) & 0xFFFFFF00);
+}
+
+// Directive c for FILE name into tmp: true when it is a number (the 0 flag pads it with zeros).
+Bool directive(U8 c, in U8[_] name) {
+    tn = 0;
+    if (c == 'a') { t_num(rec[corectl.ST_MODE] & 0xFFF, 8); return true; }
+    if (c == 'A') { t_mode(); return false; }
+    if (c == 'b') { t_num(rec[corectl.ST_BLOCKS], 10); return true; }
+    if (c == 'B') { t_num(512, 10); return true; }
+    if (c == 'd') { t_num(rec[corectl.ST_DEV], 10); return true; }
+    if (c == 'D') { t_num(rec[corectl.ST_DEV], 16); return true; }
+    if (c == 'f') { t_num(rec[corectl.ST_MODE], 16); return true; }
+    if (c == 'F') { t_kind(); return false; }
+    if (c == 'g') { t_num(rec[corectl.ST_GID], 10); return true; }
+    if (c == 'G' || c == 'U') { t_text(b"UNKNOWN"); return false; }
+    if (c == 'h') { t_num(rec[corectl.ST_NLINK], 10); return true; }
+    if (c == 'i') { t_num(rec[corectl.ST_INO], 10); return true; }
+    if (c == 'n' || c == 'N') { t_text(name); return false; }
+    if (c == 'o') { t_num(rec[corectl.ST_BLKSIZE], 10); return true; }
+    if (c == 's') { t_num(rec[corectl.ST_SIZE], 10); return true; }
+    if (c == 't') { t_num(major_of(rec[corectl.ST_RDEV]), 16); return true; }
+    if (c == 'T') { t_num(minor_of(rec[corectl.ST_RDEV]), 16); return true; }
+    if (c == 'u') { t_num(rec[corectl.ST_UID], 10); return true; }
+    if (c == 'x') { t_time(rec[corectl.ST_ATIME], rec[corectl.ST_ATIME_NS]); return false; }
+    if (c == 'X') { t_num(rec[corectl.ST_ATIME], 10); return true; }
+    if (c == 'y') { t_time(rec[corectl.ST_MTIME], rec[corectl.ST_MTIME_NS]); return false; }
+    if (c == 'Y') { t_num(rec[corectl.ST_MTIME], 10); return true; }
+    if (c == 'z') { t_time(rec[corectl.ST_CTIME], rec[corectl.ST_CTIME_NS]); return false; }
+    if (c == 'Z') { t_num(rec[corectl.ST_CTIME], 10); return true; }
+    t_byte(c);
+    return false;
+}
+
+// Writes FORMAT for FILE name, then a newline.
+void show(in U8[_] f, in U8[_] name) {
+    I64 i = 0;
+    while (i < len(f)) {
+        if (f[i] != '%' || i + 1 == len(f)) {
+            put.byte(f[i]);
+            i = i + 1;
+        } else {
+            i = i + 1;
+            Bool lean = false;
+            Bool zero = false;
+            while (i < len(f) && (f[i] == '-' || f[i] == '0' || f[i] == '#' || f[i] == '+' || f[i] == ' ')) {
+                if (f[i] == '-') { lean = true; }
+                if (f[i] == '0') { zero = true; }
+                i = i + 1;
+            }
+            I64 width = 0;
+            while (i < len(f) && f[i] >= '0' && f[i] <= '9') {
+                if (width > 100000) { msg.limit(b"WIDTH"); }
+                width = width * 10 + ((f[i] - 48) as I64);
+                i = i + 1;
+            }
+            I64 prec = -1;
+            if (i < len(f) && f[i] == '.') {
+                prec = 0;
+                i = i + 1;
+                while (i < len(f) && f[i] >= '0' && f[i] <= '9') {
+                    if (prec > 100000) { msg.limit(b"WIDTH"); }
+                    prec = prec * 10 + ((f[i] - 48) as I64);
+                    i = i + 1;
+                }
+            }
+            if (i == len(f)) {
+                put.byte('%');
+            } else {
+                U8 c = f[i];
+                i = i + 1;
+                if (c == '%') {
+                    put.byte('%');
+                } else {
+                    Bool number = directive(c, name);
+                    I64 k = tn;
+                    if (!number && prec >= 0 && prec < k) { k = prec; }
+                    I64 pad = width - k;
+                    if (!lean) {
+                        U8 p = ' ';
+                        if (zero && number) { p = '0'; }
+                        while (pad > 0) {
+                            put.byte(p);
+                            pad = pad - 1;
+                        }
+                    }
+                    put.bytes(tmp[0..k]);
+                    while (pad > 0) {
+                        put.byte(' ');
+                        pad = pad - 1;
+                    }
+                }
+            }
+        }
+    }
+    put.byte('\n');
+}
+
+void one(in U8[_] name, I64 follow, in U8[_] fmt, Bool given, Bool terse) {
+    I64 r = corectl.co_stat(name, follow, rec);
+    if (r < 0) {
+        msg.file(name, 0 - r);
+        return;
+    }
+    if (given) {
+        show(fmt, name);
+    } else if (terse) {
+        show(b"%n %s %b %f %u %g %D %i %h %t %T %X %Y %Z %o", name);
+    } else {
+        I64 t = ftype();
+        if (t == corectl.S_IFCHR || t == corectl.S_IFBLK) {
+            show(b"  File: %N\n  Size: %-10s\tBlocks: %-10b IO Block: %-6o %F\nDevice: %Dh/%dd\tInode: %-10i  Links: %-5h Device type: %t,%T\nAccess: (%04a/%10.10A)  Uid: (%5u/%8U)   Gid: (%5g/%8G)\nAccess: %x\nModify: %y\nChange: %z", name);
+        } else {
+            show(b"  File: %N\n  Size: %-10s\tBlocks: %-10b IO Block: %-6o %F\nDevice: %Dh/%dd\tInode: %-10i  Links: %h\nAccess: (%04a/%10.10A)  Uid: (%5u/%8U)   Gid: (%5g/%8G)\nAccess: %x\nModify: %y\nChange: %z", name);
+        }
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"stat");
+    args.parse(a, b"Lt", b"c");
+    I64 follow = 0;
+    if (args.has('L')) { follow = 1; }
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    I64 cs = 0;
+    I64 ce = 0;
+    if (args.has('c')) {
+        cs = args.val_start('c');
+        ce = args.val_stop('c');
+    }
+    for i in 0..n {
+        one(a[args.op_start(i)..args.op_stop(a, i)], follow, a[cs..ce], args.has('c'), args.has('t'));
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

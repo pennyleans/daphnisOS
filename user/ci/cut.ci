@@ -1,0 +1,149 @@
+// user/ci/cut.ci: cut -b LIST [-n] | -c LIST | -f LIST [-d DELIM] [-s] [FILE...] (docs/specs/2026-11-06-c-core.md,
+// CT-3; POSIX XCU cut). LIST is ranges (N, N-M, N-, -M) separated by commas or blanks, from 1. -b and -c select bytes
+// (characters of the POSIX locale are bytes), in the order of the line, each once. -f selects fields split by DELIM
+// (default tab), written joined by DELIM; a line without DELIM is written whole, or not at all with -s. POSIX's
+// output for -f: the selected fields only (busybox adds a DELIM after a last field that is missing:
+// tests/core/DIFFS.md).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+import user.ci.core.line;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 RANGES = 1024;
+I64[1024] lo;
+I64[1024] hi;       // -1: to the end
+I64 nr = 0;
+U8[65536] buf;
+U8 delim = 9;
+Bool fields = false;
+Bool only = false;
+
+Bool picked(I64 i) {
+    for r in 0..nr {
+        if (i >= lo[r] && (hi[r] < 0 || i <= hi[r])) { return true; }
+    }
+    return false;
+}
+
+I64 digits(in U8[_] s, I64 a, I64 e) {
+    I64 v = 0;
+    for i in a..e {
+        if (v > 100000000) { msg.limit(b"LIST"); }
+        v = v * 10 + ((s[i] - 48) as I64);
+    }
+    return v;
+}
+
+void list(in U8[_] s) {
+    I64 i = 0;
+    I64 n = len(s);
+    while (i < n) {
+        I64 a = i;
+        while (i < n && s[i] != ',' && s[i] != ' ' && s[i] != '\t') {
+            if (s[i] != '-' && (s[i] < '0' || s[i] > '9')) { msg.usage(b"invalid list"); }
+            i = i + 1;
+        }
+        I64 e = i;
+        if (e > a) {
+            I64 dash = -1;
+            for k in a..e {
+                if (s[k] == '-') {
+                    if (dash >= 0) { msg.usage(b"invalid list"); }
+                    dash = k;
+                }
+            }
+            if (nr == RANGES) { msg.limit(b"LIST"); }
+            if (dash < 0) {
+                lo[nr] = digits(s, a, e);
+                hi[nr] = lo[nr];
+            } else {
+                if (dash == a && dash + 1 == e) { msg.usage(b"invalid list"); }
+                lo[nr] = 1;
+                if (dash > a) { lo[nr] = digits(s, a, dash); }
+                hi[nr] = -1;
+                if (dash + 1 < e) { hi[nr] = digits(s, dash + 1, e); }
+            }
+            if (lo[nr] < 1 || (hi[nr] >= 0 && hi[nr] < lo[nr])) { msg.usage(b"invalid list"); }
+            nr = nr + 1;
+        }
+        i = i + 1;
+    }
+    if (nr == 0) { msg.usage(b"invalid list"); }
+}
+
+void one_line(I64 n) {
+    if (!fields) {
+        for i in 0..n {
+            if (picked(i + 1)) { put.byte(buf[i]); }
+        }
+        put.byte('\n');
+        return;
+    }
+    Bool has = false;
+    for i in 0..n {
+        if (buf[i] == delim) { has = true; }
+    }
+    if (!has) {
+        if (!only) {
+            put.bytes(buf[0..n]);
+            put.byte('\n');
+        }
+        return;
+    }
+    I64 f = 1;
+    I64 s = 0;
+    Bool firstout = true;
+    for i in 0..(n + 1) {
+        if (i == n || buf[i] == delim) {
+            if (picked(f)) {
+                if (!firstout) { put.byte(delim); }
+                put.bytes(buf[s..i]);
+                firstout = false;
+            }
+            f = f + 1;
+            s = i + 1;
+        }
+    }
+    put.byte('\n');
+}
+
+void one(in U8[_] name) {
+    I64 fd = get.open(name);
+    if (fd < 0) { return; }
+    line.begin(fd);
+    I64 n = line.next(buf);
+    while (n >= 0) {
+        one_line(n);
+        n = line.next(buf);
+    }
+    if (line.failed() != 0) { msg.file(name, line.failed()); }
+    get.close(fd);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"cut");
+    args.parse(a, b"ns", b"bcfd");
+    I64 kinds = 0;
+    if (args.has('b')) { kinds = kinds + 1; list(a[args.val_start('b')..args.val_stop('b')]); }
+    if (args.has('c')) { kinds = kinds + 1; list(a[args.val_start('c')..args.val_stop('c')]); }
+    if (args.has('f')) {
+        kinds = kinds + 1;
+        fields = true;
+        list(a[args.val_start('f')..args.val_stop('f')]);
+    }
+    if (kinds != 1) { msg.usage(b"expected a list of bytes, characters, or fields"); }
+    if (args.has('d')) {
+        if (!fields || args.val_stop('d') - args.val_start('d') != 1) { msg.usage(b"the delimiter must be one byte, with -f"); }
+        delim = a[args.val_start('d')];
+    }
+    only = args.has('s');
+    if (only && !fields) { msg.usage(b"-s needs -f"); }
+    I64 n = args.operands();
+    if (n == 0) { one(b"-"); }
+    for i in 0..n { one(a[args.op_start(i)..args.op_stop(a, i)]); }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

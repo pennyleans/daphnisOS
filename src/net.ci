@@ -1,0 +1,749 @@
+// src/net.ci: the network device and its record (N-1, docs/specs/2026-11-05-n-net.md sections 2
+// and 4). virtio-net (PCI 1af4:1000, legacy) through src/virtio.ci: receive queue 0 and transmit
+// queue 1, 32 buffers of 2 KiB each, polled at the tick, never by an interrupt. HW-7: this module is
+// the front over two devices. Without virtio-net, an Intel e1000 (src/e1000.ci) takes the same
+// buffers, the frame at the same 10 bytes into each, so the record, poll() and send() do not know
+// which device runs.
+//
+// The record: every frame the kernel takes prints `net rx TICK LEN HEX` at the tick it entered, and
+// every frame it sends prints `net tx LEN sha256 HEX`. TICK counts calls of tick() since init(),
+// the kernel's own clock, so a frame's place in the record does not depend on the host.
+//
+// The replay: an image with a member net.journal (tools/netjournal.py: the `net mac` and `net rx`
+// lines of a transcript) puts the kernel in replay mode. The device is never touched; tick() gives
+// the journal's frames at their ticks and send() only prints. A replay transcript equals the live
+// one but for the mode line.
+//
+// Received frames wait in a ring of 32 (a frame's bytes stay in its buffer) until poll() takes
+// them; a frame that finds the ring full is recorded, then dropped and counted.
+
+import src.serial;
+import src.text;
+import src.sha256;
+import src.phys;
+import src.frames;
+import src.virtio;
+import src.e1000;
+import src.user;
+import src.cpio;
+
+extern unrestricted void journal_record(I64 kind, in U8[_] bytes);
+extern observe I64 journal_size(I64 kind);
+extern observe I64 journal_read(I64 kind, I64 offset, out U8[_] bytes);
+
+export const I64 FRAME_MAX = 1514;    // an Ethernet frame without its FCS
+const U32 PCI_ID = 0x10001AF4;        // device 0x1000, vendor 0x1af4
+const U32 F_MAC = 32;                 // VIRTIO_NET_F_MAC: the MAC is in the configuration
+const I64 HDR = 10;                   // the legacy virtio-net header before every frame
+const I64 SLOTS = 32;
+const I64 BUF = 2048;
+const I64 LINE_MAX = 3100;            // `net rx` + tick + length + timer + 2 * FRAME_MAX hex digits (at most 3080)
+
+Bool live = false;
+Bool intel = false;  // HW-7: the live device is src/e1000.ci's, not virtio-net
+Bool replay = false;
+I64 io = 0;
+I64 irq_ = -1;
+I64 rxq = -1;
+I64 txq = -1;
+U64 rx_base = 0;     // slot s of each side is the buffer at base + s * BUF
+U64 tx_base = 0;
+U8[6] mac;
+I64 now = 0;         // the tick
+I64 timers_ = 0;     // NW-1: timer interrupts counted at halt since init()
+I64[32] ready_slot;  // the frames taken and not yet polled, oldest first
+I64[32] ready_len;
+I64 ready_head = 0;
+I64 ready_count = 0;
+Bool[32] busy;       // replay: a slot that holds a frame not yet polled
+I64 tx_next = 0;
+I64 tx_flight = 0;   // frames given to the device and not yet back
+I64 rx_count = 0;
+I64 tx_count = 0;
+I64 rx_bytes = 0;    // KF-3c: the bytes of the frames rx_count and tx_count count (facts kind 3)
+I64 tx_bytes = 0;
+I64 dropped = 0;
+Bool private_journal = false;
+I64 j_at = 0;        // replay: the journal's next unread byte in the image, and its end
+I64 j_end = 0;
+I64 j_tick = -1;     // the tick of the pending `net rx` line, or -1 when the journal is done
+I64 j_after_tick = 0;
+Bool j_has_timer = false;
+I64 j_timer = -1;
+U8[3100] line;       // the pending journal line
+I64 line_len = 0;
+
+void put_dec(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+void put_byte(U8 b) {
+    serial.serial_putc(text.hex_digit(b >> 4));
+    serial.serial_putc(text.hex_digit(b));
+}
+
+I64 record_text[n, d](in U8[n] value, inout U8[d] record, I64 at) {
+    for i in 0..n {
+        record[at + i] = value[i];
+    }
+    return at + n;
+}
+
+void print_mac() {
+    U8[26] record;
+    I64 at = record_text("net mac ", record, 0);
+    serial.serial_write("net mac ");
+    for i in 0..6 {
+        if (i > 0) {
+            serial.serial_write(":");
+        }
+        put_byte(mac[i]);
+        if (i > 0) {
+            record[at] = 58;
+            at += 1;
+        }
+        record[at] = text.hex_digit(mac[i] >> 4);
+        record[at + 1] = text.hex_digit(mac[i]);
+        at += 2;
+    }
+    serial.serial_write("\n");
+    record[at] = 10;
+    journal_record(1, record[0..at + 1]);
+}
+
+// --- the image ---
+
+Bool same_name[m](in U8[m] want, in U8[12] nm) {
+    if (m != 11 || nm[11] != 0) {
+        return false;
+    }
+    for i in 0..m {
+        if (nm[i] != want[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// prefers authenticated input; otherwise finds net.journal in the image: sets j_at and j_end. The member is a plain file (no links).
+Bool find_journal() {
+    I64 private_size = journal_size(1);
+    if (private_size >= 0) {
+        private_journal = true;
+        j_at = 0;
+        j_end = private_size;
+        return true;
+    }
+    I64 total = user.initrd_size();
+    I64 at = 0;
+    U8[110] h;
+    U8[12] nm;
+    while (at + cpio.HEADER_BYTES <= total) {
+        if (user.initrd_read(at, h) != cpio.HEADER_BYTES || !cpio.magic_ok(h)) {
+            return false;
+        }
+        I64 ns = cpio.field(h, cpio.F_NAMESIZE);
+        I64 msize = cpio.field(h, cpio.F_FILESIZE);
+        if (ns < 1 || msize < 0) {
+            return false;
+        }
+        I64 da = cpio.data_at(at, ns);
+        if (ns == 12 && user.initrd_read(at + cpio.HEADER_BYTES, nm) == 12 && same_name("net.journal", nm)) {
+            if (msize <= total - da) {
+                j_at = da;
+                j_end = da + msize;
+                return true;
+            }
+        }
+        at = cpio.next_at(at, ns, msize);
+    }
+    return false;
+}
+
+// Reads the next journal line, without its line end, into line. False at the end of the journal
+// or for a line longer than LINE_MAX.
+Bool next_line() {
+    line_len = 0;
+    if (j_at >= j_end) {
+        return false;
+    }
+    U8[1] c;
+    while (j_at < j_end) {
+        I64 got = -1;
+        if (private_journal) {
+            got = journal_read(1, j_at, c);
+        } else {
+            got = user.initrd_read(j_at, c);
+        }
+        if (got != 1) {
+            j_at = j_end;
+            return false;
+        }
+        j_at += 1;
+        if (c[0] == 10) {
+            return true;
+        }
+        if (line_len == LINE_MAX) {
+            return false;
+        }
+        line[line_len] = c[0];
+        line_len += 1;
+    }
+    return true;
+}
+
+Bool starts[n](in U8[n] prefix) {
+    if (line_len < n) {
+        return false;
+    }
+    for i in 0..n {
+        if (line[i] != prefix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+I64 hexval(U8 c) {
+    if (c >= 48 && c <= 57) {
+        return (c as I64) - 48;
+    }
+    if (c >= 97 && c <= 102) {
+        return (c as I64) - 87;
+    }
+    return -1;
+}
+
+// The decimal number at line[at..), its end in parse_end; -1 if none.
+I64 parse_end = 0;
+I64 parse_dec(I64 at) {
+    I64 v = 0;
+    I64 i = at;
+    while (i < line_len && line[i] >= 48 && line[i] <= 57 && v < 1000000000000) {
+        v = v * 10 + (line[i] as I64) - 48;
+        i += 1;
+    }
+    parse_end = i;
+    if (i == at) {
+        return -1;
+    }
+    return v;
+}
+
+// Reads the journal up to its next `net rx` line and sets j_tick to that line's tick, or -1 at the
+// end. A line that is not a record ends the replay, and the transcript says so.
+void advance_journal() {
+    j_tick = -1;
+    j_has_timer = false;
+    j_timer = -1;
+    if (!next_line()) {
+        return;
+    }
+    I64 t = -1;
+    if (starts("net rx ")) {
+        t = parse_dec(7);
+    }
+    if (t < now || t < 1) {                // several frames may share a tick (N-3): taken in one tick() of a live run
+        serial.serial_write("daphnis: net journal: a line that is not a `net rx` record of this tick or a later one ends the replay\n");
+        j_at = j_end;
+        return;
+    }
+    j_tick = t;
+    j_after_tick = parse_end;
+    if (j_after_tick < line_len && line[j_after_tick] == 32) {
+        I64 nb = parse_dec(j_after_tick + 1);
+        if (nb >= 0 && nb <= FRAME_MAX && parse_end < line_len && line[parse_end] == 32) {
+            I64 rest = parse_end + 1;
+            I64 sp = -1;
+            for i in rest..line_len {
+                if (sp < 0 && line[i] == 32) {
+                    sp = i;
+                }
+            }
+            if (sp >= 0) {
+                j_has_timer = true;
+                I64 tm = parse_dec(rest);
+                if (tm >= 0 && parse_end == sp) {
+                    j_timer = tm;
+                }
+            }
+        }
+    }
+}
+
+// The frame of the pending `net rx` line into slot s; its length, or -1 for a malformed line.
+I64 decode_pending(I64 s) {
+    if (j_after_tick >= line_len || line[j_after_tick] != 32) {
+        return -1;
+    }
+    I64 nbytes = parse_dec(j_after_tick + 1);
+    if (nbytes < 0 || nbytes > FRAME_MAX || parse_end >= line_len || line[parse_end] != 32) {
+        return -1;
+    }
+    I64 at = parse_end + 1;
+    if (j_has_timer) {
+        if (j_timer < timers_) {
+            return -1;
+        }
+        I64 tm = parse_dec(at);
+        if (tm != j_timer || parse_end >= line_len || line[parse_end] != 32) {
+            return -1;
+        }
+        timers_ = tm;
+        at = parse_end + 1;
+    }
+    if (line_len != at + 2 * nbytes) {
+        return -1;
+    }
+    U8[1514] f;
+    for i in 0..nbytes {
+        I64 hi = hexval(line[at + 2 * i]);
+        I64 lo = hexval(line[at + 2 * i + 1]);
+        if (hi < 0 || lo < 0) {
+            return -1;
+        }
+        f[i] = (hi * 16 + lo) as U8;
+    }
+    if (nbytes > 0) {
+        phys.phys_write8(rx_base + (s * BUF + HDR) as U64, f[0..nbytes]);
+    }
+    return nbytes;
+}
+
+// The MAC of the journal's first line, `net mac aa:bb:cc:dd:ee:ff`.
+Bool journal_mac() {
+    if (!next_line() || line_len != 25 || !starts("net mac ")) {
+        return false;
+    }
+    for i in 0..6 {
+        I64 hi = hexval(line[8 + 3 * i]);
+        I64 lo = hexval(line[9 + 3 * i]);
+        if (hi < 0 || lo < 0 || (i < 5 && line[10 + 3 * i] != 58)) {
+            return false;
+        }
+        mac[i] = (hi * 16 + lo) as U8;
+    }
+    return true;
+}
+
+// --- the device ---
+
+// Pool frames for the 32 buffers of one side: 16 frames, contiguous.
+U64 buffers() {
+    I64 first = frames.alloc(SLOTS * BUF / frames.FRAME_BYTES);
+    if (first < 0) {
+        return 0;
+    }
+    return (frames.POOL_BASE + first * frames.FRAME_BYTES) as U64;
+}
+
+// The frames of buffers() back to the pool (HW-7 part 2: a device that refused to open keeps none).
+void drop_buffers(U64 base) {
+    if (base != 0) {
+        _ = frames.release(((base as I64) - frames.POOL_BASE) / frames.FRAME_BYTES, SLOTS * BUF / frames.FRAME_BYTES);
+    }
+}
+
+void give_rx(I64 s) {
+    if (intel) {
+        e1000.give(s);
+        return;
+    }
+    virtio.post(rxq, s, rx_base + (s * BUF) as U64, BUF, virtio.F_WRITE, 0);
+    virtio.offer(rxq, s);
+}
+
+// Tells the device its receive queue has new buffers (e1000's tail register did, at each give).
+void kick_rx() {
+    if (!intel) {
+        virtio.notify(rxq);
+    }
+}
+
+// HW-7: the e1000 family's device on the buffers virtio-net would have; false when there is none or it does not run.
+Bool open_e1000() {
+    _ = e1000.probe_pch();             // HW-7 part 2, step 1: the board's I219-V read, never opened
+    if (!e1000.find()) {
+        serial.serial_write("daphnis: net no device\n");
+        return false;
+    }
+    rx_base = buffers();
+    tx_base = buffers();
+    if (rx_base == 0 || tx_base == 0 || !e1000.open(rx_base + HDR as U64, tx_base + HDR as U64, BUF)) {
+        serial.serial_write("daphnis: net device refused its queues\n");
+        drop_buffers(rx_base);
+        drop_buffers(tx_base);
+        rx_base = 0;
+        tx_base = 0;
+        return false;
+    }
+    intel = true;
+    for i in 0..6 {
+        mac[i] = e1000.mac_byte(i);
+    }
+    return true;
+}
+
+Bool open_device() {
+    io = virtio.open(PCI_ID);
+    if (io < 0) {
+        return open_e1000();
+    }
+    virtio.accept(io, virtio.features(io) & F_MAC);
+    rxq = virtio.queue(io, 0);
+    txq = virtio.queue(io, 1);
+    rx_base = buffers();
+    tx_base = buffers();
+    if (rxq < 0 || txq < 0 || rx_base == 0 || tx_base == 0 || virtio.queue_size(rxq) < SLOTS || virtio.queue_size(txq) < SLOTS) {
+        virtio.set_status(io, virtio.S_FAILED);
+        serial.serial_write("daphnis: net device refused its queues\n");
+        return false;
+    }
+    virtio.no_interrupt(txq);
+    irq_ = virtio.last_irq();
+    for s in 0..SLOTS {
+        give_rx(s);
+    }
+    virtio.set_status(io, virtio.S_ACK | virtio.S_DRIVER | virtio.S_DRIVER_OK);
+    virtio.notify(rxq);
+    virtio.ack_irq(io);
+    for i in 0..6 {
+        mac[i] = virtio.config8(io, i);
+    }
+    return true;
+}
+
+// SP-1: a network is there, live or replayed (the system panel's Network row).
+export Bool up() {
+    return live || replay;
+}
+
+export Bool is_live() {
+    return live;
+}
+
+export Bool is_replay() {
+    return replay;
+}
+
+export I64 irq() {
+    if (live) {
+        return irq_;
+    }
+    return -1;
+}
+
+export Bool has_rx() {
+    if (intel) {
+        return live && e1000.ready();          // HW-7: rxq is virtio's, -1 here
+    }
+    return live && virtio.ready(rxq);
+}
+
+export void count_timer() {
+    if (live) {
+        timers_ += 1;
+    }
+}
+
+// NW-1: advances timers_ before the next replay tick; true when at least one timer interrupt elapsed.
+export Bool replay_step() {
+    if (!replay) {
+        return false;
+    }
+    I64 next_t = now + 1;
+    if (j_tick == next_t) {
+        if (j_has_timer && j_timer >= timers_) {
+            Bool step = j_timer > timers_;
+            timers_ = j_timer;
+            return step;
+        }
+        timers_ += 1;
+        return true;
+    }
+    if (j_tick > next_t && j_has_timer) {
+        if (j_timer - timers_ >= j_tick - next_t) {
+            timers_ += 1;
+            return true;
+        }
+        return false;
+    }
+    timers_ += 1;
+    return true;
+}
+
+export I64 timers() {
+    return timers_;
+}
+
+// Replay when the image has net.journal, else the device. Prints the mode line and `net mac`.
+// False when there is neither.
+export Bool init() {
+    timers_ = 0;
+    if (find_journal()) {
+        I64 bytes = j_end - j_at;
+        rx_base = buffers();
+        if (rx_base == 0 || !journal_mac()) {
+            serial.serial_write("daphnis: net journal refused: no `net mac` first line\n");
+            return false;
+        }
+        replay = true;
+        serial.serial_write("daphnis: net replay from net.journal, ");
+        put_dec(bytes);
+        serial.serial_write(" bytes\n");
+        print_mac();
+        advance_journal();
+        return true;
+    }
+    if (!open_device()) {
+        return false;
+    }
+    live = true;
+    if (intel) {
+        serial.serial_write("daphnis: net e1000, live\n");
+    } else {
+        serial.serial_write("daphnis: net virtio-net, live\n");
+    }
+    print_mac();
+    return true;
+}
+
+// --- the record ---
+
+void record_rx(I64 s, I64 nbytes, Bool with_timer) {
+    U8[3101] record;
+    I64 at = record_text("net rx ", record, 0);
+    at += text.dec_digits(now, record[at..3101]);
+    at = record_text(" ", record, at);
+    at += text.dec_digits(nbytes, record[at..3101]);
+    at = record_text(" ", record, at);
+    serial.serial_write("net rx ");
+    put_dec(now);
+    serial.serial_write(" ");
+    put_dec(nbytes);
+    serial.serial_write(" ");
+    if (with_timer) {
+        at += text.dec_digits(timers_, record[at..3101]);
+        at = record_text(" ", record, at);
+        put_dec(timers_);
+        serial.serial_write(" ");
+    }
+    U8[256] b;
+    I64 done = 0;
+    while (done < nbytes) {
+        I64 c = nbytes - done;
+        if (c > 256) {
+            c = 256;
+        }
+        phys.phys_read8(rx_base + (s * BUF + HDR + done) as U64, b[0..c]);
+        for i in 0..c {
+            put_byte(b[i]);
+            record[at] = text.hex_digit(b[i] >> 4);
+            record[at + 1] = text.hex_digit(b[i]);
+            at += 2;
+        }
+        done += c;
+    }
+    serial.serial_write("\n");
+    record[at] = 10;
+    journal_record(1, record[0..at + 1]);
+    rx_count += 1;
+    rx_bytes += nbytes;
+}
+
+// Queues the frame of slot s for poll(); false when the ring is full (the frame is dropped).
+Bool enqueue(I64 s, I64 nbytes) {
+    if (ready_count == SLOTS) {
+        dropped += 1;
+        return false;
+    }
+    I64 k = (ready_head + ready_count) % SLOTS;
+    ready_slot[k] = s;
+    ready_len[k] = nbytes;
+    ready_count += 1;
+    return true;
+}
+
+// One tick: the frames that entered since the last one are recorded and queued. Live, they are
+// the device's used buffers; in replay, the journal's records of this tick.
+export void tick() {
+    now += 1;
+    if (live) {
+        if (intel) {
+            tx_flight -= e1000.reap();         // polled: IMC masks every cause, so there is no line to ack
+        } else {
+            virtio.ack_irq(io);
+            while (virtio.take(txq) >= 0) {
+                tx_flight -= 1;
+            }
+        }
+        Bool more = true;
+        Bool gave = false;
+        while (more) {
+            I64 s = -1;
+            I64 nbytes = -1;
+            if (intel) {
+                s = e1000.take();
+                nbytes = e1000.took_len();
+            } else {
+                s = virtio.take(rxq);
+                nbytes = virtio.took_len(rxq) - HDR;
+            }
+            if (s < 0) {
+                more = false;
+            } else {
+                if (s >= SLOTS || nbytes < 0 || nbytes > FRAME_MAX) {
+                    serial.serial_write("daphnis: net device returned a bad buffer\n");
+                    if (s < SLOTS) {
+                        give_rx(s);
+                        gave = true;
+                    }
+                } else {
+                    record_rx(s, nbytes, true);
+                    if (!enqueue(s, nbytes)) {
+                        give_rx(s);
+                        gave = true;
+                    }
+                }
+            }
+        }
+        if (gave) {
+            kick_rx();
+        }
+    } else if (replay) {
+        while (j_tick == now) {
+            Bool wt = j_has_timer;
+            I64 s = -1;
+            for k in 0..SLOTS {
+                if (s < 0 && !busy[k]) {
+                    s = k;
+                }
+            }
+            I64 nbytes = -1;
+            if (s >= 0) {
+                nbytes = decode_pending(s);
+            }
+            if (nbytes < 0) {
+                // a live run never records a frame it has no free buffer for, so this journal is not one
+                serial.serial_write("daphnis: net journal: a malformed `net rx` record, or one with no free buffer, ends the replay\n");
+                j_at = j_end;
+            } else {
+                record_rx(s, nbytes, wt);
+                busy[s] = enqueue(s, nbytes);
+            }
+            advance_journal();
+        }
+    }
+}
+
+// The oldest queued frame into dst; its length (cut to dst's size), or -1 when none waits.
+export I64 poll[m](inout U8[m] dst) {
+    if (ready_count == 0) {
+        return -1;
+    }
+    I64 s = ready_slot[ready_head];
+    I64 nbytes = ready_len[ready_head];
+    ready_head = (ready_head + 1) % SLOTS;
+    ready_count -= 1;
+    I64 n = nbytes;
+    if (n > m) {
+        n = m;
+    }
+    if (n > 0) {
+        phys.phys_read8(rx_base + (s * BUF + HDR) as U64, dst[0..n]);
+    }
+    if (live) {
+        give_rx(s);
+        kick_rx();
+    } else {
+        busy[s] = false;
+    }
+    return n;
+}
+
+// Sends frame[0..nbytes): prints `net tx LEN sha256 HEX`; live, gives it to the device. A frame
+// longer than FRAME_MAX, or one that finds every transmit buffer in flight (32 on virtio-net, 31 on
+// an e1000 ring), is not sent.
+export void send[m](in U8[m] frame, I64 nbytes) {
+    if (nbytes < 0 || nbytes > FRAME_MAX || nbytes > m) {
+        serial.serial_write("daphnis: net tx refused: bad length\n");
+        return;
+    }
+    U8[32] d;
+    sha256.sha_digest(frame, 0, nbytes, d);
+    serial.serial_write("net tx ");
+    put_dec(nbytes);
+    serial.serial_write(" sha256 ");
+    for i in 0..32 {
+        put_byte(d[i]);
+    }
+    serial.serial_write("\n");
+    tx_count += 1;
+    tx_bytes += nbytes;
+    if (!live) {
+        return;
+    }
+    I64 room = SLOTS;
+    if (intel) {
+        room = e1000.TX_ROOM;
+        tx_flight -= e1000.reap();
+    } else {
+        while (virtio.take(txq) >= 0) {
+            tx_flight -= 1;
+        }
+    }
+    if (tx_flight >= room) {
+        dropped += 1;
+        return;
+    }
+    I64 s = tx_next;
+    tx_next = (tx_next + 1) % SLOTS;
+    U8[10] hdr;
+    phys.phys_write8(tx_base + (s * BUF) as U64, hdr);
+    if (nbytes > 0) {
+        phys.phys_write8(tx_base + (s * BUF + HDR) as U64, frame[0..nbytes]);
+    }
+    if (intel) {
+        e1000.send(s, nbytes);
+    } else {
+        virtio.post(txq, s, tx_base + (s * BUF) as U64, HDR + nbytes, 0, 0);
+        virtio.offer(txq, s);
+        virtio.notify(txq);
+    }
+    tx_flight += 1;
+}
+
+export I64 ticks() {
+    return now;
+}
+
+// KF-3c: the bytes of every frame recorded as received (live or replayed, those the queue then dropped among them)
+// and of every frame the stack sent (printed as `net tx`, a live one the full ring dropped among them): the same
+// frames `daphnis: net rx N tx N` counts, so a replay of the same traffic reads the same counts.
+export I64 bytes_received() {
+    return rx_bytes;
+}
+
+export I64 bytes_sent() {
+    return tx_bytes;
+}
+
+export U8 mac_byte(I64 i) {
+    return mac[i];
+}
+
+// `daphnis: net rx N tx N dropped N`
+export void report() {
+    serial.serial_write("daphnis: net rx ");
+    put_dec(rx_count);
+    serial.serial_write(" tx ");
+    put_dec(tx_count);
+    serial.serial_write(" dropped ");
+    put_dec(dropped);
+    serial.serial_write("\n");
+}
+// SPDX-License-Identifier: Apache-2.0

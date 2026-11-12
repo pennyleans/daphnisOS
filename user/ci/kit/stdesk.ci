@@ -1,0 +1,429 @@
+// user/ci/kit/stdesk.ci: Settings' Desk page (RS-SET1 of stage RS; frame 33, approved by DN-58, l 2026-11-11 17:15Z),
+// a page module on kit/stpage.ci. Rows: Background, six swatches and Choose Picture; Recent Files, a switch; then
+// TASKBAR, the pinned list in the Super plane's order, each pin a grip, its icon, its name, and a remove mark shown
+// while the pointer or the keyboard is on it. A pin is dragged by its row to a new place in the list.
+//
+// What the page shows, the host tells it (set_background, set_recent, pins); what a person asks, the page returns as
+// an action for the host to do: BG (arg the swatch), PICTURE (Choose Picture: Index as a picker, PNG only, DN-58 item
+// 8), RECENT (arg 1 on, 0 off), UNPIN (arg the pin), MOVE (arg from, arg2 to). The page keeps only its own focus,
+// hover, scroll and drag. The host saves the settings through a process that runs as the account (U-SET section 3;
+// the desk never writes into a home with its own rights) and moves pins in the one pin store (kit/taskbar.ci).
+//
+// The swatches are literal colors and never swap with the theme (design note 62): #141414, #24272b, #1a4b8c,
+// #3a3937, #9e4724, #e8eaee. The chosen one wears DN-40's ring (2 px of PAPER, then 2 px of ULTRAMARINE); the others
+// a 1 px RULE edge inside. A picture chosen shows no swatch ringed.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.icons3;
+import user.ci.kit.fileicons;
+import user.ci.kit.symbols;
+import user.ci.kit.stpage;
+
+export const I64 SWATCHES = 6;
+export const I64 PICTURE = 6;          // set_background's value for a picture
+export const I64 PINS = 28;            // DN-49: the plane holds at most 28
+export const I64 FILE_ICON = 100;      // an icon code at FILE_ICON + k is fileicons' k; below it, icons3's (kit/plane.ci)
+
+export const I64 BG = 16;              // stpage.ACT + 0
+export const I64 PICK = 17;            // Choose Picture
+export const I64 RECENT = 18;
+export const I64 UNPIN = 19;
+export const I64 MOVE = 20;
+
+export const I64 PIN_H = 32;           // a pin's row, 2 apart (frame 33)
+export const I64 PIN_PITCH = 34;
+export const I64 LIST = 198;           // the list's top from y0: the rows 68 and 117, 24, the label, 6
+
+// Focus stops: the swatches, Choose Picture, the switch, then the pins.
+export const I64 F_NONE = 0;
+export const I64 F_SWATCH = 1;
+export const I64 F_PICK = 2;
+export const I64 F_RECENT = 3;
+export const I64 F_PIN = 4;
+
+U32[6] SW = [0x00141414, 0x0024272b, 0x001a4b8c, 0x003a3937, 0x009e4724, 0x00e8eaee];
+
+I64 bg = 0;
+Bool recent = true;
+Bool pick_live = true;                 // Choose Picture can work: the release takes a picture (kit/bgpic.ci, BG-1)
+I64 np = 0;
+U8[672] pname;                         // 24 bytes a pin's name
+I64[28] plen;
+I64[28] picon;
+
+I64 fs = F_NONE;                       // the keyboard's stop, F_PIN + k for pin k
+Bool kbd = false;                      // the ring shows only after a Tab or an arrow (stpage.ci)
+I64 hov = -1;                          // the pin under the pointer
+I64 top = 0;                           // the first pin shown
+I64 vis = 6;                           // pins the list shows, from the last draw
+I64 drag = -1;                         // the pin pressed, while it may be dragged
+I64 drag_to = -1;                      // where it would go
+Bool moved = false;
+Bool off = false;                      // DN-51 frame 26: the pointer is off the list, where a drop is refused
+I64 a1 = 0;
+I64 a2 = 0;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// Swatch k's color (0 to 5), the same word on both themes.
+export U32 swatch(I64 k) { return SW[k]; }
+
+export void set_background(I64 k) { bg = k; }
+export void set_recent(Bool on) { recent = on; }
+
+// Whether Choose Picture can work (BG-1: kit/bgpic.ci's PICTURES); when not, it is drawn at 40 percent and inert: Tab
+// goes from the swatches to Recent Files, a press on it asks nothing (note 58, DN-46: no caption says why).
+export void set_pick_live(Bool on) {
+    pick_live = on;
+    if (!pick_live && fs == F_PICK) { fs = F_NONE; }
+}
+
+// The pinned list from nothing; pin(name, n, icon) adds the next, in the plane's order (icon as kit/plane.ci codes it).
+// The list keeps its scroll through a refill (after a MOVE or an UNPIN); the next draw clamps it to the new list.
+export void pins_clear() { np = 0; }
+
+export Bool pin(in U8[_] name, I64 n, I64 icon) {
+    if (np >= PINS) { return false; }
+    I64 m = min(n, 24);
+    for k in 0..m { pname[24 * np + k] = name[k]; }
+    plen[np] = m;
+    picon[np] = icon;
+    np = np + 1;
+    return true;
+}
+
+export I64 pins() { return np; }
+export I64 arg() { return a1; }
+export I64 arg2() { return a2; }
+export I64 focused() { return fs; }
+export I64 first() { return top; }
+
+// The page shown afresh: no focus, no hover, the list from its top.
+export void open() {
+    fs = F_NONE;
+    kbd = false;
+    hov = -1;
+    top = 0;
+    drag = -1;
+}
+
+// The keyboard moves in from the sidebar, at the first stop (Tab) or the last (Shift+Tab); whether a stop took it.
+export Bool enter() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(1);
+}
+
+export Bool enter_last() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(-1);
+}
+
+// The stops in reading order: the swatches (one pick), Choose Picture, Recent Files, then the pins (one list, which
+// takes the keyboard at its first pin shown) when there are any.
+Bool tab(I64 d) {
+    I64 can = 7;
+    if (np > 0) { can = 15; }
+    if (!pick_live) { can = can - 2; }
+    I64 t = stpage.tab_to(min(fs, F_PIN) - 1, d, 4, can);
+    fs = t + 1;
+    if (fs == F_PIN) {
+        fs = F_PIN + min(top, np - 1);
+        reveal(fs - F_PIN);
+    }
+    return t >= 0;
+}
+
+I64 act(I64 a, I64 x, I64 y) {
+    a1 = x;
+    a2 = y;
+    return a;
+}
+
+// --- geometry ---
+
+I64 row_bg(I64 y0) { return y0 + stpage.BODY; }
+I64 row_recent(I64 y0) { return y0 + stpage.BODY + stpage.PITCH; }
+I64 pick_w() { return stpage.bw(b"Choose Picture", 14, faces.NAME); }
+I64 pick_x(I64 cr) { return cr - pick_w(); }
+I64 swatch_x(I64 cr, I64 k) { return pick_x(cr) - 16 - 24 - 36 * (SWATCHES - 1 - k); }
+I64 list_y(I64 y0) { return y0 + LIST; }
+
+// Frame 48: the page's height from y0 with the list at its fewest, one pin; a box less tall scrolls it (kit/stbox.ci).
+export I64 tall() { return LIST + PIN_PITCH - 2 + stpage.FOOT; }
+
+// Frame 48: the keyboard's row, from the page's top (y0 = 0): its top and bottom, -1 while the keyboard is not in the
+// page. The host gives them to kit/stbox.ci reveal after each key, so the row stays whole under the head.
+export I64 focus_top() {
+    if (!kbd || fs == F_NONE) { return -1; }
+    if (fs == F_SWATCH || fs == F_PICK) { return row_bg(0); }
+    if (fs == F_RECENT) { return row_recent(0); }
+    return pin_y(0, fs - F_PIN);
+}
+
+export I64 focus_bottom() {
+    I64 t = focus_top();
+    if (t < 0) { return -1; }
+    if (fs >= F_PIN) { return t + PIN_H; }
+    return t + stpage.ROW;
+}
+
+// Pins the list holds between its top and yb less the page's 24 px foot.
+export I64 shown(I64 y0, I64 yb) { return max(1, (yb - 24 - list_y(y0) + 2) / PIN_PITCH); }
+
+I64 pin_y(I64 y0, I64 k) { return list_y(y0) + PIN_PITCH * (k - top); }
+
+// Keep pin k in view.
+void reveal(I64 k) {
+    if (k < top) { top = k; }
+    if (k >= top + vis) { top = k - vis + 1; }
+    if (top > np - vis) { top = np - vis; }
+    if (top < 0) { top = 0; }
+}
+
+// The wheel: d pins on (down positive).
+export Bool scroll(I64 d) {
+    I64 t = top;
+    top = max(0, min(top + d, np - vis));
+    return t != top;
+}
+
+// --- drawing ---
+
+void grip(inout U32[_] row, I64 x0, I64 y0) {
+    U32 c = tok(tokens.INK_DIM);
+    for j in 0..3 {
+        stpage.disc(row, x0 + 5, y0 + 3 + 4 * j, 2, c);
+        stpage.disc(row, x0 + 9, y0 + 3 + 4 * j, 2, c);
+    }
+}
+
+void icon16(inout U32[_] row, I64 x0, I64 y0, I64 code, U32 ground) {
+    I64 z = pen.zoom();
+    if (code >= FILE_ICON) {
+        fileicons.icon_at(row, pen.row_y(), pen.x(x0), pen.y(y0), code - FILE_ICON, 16, z);
+    } else {
+        icons3.icon_at(row, pen.row_y(), pen.x(x0), pen.y(y0), code, 16, z, ground);
+    }
+}
+
+// Pin k's row from ry, [cx - 8, cr + 8): hovered or focused, a SURF1 pill and the remove mark.
+void pin_row(inout U32[_] row, I64 cx, I64 cr, I64 ry, I64 k, I64 y) {
+    Bool lit = k == hov || (kbd && fs == F_PIN + k) || k == drag;
+    U32 ground = tok(tokens.PAPER);
+    if (lit && stpage.on(y, ry, PIN_H)) {
+        pen.round(row, cx - 8, ry, cr + 8, ry + PIN_H, 16, tok(tokens.SURF1));
+        ground = tok(tokens.SURF1);
+    }
+    if (kbd && fs == F_PIN + k && stpage.on(y, ry - 4, PIN_H + 8)) { stpage.focus(row, cx - 8, ry, cr + 8, ry + PIN_H, 16); }
+    if (!stpage.on(y, ry, PIN_H)) { return; }
+    grip(row, cx, ry + 8);
+    icon16(row, cx + 28, ry + 8, picon[k], ground);
+    I64 e = pen.text(row, cx + 56, stpage.base(ry, PIN_H), cr - 28, pname[24 * k..24 * k + plen[k]], plen[k], tok(tokens.INK),
+                     faces.BODY);
+    if (lit) { stpage.sym(row, cr - 18, ry + 8, symbols.CLOSE_MONO, tok(tokens.INK)); }
+}
+
+// The 1x row y of the page from (cx, y0) to (cr, yb), through the pen.
+export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
+    vis = shown(y0, yb);
+    top = max(0, min(top, np - vis));
+    stpage.title(row, cx, y0, cr, b"Desk", 4, y);
+    I64 ry = row_bg(y0);
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, swatch_x(cr, 0) - 8, b"Background", 10);
+        for k in 0..SWATCHES {
+            I64 sx = swatch_x(cr, k);
+            if (k == bg) {
+                stpage.focus(row, sx, ry + 8, sx + 24, ry + 32, 12);
+                stpage.disc(row, sx, ry + 8, 24, SW[k]);
+            } else {
+                stpage.disc(row, sx, ry + 8, 24, tok(tokens.RULE));
+                stpage.disc(row, sx + 1, ry + 9, 22, SW[k]);
+            }
+        }
+        if (kbd && fs == F_SWATCH) {   // DN-40 on the strip: the swatches are one control, as a segmented pill
+            pen.ring(row, swatch_x(cr, 0) - 8, ry + 2, swatch_x(cr, SWATCHES - 1) + 32, ry + 38, 18, 2,
+                     tok(tokens.ULTRAMARINE));
+        }
+        I64 px = stpage.row_button(row, cr, ry, b"Choose Picture", 14);
+        if (!pick_live && stpage.on(y, ry, stpage.ROW)) { stpage.fade(row, px, cr); }
+        if (kbd && fs == F_PICK) { stpage.focus(row, px, ry + 4, cr, ry + 36, stpage.R_CTRL); }
+    }
+    stpage.rule_before(row, cx, row_bg(y0), cr, 1);
+    ry = row_recent(y0);
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, cr - 52, b"Recent Files", 12);
+        stpage.switch_at(row, cr, ry + 8, recent);
+        if (kbd && fs == F_RECENT) { stpage.focus(row, cr - stpage.SW_W, ry + 8, cr, ry + 32, 12); }
+    }
+    stpage.section(row, cx, y0 + LIST - stpage.LAB, cr, b"TASKBAR", 7, y);
+    for i in 0..vis {
+        I64 k = top + i;
+        if (k >= np) { break; }
+        pin_row(row, cx, cr, pin_y(y0, k), k, y);
+    }
+    if (drag >= 0 && moved && drag_to >= top && drag_to <= top + vis) {   // where the pin would land: a 2 px rule
+        I64 ly = list_y(y0) + PIN_PITCH * (drag_to - top) - 2;
+        pen.rect(row, cx - 8, ly, cr + 8, ly + 2, tok(tokens.ULTRAMARINE));
+    }
+}
+
+// --- the pointer ---
+
+// The pin under (px, py), or -1.
+export I64 pin_at(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    if (px < cx - 8 || px >= cr + 8) { return -1; }
+    I64 n = shown(y0, yb);
+    for i in 0..n {
+        I64 k = top + i;
+        if (k < np && py >= pin_y(y0, k) && py < pin_y(y0, k) + PIN_H) { return k; }
+    }
+    return -1;
+}
+
+// The pointer at (px, py): the pin it lights; whether that changed.
+export Bool hover(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    I64 h = pin_at(cx, y0, cr, yb, px, py);
+    if (h == hov) { return false; }
+    hov = h;
+    return true;
+}
+
+// A press at (px, py): a swatch, Choose Picture, the switch, a pin's remove mark; a press on a pin's row may start a
+// drag (move, release).
+export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    kbd = false;
+    vis = shown(y0, yb);
+    I64 ry = row_bg(y0);
+    if (py >= ry + 4 && py < ry + 36) {
+        for k in 0..SWATCHES {
+            I64 sx = swatch_x(cr, k);
+            if (px >= sx - 2 && px < sx + 26) {
+                fs = F_SWATCH;
+                return act(BG, k, 0);
+            }
+        }
+        if (pick_live && px >= pick_x(cr) && px < cr) {
+            fs = F_PICK;
+            return act(PICK, 0, 0);
+        }
+        return stpage.NONE;
+    }
+    ry = row_recent(y0);
+    if (py >= ry + 8 && py < ry + 32 && px >= cr - stpage.SW_W && px < cr) {
+        fs = F_RECENT;
+        return act(RECENT, if_on(!recent), 0);
+    }
+    I64 k = pin_at(cx, y0, cr, yb, px, py);
+    if (k >= 0) {
+        fs = F_PIN + k;
+        if (px >= cr - 22 && px < cr + 2) { return act(UNPIN, k, 0); }   // the remove mark's 24 px square
+        drag = k;
+        drag_to = k;
+        moved = false;
+        return stpage.DRAW;
+    }
+    return stpage.NONE;
+}
+
+I64 if_on(Bool b) {
+    if (b) { return 1; }
+    return 0;
+}
+
+// The pointer moves with the button down: where a dragged pin would land (between rows); whether that changed.
+export Bool move(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    if (drag < 0) { return false; }
+    I64 n = shown(y0, yb);
+    Bool was_off = off;                                        // DN-51 frame 26: off the list's sides, the drop is
+    off = px < cx - 8 || px >= cr + 8;                         // refused (Not here) and the list holds still; above
+    if (off) { return !was_off; }                              // or below it the pin goes to its top or foot (PR 307)
+    I64 slot = (py - list_y(y0) + PIN_PITCH / 2) / PIN_PITCH;
+    if (py < list_y(y0)) { slot = 0; }
+    slot = min(slot, n);                                       // below the list: the slot under its last row
+    Bool ch = false;
+    if (slot <= 0 && top > 0) {                                // at the list's edges the list follows the pointer
+        top = top - 1;
+        ch = true;
+    }
+    if (slot >= n && top + n < np) {
+        top = top + 1;
+        ch = true;
+    }
+    I64 to = max(0, min(top + slot, np));                      // the slot under the pointer, after any scroll
+    Bool was = moved;
+    I64 old = drag_to;
+    drag_to = to;
+    if (to != drag && to != drag + 1) { moved = true; }
+    return ch || moved != was || (moved && to != old);         // the rule shows once the pin leaves its own place
+}
+
+// DN-51 frame 26: a pin is pressed and may be dragged; and it is over a place that refuses it (Not here).
+export Bool dragging() { return drag >= 0; }
+export Bool refused() { return drag >= 0 && off; }
+
+// The button released: MOVE (arg from, arg2 the pin's new index) when a dragged pin changed place, else DRAW.
+export I64 release() {
+    I64 from = drag;
+    I64 to = drag_to;
+    Bool no = off;
+    drag = -1;
+    off = false;
+    if (from < 0 || no || !moved || to == from || to == from + 1) {
+        moved = false;
+        return stpage.DRAW;
+    }
+    moved = false;
+    if (to > from) { to = to - 1; }                            // its index once taken out of the list
+    fs = F_PIN + to;                                           // the keyboard goes on with the pin it moved
+    return act(MOVE, from, to);
+}
+
+// --- the keyboard ---
+
+// A key: Tab and Shift+Tab step through the swatches, Choose Picture, Recent Files and the pins, past either end to
+// the sidebar (BACK); Left and Right choose a swatch; Up and Down move along the pins; Enter or Space presses Choose
+// Picture and flips the switch; Delete or Backspace unpins. An arrow with no stop shows the ring on the first.
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
+    if (stpage.is_tab(code)) {
+        if (tab(stpage.tab_d(code))) { return stpage.DRAW; }
+        return stpage.BACK;
+    }
+    if (fs == F_NONE) {
+        if (stpage.is_arrow(code) && tab(1)) { return stpage.DRAW; }
+        return stpage.NONE;
+    }
+    if (fs == F_SWATCH && (code == stpage.K_LEFT || code == stpage.K_RIGHT)) {
+        I64 k = min(bg, SWATCHES);                             // a picture: Left takes the last swatch
+        if (code == stpage.K_LEFT && k > 0) { return act(BG, k - 1, 0); }
+        if (code == stpage.K_RIGHT && k < SWATCHES - 1) { return act(BG, k + 1, 0); }
+        return stpage.DRAW;
+    }
+    if (fs >= F_PIN && (code == stpage.K_UP || code == stpage.K_DOWN)) {
+        I64 k = fs - F_PIN - 1;
+        if (code == stpage.K_DOWN) { k = fs - F_PIN + 1; }
+        if (k >= 0 && k < np) {
+            fs = F_PIN + k;
+            reveal(k);
+        }
+        return stpage.DRAW;
+    }
+    if (stpage.is_arrow(code)) { return stpage.DRAW; }       // nothing to move inside the stop: the ring shows
+    if (fs == F_PICK && stpage.is_press(code)) { return act(PICK, 0, 0); }
+    if (fs == F_RECENT && stpage.is_press(code)) { return act(RECENT, if_on(!recent), 0); }
+    if (fs >= F_PIN && (code == stpage.K_DELETE || code == stpage.K_BACKSPACE)) { return act(UNPIN, fs - F_PIN, 0); }
+    return stpage.NONE;
+}
+
+// After the host takes pin k out: the keyboard stays on the pin now in its place, or the last.
+export void unpinned(I64 k) {
+    if (fs >= F_PIN && np == 0) { fs = F_RECENT; }
+    if (fs >= F_PIN && fs - F_PIN >= np) { fs = F_PIN + np - 1; }
+    if (hov >= np) { hov = -1; }
+    reveal(max(0, min(k, np - 1)));
+}
+// SPDX-License-Identifier: Apache-2.0

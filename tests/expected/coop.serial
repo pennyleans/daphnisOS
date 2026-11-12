@@ -1,0 +1,28 @@
+run 0
+Daphnis K4: cooperative tasks
+run task 1
+run task 2
+run task 3
+run task 1
+run task 2
+run task 3
+run task 1
+run task 2
+run task 3
+run task 1
+run task 2
+run task 3
+run task 1
+run task 2
+run task 3
+run task 1
+run task 2
+run task 3
+run task 1
+run task 2
+run task 3
+task 1 total 1180 read 7 raw -1
+task 2 total 1693 read -1 raw 0
+task 3 total 1433 read 7 raw 0
+coop: done
+runs: 0 faulted, then one entry returned

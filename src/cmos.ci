@@ -1,0 +1,99 @@
+// src/cmos.ci: the machine's clock, the CMOS RTC (MC146818 registers, ports 0x70 and 0x71). A-3 reads it once at
+// boot (src/rtc.ci); RS-CLK (docs/specs/2026-11-11-rs-rel-s1-units.md section 2) writes a set back to it, so the time
+// survives a restart. Only a clock the boot read is written: a replay or the fixed epoch never touches the machine.
+// The register arithmetic is src/civil.ci's (cmos_seconds, cmos_bytes), in the hosted tests.
+
+import src.portio;
+import src.civil;
+
+Bool read_ok = false;    // the boot read a date from this clock
+Bool century = false;    // and its century register (QEMU's and the ACPI FADT's 0x32) held 19 to 99
+
+U8 reg(U8 r) {
+    portio.port_out8(0x70, r);
+    return portio.port_in8(0x71);
+}
+
+void put(U8 r, U8 v) {
+    portio.port_out8(0x70, r);
+    portio.port_out8(0x71, v);
+}
+
+// The register of field i: second, minute, hour, day, month, year, century.
+U8 field(I64 i) {
+    if (i == 0) {
+        return 0x00;
+    } else if (i == 1) {
+        return 0x02;
+    } else if (i == 2) {
+        return 0x04;
+    } else if (i == 3) {
+        return 0x07;
+    } else if (i == 4) {
+        return 0x08;
+    } else if (i == 5) {
+        return 0x09;
+    }
+    return 0x32;
+}
+
+// The clock in seconds since 1970, -1 if it does not read as a date. Waits out an update in progress (register A
+// bit 7) and reads until two reads agree.
+export I64 read() {
+    U8[7] a;
+    U8[7] b;
+    Bool same = false;
+    I64 round = 0;
+    while (!same && round < 8) {
+        I64 wait = 0;
+        while ((reg(0x0A) & 0x80) != 0 && wait < 1000000) {
+            wait += 1;
+        }
+        for i in 0..7 {
+            a[i] = reg(field(i));
+        }
+        same = round > 0;
+        for i in 0..7 {
+            same = same && a[i] == b[i];
+            b[i] = a[i];
+        }
+        round += 1;
+    }
+    if (!same) {
+        return -1;
+    }
+    U8 sb = reg(0x0B);
+    I64 s = civil.cmos_seconds(a, sb);
+    if (s >= 0) {
+        read_ok = true;
+        I64 c = civil.bcd(a[6]);
+        if ((sb & 4) != 0) {
+            c = a[6] as I64;
+        }
+        century = c >= 19 && c <= 99;
+    }
+    return s;
+}
+
+// True when the boot read a date from the clock (read), so a set is written back.
+export Bool live() {
+    return read_ok;
+}
+
+// RS-CLK: the clock reads s from now on. Register B's SET bit holds the clock still while the fields change, in the
+// format register B names; the century register only when the boot read one there.
+export void write(I64 s) {
+    U8 sb = reg(0x0B);
+    U8[7] r;
+    civil.cmos_bytes(s, sb, r);
+    put(0x0B, sb | 0x80);
+    I64 n = 6;
+    if (century) {
+        n = 7;
+    }
+    for i in 0..n {
+        put(field(i), r[i]);
+    }
+    put(0x0B, sb & 0x7F);
+}
+// SPDX-License-Identifier: Apache-2.0

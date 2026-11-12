@@ -1,0 +1,120 @@
+// tests/am/appmenu_test.ci: AM-2, the program's side (user/ci/kit/appmenu.ci): the FBIO_TILE_MENU record the kernel
+// reads, the OSC 7770 strings the desk's terminal parses (tests/k/terms_test.ci reads them back), and the chosen
+// item coming back. Run by check.sh.
+import user.ci.kit.appmenu;
+import user.ci.terms;
+
+I64 u32_at(in U8[_] b, I64 at) {
+    return (b[at] as I64) | ((b[at + 1] as I64) << 8) | ((b[at + 2] as I64) << 16) | ((b[at + 3] as I64) << 24);
+}
+
+test "AM-2: the record: name, version, the text in 24-byte records, the Settings item last; no own items" {
+    U8[516] b;
+    I64 n = appmenu.record(b, b"Index", b"0.1.0", b"The file explorer of the desk; folders first, then files.", 7);
+    assert(u32_at(b, 0) == 6 && n == 4 + 32 * 6);   // name, version, 3 text records, settings
+    assert(u32_at(b, 4 + 4) == appmenu.K_ABOUT && b[4 + 8] == 'I');
+    assert(u32_at(b, 36 + 4) == appmenu.K_VERSION && b[36 + 8] == '0');
+    assert(u32_at(b, 68 + 4) == appmenu.K_TEXT && b[68 + 8] == 'T' && b[100 + 9] == 'd');   // the second record: " desk"
+    assert(u32_at(b, 164 + 4) == appmenu.K_SETTINGS && u32_at(b, 164) == 7);
+    for r in 0..6 { assert(u32_at(b, 4 + 32 * r + 4) != 2); }   // kind item (2) is never written in 0.1.0
+    n = appmenu.record(b, b"Calc", b"1", b"", -1);
+    assert(u32_at(b, 0) == 2);                                    // no text, no Settings: name and version only
+}
+
+test "AM-2: a terminal program's OSC 7770 strings read back by the desk's terminal; a chosen Settings comes back" {
+    U8[200] o;
+    terms.init(5, 80, 24);
+    I64 n = appmenu.osc_about(o, b"CVim", b"0.1.0", b"A modal editor");
+    for k in 0..n { terms.feed(5, o[k]); }
+    n = appmenu.osc_settings(o, 3);
+    for k in 0..n { terms.feed(5, o[k]); }
+    U8[128] t;
+    assert(terms.menu_name(5, t) == 4 && terms.menu_version(5, t) == 5 && terms.menu_text(5, t) == 14);
+    assert(terms.menu_settings(5) == 3);
+    assert(appmenu.chosen_osc(b"\x1b]7770;chose;3\x07", 15) == 3);
+    assert(appmenu.chosen_osc(b"\x1b]7770;chose;\x07", 14) == -1);
+    assert(appmenu.chosen_osc(b"\x1b]2;title\x07", 10) == -1);
+    assert(appmenu.chosen(appmenu.EV_MENU, 3) == 3 && appmenu.chosen(1, 28) == -1);
+}
+
+test "plan A: Settings declared dimmed, by OSC and in a record; a title clears the dim with the rest" {
+    U8[200] o;
+    terms.init(5, 80, 24);
+    I64 n = appmenu.osc_settings_dim(o, 1);
+    assert(n == 20 && o[17] == ';' && o[18] == 'd' && o[19] == 7);
+    for k in 0..n { terms.feed(5, o[k]); }
+    assert(terms.menu_settings(5) == 1 && terms.menu_settings_off(5));
+    n = appmenu.osc_settings(o, 2);
+    for k in 0..n { terms.feed(5, o[k]); }
+    assert(terms.menu_settings(5) == 2 && !terms.menu_settings_off(5));
+    n = appmenu.osc_settings_dim(o, 1);
+    for k in 0..n { terms.feed(5, o[k]); }
+    U8[6] ti = b"\x1b]2;x\x07";
+    for k in 0..6 { terms.feed(5, ti[k]); }
+    assert(terms.menu_settings(5) == -1 && !terms.menu_settings_off(5));
+    U8[516] b;
+    n = appmenu.record(b, b"Calc", b"1", b"", 1);
+    appmenu.settings_dim(b);
+    assert(b[4 + 32 * 2 + 4] == 1 && b[4 + 32 * 2 + 5] == 4 && b[4 + 32 * 2] == 1);
+    assert(b[4 + 4] == 0 && b[4 + 5] == 0);          // About's record keeps its kind
+}
+
+test "AM-4 section 5 (kernel B's layout): own rows after About and Settings, MENU_ITEM then MENU_KEYS when keyed" {
+    U8[1220] b;
+    I64 n = appmenu.record(b, b"Calc", b"0.1.0", b"The calculator, on ccalc's arithmetic.", 1);
+    appmenu.settings_dim(b);
+    I64 base = n;
+    assert(u32_at(b, 0) == 5);                                    // name, version, two text records, Settings
+    n = appmenu.item(b, 2, 0, b"Copy Result", b"Ctrl+C", appmenu.DIM);
+    n = appmenu.item(b, 4, 0, b"Clear Tape", b"", 0);
+    n = appmenu.item(b, 5, 4, b"Child", b"", 1 | 2);
+    assert(n == base + 32 * 4 && u32_at(b, 0) == 9);
+    I64 r = base;                                                 // Copy Result: id, kind 2 | DIM << 8, the label
+    assert(u32_at(b, r) == 2 && u32_at(b, r + 4) == 2 + 4 * 256 && b[r + 8] == 'C' && b[r + 18] == 't' && b[r + 19] == 0);
+    r = r + 32;                                                   // its keys: id, 6, the keys, zeros after
+    assert(u32_at(b, r) == 2 && u32_at(b, r + 4) == 6 && b[r + 8] == 'C' && b[r + 13] == 'C' && b[r + 14] == 0);
+    r = r + 32;                                                   // Clear Tape: no keys record
+    assert(u32_at(b, r) == 4 && u32_at(b, r + 4) == 2);
+    r = r + 32;                                                   // a child: id | parent << 16, divider and dot
+    assert(u32_at(b, r) == 5 + 4 * 65536 && u32_at(b, r + 4) == 2 + 3 * 256);
+    assert(b[4 + 32 * 4 + 5] == 4);                                // Settings stays dimmed under the rows
+}
+
+test "AM section 7: the dirty record alone, and OSC 7770 dirty read back by the terminal; a title clears it" {
+    U8[64] b;
+    assert(appmenu.dirty(b, true) == 36);
+    assert(b[0] == 1 && b[4] == 1 && u32_at(b, 8) == appmenu.K_DIRTY);
+    assert(appmenu.dirty(b, false) == 36 && b[4] == 0);
+    terms.init(6, 80, 24);
+    I64 n = appmenu.osc_dirty(b, true);
+    assert(n == 15 && b[13] == '1' && b[14] == 7);
+    for k in 0..n { terms.feed(6, b[k]); }
+    assert(terms.menu_unsaved(6));
+    n = appmenu.osc_dirty(b, false);
+    for k in 0..n { terms.feed(6, b[k]); }
+    assert(!terms.menu_unsaved(6));
+    n = appmenu.osc_dirty(b, true);                  // dirty, then a title: the title clears it (section 7.2)
+    for k in 0..n { terms.feed(6, b[k]); }
+    U8[10] t = b"\x1b]2;shell\x07";
+    for k in 0..len(t) { terms.feed(6, t[k]); }
+    assert(!terms.menu_unsaved(6));
+    for k in 0..len(t) { terms.feed(6, t[k]); }      // a title, then dirty: it stands
+    for k in 0..n { terms.feed(6, b[k]); }
+    assert(terms.menu_unsaved(6));
+}
+
+test "AM section 7.2: the terminal answers XTVERSION with Daphnis and DA1, in order, and nothing else" {
+    terms.init(7, 80, 24);
+    U8[7] q = b"\x1b[>q\x1b[c";
+    for k in 0..len(q) { terms.feed(7, q[k]); }
+    U8[64] r;
+    I64 n = terms.replies(7, r);
+    U8[22] want = b"\x1bP>|Daphnis\x1b\\\x1b[?62;22c";
+    assert(n == 22);
+    for k in 0..22 { assert(r[k] == want[k]); }
+    assert(terms.replies(7, r) == 0);                // taken once
+    U8[9] other = b"\x1b[6n\x1b[>0c";              // queries it does not answer
+    for k in 0..len(other) { terms.feed(7, other[k]); }
+    assert(terms.replies(7, r) == 0);
+}
+// SPDX-License-Identifier: Apache-2.0

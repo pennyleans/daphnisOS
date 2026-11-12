@@ -1,0 +1,3969 @@
+// src/proc.ci: processes (U1-1, U1-2; docs/user.md). The table, the loader (a static ELF64 from
+// the cpio image into a fresh space), the system calls of the U1-2 subset of the Linux x86-64 ABI,
+// and the end of a process by exit or by signal. A process runs only inside user.user_enter; the
+// kernel is this module's loop between two turns.
+//
+// What a transcript shows must not depend on the timer: run_alone runs one process at a time,
+// with its output live on the console; run_together runs several under the timer and prints
+// their output and ends afterwards, in pid order.
+
+import src.serial;
+import src.text;
+import src.user;
+import src.uvm;
+import src.cpio;
+import src.elf;
+import src.frames;
+import src.tile;
+import src.fs;
+import src.input;
+import src.xhci;
+import src.udp;
+import src.sock;
+import src.pty;
+import src.trap;
+import src.pit;
+import src.rng;
+import src.sysinfo;
+import src.facts;
+import src.pci;
+import src.blk;
+import src.grants;
+import src.stamp;
+import src.dsp;
+import src.job;
+import src.exepath;
+import src.seat;
+import src.net;
+import src.eth;
+import src.dhcp;
+import src.civil;
+import src.cmos;
+import src.keyrep;
+
+// rt/host.c's row (KF-3a): the processor's brand string, 48 bytes, into dst; 48, or 0 with dst zeroed when the CPU
+// has none.
+extern observe I64 cpu_brand(out U8[_] dst);
+// The processor's base speed in MHz as it reports it (CPUID 0x16), 0 when it reports none.
+extern observe I64 cpu_mhz();
+
+const I64 FREE = 0;
+const I64 READY = 1;
+const I64 DONE = 2;
+const I64 ZOMBIE = 3;      // ended, its parent has not waited yet
+const I64 WAITING = 4;     // in a call that must wait: retried by the scheduler
+const I64 CAP = 256;                  // bytes of output kept per captured process
+const U64 STACK_TOP = 0x7FFFFFFFF000;
+const U64 STACK_BYTES = 131072;
+const U64 MMAP_TOP = 0x7FFF00000000;  // mmap places down from here, a bump pointer per process
+const I64 RLIMIT_STACK = 3;
+const I64 RLIMIT_AS = 9;
+const U64 EPOCH_S = 1767225600;       // 2026-01-01T00:00:00Z: the fixed epoch every gate flavor keeps
+const U64 NS = 1000000000;
+const U64 CLOCK_MAX = 0x7FFFFFFFFFFFFFFF;
+const I64 EPERM = 1;
+const I64 EBADF = 9;
+const I64 ENOMEM = 12;
+const I64 EFAULT = 14;
+const I64 EINVAL = 22;
+const I64 ENOTTY = 25;
+const I64 ECHILD = 10;
+const I64 ESRCH = 3;
+const I64 E2BIG = 7;
+const I64 ESPIPE = 29;
+const U64 AT_FDCWD = 0xFFFFFFFFFFFFFF9C;   // -100
+const I64 CWD = -100;                       // fs: a path relative to the working directory
+const I64 ENOSYS = 38;
+const U64 NR_GRANT = 1000;             // P-3, GR-1 A: grant(word), Daphnis's own; Linux has no call 1000 (-ENOSYS)
+const U64 NR_TRAY = 1002;              // SP-2: tray(on), the window's program asks for the desk's tray; Linux has no call 1002
+const U64 NR_KERN = 1001;              // R0-1: kern(text, n), ask the desk for ring 0; Linux has no call 1001 (-ENOSYS)
+const U64 NR_LOGIN = 1003;             // AC-1a (1002 is SP-2's tray): login(uid, gid, ceiling), the desk's child before its first execve
+const U64 NR_OPEN_ASK = 1005;          // FF-6c (FF-R8 A): open_ask(path, n), a window asks the desk to open a file; Linux has no call 1005
+const U64 NR_HOME = 1006;              // FS-3: home(path, uid, gid), the desk makes or checks an account's home
+const U64 NR_FACTS = 1007;             // KF-3a: facts(kind, id, buf, n), one read-only record of the system; Linux has no call 1007
+const U64 NR_REVOKE = 1008;            // GV-1a: revoke(vpid, word), the desk takes grants back from a window's processes
+const U64 NR_SEAT = 1009;              // LO-1: seat(uid), the desk names the account whose processes take its tile; Linux has no call 1009
+const U64 NR_SWEEP = 1010;             // LO-1: sweep(uid), the desk ends a logged out account's processes; Linux has no call 1010
+const U64 NR_GRANT_ASK = 1004;         // AC-1a: grant_ask(text, n, word), ask the desk for grants past the ceiling
+const I64 EACCES = 13;
+const I64 ENOENT = 2;
+const I64 ENOEXEC = 8;
+const I64 EAGAIN = 11;
+const I64 EMFILE = 24;
+const I64 ENODEV = 19;
+const U64 MAP_SHARED = 1;
+const U64 MAP_PRIVATE = 2;
+const U64 MAP_FIXED = 16;
+const U64 MAP_ANONYMOUS = 32;
+
+I64[64] state;
+I64[64] code;       // exit status, or the signal
+Bool[64] signaled;
+I64[64] ticks;      // turns the timer ended
+Bool[64] on_device; // WAITING for the input device (F-2): the scheduler halts for an interrupt, not a deadlock
+I64[64] poll_wait;   // E-1: a timed poll parked (1, or 3 when spent), 2 it expires on its next call (E spec 4a)
+Bool[64] poll_spent; // a timeout expired and nothing was ready since: the next timed poll waits for a device
+I64[64] poll_seen;   // pty.resize_count() at that expiry; a window change ends the untimed wait
+const I64 WAIT_MAX = 1500;   // halts for the device before the process is ended: about 15 s of ticks
+U64[64] sleep_until; // RS-SLEEP: the wall time (wall_ns) a parked sleep ends, 0 for none; not in the state
+Bool sleep_wall = false;   // RS-SLEEP: a live boot that took the machine's date: a sleep also waits the machine's time
+Bool[64] capture;
+I64[64] caplen;
+U8[16384] cap;       // CAP bytes per process
+U8[2048] digests;   // per process the digest of its canonical state when it ended (uvm.state_digest)
+U64[64] brk_base;   // the page after the program's highest segment
+U64[64] brk_now;
+U64[64] mmap_next;
+U64[64] sres_va;     // RS-SURF: the span of address space a private surface maps into again, 0 for none
+U64[64] sres_len;
+U64[64] clock;      // the virtual clock, nanoseconds since the process started
+I64[64] zero_at;    // RS-CLK2: where CLOCK_REALTIME stood, ns past realtime_s, when the process's clock read 0:
+                    // far - far_set when a program starts (load), the parent's at a fork, less the clock at a set
+                    // (sys_clock_settime). Not in the state
+U64 far = 0;        // FS-R3 C, RS-CLK2: the furthest any process's time line (time_line) has run since boot, ns;
+                    // it only grows
+I64 stamped = 0;    // the last stamp time given in this boot (src/stamp.ci); neither word is in the state
+I64[64] began;      // KF-3b: when the process began, in seconds: the boot's base for one the kernel started, the
+                    // system's stamp time (FS-R3 C) at the fork for a child. An execve keeps it (load() starts
+                    // the clock again at 0; this word is not load's). Not in the state
+U64 realtime_s = EPOCH_S;   // what CLOCK_REALTIME adds: the fixed epoch, or the boot's `rtc` seconds (A-3, src/rtc.ci)
+Bool dated = false; // RS-CLK: the boot took a date (src/rtc.ci), so a set is journaled
+U64 far_set = 0;    // RS-CLK: `far` at the last set; the stamp time runs from the set's seconds by what far gained since
+U64 wall_set = 0;   // RS-CLK2: the wall clock (wall_ns) when the date was last taken: the boot's rtc, or a set
+I64[64] vpid;       // the pid the process sees: its number among the processes started together
+Bool[64] trayf;     // SP-2: the process asked for the desk's tray (sys_tray)
+Bool[64] traymin;   // SP-6: its window minimizes to the tray (tray(2), DN-16)
+Bool[64] dlrun;     // SP-7: the process said a download started (tray(3)) and has not said it finished (tray(4))
+I64 dl_started = 0; // SP-7 (SP-R6 A): downloads started and finished since boot, FBIO_TILE_INFO kind 12
+I64 dl_done = 0;
+I64 tray_seq = 0;   // asks and leaves since boot, and those the tiler was told of (FBIO_TILE_SYNC 7)
+I64 tray_told = 0;
+U8[256] open_path;  // FF-6c: the latest open asked of the desk (sys_open_ask), FBIO_TILE_INFO kind 7
+I64 open_len = 0;   // its bytes, 0 for none
+I64 open_from = -1; // the asking process
+I64 open_seq = 0;   // asks since boot, and those the tiler was told of (FBIO_TILE_SYNC 10)
+I64 open_told = 0;
+I64[64] parent;     // the slot of the parent, or -1
+I64[64] window;     // GV-1a: the window a process belongs to: a number of its own for each child the desk forks,
+                    // inherited by all that child starts and kept when a parent ends; 0 for a process of no window
+                    // (the desk, and what was started before there was one). Not in the state
+I64 windows = 0;    // the last window number given
+I64[64] root;       // the slot the kernel started: the family
+I64[64] out_owner;  // whose capture buffer console output goes to
+I64[64] forks;      // children made
+I64 focus_p = -1;   // SCHED-1: the focused pixel window's process, or -1; not in the state (the tiler's input names it)
+I64 focus_pty = -1; // SCHED-1: the focused terminal's pty, or -1
+I64 desk_run = 0;   // SCHED-1: desk-class turns in a row that an interrupt ended
+Bool keep = false;  // SCHED-1: the last turn ended at a system call
+const I64 DESK_RUN = 3;
+I64[64] exec_at;    // H-3a: the execs counter at the process's last execve (a fork keeps the parent's); not in the state
+I64 execs = 0;
+I64 family_next = 2;   // the pid the next child of the running family sees
+const I64 CHILD_LO = 48;   // children take slots 48 to 63; the kernel starts programs below
+U8[1024] comm;      // 16 bytes a process: the name prctl sees (Linux's comm); U1-5
+U8[2048] exe;       // 32 bytes a process: the image it runs, what /proc/self/exe names
+
+// execve's strings (FS-4): one string up to PATH_MAX, 4,096 bytes with its NUL, so a path Linux takes is an
+// argument here too; 8,192 bytes in all. They lie in the front of digest_now's head (module-level: a kernel local
+// past about 4 KiB has no room, and the high window none for both); a digest is never taken during an execve.
+const I64 ARG_BYTES = 8192;
+const I64 ARG_STR = 4096;
+U8[11852] head;     // digest_now's head: at most 256 open descriptors (2 + 20 each), 256 sockets (24 each), the ring
+I64[64] exelen;
+I64[64] exe_ino;    // K13: the volume inode the process's program was loaded from, 0 for an image member
+I64 found_at = 0;   // the last lookup: where the member's data starts, and its size
+I64 found_size = 0;
+I64 src_ino = 0;    // K13: the loader reads volume inode src_ino (found_size bytes), or the image at found_at when 0
+I64 pending_ino = 0;   // K13: the volume inode execve hands load, 0 for the image member load is named
+
+// --- printing ---
+
+export void put_dec(I64 v) {
+    U8[20] d;
+    I64 mag = v;
+    if (v < 0) {
+        serial.serial_putc(45);
+        mag = 0 - v;
+    }
+    I64 k = text.dec_digits(mag, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+// 0x and the hex digits of v, without leading zeros.
+void put_hex(U64 v) {
+    serial.serial_write("0x");
+    Bool started = false;
+    for i in 0..16 {
+        U8 nib = ((v >> ((60 - 4 * i) as U64)) & 15) as U8;
+        if (nib != 0 || started || i == 15) {
+            serial.serial_putc(text.hex_digit(nib));
+            started = true;
+        }
+    }
+}
+
+void put_name[m](in U8[m] name) {
+    serial.serial_write(name);
+}
+
+// --- the image ---
+
+// Finds the member called `want` in the cpio image; sets found_at and found_size. A member with
+// no bytes and more than one link is a hard link: the bytes are with the member of the same
+// inode that has them (tools/mkcpio.py writes them last, as Linux does).
+Bool lookup[m](in U8[m] want) {
+    I64 total = user.initrd_size();
+    I64 at = 0;
+    U8[110] h;
+    U8[64] nm;
+    while (at + cpio.HEADER_BYTES <= total) {
+        if (user.initrd_read(at, h) != cpio.HEADER_BYTES || !cpio.magic_ok(h)) {
+            return false;
+        }
+        I64 ns = cpio.field(h, cpio.F_NAMESIZE);
+        I64 msize = cpio.field(h, cpio.F_FILESIZE);
+        if (ns < 1 || msize < 0) {
+            return false;
+        }
+        I64 da = cpio.data_at(at, ns);
+        if (ns == m + 1) {
+            Bool same = user.initrd_read(at + cpio.HEADER_BYTES, nm[0..ns]) == ns && nm[m] == 0;
+            for i in 0..m {
+                if (nm[i] != want[i]) {
+                    same = false;
+                }
+            }
+            if (same) {
+                if (msize == 0 && cpio.field(h, cpio.F_NLINK) > 1) {
+                    return lookup_ino(cpio.field(h, cpio.F_INO));
+                }
+                if (msize > total - da) {
+                    return false;
+                }
+                found_at = da;
+                found_size = msize;
+                return true;
+            }
+        }
+        at = cpio.next_at(at, ns, msize);
+    }
+    return false;
+}
+
+// True when the image has a member called name (N-2: the net flavor runs mudp only when it is there).
+export Bool in_image[m](in U8[m] name) {
+    return lookup(name);
+}
+
+// The member of inode `ino` that holds its bytes.
+Bool lookup_ino(I64 ino) {
+    I64 total = user.initrd_size();
+    I64 at = 0;
+    U8[110] h;
+    while (at + cpio.HEADER_BYTES <= total) {
+        if (user.initrd_read(at, h) != cpio.HEADER_BYTES || !cpio.magic_ok(h)) {
+            return false;
+        }
+        I64 ns = cpio.field(h, cpio.F_NAMESIZE);
+        I64 msize = cpio.field(h, cpio.F_FILESIZE);
+        if (ns < 1 || msize < 0) {
+            return false;
+        }
+        I64 da = cpio.data_at(at, ns);
+        if (msize > 0 && cpio.field(h, cpio.F_INO) == ino) {
+            if (msize > total - da) {
+                return false;
+            }
+            found_at = da;
+            found_size = msize;
+            return true;
+        }
+        at = cpio.next_at(at, ns, msize);
+    }
+    return false;
+}
+
+// --- user memory words ---
+
+Bool user_range(U64 va, U64 nbytes) {
+    return va < uvm.USER_HI && nbytes <= uvm.USER_HI - va;
+}
+
+U64 page_up(U64 v) {
+    return (v + 4095) & 0xFFFFFFFFFFFFF000;
+}
+
+// Writes the 64-bit words of w to pid's memory at va (where ring 3 may write); the bytes written.
+I64 poke_words[n](I64 pid, U64 va, in U64[n] w) {
+    U8[1024] b;
+    for i in 0..n {
+        for k in 0..8 {
+            b[8 * i + k] = ((w[i] >> ((8 * k) as U64)) & 0xFF) as U8;
+        }
+    }
+    return uvm.poke(pid, va, b, 8 * n, true);
+}
+
+// The little-endian word at va in pid's memory; ok[0] goes false if ring 3 could not read it.
+U64 peek_word(I64 pid, U64 va, inout Bool[1] ok) {
+    U8[8] b;
+    if (!user_range(va, 8) || uvm.peek(pid, va, b, 8) != 8) {
+        ok[0] = false;
+        return 0;
+    }
+    U64 v = 0;
+    for k in 0..8 {
+        v = v | ((b[k] as U64) << ((8 * k) as U64));
+    }
+    return v;
+}
+
+// --- pages ---
+
+// Gives every page of [lo, hi) the rights prot; on a failure, takes the pages mapped so far away
+// and returns -1.
+I64 set_pages(I64 pid, U64 lo, U64 hi, I64 prot) {
+    U64 p = lo;
+    while (p < hi) {
+        if (uvm.set_page(pid, p, prot) < 0) {
+            unmap_pages(pid, lo, p);
+            return -1;
+        }
+        p += 4096;
+    }
+    return 0;
+}
+
+void unmap_pages(I64 pid, U64 lo, U64 hi) {
+    U64 p = lo;
+    while (p < hi) {
+        uvm.unmap_page(pid, p);
+        p += 4096;
+    }
+}
+
+// True when every page of [lo, hi) is of the kind asked (uvm.KIND_NONE), or, with any, of any
+// kind but none.
+Bool pages_are(I64 pid, U64 lo, U64 hi, I64 want, Bool any) {
+    U64 p = lo;
+    while (p < hi) {
+        I64 k = uvm.kind(pid, p);
+        if ((any && k == uvm.KIND_NONE) || (!any && k != want)) {
+            return false;
+        }
+        p += 4096;
+    }
+    return true;
+}
+
+// A page-aligned user range of at least one byte.
+Bool range_ok(U64 addr, U64 nbytes) {
+    return (addr & 4095) == 0 && addr >= uvm.USER_LO && nbytes > 0 && user_range(addr, nbytes);
+}
+
+// --- loading ---
+
+// K13: bytes of the executable being loaded from off into b, as many as b holds; the count read.
+I64 src_read[n](I64 off, inout U8[n] b) {
+    if (src_ino > 0) {
+        return fs.exec_read(src_ino, off, b);
+    }
+    return user.initrd_read(found_at + off, b);
+}
+
+// K13: the executable's source for load: volume inode xi, or (xi 0) the image member name. False when
+// there is none.
+Bool set_source[m](in U8[m] name, I64 xi) {
+    src_ino = xi;
+    if (xi > 0) {
+        found_size = fs.exec_size(xi);
+        return found_size > 0;
+    }
+    return lookup(name);
+}
+
+// K13: execve checks the executable whole before the old space goes: the ELF header and each PT_LOAD
+// header, as load will. 0, -ENOENT when there is no such member or file, -ENOEXEC when it is not an
+// executable this loader takes.
+I64 exec_check[m](in U8[m] name, I64 xi) {
+    if (!set_source(name, xi)) {
+        return 0 - ENOENT;
+    }
+    U8[64] h;
+    if (found_size < elf.EHDR_BYTES || src_read(0, h) != elf.EHDR_BYTES) {
+        return 0 - ENOEXEC;
+    }
+    U64 fsize = found_size as U64;
+    if (!elf.exec_ok(h, fsize) || elf.entry(h) < uvm.USER_LO || elf.entry(h) >= STACK_TOP - STACK_BYTES) {
+        return 0 - ENOEXEC;
+    }
+    I64 ph_at = elf.phoff(h) as I64;
+    U8[56] p;
+    for i in 0..elf.phnum(h) {
+        if (src_read(ph_at + elf.PHDR_BYTES * i, p) != elf.PHDR_BYTES) {
+            return 0 - ENOEXEC;
+        }
+        if (elf.p_type(p) == elf.PT_LOAD && !elf.load_ok(p, fsize, uvm.USER_LO, STACK_TOP - STACK_BYTES)) {
+            return 0 - ENOEXEC;
+        }
+    }
+    return 0;
+}
+
+// Loads `name` from the image into a new space for pid and sets its first frame: 0, or a
+// negative step number (2 no such file, 3 not an executable, 4 a segment outside user space,
+// 5 out of memory, 6 the stack).
+// head holds argc + envc strings (take_strings, start), each with its NUL, argn bytes in all: the program's argv, then
+// its environment (CT-5b; at most 96 strings together).
+I64 load[m](I64 pid, in U8[m] name, I64 argc, I64 envc, I64 argn) {
+    I64 xi = pending_ino;
+    pending_ino = 0;
+    if (!set_source(name, xi) || found_size < elf.EHDR_BYTES || m > 31 || argc < 1 || envc < 0 || argc + envc > 96 || argn < 1 || argn > ARG_BYTES) {
+        return -2;
+    }
+    U8[64] h;
+    if (src_read(0, h) != elf.EHDR_BYTES) {
+        return -3;
+    }
+    U64 fsize = found_size as U64;
+    if (!elf.exec_ok(h, fsize) || elf.entry(h) < uvm.USER_LO || elf.entry(h) >= STACK_TOP - STACK_BYTES) {
+        return -3;
+    }
+    if (uvm.create(pid) < 0) {
+        return -5;
+    }
+    for i in 0..32 {
+        exe[pid * 32 + i] = 0;
+    }
+    for i in 0..m {
+        exe[pid * 32 + i] = name[i];
+    }
+    exelen[pid] = m;
+    exe_ino[pid] = xi;
+    U64 phoff = elf.phoff(h);
+    I64 ph_at = phoff as I64;
+    I64 ph_count = elf.phnum(h);
+    U64 top = 0;
+    U64 phdr_va = 0;
+    U8[56] p;
+    U8[512] buf;
+    for i in 0..ph_count {
+        if (src_read(ph_at + elf.PHDR_BYTES * i, p) != elf.PHDR_BYTES) {
+            return -3;
+        }
+        if (elf.p_type(p) == elf.PT_LOAD) {
+            if (!elf.load_ok(p, fsize, uvm.USER_LO, STACK_TOP - STACK_BYTES)) {
+                return -4;
+            }
+            U64 va = elf.p_vaddr(p);
+            U64 page = va & 0xFFFFFFFFFFFFF000;
+            Bool w = (elf.p_flags(p) & elf.PF_W) != 0;
+            Bool x = (elf.p_flags(p) & elf.PF_X) != 0;
+            while (page < va + elf.p_memsz(p)) {
+                if (uvm.map(pid, page, w, x) < 0) {
+                    return -5;
+                }
+                page += 4096;
+            }
+            if (va + elf.p_memsz(p) > top) {
+                top = va + elf.p_memsz(p);
+            }
+            I64 fsz = elf.p_filesz(p) as I64;
+            I64 off = elf.p_offset(p) as I64;
+            if (phoff >= elf.p_offset(p) && phoff < elf.p_offset(p) + elf.p_filesz(p)) {
+                phdr_va = va + (phoff - elf.p_offset(p));
+            }
+            I64 done = 0;
+            while (done < fsz) {
+                I64 c = fsz - done;
+                if (c > 512) {
+                    c = 512;
+                }
+                if (src_read(off + done, buf[0..c]) != c || uvm.poke(pid, va + done as U64, buf, c, false) != c) {
+                    return -5;
+                }
+                done += c;
+            }
+        }
+    }
+    brk_base[pid] = page_up(top);
+    brk_now[pid] = brk_base[pid];
+    mmap_next[pid] = MMAP_TOP;
+    sres_va[pid] = 0;
+    sres_len[pid] = 0;
+    clock[pid] = 0;
+    zero_at[pid] = now_rel() as I64;   // RS-CLK2: a program starts at the system's time, not the boot's second
+    far = stamp.further(far, time_line(pid));
+    poll_wait[pid] = 0;
+    poll_spent[pid] = false;
+    sleep_until[pid] = 0;
+    U64 sp = STACK_TOP - STACK_BYTES;
+    while (sp < STACK_TOP) {
+        if (uvm.map(pid, sp, true, false) < 0) {
+            return -5;
+        }
+        sp += 4096;
+    }
+    // The Linux initial stack, from the top: the argv and environment strings, the 16 bytes
+    // AT_RANDOM points at (fixed, so the sealed state depends on nothing but the program, its
+    // arguments and its environment), then, 16-byte aligned, argc, argv[0..argc), NULL,
+    // envp[0..envc), NULL and the auxiliary vector.
+    U64 str = STACK_TOP - (((argn + 15) / 16) * 16) as U64;
+    U64 rnd = str - 16;
+    U8[16] rb;
+    for i in 0..16 {
+        rb[i] = ((0x9E + 0x3B * i) & 0xFF) as U8;
+    }
+    I64 nwords = argc + envc + 27;
+    U64 rsp = (rnd - (8 * nwords) as U64) & 0xFFFFFFFFFFFFFFF0;
+    U64[128] w;
+    for i in 0..128 {
+        w[i] = 0;
+    }
+    w[0] = argc as U64;
+    I64 at = 0;
+    for i in 0..(argc + envc) {
+        I64 slot = 1 + i;              // argv[i]
+        if (i >= argc) {
+            slot = 2 + i;              // envp[i - argc], after argv's NULL
+        }
+        w[slot] = str + at as U64;
+        while (at < argn && head[at] != 0) {
+            at += 1;
+        }
+        at += 1;
+    }
+    I64 ax = argc + envc + 3;          // after argv's NULL and envp's NULL
+    w[ax] = 3;                         // AT_PHDR
+    w[ax + 1] = phdr_va;
+    w[ax + 2] = 4;                     // AT_PHENT
+    w[ax + 3] = elf.PHDR_BYTES as U64;
+    w[ax + 4] = 5;                     // AT_PHNUM
+    w[ax + 5] = ph_count as U64;
+    w[ax + 6] = 6;                     // AT_PAGESZ
+    w[ax + 7] = 4096;
+    w[ax + 8] = 9;                     // AT_ENTRY
+    w[ax + 9] = elf.entry(h);
+    w[ax + 10] = 11;                   // AT_UID, AT_EUID, AT_GID, AT_EGID: 0
+    w[ax + 12] = 12;
+    w[ax + 14] = 13;
+    w[ax + 16] = 14;
+    w[ax + 18] = 23;                   // AT_SECURE 0
+    w[ax + 20] = 25;                   // AT_RANDOM
+    w[ax + 21] = rnd;
+    if (uvm.poke(pid, str, head, argn, true) != argn || uvm.poke(pid, rnd, rb, 16, true) != 16 || poke_words(pid, rsp, w[0..nwords]) != 8 * nwords) {
+        return -6;
+    }
+    user.user_setup(pid, elf.entry(h), rsp);
+    return 0;
+}
+
+// --- system calls ---
+
+void emit[n](I64 pid, in U8[n] b, I64 k) {
+    I64 ow = out_owner[pid];
+    for i in 0..k {
+        if (capture[ow]) {
+            if (caplen[ow] < CAP) {
+                cap[ow * CAP + caplen[ow]] = b[i];
+                caplen[ow] += 1;
+            }
+        } else {
+            serial.serial_putc(b[i]);
+        }
+    }
+}
+
+// A write to the console. Stops at the first byte ring 3 may not read: the count so far, or
+// -EFAULT if that was the first.
+I64 console_write(I64 pid, U64 buf, U64 n) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    U64 want = n;
+    if (want > uvm.USER_HI - buf) {
+        want = uvm.USER_HI - buf;
+    }
+    if (want > 0x7FFFF000) {
+        want = 0x7FFFF000;
+    }
+    I64 total = want as I64;
+    I64 done = 0;
+    U8[256] b;
+    while (done < total) {
+        I64 c = total - done;
+        if (c > 256) {
+            c = 256;
+        }
+        I64 got = uvm.peek(pid, buf + done as U64, b, c);
+        emit(pid, b, got);
+        done += got;
+        if (got < c) {
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            return done;
+        }
+    }
+    return done;
+}
+
+// A descriptor number from a register: -1 when it cannot be one.
+I64 fd_of(U64 v) {
+    if (v > 0x7FFFFFFF) {
+        return -1;
+    }
+    return v as I64;
+}
+
+// poll(fds, nfds, ms) and ppoll(fds, nfds, ts, mask) with the wait in nanoseconds, -1 for none (E-1,
+// docs/specs/2026-11-06-e-editor.md section 4a): each pollfd's revents from fs.poll_events, and the count of
+// those not 0. Nothing ready and a wait above 0 parks the call; it returns 0 only when the scheduler expires it,
+// with every process waiting, and the clock moves on by the wait. After an expiry with nothing ready since,
+// the next timed poll is spent: it expires only when no process waits for a device, so it waits for a key
+// rather than spin, until something is ready or a pty's window changes. The mask is ignored.
+I64 sys_poll(I64 pid, U64 va, U64 nfds, I64 wait_ns) {
+    if (nfds > 256) {
+        return 0 - EINVAL;
+    }
+    I64 n = nfds as I64;
+    if (n > 0 && (va >= uvm.USER_HI || uvm.USER_HI - va < (8 * n) as U64)) {
+        return 0 - EFAULT;
+    }
+    U8[2048] b;
+    if (n > 0 && uvm.peek(pid, va, b, 8 * n) != 8 * n) {
+        return 0 - EFAULT;
+    }
+    I64 ready = 0;
+    for k in 0..n {
+        I64 fd = (b[8 * k] as I64) | ((b[8 * k + 1] as I64) << 8) | ((b[8 * k + 2] as I64) << 16) | ((b[8 * k + 3] as I64) << 24);
+        I64 ev = (b[8 * k + 4] as I64) | ((b[8 * k + 5] as I64) << 8);
+        I64 re = 0;
+        if (fd < 0x80000000) {
+            re = fs.poll_events(pid, fd, ev);   // a negative fd is skipped: revents 0
+        }
+        b[8 * k + 6] = (re & 0xFF) as U8;
+        b[8 * k + 7] = ((re >> 8) & 0xFF) as U8;
+        if (re != 0) {
+            ready += 1;
+        }
+    }
+    Bool expire = poll_wait[pid] == 2;
+    poll_wait[pid] = 0;
+    if (ready == 0 && wait_ns != 0 && !expire) {
+        if (poll_spent[pid] && pty.resize_count() != poll_seen[pid]) {
+            poll_spent[pid] = false;
+        }
+        if (wait_ns > 0) {
+            poll_wait[pid] = 1;
+            if (poll_spent[pid]) {
+                poll_wait[pid] = 3;
+            }
+        }
+        return fs.WOULD_BLOCK;
+    }
+    if (ready > 0) {
+        poll_spent[pid] = false;
+    } else if (expire) {
+        poll_spent[pid] = true;
+        poll_seen[pid] = pty.resize_count();
+        advance(pid, wait_ns as U64);
+    }
+    if (n > 0 && uvm.poke(pid, va, b, 8 * n, true) != 8 * n) {
+        return 0 - EFAULT;
+    }
+    return ready;
+}
+
+// The two's complement value of v.
+// A directory descriptor argument (an int): AT_FDCWD (-100), a descriptor, or -1 for anything else.
+I64 dirfd_of(U64 v) {
+    U64 low = v & 0xFFFFFFFF;
+    if (low == (AT_FDCWD & 0xFFFFFFFF)) {
+        return CWD;
+    }
+    return fd_of(low);
+}
+
+I64 signed_of(U64 v) {
+    if (v < 0x8000000000000000) {
+        return v as I64;
+    }
+    return 0 - ((0xFFFFFFFFFFFFFFFF - v) as I64) - 1;
+}
+
+// read(fd, buf, n) and write(fd, buf, n) by what the descriptor is.
+I64 sys_read(I64 pid, U64 fdv, U64 buf, U64 n) {
+    I64 fd = fd_of(fdv);
+    I64 k = fs.fd_kind(pid, fd);
+    if (k == fs.KIND_IN || k == fs.KIND_FILE || k == fs.KIND_DIR || k == fs.KIND_PIPE_R || k == fs.KIND_FB
+        || k == fs.KIND_XFILE || k == fs.KIND_XDIR || k == fs.KIND_PTM || k == fs.KIND_PTS || k == fs.KIND_DSP
+        || k == fs.KIND_FSIDX || k == fs.KIND_RESOLV || k == fs.KIND_NULL) {
+        return fs.sys_read(pid, fd, buf, n);
+    }
+    if (k == fs.KIND_EVENT && tile.queued(pid)) {
+        return tile.read_queue(pid, buf, n, real_rel(pid) + realtime_s * NS, fs.nonblock(pid, fd));
+    }
+    if (k == fs.KIND_EVENT) {
+        if (fs.uid_of(pid) != 0 || (tile.tiler_pid() >= 0 && pid != tile.tiler_pid())) { return 0 - EACCES; }
+        return input.read_events(pid, buf, n, real_rel(pid) + realtime_s * NS, fs.nonblock(pid, fd));
+    }
+    if (k == fs.KIND_TCP) {
+        return sock.stream_read(pid, fd, buf, n, 0);
+    }
+    return 0 - EBADF;
+}
+
+I64 sys_write(I64 pid, U64 fdv, U64 buf, U64 n) {
+    I64 fd = fd_of(fdv);
+    I64 k = fs.fd_kind(pid, fd);
+    if (k == fs.KIND_OUT) {
+        return console_write(pid, buf, n);
+    }
+    if (k == fs.KIND_FILE || k == fs.KIND_XFILE || k == fs.KIND_PIPE_W || k == fs.KIND_FB || k == fs.KIND_EVENT
+        || k == fs.KIND_PTM || k == fs.KIND_PTS || k == fs.KIND_DSP || k == fs.KIND_NULL) {
+        return fs.sys_write(pid, fd, buf, n, stamp_s());
+    }
+    if (k == fs.KIND_TCP) {
+        return sock.stream_write(pid, fd, buf, n, 0);
+    }
+    return 0 - EBADF;
+}
+
+// readv(fd, iov, cnt): read for each vector in turn, stopping at a short one.
+I64 sys_readv(I64 pid, U64 fd, U64 iov, U64 cnt) {
+    if (fs.fd_kind(pid, fd_of(fd)) == fs.KIND_NONE) {
+        return 0 - EBADF;
+    }
+    if (cnt > 1024) {
+        return 0 - EINVAL;
+    }
+    if (iov >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 total = 0;
+    Bool[1] ok;
+    ok[0] = true;
+    for i in 0..cnt as I64 {
+        U64 base = peek_word(pid, iov + (16 * i) as U64, ok);
+        U64 nbytes = peek_word(pid, iov + (16 * i + 8) as U64, ok);
+        if (!ok[0]) {
+            if (total == 0) {
+                return 0 - EFAULT;
+            }
+            return total;
+        }
+        if (nbytes > 0) {
+            I64 r = sys_read(pid, fd, base, nbytes);
+            if (r <= 0) {
+                if (total == 0) {
+                    return r;
+                }
+                return total;
+            }
+            total += r;
+            if ((r as U64) < nbytes) {
+                return total;
+            }
+        }
+    }
+    return total;
+}
+
+// writev(fd, iov, cnt): write for each vector in turn; stops where Linux stops.
+I64 sys_writev(I64 pid, U64 fd, U64 iov, U64 cnt) {
+    if (fs.fd_kind(pid, fd_of(fd)) == fs.KIND_NONE) {
+        return 0 - EBADF;
+    }
+    if (cnt > 1024) {
+        return 0 - EINVAL;
+    }
+    if (iov >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 total = 0;
+    Bool[1] ok;
+    ok[0] = true;
+    for i in 0..cnt as I64 {
+        U64 base = peek_word(pid, iov + (16 * i) as U64, ok);
+        U64 nbytes = peek_word(pid, iov + (16 * i + 8) as U64, ok);
+        if (!ok[0]) {
+            if (total == 0) {
+                return 0 - EFAULT;
+            }
+            return total;
+        }
+        if (nbytes > 0) {
+            I64 r = sys_write(pid, fd, base, nbytes);
+            if (r < 0) {
+                if (total == 0) {
+                    return r;
+                }
+                return total;
+            }
+            total += r;
+            if ((r as U64) < nbytes) {
+                return total;
+            }
+        }
+    }
+    return total;
+}
+
+// brk(a): the break, moved to a when a is at or above its base, below the mmap area, and the pages are
+// free and within the quota (M-1: no cap of its own); the break as it is otherwise (Linux reports a
+// failure that way).
+I64 sys_brk(I64 pid, U64 a) {
+    U64 cur = brk_now[pid];
+    if (a < brk_base[pid] || a > mmap_next[pid]) {
+        return cur as I64;
+    }
+    U64 old_end = page_up(cur);
+    U64 new_end = page_up(a);
+    if (new_end > old_end) {
+        if (!pages_are(pid, old_end, new_end, uvm.KIND_NONE, false) || set_pages(pid, old_end, new_end, uvm.PROT_READ | uvm.PROT_WRITE) < 0) {
+            return cur as I64;
+        }
+    } else if (new_end < old_end) {
+        unmap_pages(pid, new_end, old_end);
+    }
+    brk_now[pid] = a;
+    return a as I64;
+}
+
+// mmap(addr, nbytes, prot, flags, fd, off): anonymous memory, or the surface (F-1): /dev/fb0 at
+// offset 0, MAP_SHARED, up to its length, as device pages at the next mmap address (a private
+// surface, W-2: fresh pages of the process, which the kernel copies into its tile); any other
+// descriptor is -ENODEV. MAP_FIXED replaces what is at addr; otherwise the pages come from the
+// top of the process's mmap area, downward.
+I64 sys_mmap(I64 pid, U64 addr, U64 nbytes, U64 prot, U64 flags, U64 fd, U64 off) {
+    if (nbytes == 0 || nbytes > uvm.USER_HI) {
+        return 0 - EINVAL;
+    }
+    if ((flags & MAP_ANONYMOUS) == 0) {
+        I64 k = fs.fd_kind(pid, fd_of(fd));
+        if (k == fs.KIND_NONE) {
+            return 0 - EBADF;
+        }
+        if (k != fs.KIND_FB) {
+            return 0 - ENODEV;
+        }
+        Bool own = tile.kind_of(pid) == tile.PRIVATE;
+        U64 limit = user.fb_word(4);
+        if (own) {
+            limit = (tile.stride(pid) * tile.height(pid)) as U64;   // M-1: its pages come out of the quota
+        }                              // else the device pages: bounded by fb_word(4), the framebuffer's length, any pitch
+        // RES-1: a private surface is bounded by its own length (up to the screen's size, src/surfsize.ci), as
+        // /dev/fb0 is by the framebuffer's (HX-8); no 8 MiB MAP_LIMIT (M-1 took it out), so a 4K surface maps
+        if ((flags & MAP_SHARED) == 0 || (flags & MAP_FIXED) != 0 || off != 0 || nbytes > limit) {
+            return 0 - EINVAL;
+        }
+        U64 dbytes = page_up(nbytes);
+        U64 dat = 0;
+        if (own && sres_len[pid] >= dbytes && pages_are(pid, sres_va[pid], sres_va[pid] + dbytes, uvm.KIND_NONE, false)) {
+            dat = sres_va[pid];        // RS-SURF: a surface mapped again starts where the last one did (section 5a)
+        } else {
+            U64 span = dbytes;         // the first map takes its own length, as before RS-SURF
+            if (own && sres_len[pid] > 0) {
+                span = page_up(4 * user.fb_word(0) * user.fb_word(1));   // a larger one: the mode's whole screen
+                if (span < dbytes) {
+                    span = dbytes;
+                }
+            }
+            if (mmap_next[pid] - uvm.USER_LO < span) {
+                return 0 - ENOMEM;
+            }
+            dat = mmap_next[pid] - span;
+            mmap_next[pid] = dat;
+            if (own) {
+                sres_va[pid] = dat;
+                sres_len[pid] = span;
+            }
+        }
+        if (own) {
+            // W-2: a private surface is the process's own pages, read and write, in its digest
+            if (set_pages(pid, dat, dat + dbytes, uvm.PROT_READ | uvm.PROT_WRITE) < 0) {
+                return 0 - ENOMEM;
+            }
+            tile.mapped(pid, dat);
+            return dat as I64;
+        }
+        U64 p = 0;
+        while (p < dbytes) {
+            U64 pa = user.fb_page(p);
+            if (pa == 0 || uvm.map_device(pid, dat + p, pa) < 0) {
+                unmap_pages(pid, dat, dat + p);
+                return 0 - ENOMEM;
+            }
+            p += 4096;
+        }
+        return dat as I64;
+    }
+    if (fd != 0xFFFFFFFFFFFFFFFF) {
+        return 0 - EBADF;
+    }
+    if ((flags & (MAP_SHARED | MAP_PRIVATE)) == 0) {
+        return 0 - EINVAL;
+    }
+    U64 bytes = page_up(nbytes);
+    U64 at = 0;
+    if ((flags & MAP_FIXED) != 0) {
+        if (!range_ok(addr, bytes)) {
+            return 0 - EINVAL;
+        }
+        at = addr;
+        tile.unmapped(pid, at, at + bytes);           // RS-SURF: as munmap
+        unmap_pages(pid, at, at + bytes);
+    } else {
+        if (mmap_next[pid] - uvm.USER_LO < bytes) {
+            return 0 - ENOMEM;
+        }
+        at = mmap_next[pid] - bytes;
+        mmap_next[pid] = at;
+    }
+    if (set_pages(pid, at, at + bytes, (prot & 7) as I64) < 0) {
+        return 0 - ENOMEM;
+    }
+    return at as I64;
+}
+
+// KF-3 (docs/specs/2026-11-11-kf-facts.md section 2): facts(kind, id, buf, n) (1007), Daphnis's own call: one fixed
+// little-endian record of the system (src/facts.ci). It only reads the kernel's state: nothing of the caller's is
+// read (buf and n are where the answer goes), it never blocks and it changes nothing. At most n bytes of the record
+// are written to buf, and the record's full size is returned, so a record can grow at its end; n 0 asks for the
+// size alone and buf is not touched.
+//   -EINVAL  a kind that is not one (checked first, before id and buf)
+//   -ENOENT  an id past the kind's last record
+//   -EFAULT  buf at or above USER_HI, or the bytes to write not all where ring 3 may write (the copy goes a page at
+//            a time, as every copy-out does)
+// Kind 1, the processor (KF-3a): id 0 only; any process may ask. The record is the CPU's brand string, the count of
+// processors the kernel runs on (1: no second processor is started) and the base speed it reports in MHz.
+I64 facts_out[m](I64 pid, U64 buf, U64 n, in U8[m] rec, I64 full) {
+    I64 k = facts.share(full, n);
+    if (k > 0 && (buf >= uvm.USER_HI || uvm.poke(pid, buf, rec, k, true) != k)) {
+        return 0 - EFAULT;
+    }
+    return full;
+}
+
+I64 sys_facts(I64 pid, U64 kind, U64 id, U64 buf, U64 n) {
+    if (kind == facts.CPU) {
+        if (id != 0) {
+            return 0 - ENOENT;
+        }
+        U8[48] brand;
+        _ = cpu_brand(brand);
+        U8[80] rec;
+        facts.cpu(rec, brand, 1, cpu_mhz() as U64, facts.busy_ticks() as U64, facts.idle_ticks() as U64);
+        return facts_out(pid, buf, n, rec, facts.CPU_BYTES);
+    }
+    if (kind == facts.PROCESS) {
+        return facts_process(pid, id, buf, n);
+    }
+    if (kind == facts.NETWORK) {
+        return facts_network(pid, id, buf, n);
+    }
+    if (kind == facts.DISPLAY) {
+        return facts_display(pid, id, buf, n);
+    }
+    if (kind == facts.DISK) {
+        return facts_disk(pid, id, buf, n);
+    }
+    return 0 - EINVAL;
+}
+
+// Kind 3, the network (KF-3c): id 0 is the device src/net.ci drives, live or replayed; -ENOENT past it, and for id 0
+// when the machine has no network. Any process may ask: an address is no secret on the machine that holds it, and the
+// record changes nothing. Link up is a device that holds an address (no carrier state is read from the device).
+I64 facts_network(I64 pid, U64 id, U64 buf, U64 n) {
+    if (id != 0 || !net.up()) {
+        return 0 - ENOENT;
+    }
+    U8[6] mac;
+    for k in 0..6 {
+        mac[k] = net.mac_byte(k);
+    }
+    U8[64] rec;
+    facts.network(rec, eth.our_ip() != 0, mac, eth.our_ip() as U64, eth.netmask() as U64, eth.gateway() as U64,
+                  eth.dns_ip() as U64, dhcp.source() as U64, dhcp.lease_left() as U64, net.bytes_received() as U64,
+                  net.bytes_sent() as U64);
+    return facts_out(pid, buf, n, rec, facts.NET_BYTES);
+}
+
+// Kind 5, the disk (KF-3e): id 0 is the block device src/blk.ci drives; -ENOENT past it, and for id 0 when the
+// machine has no such device. Any process may ask: the record is the device's size and how many bytes its requests
+// have moved since boot, no file and no process. Used and free space are statfs's (KF-1), not this record's.
+I64 facts_disk(I64 pid, U64 id, U64 buf, U64 n) {
+    if (id != 0 || blk.sector_count() == 0) {
+        return 0 - ENOENT;
+    }
+    U8[64] rec;
+    facts.disk(rec, (blk.sector_count() * blk.SECTOR_BYTES) as U64, blk.bytes_read() as U64, blk.bytes_written() as U64);
+    return facts_out(pid, buf, n, rec, facts.DISK_BYTES);
+}
+
+// Kind 4, the display (KF-3d): id 0 only (-ENOENT past it); any process may ask: the record names the machine's
+// display adapter and the mode on the screen, and no process. The adapter is the first PCI function of class 0x03
+// in the order src/pci.ci lists them (0 with none); its name comes from facts.display_name's table. The mode is the
+// surface's as it stands (a mode change shows at the next call); bits a pixel is 32 whenever there is a surface,
+// the only depth the kernel takes.
+I64 facts_display(I64 pid, U64 id, U64 buf, U64 n) {
+    if (id != 0) {
+        return 0 - ENOENT;
+    }
+    I64[64] devs;
+    U32[64] ids;
+    U32[64] classes;
+    I64 found = pci.list(devs, ids, classes);
+    U64 idw = 0;
+    U64 cls = 0;
+    for k in 0..found {
+        if (idw == 0 && (classes[k] >> 16) == 3) {
+            idw = ids[k] as U64;
+            cls = classes[k] as U64;
+        }
+    }
+    U64 w = user.fb_word(0);
+    U64 h = user.fb_word(1);
+    U64 depth = 0;
+    U64 source = facts.SRC_NONE;
+    if (w != 0 && h != 0) {
+        depth = 32;
+        if (user.fb_word(5) == 1) {
+            source = facts.SRC_BOCHS;
+        } else if (user.fb_word(5) == 2) {
+            source = facts.SRC_FIRMWARE;
+        }
+    }
+    U8[104] rec;
+    facts.display(rec, idw, cls, w, h, depth, source);
+    return facts_out(pid, buf, n, rec, facts.DISPLAY_BYTES);
+}
+
+// Kind 2, a process (KF-3b): id is a slot of the process table, 0 up to uvm.PROCS; past it, -ENOENT. The caller sees
+// a slot's record when facts.sees says so: the slot's uid is the caller's, or the caller is uid 0, or the caller
+// holds ring 0, or its account is a Parent (DN-69 item 5: facts.is_parent, what the desk's login said). Every other slot, with a process the caller may not see or with none, answers with the same 96
+// zero bytes and the same return value, so a caller cannot tell the two apart by what it reads. The uid and the
+// grant asked about are the kernel's own words for the caller (fs.uid_of, fs.grant_of, facts.is_parent): nothing the
+// caller passes decides what it sees.
+I64 facts_process(I64 pid, U64 id, U64 buf, U64 n) {
+    if (id >= uvm.PROCS as U64) {
+        return 0 - ENOENT;
+    }
+    I64 s = id as I64;
+    U8[96] rec;
+    facts.empty(rec);
+    U64 st = facts.S_EMPTY;
+    if (state[s] == READY) {
+        st = facts.S_READY;
+    } else if (state[s] == WAITING) {
+        st = facts.S_WAITING;
+    } else if (state[s] == ZOMBIE) {
+        st = facts.S_ENDED;
+    }
+    Bool kern = (fs.grant_of(pid) & fs.GRANT_KERN) != 0;
+    if (st != facts.S_EMPTY && facts.sees(fs.uid_of(pid), kern, facts.is_parent(pid), fs.uid_of(s))) {
+        U8[16] name;
+        for k in 0..16 {
+            name[k] = comm[s * 16 + k];
+        }
+        U64 ppid = 0;
+        if (parent[s] >= 0) {
+            ppid = vpid[parent[s]] as U64;
+        }
+        facts.process(rec, vpid[s] as U64, ppid, fs.uid_of(s) as U64, st, name, uvm.frames_owned(s) as U64,
+                      frames.quota() as U64, clock[s], fs.grant_of(s), began[s] as U64, facts.ran_ticks(s) as U64);
+    }
+    return facts_out(pid, buf, n, rec, facts.PROCESS_BYTES);
+}
+
+// GV-1a (docs/specs/2026-11-11-gv-revoke.md section 2): revoke(vpid, word) (1008), the desk takes grants back from a
+// running window. Only the desk may ask: the tiler's pid with uid 0, the test home (1006) makes; any other caller
+// reads -EPERM, before anything else is looked at. word holds disk, net or audio bits; ring 0 or an unknown bit is
+// -EINVAL. vpid names a live process as the desk's window record names it (FBIO_TILE_INFO); the call acts on its
+// whole window: every live process that carries the same window number, which is the child the desk forked and all
+// it started, an orphan among them. -ESRCH when vpid names no live process of the desk's family, or one of no window
+// (the desk itself). For each process the bits leave the word and the ceiling (fs.revoke). The count of processes
+// whose word held one of the bits. Nothing is copied to or from the caller's memory.
+I64 sys_revoke(I64 pid, I64 vp, U64 word) {
+    if (pid != tile.tiler_pid() || fs.uid_of(pid) != 0) {
+        return 0 - EPERM;
+    }
+    if (!grants.revocable(word)) {
+        return 0 - EINVAL;
+    }
+    I64 t = slot_of(pid, vp);
+    if (t < 0 || state[t] == ZOMBIE || window[t] == 0) {
+        return 0 - ESRCH;
+    }
+    I64 changed = 0;
+    for p in 0..uvm.PROCS {
+        if ((state[p] == READY || state[p] == WAITING) && root[p] == root[pid] && window[p] == window[t]) {
+            if (fs.revoke(p, word)) {
+                changed += 1;
+            }
+        }
+    }
+    return changed;
+}
+
+// KF-2 (docs/specs/2026-11-11-kf-facts.md section 2): sysinfo(info) (99), Linux's struct sysinfo (src/sysinfo.ci).
+// uptime is the caller's virtual clock in seconds, so it is a function of the caller's own history like every
+// other time it reads. totalram and freeram are the pool's RAM frames and its free ones (mem_unit 4096): the pool
+// starts at 32 MiB, below it are the kernel and the loader's image. procs counts the processes that have a pid:
+// ready, waiting, or ended and not yet waited for. Any process may ask, as on Linux; the record is five counts.
+// -EFAULT unless all 112 bytes lie below USER_HI where ring 3 may write (the copy goes a page at a time).
+I64 sys_sysinfo(I64 pid, U64 info) {
+    I64 live = 0;
+    for p in 0..uvm.PROCS {
+        if (state[p] == READY || state[p] == WAITING || state[p] == ZOMBIE) {
+            live += 1;
+        }
+    }
+    U64[14] w;
+    sysinfo.words(w, clock[pid] / NS, frames.ram() as U64, frames.free_count() as U64, live as U64);
+    if (info >= uvm.USER_HI || poke_words(pid, info, w) != sysinfo.BYTES) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// getrlimit(resource, rlim) and prlimit64(pid, resource, new, old): RLIMIT_AS is the quota, frames.quota() in
+// bytes (M-1), RLIMIT_STACK the stack; both fixed, so a new limit is -EPERM. Any other resource is -ENOSYS,
+// not modeled. The process is its own pid (0 or its vpid); another is -ESRCH.
+I64 sys_rlimit(I64 pid, I64 who, I64 resource, U64 newp, U64 oldp) {
+    if (who != 0 && who != vpid[pid]) {
+        return 0 - ESRCH;
+    }
+    U64 lim = 0;
+    if (resource == RLIMIT_AS) {
+        lim = (frames.quota() * 4096) as U64;
+    } else if (resource == RLIMIT_STACK) {
+        lim = STACK_BYTES;
+    } else {
+        return 0 - ENOSYS;
+    }
+    if (newp != 0) {
+        return 0 - EPERM;
+    }
+    if (oldp != 0) {
+        U8[16] b;
+        for k in 0..8 {
+            b[k] = ((lim >> ((8 * k) as U64)) & 0xFF) as U8;
+            b[8 + k] = b[k];
+        }
+        if (uvm.poke(pid, oldp, b, 16, true) != 16) {
+            return 0 - EFAULT;
+        }
+    }
+    return 0;
+}
+
+I64 sys_munmap(I64 pid, U64 addr, U64 nbytes) {
+    if (!range_ok(addr, nbytes)) {
+        return 0 - EINVAL;
+    }
+    tile.unmapped(pid, addr, addr + page_up(nbytes));   // RS-SURF: a surface page among them ends the mapping
+    unmap_pages(pid, addr, addr + page_up(nbytes));
+    return 0;
+}
+
+I64 sys_mprotect(I64 pid, U64 addr, U64 nbytes, U64 prot) {
+    if (!range_ok(addr, nbytes)) {
+        return 0 - EINVAL;
+    }
+    U64 hi = addr + page_up(nbytes);
+    if (!pages_are(pid, addr, hi, uvm.KIND_NONE, true) || set_pages(pid, addr, hi, (prot & 7) as I64) < 0) {
+        return 0 - ENOMEM;
+    }
+    return 0;
+}
+
+// The virtual clock moves forward by add nanoseconds, never past CLOCK_MAX.
+void advance(I64 pid, U64 add) {
+    if (add > CLOCK_MAX - clock[pid]) {
+        clock[pid] = CLOCK_MAX;
+    } else {
+        clock[pid] = clock[pid] + add;
+    }
+    far = stamp.further(far, time_line(pid));  // FS-R3 C, RS-CLK2
+}
+
+// RS-CLK2: the process's CLOCK_REALTIME in ns past realtime_s: its time line's zero (zero_at) plus its clock. Every
+// process is on the stamp time's line (FS-R3 C): a program starts where the system's furthest clock stands, so one
+// started later reads later, and never before a file stamped before it started.
+U64 real_rel(I64 pid) {
+    I64 z = zero_at[pid];
+    U64 c = clock[pid];
+    if (z < 0) {
+        U64 back = (0 - z) as U64;
+        if (c < back) {
+            return 0;
+        }
+        return c - back;
+    }
+    if (c > CLOCK_MAX - z as U64) {
+        return CLOCK_MAX;
+    }
+    return c + z as U64;
+}
+
+// RS-CLK2: where pid's time line stands in far's terms: far_set plus its CLOCK_REALTIME past realtime_s. A program
+// starts at far (zero_at), so `sleep 1; sleep 1` moves the system's time 2 s, and one started after another slept
+// reads after it.
+U64 time_line(I64 pid) {
+    U64 r = real_rel(pid);
+    if (r > CLOCK_MAX - far_set) {
+        return CLOCK_MAX;
+    }
+    return far_set + r;
+}
+
+// RS-CLK2: the system's time in ns past realtime_s. On the fixed epoch, the furthest line (far - far_set), a function
+// of the system's history. On a boot that took a date (A-3), the machine's clock alone: the whole seconds the PIT has
+// run since the date was taken (the desk's clock), journaled `wal S N` and taken from the journal in a replay
+// (rng.wall_take). There a process's sleeps move its own reads and no other's: no call but a set moves the system's
+// time.
+U64 now_rel() {
+    if (!dated) {
+        return far - far_set;
+    }
+    U64 w = wall_ns();
+    I64 s = 0;
+    if (w > wall_set) {
+        s = ((w - wall_set) / NS) as I64;
+    }
+    return rng.wall_take(s) as U64 * NS;
+}
+
+// The wall clock (G-2): the PIT's ticks since the kernel programmed it, in nanoseconds; real time under KVM,
+// dilated under TCG. Only CLOCK_BOOTTIME reads it, and no digest holds it.
+U64 wall_ns() {
+    I64 num = trap.timer_ticks() * pit.USER_DIVISOR;
+    I64 s = num / pit.INPUT_HZ;
+    I64 frac = (num % pit.INPUT_HZ) * 1000000000 / pit.INPUT_HZ;
+    return (s * 1000000000 + frac) as U64;
+}
+
+// clock_gettime(clk, ts): the virtual clock, then 1 us on, so a loop that polls it ends.
+// CLOCK_REALTIME (0) is realtime_s plus the process's place on the stamp time's line (real_rel, RS-CLK2);
+// CLOCK_BOOTTIME (7, G-2) reads the wall clock, the one result that is not a function of the system's history
+// (docs/user.md); every other id reads the bare clock.
+I64 sys_clock_gettime(I64 pid, U64 clk, U64 ts) {
+    if (clk > 11) {
+        return 0 - EINVAL;
+    }
+    U64 t = clock[pid];
+    if (clk == 0) {
+        U64 n = now_rel();             // RS-CLK2: a running process catches up to the system's time
+        U64 r = real_rel(pid);
+        if (n > r) {
+            zero_at[pid] = zero_at[pid] + (n - r) as I64;
+            far = stamp.further(far, time_line(pid));
+        }
+        t = real_rel(pid);
+    }
+    if (clk == 7) {
+        t = wall_ns();
+    }
+    advance(pid, 1000);
+    U64[2] w;
+    w[0] = t / NS;
+    w[1] = t % NS;
+    if (clk == 0) {
+        w[0] = w[0] + realtime_s;
+    }
+    if (poke_words(pid, ts, w) != 16) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// The nanoseconds of the timespec at req, or -1 if it is unreadable or not a valid time. RS-CLK2, as Linux: seconds
+// below 0 (as a signed word) or nanoseconds of a second or more are -EINVAL; any other time is taken, one past what
+// the clock holds read as the clock's end (CLOCK_MAX), so a sleep to a real date is a sleep.
+I64 read_timespec(I64 pid, U64 req) {
+    Bool[1] ok;
+    ok[0] = true;
+    U64 s = peek_word(pid, req, ok);
+    U64 n = peek_word(pid, req + 8, ok);
+    if (!ok[0]) {
+        return 0 - EFAULT;
+    }
+    if (s >= 0x8000000000000000 || n >= NS) {
+        return 0 - EINVAL;
+    }
+    if (s > CLOCK_MAX / NS - 1) {
+        return CLOCK_MAX as I64;
+    }
+    return (s * NS + n) as I64;
+}
+
+// A-3: CLOCK_REALTIME from now on adds s, the seconds since 1970 that src/rtc.ci read at boot; K-6: the desk's clock
+// runs from it (src/tile.ci).
+export void set_realtime(U64 s) {
+    realtime_s = s;
+    wall_set = wall_ns();              // RS-CLK2
+    dated = true;
+    sleep_wall = rng.mode() == rng.LIVE;   // RS-SLEEP: a replay's dates come from its journal, and it never waits
+    tile.set_date(s as I64);
+}
+
+// RS-CLK (docs/specs/2026-11-11-rs-rel-s1-units.md section 2): clock_settime(clk, ts). CLOCK_REALTIME (0) alone; every
+// other id is -EINVAL, as Linux answers for a clock it cannot set. In Linux's order: the id, the copy (-EFAULT), the
+// time (-EINVAL for nanoseconds of a second or more, or seconds at or past Linux's settimeofday bound), then the
+// caller: uid 0 or a holder of GRANT_KERN, else -EPERM, so a session reaches it only through the approval prompt.
+// From the set on, CLOCK_REALTIME adds its seconds (each process still adds its own clock), the desk's clock reads
+// them at once, and the stamp time (FS-R3 C) runs from them with its guard started again, forward or back. On a boot
+// that took a date (A-3) the set is printed and journaled, `clk S` (src/rng.ci), a replay takes the journal's
+// seconds, and a boot that read the machine's clock writes it back (src/cmos.ci); on the fixed epoch the set lasts
+// for the boot.
+I64 sys_clock_settime(I64 pid, U64 clk, U64 ts) {
+    if (clk != 0) {
+        return 0 - EINVAL;
+    }
+    if (ts >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    Bool[1] ok;
+    ok[0] = true;
+    U64 s = peek_word(pid, ts, ok);
+    U64 n = peek_word(pid, ts + 8, ok);
+    if (!ok[0]) {
+        return 0 - EFAULT;
+    }
+    if (n >= NS || s >= civil.SETTOD_MAX as U64) {   // civil.settable: Linux's settimeofday bound
+        return 0 - EINVAL;
+    }
+    if (fs.uid_of(pid) != 0 && (fs.grant_of(pid) & fs.GRANT_KERN) == 0) {
+        return 0 - EPERM;
+    }
+    I64 t = s as I64;
+    if (dated) {
+        t = rng.clock_take(t);
+        if (!civil.settable(t)) {   // a replay's `clk` line past the bound: the caller's seconds, as live
+            t = s as I64;
+        }
+        rng.clock_record(t);
+        if (cmos.live()) {
+            cmos.write(t);
+        }
+    }
+    realtime_s = t as U64;
+    wall_set = wall_ns();              // RS-CLK2: the machine's clock runs on from the set
+    rng.wall_reset();
+    for q in 0..uvm.PROCS {            // RS-CLK2: every process reads the set's seconds now, then runs on by its clock
+        zero_at[q] = 0 - clock[q] as I64;
+    }
+    I64 dbase = t - trap.timer_ticks() * pit.USER_DIVISOR / pit.INPUT_HZ;   // K-6: the desk's clock adds the PIT's seconds
+    if (dbase < 0) {
+        dbase = 0;
+    }
+    tile.set_date(dbase);
+    far_set = far;
+    stamped = t;
+    return 0;
+}
+
+// RS-KR (docs/specs/2026-11-11-rs-rel-s1-units.md section 2): Linux's key repeat control on /dev/input/event0, two
+// u32 at arg, the delay before the first repeat and the period between repeats, in ms (src/keyrep.ci). EVIOCGREP: any
+// holder of the device reads them. EVIOCSREP: the desk alone (the tiler's pid, uid 0), -EPERM for any other before
+// arg is read; then -EFAULT, and -EINVAL for a delay outside 100 to 2000 or a period outside 10 to 1000.
+I64 sys_keyrep(I64 pid, U64 req, U64 arg) {
+    U8[8] b;
+    if (req == keyrep.EVIOCGREP) {
+        I64 d = keyrep.delay();
+        I64 p = keyrep.period();
+        for k in 0..4 {
+            b[k] = ((d >> (8 * k)) & 0xFF) as U8;
+            b[4 + k] = ((p >> (8 * k)) & 0xFF) as U8;
+        }
+        if (arg >= uvm.USER_HI || uvm.poke(pid, arg, b, 8, true) != 8) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    if (pid != tile.tiler_pid() || fs.uid_of(pid) != 0) {
+        return 0 - EPERM;
+    }
+    if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 8) != 8) {
+        return 0 - EFAULT;
+    }
+    I64 d = (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+    I64 p = (b[4] as I64) | ((b[5] as I64) << 8) | ((b[6] as I64) << 16) | ((b[7] as I64) << 24);
+    if (!keyrep.set(d, p)) {
+        return 0 - EINVAL;
+    }
+    return 0;
+}
+
+// getrandom(buf, n, flags) (A-3): up to rng.DRAW_MAX bytes from src/rng.ci's source, the draw recorded there;
+// -ENOSYS with no source, as on a Linux without the call. GRND_NONBLOCK, GRND_RANDOM and GRND_INSECURE (the
+// low three bits) change nothing: the source never blocks. A source that fails is -EAGAIN.
+I64 sys_getrandom(I64 pid, U64 buf, U64 n, U64 flags) {
+    if (rng.mode() == rng.NONE) {
+        return 0 - ENOSYS;
+    }
+    if ((flags & 0xFFFFFFFFFFFFFFF8) != 0) {
+        return 0 - EINVAL;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    I64 k = rng.DRAW_MAX;
+    if (n < k as U64) {
+        k = n as I64;
+    }
+    if (!user_range(buf, k as U64)) {
+        return 0 - EFAULT;
+    }
+    U8[256] b;
+    if (rng.draw(b, k) != k) {
+        return 0 - EAGAIN;
+    }
+    if (uvm.poke(pid, buf, b, k, true) != k) {
+        return 0 - EFAULT;
+    }
+    return k;
+}
+
+// RS-SLEEP (docs/specs/2026-11-05-u1-2-musl.md section 4, edition 2): a sleep moves the virtual clock as it always
+// did, and on a live boot that took the machine's date (sleep_wall) the call then also waits the same time on the
+// machine's clock: parked as a device wait (the scheduler halts until the PIT's next tick, never a deadlock) and
+// made again at each turn until wall_ns reaches sleep_until. A sealed run, a replay and every gate's golden boot
+// return at once, as before, so no digest or transcript moves (G-2 A: the PIT never enters the virtual clock).
+I64 sleep_park(I64 pid, U64 c0, I64 r) {
+    if (r != 0 || !sleep_wall || clock[pid] <= c0) {
+        return r;
+    }
+    U64 d = clock[pid] - c0;
+    U64 w = wall_ns();
+    if (d > 0xFFFFFFFFFFFFFFFF - w) {
+        sleep_until[pid] = 0xFFFFFFFFFFFFFFFF;
+    } else {
+        sleep_until[pid] = w + d;
+    }
+    return input.WOULD_BLOCK_DEV;
+}
+
+// A parked sleep made again: still waiting, or 0 once the machine's clock reached its end.
+I64 sleep_on(I64 pid) {
+    if (wall_ns() < sleep_until[pid]) {
+        return input.WOULD_BLOCK_DEV;
+    }
+    sleep_until[pid] = 0;
+    return 0;
+}
+
+// nanosleep(req, rem): the clock moves by req, and the call returns (RS-SLEEP: on a live boot, after req).
+I64 sys_nanosleep(I64 pid, U64 req) {
+    if (sleep_until[pid] != 0) {
+        return sleep_on(pid);
+    }
+    U64 c0 = clock[pid];
+    return sleep_park(pid, c0, nanosleep_clock(pid, req));
+}
+
+I64 nanosleep_clock(I64 pid, U64 req) {
+    if (req >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 t = read_timespec(pid, req);
+    if (t < 0) {
+        return t;
+    }
+    advance(pid, t as U64);
+    return 0;
+}
+
+// clock_nanosleep(clk, flags, req, rem): as nanosleep; with TIMER_ABSTIME (1) the clock moves to
+// req if that is later (RS-SLEEP: on a live boot the call waits what the clock moved).
+I64 sys_clock_nanosleep(I64 pid, U64 clk, U64 flags, U64 req) {
+    if (sleep_until[pid] != 0) {
+        return sleep_on(pid);
+    }
+    U64 c0 = clock[pid];
+    return sleep_park(pid, c0, clock_nanosleep_clock(pid, clk, flags, req));
+}
+
+I64 clock_nanosleep_clock(I64 pid, U64 clk, U64 flags, U64 req) {
+    if (clk > 11) {
+        return 0 - EINVAL;
+    }
+    if (req >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 t = read_timespec(pid, req);
+    if (t < 0) {
+        return t;
+    }
+    U64 target = t as U64;
+    if ((flags & 1) == 0) {
+        advance(pid, target);
+        return 0;
+    }
+    if (clk == 0) {                    // RS-CLK2: the process's clock where its CLOCK_REALTIME reads target
+        if (target < realtime_s * NS) {
+            return 0;
+        }
+        target = target - realtime_s * NS;
+        I64 z = zero_at[pid];
+        if (z >= 0) {
+            if (target < z as U64) {
+                return 0;
+            }
+            target = target - z as U64;
+        } else if (target > CLOCK_MAX - (0 - z) as U64) {
+            target = CLOCK_MAX;
+        } else {
+            target = target + (0 - z) as U64;
+        }
+    }
+    if (target > clock[pid]) {
+        clock[pid] = target;
+        far = stamp.further(far, time_line(pid));  // FS-R3 C, RS-CLK2
+    }
+    return 0;
+}
+
+// arch_prctl(op, addr): the FS base, which thread-local storage goes through.
+I64 sys_arch_prctl(I64 pid, U64 op, U64 addr) {
+    if (op == 0x1002) {
+        if (addr >= uvm.USER_HI) {
+            return 0 - EPERM;
+        }
+        user.user_set_reg(pid, user.R_FS, addr);
+        return 0;
+    }
+    if (op == 0x1003) {
+        U64[1] w;
+        w[0] = user.user_reg(pid, user.R_FS);
+        if (addr >= uvm.USER_HI || poke_words(pid, addr, w) != 8) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    return 0 - EINVAL;
+}
+
+// FS-4 with ruling FS-R3 C (docs/specs/2026-11-07-bu2-meta.md section 4.6): the stamp time, the one time every file
+// stamp and utimensat's UTIME_NOW take: the boot's base plus the furthest any process's time line has run since boot
+// (RS-CLK2: its clock from where the system's stood when its program started), in seconds, never earlier than the last
+// stamp given. Not the caller's own clock: a program's clock starts again at 0 when it starts, so a file written later
+// by a fresh program would read earlier; RS-CLK2: the caller's CLOCK_REALTIME is this line from where it stood at the
+// program's start (real_rel). `far` only grows (advance, and clock_nanosleep's absolute sleep, are the two places a
+// clock moves; a fork copies a line that is already counted; a process that ends leaves `far` where it was), so neither
+// a child nor an ended process pulls the value back, and the guard holds if the base itself is set back. RS-CLK: a set
+// of the clock is the one exception, as the person asked for that time: the stamp time is then the set's seconds plus
+// what `far` gained since (far_set), and the guard starts again from them (sys_clock_settime).
+I64 stamp_s() {
+    stamped = stamp.time(now_rel(), realtime_s, stamped);   // RS-CLK: from the last set's seconds; RS-CLK2
+    return stamped;
+}
+
+// BU-2: uname (63), struct utsname, six fields of 65 bytes, NUL padded (docs/specs/2026-11-07-bu2-meta.md 4.8).
+void uts_field[m](inout U8[390] b, I64 k, in U8[m] v) {
+    for i in 0..m {
+        b[65 * k + i] = v[i];
+    }
+}
+
+I64 sys_uname(I64 pid, U64 buf) {
+    U8[390] b;
+    for i in 0..390 {
+        b[i] = 0;
+    }
+    uts_field(b, 0, "Daphnis");
+    uts_field(b, 1, "daphnis");
+    uts_field(b, 2, "0.1.0");
+    uts_field(b, 3, "#1 BU-2");
+    uts_field(b, 4, "x86_64");
+    uts_field(b, 5, "(none)");
+    if (buf >= uvm.USER_HI || uvm.poke(pid, buf, b, 390, true) != 390) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// The two's complement bits of v, without a checked cast of a negative value.
+U64 bits(I64 v) {
+    if (v >= 0) {
+        return v as U64;
+    }
+    return 0xFFFFFFFFFFFFFFFF - (0 - (v + 1)) as U64;
+}
+
+void syscall(I64 pid) {
+    U64 nr = user.user_reg(pid, user.R_RAX);
+    U64 a0 = user.user_reg(pid, user.R_RDI);
+    U64 a1 = user.user_reg(pid, user.R_RSI);
+    U64 a2 = user.user_reg(pid, user.R_RDX);
+    U64 a3 = user.user_reg(pid, user.R_R10);
+    U64 a4 = user.user_reg(pid, user.R_R8);
+    U64 a5 = user.user_reg(pid, user.R_R9);
+    I64 ret = 0 - ENOSYS;
+    if (nr == 60 || nr == 231) {
+        finish(pid, (a0 & 0xFF) as I64, false);
+        return;
+    }
+    if (nr == 169) {
+        ret = sys_reboot(pid, a0, a1, a2);
+        if (ret == 0) {
+            return;                    // FF-4: every process has ended, the caller last
+        }
+    } else if (nr == 62) {
+        I64 t = slot_of(pid, signed_of(a0));
+        I64 sig = signed_of(a1);
+        I64 answer = 0 - ESRCH;
+        if (t >= 0) {               // KF edition 14: -ESRCH as well for a process the caller may not see
+            answer = facts.kill_answer(fs.uid_of(pid), (fs.grant_of(pid) & fs.GRANT_KERN) != 0, facts.is_parent(pid),
+                                       fs.uid_of(t));
+        }
+        if (answer != 0) {
+            ret = answer;
+        } else if (sig == 0) {
+            ret = 0;
+        } else if (sig < 1 || sig > 64) {
+            ret = 0 - EINVAL;
+        } else if (state[t] == ZOMBIE) {
+            ret = 0;                   // KILL-Z: an ended process not yet waited for takes no signal, as on Linux;
+                                       // finish() on it read the page tables its end had freed (a kernel fault)
+        } else if (job.ignored(t, sig)) {
+            ret = 0;                   // K-10: an ignored signal does nothing
+        } else if (t == pid) {
+            finish(pid, sig, true);
+            return;
+        } else {
+            finish(t, sig, true);
+            ret = 0;
+        }
+    } else if (nr == 57) {
+        ret = sys_fork(pid);
+    } else if (nr == 56) {
+        ret = sys_clone(pid, a0, a1);
+    } else if (nr == 58) {
+        ret = sys_clone(pid, 0x4111, user.user_reg(pid, user.R_RSP));   // vfork: clone's flags on the same stack
+    } else if (nr == 59) {
+        ret = sys_execve(pid, a0, a1, a2);
+        if (ret == 0) {
+            return;                    // the new program starts at its entry
+        }
+        if (ret == 0 - ESRCH) {
+            finish(pid, 9, true);      // the old image is gone and the new could not load
+            return;
+        }
+    } else if (nr == 61) {
+        ret = sys_wait4(pid, signed_of(a0), a1, a2, a3);
+    } else if (nr == 110) {
+        ret = 1;
+        if (parent[pid] >= 0) {
+            ret = vpid[parent[pid]];
+        }
+    } else if (nr == 102 || nr == 107) {
+        ret = fs.uid_of(pid);          // getuid, geteuid (AC-1a): 0 until a login, then the account's
+    } else if (nr == 104 || nr == 108) {
+        ret = fs.gid_of(pid);          // getgid, getegid
+    } else if (nr == 186) {
+        ret = vpid[pid];               // gettid: a process is one thread
+    } else if (nr == 157) {
+        ret = sys_prctl(pid, a0, a1);
+    } else if (nr == 97) {
+        ret = sys_rlimit(pid, 0, signed_of(a0), 0, a1);
+    } else if (nr == 302) {
+        ret = sys_rlimit(pid, signed_of(a0), signed_of(a1), a2, a3);
+    } else if (nr == 22) {
+        ret = fs.sys_pipe(pid, a0, 0);
+    } else if (nr == 293) {
+        ret = fs.sys_pipe(pid, a0, a1);
+    } else if (nr == 7) {
+        U64 ms = a2 & 0xFFFFFFFF;
+        I64 w = -1;                    // an int below 0: no timeout
+        if (ms < 0x80000000) {
+            w = (ms as I64) * 1000000;
+        }
+        ret = sys_poll(pid, a0, a1, w);
+    } else if (nr == 271) {
+        I64 t = -1;
+        if (a2 != 0) {
+            t = read_timespec(pid, a2);
+        }
+        if (a2 != 0 && t < 0) {
+            ret = t;
+        } else {
+            ret = sys_poll(pid, a0, a1, t);
+        }
+    } else if (nr == 0) {
+        ret = sys_read(pid, a0, a1, a2);
+    } else if (nr == 1) {
+        ret = sys_write(pid, a0, a1, a2);
+    } else if (nr == 2) {
+        ret = fs.sys_open(pid, CWD, a0, a1, a2, stamp_s());
+    } else if (nr == 3) {
+        ret = fs.sys_close(pid, fd_of(a0));
+    } else if (nr == 4) {
+        ret = fs.sys_stat(pid, CWD, a0, a1, 0);
+    } else if (nr == 6) {
+        ret = fs.sys_stat(pid, CWD, a0, a1, 0x100);   // lstat: AT_SYMLINK_NOFOLLOW (P-2)
+    } else if (nr == 5) {
+        ret = fs.sys_fstat(pid, fd_of(a0), a1);
+    } else if (nr == 8) {
+        ret = fs.sys_lseek(pid, fd_of(a0), signed_of(a1), signed_of(a2));
+    } else if (nr == 17) {
+        ret = fs.sys_pread(pid, fd_of(a0), a1, a2, a3);
+    } else if (nr == 19) {
+        ret = sys_readv(pid, a0, a1, a2);
+    } else if (nr == 21) {
+        ret = fs.sys_access(pid, CWD, a0, a1);
+    } else if (nr == 32) {
+        ret = fs.sys_dup(pid, fd_of(a0), 0);
+    } else if (nr == 33) {
+        ret = fs.sys_dup2(pid, fd_of(a0), fd_of(a1), 0, false);
+    } else if (nr == 72) {
+        ret = fs.sys_fcntl(pid, fd_of(a0), signed_of(a1), a2);
+    } else if (nr == 79) {
+        ret = fs.sys_getcwd(pid, a0, a1);
+    } else if (nr == 80) {
+        ret = fs.sys_chdir(pid, a0);
+    } else if (nr == 81) {
+        ret = fs.sys_fchdir(pid, fd_of(a0));
+    } else if (nr == 82) {
+        ret = fs.sys_rename(pid, CWD, a0, CWD, a1, stamp_s());
+    } else if (nr == 83) {
+        ret = fs.sys_mkdir(pid, CWD, a0, a1, stamp_s());
+    } else if (nr == 84) {
+        ret = fs.sys_unlink(pid, CWD, a0, true, stamp_s());
+    } else if (nr == 87) {
+        ret = fs.sys_unlink(pid, CWD, a0, false, stamp_s());
+    } else if (nr == 99) {
+        ret = sys_sysinfo(pid, a0);                        // KF-2
+    } else if (nr == 137) {
+        ret = fs.sys_statfs(pid, a0, a1);                  // KF-1
+    } else if (nr == 138) {
+        ret = fs.sys_fstatfs(pid, fd_of(a0), a1);          // KF-1
+    } else if (nr == 76) {
+        ret = fs.sys_truncate(pid, a0, signed_of(a1), stamp_s());
+    } else if (nr == 77) {
+        ret = fs.sys_ftruncate(pid, fd_of(a0), signed_of(a1), stamp_s());
+    } else if (nr == 74 || nr == 75) {
+        ret = fs.sys_fsync(pid, fd_of(a0));
+    } else if (nr == 162) {
+        ret = fs.sys_sync();
+    } else if (nr == NR_GRANT) {
+        ret = fs.sys_grant(pid, a0);
+    } else if (nr == NR_KERN) {
+        ret = sys_kern(pid, a0, a1);
+    } else if (nr == NR_TRAY) {
+        ret = sys_tray(pid, a0);
+    } else if (nr == NR_OPEN_ASK) {
+        ret = sys_open_ask(pid, a0, a1);
+    } else if (nr == NR_LOGIN) {
+        ret = sys_login(pid, signed_of(a0), signed_of(a1), a2);
+    } else if (nr == NR_GRANT_ASK) {
+        ret = sys_grant_ask(pid, a0, a1, a2);
+    } else if (nr == NR_FACTS) {
+        ret = sys_facts(pid, a0, a1, a2, a3);
+    } else if (nr == NR_REVOKE) {
+        ret = sys_revoke(pid, signed_of(a0), a1);
+    } else if (nr == NR_HOME) {
+        ret = sys_home(pid, a0, signed_of(a1), signed_of(a2));
+    } else if (nr == NR_SEAT) {
+        ret = sys_seat(pid, signed_of(a0));
+    } else if (nr == NR_SWEEP) {
+        ret = sys_sweep(pid, signed_of(a0));
+    } else if (nr == 217) {
+        ret = fs.sys_getdents(pid, fd_of(a0), a1, a2);
+    } else if (nr == 257) {
+        ret = fs.sys_open(pid, dirfd_of(a0), a1, a2, a3, stamp_s());
+    } else if (nr == 258) {
+        ret = fs.sys_mkdir(pid, dirfd_of(a0), a1, a2, stamp_s());
+    } else if (nr == 262) {
+        ret = fs.sys_stat(pid, dirfd_of(a0), a1, a2, a3);
+    } else if (nr == 263) {
+        ret = fs.sys_unlink(pid, dirfd_of(a0), a1, (a2 & 0x200) != 0, stamp_s());   // AT_REMOVEDIR
+    } else if (nr == 264) {
+        ret = fs.sys_rename(pid, dirfd_of(a0), a1, dirfd_of(a2), a3, stamp_s());
+    } else if (nr == 316) {
+        ret = 0 - EINVAL;              // renameat2: no flags taken
+        if (a4 == 0) {
+            ret = fs.sys_rename(pid, dirfd_of(a0), a1, dirfd_of(a2), a3, stamp_s());
+        }
+    } else if (nr == 63) {
+        ret = sys_uname(pid, a0);      // BU-2 (docs/specs/2026-11-07-bu2-meta.md): K5 and K4 below
+    } else if (nr == 90) {
+        ret = fs.sys_chmod(pid, CWD, a0, a1, stamp_s());
+    } else if (nr == 268) {
+        ret = fs.sys_chmod(pid, dirfd_of(a0), a1, a2, stamp_s());
+    } else if (nr == 91) {
+        ret = fs.sys_fchmod(pid, fd_of(a0), a1, stamp_s());
+    } else if (nr == 92) {
+        ret = fs.sys_chown(pid, CWD, a0, a1, a2, 0, stamp_s());
+    } else if (nr == 94) {
+        ret = fs.sys_chown(pid, CWD, a0, a1, a2, 0x100, stamp_s());
+    } else if (nr == 260) {
+        ret = fs.sys_chown(pid, dirfd_of(a0), a1, a2, a3, a4, stamp_s());
+    } else if (nr == 93) {
+        ret = fs.sys_fchown(pid, fd_of(a0), a1, a2, stamp_s());
+    } else if (nr == 95) {
+        ret = fs.sys_umask(pid, a0);
+    } else if (nr == 280) {
+        ret = fs.sys_utimensat(pid, dirfd_of(a0), a1, a2, a3, stamp_s());
+    } else if (nr == 86) {
+        ret = fs.sys_link(pid, CWD, a0, CWD, a1, 0, stamp_s());
+    } else if (nr == 265) {
+        ret = fs.sys_link(pid, dirfd_of(a0), a1, dirfd_of(a2), a3, a4, stamp_s());
+    } else if (nr == 88) {
+        ret = fs.sys_symlink(pid, a0, CWD, a1, stamp_s());
+    } else if (nr == 266) {
+        ret = fs.sys_symlink(pid, a0, dirfd_of(a1), a2, stamp_s());
+    } else if (nr == 89 && is_self_exe(pid, a0)) {
+        ret = self_exe(pid, a1, a2);
+    } else if (nr == 89) {
+        ret = fs.sys_readlink(pid, CWD, a0, a1, a2);
+    } else if (nr == 267 && is_self_exe(pid, a1)) {
+        ret = self_exe(pid, a2, a3);
+    } else if (nr == 267) {
+        ret = fs.sys_readlink(pid, dirfd_of(a0), a1, a2, a3);
+    } else if (nr == 269) {
+        ret = fs.sys_access(pid, dirfd_of(a0), a1, a2);
+    } else if (nr == 292) {
+        ret = fs.sys_dup2(pid, fd_of(a0), fd_of(a1), a2, true);
+    } else if (nr == 9 && uvm.lender_of(pid) > 0) {
+        ret = 0 - ENOMEM;              // K12: a child running in its parent's space maps nothing of its own
+    } else if (nr == 12 && uvm.lender_of(pid) > 0) {
+        ret = brk_now[pid] as I64;     // nor moves the break: the break stays where it is, as a refused brk
+    } else if (nr == 9) {
+        ret = sys_mmap(pid, a0, a1, a2, a3, a4, a5);
+    } else if (nr == 10) {
+        ret = sys_mprotect(pid, a0, a1, a2);
+    } else if (nr == 11) {
+        ret = sys_munmap(pid, a0, a1);
+    } else if (nr == 12) {
+        ret = sys_brk(pid, a0);
+    } else if (nr == 13) {
+        ret = sys_sigaction(pid, signed_of(a0), a1, a2, a3);
+    } else if (nr == 14 || nr == 28) {
+        ret = 0;                       // rt_sigprocmask, madvise: nothing to do yet
+    } else if (nr == 109) {
+        ret = sys_setpgid(pid, signed_of(a0), signed_of(a1));
+    } else if (nr == 111) {
+        ret = job.group(pid);          // getpgrp
+    } else if (nr == 112) {
+        ret = sys_setsid(pid);
+    } else if (nr == 121 || nr == 124) {
+        ret = sys_getpgid(pid, signed_of(a0), nr == 124);
+    } else if (nr == 16 && (a1 == keyrep.EVIOCGREP || a1 == keyrep.EVIOCSREP) && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_EVENT) {
+        ret = sys_keyrep(pid, a1, a2);   // RS-KR
+    } else if (nr == 16 && a1 == tile.FBIO_TILE_INFO && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {
+        ret = sys_tile_info(pid, a2);
+    } else if (nr == 16 && a1 == tile.FBIO_TILE_KERN && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {
+        ret = sys_tile_kern(pid, a2);
+    } else if (nr == 16 && a1 == tile.FBIO_TILE_AUDIO && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {
+        ret = sys_tile_audio(pid, a2);
+    } else if (nr == 16 && a1 == tile.FBIO_TILE_SYNC && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {
+        ret = fs.sys_ioctl(pid, fd_of(a0), a1, a2, stamp_s());
+        if (ret == input.WOULD_BLOCK_DEV && pid == tile.tiler_pid() && kern_news()) {
+            ret = 9;                   // R0-1: a request waits for the desk, or a hold ended or turned a minute
+        } else if (ret == input.WOULD_BLOCK_DEV && pid == tile.tiler_pid() && tray_told != tray_seq) {
+            tray_told = tray_seq;
+            ret = 7;                   // SP-2: a process asked for the tray or left it
+        } else if (ret == input.WOULD_BLOCK_DEV && pid == tile.tiler_pid() && open_told != open_seq) {
+            open_told = open_seq;
+            ret = 10;                  // FF-6c: a window asked the desk to open a file
+        }
+    } else if (nr == 16 && a1 == tile.FBIO_TILE_FOCUS && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {
+        ret = sys_tile_focus(pid, a2);
+    } else if (nr == 16 && (a1 == tile.FBIO_TILE_INPUT || a1 == tile.FBIO_TILE_PLACE) &&
+               fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {
+        ret = sys_tile_pid(pid, a1, a2);
+    } else if (nr == 16 && a1 == tile.FBIO_TILER && fs.uid_of(pid) != 0) {
+        ret = 0 - EPERM;               // AC-1a: only uid 0 may become the desk
+    } else if (nr == 16) {
+        ret = fs.sys_ioctl(pid, fd_of(a0), a1, a2, stamp_s());
+    } else if (nr == 20) {
+        ret = sys_writev(pid, a0, a1, a2);
+    } else if (nr == 35) {
+        ret = sys_nanosleep(pid, a0);
+    } else if (nr == 39 || nr == 218) {
+        ret = vpid[pid];               // getpid, set_tid_address: the pid the process sees
+    } else if (nr == 158) {
+        ret = sys_arch_prctl(pid, a0, a1);
+    } else if (nr == 228) {
+        ret = sys_clock_gettime(pid, a0, a1);
+    } else if (nr == 227) {
+        ret = sys_clock_settime(pid, a0, a1);   // RS-CLK
+    } else if (nr == 318) {
+        ret = sys_getrandom(pid, a0, a1, a2);
+    } else if (nr == 230) {
+        ret = sys_clock_nanosleep(pid, a0, a1, a2);
+    } else if (nr == 41) {
+        ret = sock.sys_socket(pid, a0, a1, a2);
+    } else if (nr == 49) {
+        ret = sock.sys_bind(pid, fd_of(a0), a1, a2);
+    } else if (nr == 44) {
+        ret = sock.sys_sendto(pid, fd_of(a0), a1, a2, a3, a4, a5);
+    } else if (nr == 45) {
+        ret = sock.sys_recvfrom(pid, fd_of(a0), a1, a2, a3, a4, a5);
+    } else if (nr == 51) {
+        ret = sock.sys_getsockname(pid, fd_of(a0), a1, a2);
+    } else if (nr == 54) {
+        ret = sock.sys_setsockopt(pid, fd_of(a0));
+    } else if (nr == 42) {
+        ret = sock.sys_connect(pid, fd_of(a0), a1, a2);
+    } else if (nr == 43) {
+        ret = sock.sys_accept(pid, fd_of(a0), a1, a2, 0);
+    } else if (nr == 288) {
+        ret = sock.sys_accept(pid, fd_of(a0), a1, a2, a3);
+    } else if (nr == 48) {
+        ret = sock.sys_shutdown(pid, fd_of(a0), a1);
+    } else if (nr == 50) {
+        ret = sock.sys_listen(pid, fd_of(a0));
+    } else if (nr == 52) {
+        ret = sock.sys_getpeername(pid, fd_of(a0), a1, a2);
+    }
+    if (ret == fs.WOULD_BLOCK || ret == input.WOULD_BLOCK_DEV) {
+        state[pid] = WAITING;          // the frame is left as it is: the call is made again
+        on_device[pid] = ret == input.WOULD_BLOCK_DEV;
+        return;
+    }
+    if (ret == 0 - 32 && (nr == 1 || nr == 20) && !job.ignored(pid, 13)) {
+        finish(pid, 13, true);         // a write with no reader: SIGPIPE, unless it is ignored
+        return;
+    }
+    if (state[pid] == WAITING) {
+        state[pid] = READY;
+        on_device[pid] = false;
+    }
+    user.user_set_reg(pid, user.R_RAX, bits(ret));
+}
+
+// FBIO_TILE_INPUT (W-3) and FBIO_TILE_PLACE (H-2): the tiler names the client by the pid it sees; the event goes
+// to its tile queue, the placement to its window (pid 0: to the tile set next).
+I64 sys_tile_pid(I64 pid, U64 req, U64 arg) {
+    if (pid != tile.tiler_pid()) {
+        return 0 - EPERM;
+    }
+    U8[4] b;
+    if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 4) != 4) {
+        return 0 - EFAULT;
+    }
+    I64 vp = (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+    if (req == tile.FBIO_TILE_PLACE) {
+        if (vp == 0) {
+            return tile.place(uvm.PROCS, arg);
+        }
+        return tile.place(slot_of(pid, vp), arg);
+    }
+    return tile.input_to(slot_of(pid, vp), arg);
+}
+
+// FBIO_TILE_FOCUS (SCHED-1, docs/specs/2026-11-07-ds-desk-speed.md section 3), the tiler only: the {u32 kind,
+// u32 id} at arg names the focused window as FBIO_TILE_INFO does, kind 0 a pixel client by the pid the tiler sees,
+// kind 1 a terminal by the tiler's descriptor of its pty's master; any other kind, no focus. 0, -EPERM, -EFAULT, or
+// -ESRCH (no such process or pty: the focus is none).
+I64 sys_tile_focus(I64 pid, U64 arg) {
+    if (pid != tile.tiler_pid()) {
+        return 0 - EPERM;
+    }
+    U8[8] b;
+    if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 8) != 8) {
+        return 0 - EFAULT;
+    }
+    I64 kind = (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+    I64 id = (b[4] as I64) | ((b[5] as I64) << 8) | ((b[6] as I64) << 16) | ((b[7] as I64) << 24);
+    focus_p = -1;
+    focus_pty = -1;
+    if (kind == 0) {
+        focus_p = slot_of(pid, id);
+        if (focus_p < 0) {
+            return 0 - ESRCH;
+        }
+    } else if (kind == 1) {
+        focus_pty = fs.fd_pty(pid, id);
+        if (focus_pty < 0) {
+            return 0 - ESRCH;
+        }
+    }
+    return 0;
+}
+
+// SCHED-1: p is in the desk class: the tiler, the focused pixel window's process, or a member of the focused
+// terminal's foreground process group.
+Bool desk(I64 p) {
+    if (p == tile.tiler_pid() || p == focus_p) {
+        return true;
+    }
+    if (focus_pty < 0) {
+        return false;
+    }
+    I64 g = pty.foreground(focus_pty);
+    return g > 0 && job.group(p) == g;
+}
+
+// FBIO_TILE_INFO (H-3a, section 5 item 4), the tiler only: the {u32 kind, u32 id} at arg names a window, kind 0 a
+// pixel client by the pid the tiler sees (id 0: the latest that took the tile set next at its open or asked
+// FBIO_TILE_WANT), kind 1 a terminal by the tiler's descriptor of its pty's master; for a terminal the process is the
+// foreground one, the live process with that pty's slave as descriptor 0 that exec'd last, ties to the lowest vpid.
+// Writes 64 bytes at arg, {u32 vpid as the tiler sees it, u16 surface w, u16 h (0 x 0 for none), u64 grant word,
+// comm[16], the variable[32] (H-3c3)}, the grant word's bit 32 the process's ask for the tray (SP-2): 0, -ESRCH for none, -EFAULT, -EPERM.
+// Kinds 8 and 9 (AM-2, DN-43): kinds 0 and 1's window, its app menu's head {u32 vpid, u8 bit 0 Settings declared at 4
+// and bit 1 Settings dimmed (AM-4: kind 1 | MARK_DIM << 8),
+// u32 its id at 8, About's name[24] at 16, its version[16] at 40}; kinds 10 and 11 About's text {u32 vpid, text[60]}.
+// Kinds 15 and 16 (AM-4, docs/specs/2026-11-11-am4-appitems.md section 5): kinds 0 and 1's window, its own row k for a
+// kind word 15 + 256 k or 16 + 256 k: {u32 vpid, u8 the rows declared at 4, then the row at 8: u16 id, u16 parent (0
+// a menu row), u8 marks at 12 (1 a divider above, 2 the dot, 4 dimmed), u8 the label's length, u8 the keys' length,
+// the label[24] at 16 and the keys[16] at 40, NUL padded}; all zero past the rows.
+// Kinds 13 and 14 (AC-T2, docs/specs/2026-11-11-ac-t2-image-path.md): kinds 0 and 1's process, the program it runs as
+// the kernel loaded it (src/exepath.ci: {u32 vpid, u32 source, u32 the path's length, u32 0, the path at 16, NUL
+// padded}); its comm and prctl have no part in it.
+// Kinds 17 and 18 (DN-51 frame 25, "NAME is not answering."): kinds 0 and 1's window, {u32 vpid, u32 the input
+// waiting unread, u64 the input taken since it began}: a pixel window's tile queue in events (src/tile.ci), a
+// terminal's pty in bytes ready to read (src/pty.ci), for any process of it.
+// Kind 19 (RS-TTL section 6): kind 0's process, the rest of its variable, {u32 vpid, 28 zero bytes, the variable's
+// bytes 32 to 64 at 32}, so kind 0's answer and this one hold the whole tile.VAR_LEN bytes.
+// Kind 2 (HX-14): the system, {u32 pool
+// frames free, u32 frames, u64 flags (bit 0 a volume on /home, bit 1 stepped frames, SP-3), u64 the date in seconds since 1970 (K-6: the live
+// date, src/tile.ci, or the fixed epoch), u64 the compose budget in pixels (D-ROW)}, the rest zero.
+I64 sys_tile_info(I64 pid, U64 arg) {
+    if (pid != tile.tiler_pid()) {
+        return 0 - EPERM;
+    }
+    U8[64] b;
+    if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 8) != 8) {
+        return 0 - EFAULT;
+    }
+    I64 kind = (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+    I64 id = (b[4] as I64) | ((b[5] as I64) << 8) | ((b[6] as I64) << 16) | ((b[7] as I64) << 24);
+    I64 p = -1;
+    if (kind == 2) {
+        // HX-14: the system for Settings' About: u32 pool frames free, u32 frames, u64 bit 0 a volume on /home;
+        // K-6: u64 the date for the bar's clock
+        I64 fr = frames.free_count();
+        U64 fl = 0;
+        if (fs.disk_mounted()) { fl = 1; }
+        if (tile.stepped()) { fl = fl | 2; }   // SP-3: the gates' stepped frames
+        U64 dt = realtime_s;
+        I64 dn = tile.date_now();
+        if (dn >= 0) { dt = dn as U64; }
+        for k in 0..4 {
+            b[k] = ((fr >> (8 * k)) & 0xFF) as U8;
+            b[4 + k] = ((frames.FRAMES >> (8 * k)) & 0xFF) as U8;
+        }
+        for k in 0..8 { b[8 + k] = ((fl >> ((8 * k) as U64)) & 0xFF) as U8; }
+        for k in 0..8 { b[16 + k] = ((dt >> ((8 * k) as U64)) & 0xFF) as U8; }
+        I64 bu = tile.budget_now();    // D-ROW: u64 the compose budget, pixels a timed copy
+        for k in 0..8 { b[24 + k] = ((bu >> (8 * k)) & 0xFF) as U8; }
+        for k in 32..64 { b[k] = 0; }
+        if (uvm.poke(pid, arg, b, 64, true) != 64) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    if (kind == 3 || kind == 4 || kind == 6) {
+        return kern_info(pid, kind, id, arg);
+    }
+    if (kind == 5) {
+        return panel_info(pid, arg);
+    }
+    if (kind == 7) {
+        return open_info(pid, id, arg);
+    }
+    if (kind == 12) {
+        return dl_info(pid, arg);
+    }
+    I64 menu = 0;                      // AM-2: kinds 8 to 11 are 0 and 1's window, its app menu declaration
+    if (kind == 8 || kind == 9) {
+        menu = 1;                      // the head: Settings and About's name and version
+        kind = kind - 8;
+    } else if (kind == 10 || kind == 11) {
+        menu = 2;                      // About's text
+        kind = kind - 10;
+    } else if (kind == 13 || kind == 14) {
+        menu = 3;                      // AC-T2: the program the process runs, as loaded
+        kind = kind - 13;
+    } else if (kind == 17 || kind == 18) {
+        menu = 4;                      // DN-51 frame 25: its input, waiting and taken
+        kind = kind - 17;
+    } else if (kind == 19) {
+        menu = 6;                      // RS-TTL section 6: the rest of the variable (5 is AM-4's)
+        kind = 0;
+    }
+    I64 row = 0;                       // AM-4: kinds 15 and 16, row kind >> 8 of 0 and 1's window
+    if ((kind & 0xFF) == 15 || (kind & 0xFF) == 16) {
+        menu = 5;                      // 4 is DN-51's (kinds 17 and 18)
+        row = kind >> 8;
+        kind = (kind & 0xFF) - 15;
+    }
+    if (kind == 0 && id == 0) {
+        p = tile.bound_last();
+    } else if (kind == 0) {
+        p = slot_of(pid, id);
+    } else if (kind == 1) {
+        I64 pair = fs.fd_pty(pid, id);
+        for q in 0..uvm.PROCS {
+            Bool live = state[q] == READY || state[q] == WAITING;
+            if (pair >= 0 && live && root[q] == root[pid] && fs.fd_kind(q, 0) == fs.KIND_PTS && fs.fd_pty(q, 0) == pair &&
+                (p < 0 || exec_at[q] > exec_at[p] || (exec_at[q] == exec_at[p] && vpid[q] < vpid[p]))) {
+                p = q;
+            }
+        }
+    }
+    if (p < 0 || root[p] != root[pid] || !(state[p] == READY || state[p] == WAITING)) {
+        return 0 - ESRCH;
+    }
+    if (menu == 4) {
+        I64 un = tile.queue_unread(p);
+        I64 tk = tile.queue_taken(p);
+        if (kind == 1) {
+            I64 pair = fs.fd_pty(pid, id);
+            un = pty.unread(pair);
+            tk = pty.taken_bytes(pair);
+        }
+        for k in 0..64 { b[k] = 0; }
+        for k in 0..4 {
+            b[k] = ((vpid[p] >> (8 * k)) & 0xFF) as U8;
+            b[4 + k] = ((un >> (8 * k)) & 0xFF) as U8;
+        }
+        for k in 0..8 { b[8 + k] = ((tk >> (8 * k)) & 0xFF) as U8; }
+        if (uvm.poke(pid, arg, b, 64, true) != 64) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    if (menu == 6) {
+        for k in 0..64 { b[k] = 0; }
+        for k in 0..4 { b[k] = ((vpid[p] >> (8 * k)) & 0xFF) as U8; }
+        for k in 32..64 { b[k] = tile.var_byte(p, k); }
+        if (uvm.poke(pid, arg, b, 64, true) != 64) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    if (menu == 3) {
+        U8[32] e;
+        for k in 0..32 { e[k] = exe[p * 32 + k]; }
+        exepath.record(b, vpid[p] as U64, exe_ino[p], e, exelen[p]);
+        if (uvm.poke(pid, arg, b, 64, true) != 64) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    if (menu > 0) {                    // AM-2: {u32 vpid, then the head or the text}, the rest zero
+        for k in 0..64 { b[k] = 0; }
+        for k in 0..4 { b[k] = ((vpid[p] >> (8 * k)) & 0xFF) as U8; }
+        if (menu == 1) {
+            b[4] = tile.menu_byte(p, 104);                         // bit 0: Settings declared; bit 1 dimmed (AM-4)
+            b[5] = tile.menu_byte(p, 100);                         // AM section 7: unsaved work
+            for k in 0..4 { b[8 + k] = tile.menu_byte(p, 105 + k); }   // its id
+            for k in 0..24 { b[16 + k] = tile.menu_byte(p, k); }        // About's name
+            for k in 0..16 { b[40 + k] = tile.menu_byte(p, 24 + k); }   // its version
+        } else if (menu == 2) {
+            for k in 0..60 { b[4 + k] = tile.menu_byte(p, 40 + k); }    // its text
+        } else {
+            b[4] = tile.rows_of(p) as U8;                          // AM-4: the rows declared, then row `row`
+            for k in 0..48 { b[8 + k] = tile.row_byte(p, row, k); }
+        }
+        if (uvm.poke(pid, arg, b, 64, true) != 64) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    U64 gw = fs.grant_of(p);
+    if (kind == 1) {
+        I64 pair = fs.fd_pty(pid, id);
+        for q in 0..uvm.PROCS {
+            if ((state[q] == READY || state[q] == WAITING) && root[q] == root[pid] && fs.fd_kind(q, 0) == fs.KIND_PTS &&
+                fs.fd_pty(q, 0) == pair) {
+                gw = gw | (fs.grant_of(q) & fs.GRANT_KERN);   // R0-1: ring 0 while any process of the terminal holds it
+            }
+        }
+    }
+    I64 w = 0;
+    I64 h = 0;
+    if (tile.kind_of(p) == tile.PRIVATE) {
+        w = tile.width(p);
+        h = tile.height(p);
+    }
+    for k in 0..4 {
+        b[k] = ((vpid[p] >> (8 * k)) & 0xFF) as U8;
+    }
+    for k in 0..2 {
+        b[4 + k] = ((w >> (8 * k)) & 0xFF) as U8;
+        b[6 + k] = ((h >> (8 * k)) & 0xFF) as U8;
+    }
+    for k in 0..8 {
+        b[8 + k] = ((gw >> ((8 * k) as U64)) & 0xFF) as U8;
+    }
+    if (trayf[p]) {
+        b[12] = b[12] | 1;             // SP-2: bit 32, the process asked for the tray
+    }
+    if (traymin[p]) {
+        b[12] = b[12] | 2;             // SP-6: bit 33, its window minimizes to the tray
+    }
+    for k in 0..16 {
+        b[16 + k] = comm[p * 16 + k];
+    }
+    for k in 0..32 {
+        b[32 + k] = tile.var_byte(p, k);
+    }
+    if (uvm.poke(pid, arg, b, 64, true) != 64) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// --- R0-1: ring 0 by the desk's word (docs/specs/2026-11-07-r0-ring-zero.md) ---
+
+const I64 KQ = 4;                      // requests that wait for the desk at once
+const I64 KTEXT = 56;                  // bytes of a request's command line the desk is shown
+const I64 KQ_FREE = 0;
+const I64 KQ_ASKED = 1;
+const I64 KQ_YES = 2;
+const I64 KQ_NO = 3;
+I64[4] kq_pid = [-1, -1, -1, -1];
+I64[4] kq_state;
+I64[4] kq_len;
+I64[4] kq_seq;                         // the order requests came in
+U64[4] kq_want;                        // AC-1a: what a request asks: GRANT_KERN for kern, grant bits for grant_ask
+U8[224] kq_text;
+I64 kq_next = 0;
+I64 kq_told = 0;                       // requests the desk was told of (FBIO_TILE_SYNC 9)
+I64 kq_asked = 0;
+I64[64] hold_end;                      // R0-R4 B: the tick a window's hold ends, 0 for none
+I64[64] hold_min;                      // its whole minutes left when the desk was last told
+I64 hold_s = 300;                      // R0-R4 B: 5 minutes; the hybrid desk's daphnis.kernhold=20 shortens it
+I64[64] cool_end;                      // AC-D4: the tick until which the process's asks are refused at once, 0 for
+                                       // none; a fork copies it, and nothing but a process's end clears it. Not in
+                                       // the state, as hold_end is not
+const I64 COOL_S = 30;                 // AC-D4: 30 s from the desk's no or a prompt's timeout
+
+// R0-R4 B: a window's hold, s seconds (src/main_hdesk.ci, from the loader's line, for the gates).
+export void set_hold(I64 s) {
+    hold_s = s;
+}
+
+I64 hold_ticks() {
+    return hold_s * pit.INPUT_HZ / pit.USER_DIVISOR;
+}
+
+// AC-D4: COOL_S in timer ticks, rounded up, so the cooldown is never shorter than 30 s (3000 at 100 Hz).
+I64 cool_ticks() {
+    return (COOL_S * pit.INPUT_HZ + pit.USER_DIVISOR - 1) / pit.USER_DIVISOR;
+}
+
+// kern(text, n): ring 0 for the caller, asked of the desk. 0 when the caller holds it (a hold in its window, or the
+// desk's yes); the call waits while the desk's prompt is up; -EPERM on the desk's no, with no desk, or at once with
+// no prompt within 30 s of the desk's no to the caller's tree (AC-D4, cool); -EAGAIN when KQ requests wait already;
+// -EFAULT. text is the command line the prompt names, NUL-separated. kern(0, 0) asks
+// nothing: 1 when the caller holds ring 0, else 0.
+I64 sys_kern(I64 pid, U64 a0, U64 a1) {
+    if (a0 == 0 && a1 == 0) {
+        if ((fs.grant_of(pid) & fs.GRANT_KERN) != 0) { return 1; }
+        return 0;
+    }
+    return ask(pid, a0, a1, fs.GRANT_KERN);
+}
+
+// AC-1a (docs/specs/2026-11-08-ac-accounts.md section 5): grant_ask(text, n, word), the grants of word that the
+// caller's ceiling does not reach, asked of the desk as kern is (L2, L8). 0 when nothing is past the ceiling or on
+// the desk's yes, which adds the bits to the caller's word (so they last until its tree ends); the call waits while
+// the prompt is up; -EPERM on the desk's no or with no desk; -EINVAL for a word holding ring 0 or an unknown bit.
+I64 sys_grant_ask(I64 pid, U64 a0, U64 a1, U64 w) {
+    if ((w & ~fs.GRANT_ALL) != 0) {
+        return 0 - EINVAL;
+    }
+    for k in 0..KQ {
+        if (kq_pid[k] == pid) {
+            return ask(pid, a0, a1, w);   // the answer to the request already made
+        }
+    }
+    U64 more = fs.beyond(pid, w);
+    if (more == 0) {
+        return 0;
+    }
+    return ask(pid, a0, a1, more);
+}
+
+// AC-1a: login(uid, gid, ceiling), the one-way door of section 5. Only a child of the desk that has not run execve
+// may call it, once: uid 1 or more, gid 0 or more, the ceiling grant bits without ring 0. The caller takes the user,
+// the group and the ceiling, and drops ring 0, its window hold and every grant but disk if the ceiling holds it.
+// DN-69 item 5: facts.LOGIN_PARENT beside the ceiling bits says the account is a Parent (the desk reads the role from
+// authd's store), so the session sees every process in facts. 0, -EPERM (not the desk's child, already execve'd, or
+// already a user), -EINVAL.
+// FS-3: home(path, uid, gid), the desk's alone (the tiler's pid, uid 0): src/fs.ci's sys_home. -EPERM for any other.
+I64 sys_home(I64 pid, U64 path, I64 uid, I64 gid) {
+    if (pid != tile.tiler_pid() || fs.uid_of(pid) != 0) {
+        return 0 - EPERM;
+    }
+    return fs.sys_home(pid, path, uid, gid, stamp_s());
+}
+
+// LO-1: seat(uid), the desk's alone (-EPERM for any other): the account whose processes may take the tile the desk
+// offers (src/tile.ci's on_open), named at login, or -1 for none between a log out and the next login; with accounts
+// off, uid 0. Until a desk names one, any process takes the tile, as before LO-1. uid -1 to 65535, else -EINVAL.
+I64 sys_seat(I64 pid, I64 uid) {
+    if (pid != tile.tiler_pid() || fs.uid_of(pid) != 0) {
+        return 0 - EPERM;
+    }
+    return seat.name(uid);
+}
+
+// LO-1: sweep(uid), the desk's alone (the tiler's pid, uid 0; -EPERM for any other): every live process of the desk's
+// family whose uid is uid ends as SIGKILL ends it, whatever its session or what it ignores (src/seat.ci). After a log
+// out's SIGTERM and its hold, so a program an account left running never reaches the next session. uid 1 to 65535,
+// else -EINVAL; the count of processes it ended. No process runs during the call, and a fork's child has its parent's uid, so no fork
+// escapes it; a process that has ended (ZOMBIE) is left for its parent's wait.
+I64 sys_sweep(I64 pid, I64 uid) {
+    if (pid != tile.tiler_pid() || fs.uid_of(pid) != 0) {
+        return 0 - EPERM;
+    }
+    if (uid < 1 || uid > 65535) {
+        return 0 - EINVAL;
+    }
+    I64 n = 0;
+    for p in 0..uvm.PROCS {
+        if (seat.ends(uid, fs.uid_of(p), state[p] == READY || state[p] == WAITING, root[p] == root[pid])) {
+            n += 1;
+        }
+    }
+    for p in 0..uvm.PROCS {
+        if (seat.ends(uid, fs.uid_of(p), state[p] == READY || state[p] == WAITING, root[p] == root[pid])) {
+            finish(p, 9, true);        // a vfork child in its space ends first, as kill ends one (K12)
+        }
+    }
+    return n;
+}
+
+I64 sys_login(I64 pid, I64 uid, I64 gid, U64 c) {
+    I64 d = tile.tiler_pid();
+    if (d < 0 || parent[pid] != d || exec_at[pid] != exec_at[d] || fs.uid_of(pid) != 0) {
+        return 0 - EPERM;
+    }
+    U64 g = c & ~facts.LOGIN_PARENT;
+    if (uid < 1 || uid > 65535 || gid < 0 || gid > 65535 || (g & ~fs.GRANT_ALL) != 0) {
+        return 0 - EINVAL;
+    }
+    kern_forget(pid);
+    fs.set_login(pid, uid, gid, g);
+    facts.set_parent(pid, (c & facts.LOGIN_PARENT) != 0);
+    return 0;
+}
+
+// A request of the desk for want (GRANT_KERN, or grant bits): kern's and grant_ask's common path.
+I64 ask(I64 pid, U64 a0, U64 a1, U64 want) {
+    for k in 0..KQ {
+        if (kq_pid[k] == pid) {
+            if (kq_state[k] == KQ_ASKED) { return fs.WOULD_BLOCK; }
+            Bool yes = kq_state[k] == KQ_YES;
+            kq_pid[k] = -1;
+            kq_state[k] = KQ_FREE;
+            if (yes) { return 0; }
+            return 0 - EPERM;
+        }
+    }
+    if ((fs.grant_of(pid) & fs.GRANT_KERN) != 0) {
+        return 0;
+    }
+    if (want != fs.GRANT_KERN && fs.beyond(pid, want) == 0) {
+        return 0;
+    }
+    if (cool_end[pid] > 0 && trap.timer_ticks() < cool_end[pid]) {
+        return 0 - EPERM;              // AC-D4: the tree was refused under 30 s ago: refused at once, no prompt
+    }
+    if (tile.tiler_pid() < 0 || root[tile.tiler_pid()] != root[pid]) {
+        return 0 - EPERM;              // no desk to ask: the kernel never sets the bit on its own
+    }
+    I64 at = -1;
+    for k in 0..KQ {
+        if (at < 0 && kq_state[k] == KQ_FREE) { at = k; }
+    }
+    if (at < 0) {
+        return 0 - EAGAIN;
+    }
+    I64 n = a1 as I64;
+    if (a1 > 4096) { n = 4096; }
+    if (n > KTEXT) { n = KTEXT; }
+    U8[56] t;
+    if (n > 0 && (a0 >= uvm.USER_HI || uvm.peek(pid, a0, t, n) != n)) {
+        return 0 - EFAULT;
+    }
+    for k in 0..KTEXT {
+        kq_text[KTEXT * at + k] = 0;
+        if (k < n) { kq_text[KTEXT * at + k] = t[k]; }
+    }
+    kq_pid[at] = pid;
+    kq_state[at] = KQ_ASKED;
+    kq_want[at] = want;
+    kq_len[at] = n;
+    kq_seq[at] = kq_next;
+    kq_next = kq_next + 1;
+    kq_asked = kq_asked + 1;
+    return fs.WOULD_BLOCK;
+}
+
+// A process ended: its request, if any, its hold and its cooldown go.
+void kern_forget(I64 pid) {
+    for k in 0..KQ {
+        if (kq_pid[k] == pid) {
+            kq_pid[k] = -1;
+            kq_state[k] = KQ_FREE;
+        }
+    }
+    hold_end[pid] = 0;
+    cool_end[pid] = 0;
+    if (trayf[pid] || traymin[pid]) {
+        trayf[pid] = false;
+        traymin[pid] = false;
+        tray_seq += 1;
+    }
+    if (dlrun[pid]) {                  // SP-7: a download that ended unfinished; the desk's icon stays as it is
+        dlrun[pid] = false;
+        tray_seq += 1;
+    }
+}
+
+// Whether the desk has news of ring 0: a request it was not told of, a hold that ended (its bit cleared here), or a
+// hold whose whole minutes left changed.
+Bool kern_news() {
+    Bool news = kq_asked != kq_told;
+    kq_told = kq_asked;
+    I64 now = trap.timer_ticks();
+    for p in 0..uvm.PROCS {
+        if (hold_end[p] > 0) {
+            if (now >= hold_end[p]) {
+                hold_end[p] = 0;
+                fs.kern_set(p, false);  // R0-R4 B: commands started now hold none; a running one keeps its bit
+                news = true;
+            } else {
+                I64 m = mins_left(p, now);
+                if (m != hold_min[p]) {
+                    hold_min[p] = m;
+                    news = true;
+                }
+            }
+        }
+    }
+    return news;
+}
+
+I64 secs_left(I64 p, I64 now) {
+    if (hold_end[p] <= now) { return 0; }
+    return ((hold_end[p] - now) * pit.USER_DIVISOR + pit.INPUT_HZ - 1) / pit.INPUT_HZ;
+}
+
+I64 mins_left(I64 p, I64 now) {
+    return (secs_left(p, now) + 59) / 60;
+}
+
+// FBIO_TILE_INFO kinds 3, 4 and 6, the tiler only. Kind 3: the oldest request the desk has not answered, {u32 vpid,
+// u32 n, the command line[56]}, -ESRCH for none. Kind 4, id a vpid: {u32 seconds its hold has left (0: none),
+// u32 1 if it holds ring 0}, -ESRCH for no such process. Kind 6 (AC-1a; 5 is the SP panel), the same oldest request: {u32 vpid, u32 the
+// word it asks (GRANT_KERN for kern, else grant bits), u32 the asking process's uid}, so the desk draws the
+// KERNEL ELEVATION REQUEST or PARENT APPROVAL in the asked ring's color (L8).
+I64 kern_info(I64 pid, I64 kind, I64 id, U64 arg) {
+    U8[64] b;
+    for k in 0..64 { b[k] = 0; }
+    if (kind == 3 || kind == 6) {
+        I64 at = -1;
+        for k in 0..KQ {
+            if (kq_state[k] == KQ_ASKED && (at < 0 || kq_seq[k] < kq_seq[at])) { at = k; }
+        }
+        if (at < 0) { return 0 - ESRCH; }
+        I64 vp = vpid[kq_pid[at]];
+        I64 second = kq_len[at];
+        if (kind == 6) { second = kq_want[at] as I64; }
+        I64 u = fs.uid_of(kq_pid[at]);
+        for k in 0..4 {
+            b[k] = ((vp >> (8 * k)) & 0xFF) as U8;
+            b[4 + k] = ((second >> (8 * k)) & 0xFF) as U8;
+            if (kind == 6) { b[8 + k] = ((u >> (8 * k)) & 0xFF) as U8; }
+        }
+        if (kind == 3) {
+            for k in 0..KTEXT { b[8 + k] = kq_text[KTEXT * at + k]; }
+        }
+    } else {
+        I64 p = slot_of(pid, id);
+        if (p < 0) { return 0 - ESRCH; }
+        I64 sl = secs_left(p, trap.timer_ticks());
+        for k in 0..4 { b[k] = ((sl >> (8 * k)) & 0xFF) as U8; }
+        if ((fs.grant_of(p) & fs.GRANT_KERN) != 0) { b[4] = 1; }
+    }
+    if (uvm.poke(pid, arg, b, 64, true) != 64) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// FBIO_TILE_KERN (R0-1), the tiler only: {u32 vpid, u32 verb} at arg. Verb 0, the person refused vpid's request
+// (Esc), or it timed out: an account's tree is cooled for 30 s (AC-D4, cool); 1, confirmed it (Super+Enter): the
+// bit is set on vpid; 2, the window's hold (R0-R4 B): the bit on vpid
+// (its shell) until hold_s seconds from now; 3, the hold cleared now. 0, -EPERM, -EFAULT, -ESRCH, -EINVAL.
+I64 sys_tile_kern(I64 pid, U64 arg) {
+    if (pid != tile.tiler_pid()) {
+        return 0 - EPERM;
+    }
+    U8[8] b;
+    if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 8) != 8) {
+        return 0 - EFAULT;
+    }
+    I64 vp = (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+    I64 verb = (b[4] as I64) | ((b[5] as I64) << 8) | ((b[6] as I64) << 16) | ((b[7] as I64) << 24);
+    I64 p = slot_of(pid, vp);
+    if (p < 0) {
+        return 0 - ESRCH;
+    }
+    if (verb == 0 || verb == 1) {
+        for k in 0..KQ {
+            if (kq_pid[k] == p && kq_state[k] == KQ_ASKED) {
+                if (verb == 1) {
+                    if (kq_want[k] == fs.GRANT_KERN) {
+                        fs.kern_set(p, true);
+                    } else {
+                        fs.grant_add(p, kq_want[k]);   // AC-1a: a parent's yes to grant_ask (L2)
+                    }
+                    kq_state[k] = KQ_YES;
+                } else {
+                    kq_state[k] = KQ_NO;
+                    cool(p);
+                }
+                return 0;
+            }
+        }
+        return 0 - ESRCH;
+    }
+    if (verb == 2) {
+        fs.kern_set(p, true);
+        hold_end[p] = trap.timer_ticks() + hold_ticks();
+        hold_min[p] = mins_left(p, trap.timer_ticks());
+        return 0;
+    }
+    if (verb == 3) {
+        hold_end[p] = 0;
+        fs.kern_set(p, false);
+        return 0;
+    }
+    return 0 - EINVAL;
+}
+
+// AC-D4 (docs/specs/2026-11-08-ac-accounts.md section 2): the desk said no to p's request, by Esc, a click off,
+// a lock or the prompt's timeout. A refused or timed-out request from the same process tree is refused without a
+// prompt for 30 s: the tree is p's window (GV-1a), the child the desk forked and all it started, an orphan or a new
+// session among them, so every live process of the family with p's window number is marked until cool_ticks() from
+// now, and a request of theirs already waiting is refused with p's. What they start is marked by fork. A process of
+// no window marks itself alone. Only an account's process (uid 1 or more) is marked: with accounts off every process
+// is uid 0, and R0-3's prompt is asked each time.
+void cool(I64 p) {
+    if (fs.uid_of(p) == 0) {
+        return;
+    }
+    I64 e = trap.timer_ticks() + cool_ticks();
+    for q in 0..uvm.PROCS {
+        if ((state[q] == READY || state[q] == WAITING) && root[q] == root[p] &&
+            (q == p || (window[p] != 0 && window[q] == window[p]))) {
+            if (cool_end[q] < e) {
+                cool_end[q] = e;
+            }
+            for k in 0..KQ {
+                if (kq_pid[k] == q && kq_state[k] == KQ_ASKED) {
+                    kq_state[k] = KQ_NO;
+                }
+            }
+        }
+    }
+}
+
+// --- SP-1: the system panel (docs/specs/2026-11-08-sp-system-panel.md) ---
+
+// SP-2 (SP-R3 A): a process's ask for the desk's tray, told the desk by FBIO_TILE_SYNC 7 and FBIO_TILE_INFO kinds 0
+// and 1 (bit 32 of the grant word's u64). Only the asking program puts its window there; nothing hides by default.
+
+// tray(on): 1 asks for the tray, 2 asks that the window minimize to it (SP-6, DN-16: the program's choice, DN-19),
+// 0 drops either; SP-7 (SP-R6 A): 3 says a download started, 4 that the process's download finished (once a 3);
+// 0, -EINVAL.
+I64 sys_tray(I64 pid, U64 on) {
+    if (on > 4) {
+        return 0 - EINVAL;
+    }
+    if (on == 3) {
+        dl_started += 1;
+        dlrun[pid] = true;
+        tray_seq += 1;
+        return 0;
+    }
+    if (on == 4) {
+        if (dlrun[pid]) {
+            dl_done += 1;
+            dlrun[pid] = false;
+            tray_seq += 1;
+        }
+        return 0;
+    }
+    Bool want = trayf[pid];           // (not `ask`: the name of this module's ask for the desk)
+    Bool to_min = traymin[pid];
+    if (on == 0) {
+        want = false;
+        to_min = false;
+    }
+    if (on == 1) { want = true; }
+    if (on == 2) { to_min = true; }
+    if (want != trayf[pid] || to_min != traymin[pid]) {
+        trayf[pid] = want;
+        traymin[pid] = to_min;
+        tray_seq += 1;
+    }
+    return 0;
+}
+
+// FBIO_TILE_INFO kind 12 (SP-7): the downloads, {u32 started, u32 finished, u32 running} since boot; 0, -EFAULT.
+I64 dl_info(I64 pid, U64 arg) {
+    U8[64] b;
+    for k in 0..64 { b[k] = 0; }
+    I64 live_n = 0;
+    for q in 0..64 {
+        if (dlrun[q]) { live_n += 1; }
+    }
+    I64[3] v = [dl_started, dl_done, live_n];
+    for j in 0..3 {
+        for k in 0..4 { b[4 * j + k] = ((v[j] >> (8 * k)) & 255) as U8; }
+    }
+    if (uvm.poke(pid, arg, b, 64, true) != 64) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// FF-6c (FF-R8 A): open_ask(path, n): a window's program asks the desk to open the file at path (1..256 bytes) as
+// the Super plane opens one; the latest ask waits, the desk told by FBIO_TILE_SYNC 10 and reading it by
+// FBIO_TILE_INFO kind 7. 0, -EINVAL, -EFAULT. The desk opens it only for a process that holds one of its windows.
+I64 sys_open_ask(I64 pid, U64 va, U64 n) {
+    if (n < 1 || n > 256) {
+        return 0 - EINVAL;
+    }
+    if (!user_range(va, n) || uvm.peek(pid, va, open_path, n as I64) != n as I64) {
+        open_len = 0;
+        return 0 - EFAULT;
+    }
+    open_len = n as I64;
+    open_from = pid;
+    open_seq += 1;
+    return 0;
+}
+
+// FBIO_TILE_INFO kind 7 (FF-6c), id the byte offset: {u32 vpid of the asking process, u32 the path's length, its
+// bytes from the offset (56 at most)}; 1 when an ask waits, 0 for none. The chunk that holds the path's end takes it.
+I64 open_info(I64 pid, I64 off, U64 arg) {
+    U8[64] b;
+    for k in 0..64 { b[k] = 0; }
+    if (open_len == 0 || off < 0 || off >= open_len) {
+        if (uvm.poke(pid, arg, b, 64, true) != 64) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    I64 v = 0;
+    if (open_from >= 0) { v = vpid[open_from]; }
+    for k in 0..4 {
+        b[k] = ((v >> (8 * k)) & 0xFF) as U8;
+        b[4 + k] = ((open_len >> (8 * k)) & 0xFF) as U8;
+    }
+    I64 c = open_len - off;
+    if (c > 56) { c = 56; }
+    for k in 0..c { b[8 + k] = open_path[off + k]; }
+    if (uvm.poke(pid, arg, b, 64, true) != 64) {
+        return 0 - EFAULT;
+    }
+    if (off + c >= open_len) {
+        open_len = 0;
+        open_from = -1;
+    }
+    return 1;
+}
+
+// FBIO_TILE_INFO kind 5, the tiler only: {u32 flags (bit 0 an audio device, bit 1 a network), u32 the mix's level
+// 0..100, u32 the vpid of the process that opened the lowest open stream (0: none), u32 the open streams, u32 the
+// network's IPv4 address (0: none), u8 its MAC[6] at 20, the player's comm[16] at 32}.
+I64 panel_info(I64 pid, U64 arg) {
+    U8[64] b;
+    for k in 0..64 { b[k] = 0; }
+    I64 fl = 0;
+    if (dsp.present()) { fl = fl | 1; }
+    if (net.up()) { fl = fl | 2; }
+    I64 p = dsp.player();
+    I64 vp = 0;
+    if (p >= 0 && root[p] == root[pid] && (state[p] == READY || state[p] == WAITING)) {
+        vp = vpid[p];
+        for k in 0..16 { b[32 + k] = comm[p * 16 + k]; }
+    }
+    I64 ipa = 0;
+    if (net.up()) {
+        ipa = eth.our_ip();
+        for k in 0..6 { b[20 + k] = net.mac_byte(k); }
+    }
+    I64[5] v = [fl, dsp.level_of(), vp, dsp.open_streams(), ipa];
+    for j in 0..5 {
+        for k in 0..4 { b[4 * j + k] = ((v[j] >> (8 * k)) & 0xFF) as U8; }
+    }
+    if (uvm.poke(pid, arg, b, 64, true) != 64) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// FBIO_TILE_AUDIO (SP-1, SP-R4 B), the tiler only: the u32 at arg is the mix's level, 0 to 100 percent. 0, -EPERM,
+// -EFAULT, -ENODEV (no audio device), -EINVAL.
+I64 sys_tile_audio(I64 pid, U64 arg) {
+    if (pid != tile.tiler_pid()) {
+        return 0 - EPERM;
+    }
+    U8[4] b;
+    if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 4) != 4) {
+        return 0 - EFAULT;
+    }
+    if (!dsp.present()) {
+        return 0 - ENODEV;
+    }
+    I64 l = (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+    if (l > 100) {
+        return 0 - EINVAL;
+    }
+    dsp.set_level(l);
+    return 0;
+}
+
+// --- groups, sessions and signals (K-10, src/job.ci) ---
+
+// rt_sigaction(sig, act, oact, sigsetsize): SIG_IGN (1) is recorded; any other handler reads back as SIG_DFL, since
+// no handler frame is built. oact is {handler, flags, restorer, mask}, the handler 1 or 0 and the rest 0.
+I64 sys_sigaction(I64 pid, I64 sig, U64 act, U64 oact, U64 setsize) {
+    if (setsize != 8 || sig < 1 || sig > 64) {
+        return 0 - EINVAL;
+    }
+    if (act != 0 && !job.can_ignore(sig)) {
+        return 0 - EINVAL;
+    }
+    U64 h = 0;
+    if (act != 0) {
+        Bool[1] ok;
+        ok[0] = true;
+        h = peek_word(pid, act, ok);
+        if (!ok[0]) {
+            return 0 - EFAULT;
+        }
+    }
+    if (oact != 0) {
+        U64[4] w;
+        for i in 0..4 {
+            w[i] = 0;
+        }
+        if (job.ignored(pid, sig)) {
+            w[0] = 1;
+        }
+        if (!user_range(oact, 32) || poke_words(pid, oact, w) != 32) {
+            return 0 - EFAULT;
+        }
+    }
+    if (act != 0) {
+        job.set_ignored(pid, sig, h == 1);
+    }
+    return 0;
+}
+
+// setpgid(which, g): process which (0 itself, else itself or a child) joins group g (0: its own pid's) of its session.
+// A session leader cannot move; no check that a child has exec'd (Linux's EACCES).
+I64 sys_setpgid(I64 pid, I64 which, I64 g) {
+    if (which < 0 || g < 0) {
+        return 0 - EINVAL;
+    }
+    I64 t = pid;
+    if (which != 0) {
+        t = slot_of(pid, which);
+        if (t < 0 || state[t] == ZOMBIE || (t != pid && parent[t] != pid)) {
+            return 0 - ESRCH;
+        }
+    }
+    if (job.session(t) != job.session(pid) || job.session(t) == vpid[t]) {
+        return 0 - EPERM;
+    }
+    I64 want = g;
+    if (want == 0) {
+        want = vpid[t];
+    }
+    if (want != vpid[t] && !job.group_in(root[pid], job.session(pid), want)) {
+        return 0 - EPERM;
+    }
+    job.set_group(t, want);
+    return 0;
+}
+
+// setsid(): a new session and group named by the caller, with no terminal; -EPERM when a group of that name exists.
+I64 sys_setsid(I64 pid) {
+    if (job.group_used(root[pid], vpid[pid])) {
+        return 0 - EPERM;
+    }
+    job.new_session(pid, vpid[pid]);
+    return vpid[pid];
+}
+
+// getpgid(which) and getsid(which): 0 names the caller.
+I64 sys_getpgid(I64 pid, I64 which, Bool sid) {
+    I64 t = pid;
+    if (which != 0) {
+        t = slot_of(pid, which);
+        if (t < 0 || !facts.sees(fs.uid_of(pid), (fs.grant_of(pid) & fs.GRANT_KERN) != 0, facts.is_parent(pid),
+                                 fs.uid_of(t))) {
+            return 0 - ESRCH;      // KF edition 14: a process the caller may not see is no process
+        }
+    }
+    if (sid) {
+        return job.session(t);
+    }
+    return job.group(t);
+}
+
+// After a system call: each signal a pty master's write raised (VINTR, VQUIT) goes to every live process of the pair's
+// foreground group that does not ignore it, and ends it by its default action; TIOCSIGSESS's (WB-4) to every live
+// process the pair controls, its whole session.
+void tty_signals() {
+    for i in 0..pty.PTYS {
+        I64 m = pty.take_raised(i);
+        if (m != 0) {
+            I64 f = pty.session_family(i);
+            I64 g = pty.foreground(i);
+            for s in 0..2 {
+                I64 sig = pty.SIGINT + s;
+                I64 bit = 1 + s;       // bit 0 SIGINT, bit 1 SIGQUIT
+                if ((m & bit) != 0) {
+                    for p in 0..uvm.PROCS {
+                        if ((state[p] == READY || state[p] == WAITING) && root[p] == f && job.group(p) == g &&
+                            !job.ignored(p, sig)) {
+                            finish(p, sig, true);
+                        }
+                    }
+                }
+            }
+            I64 ss = pty.session_signal(i);
+            if ((m & 4) != 0) {
+                for p in 0..uvm.PROCS {
+                    if ((state[p] == READY || state[p] == WAITING) && root[p] == f && job.terminal(p) == i &&
+                        !job.ignored(p, ss)) {
+                        finish(p, ss, true);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- processes (U1-4) ---
+
+// The slot of the process of the running family that sees itself as vp, alive or a zombie; -1.
+I64 slot_of(I64 pid, I64 vp) {
+    for p in 0..uvm.PROCS {
+        if (root[p] == root[pid] && vpid[p] == vp && (state[p] == READY || state[p] == WAITING || state[p] == ZOMBIE)) {
+            return p;
+        }
+    }
+    return -1;
+}
+
+// The name prctl sees: up to 15 bytes of name, then zeros (Linux's TASK_COMM_LEN 16).
+void set_comm[m](I64 pid, in U8[m] name) {
+    for i in 0..16 {
+        comm[pid * 16 + i] = 0;
+    }
+    I64 k = 0;
+    while (k < m && k < 15 && name[k] != 0) {
+        comm[pid * 16 + k] = name[k];
+        k += 1;
+    }
+}
+
+// NAMES-28: set_comm, and the tiler woken (sync 6) when the name changed, so the bar names a program that writes
+// nothing after its exec (Read with no file, waiting on its input).
+void set_name[m](I64 pid, in U8[m] name) {
+    U8[16] was;
+    for i in 0..16 {
+        was[i] = comm[pid * 16 + i];
+    }
+    set_comm(pid, name);
+    for i in 0..16 {
+        if (comm[pid * 16 + i] != was[i]) {
+            tile.named();
+            return;
+        }
+    }
+}
+
+// prctl(PR_SET_NAME 15, PR_GET_NAME 16): the process's comm; other options -EINVAL.
+I64 sys_prctl(I64 pid, U64 op, U64 arg) {
+    U8[16] b;
+    if (arg >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    if (op == 15) {
+        I64 got = uvm.peek(pid, arg, b, 16);
+        if (got == 0) {
+            return 0 - EFAULT;
+        }
+        for i in got..16 {
+            b[i] = 0;
+        }
+        set_name(pid, b);
+        return 0;
+    }
+    if (op == 16) {
+        for i in 0..16 {
+            b[i] = comm[pid * 16 + i];
+        }
+        if (uvm.poke(pid, arg, b, 16, true) != 16) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    return 0 - EINVAL;
+}
+
+// fork(): a child in a free child slot, a copy of the parent's memory, registers, FPU state,
+// descriptors and process words; it returns 0 to the child and the child's pid to the parent.
+I64 sys_fork(I64 pid) {
+    I64 c = new_child(pid, false);
+    if (c < 0) {
+        return c;
+    }
+    return vpid[c];
+}
+
+// K12 (BU-4a, docs/specs/2026-11-07-bu4-toolchain.md 4.8): clone with exactly CLONE_VM | CLONE_VFORK | SIGCHLD, as
+// musl's posix_spawn and busybox's vfork make it: the child runs in the parent's space (uvm.borrow, nothing copied),
+// from the stack sp names with 0 in RAX, its own descriptors as fork's; the parent waits in the call (WOULD_BLOCK, the
+// call made again) until the child's execve or end gives the space back, then gets the child's pid. Any other
+// flags: -ENOSYS.
+I64[64] vfork_child;   // 1 + the child a parent waits for in clone, or 0
+
+I64 sys_clone(I64 pid, U64 flags, U64 sp) {
+    if (vfork_child[pid] > 0) {
+        I64 w = vfork_child[pid] - 1;
+        if (uvm.lender_of(w) == pid + 1) {
+            return fs.WOULD_BLOCK;
+        }
+        vfork_child[pid] = 0;
+        return vpid[w];
+    }
+    if (flags != 0x4111 || sp == 0 || sp >= uvm.USER_HI) {
+        return 0 - ENOSYS;
+    }
+    I64 c = new_child(pid, true);
+    if (c < 0) {
+        return c;
+    }
+    user.user_set_reg(c, user.R_RSP, sp);
+    vfork_child[pid] = c + 1;
+    return fs.WOULD_BLOCK;
+}
+
+// A child of pid in a free child slot with pid's registers (RAX 0), FPU state, descriptors and process words,
+// running in a copy of pid's memory, or in pid's own (share, K12). Its slot, or -EAGAIN, -ENOMEM.
+I64 new_child(I64 pid, Bool share) {
+    I64 c = -1;
+    for p in CHILD_LO..uvm.PROCS {
+        if (c < 0 && state[p] == FREE) {
+            c = p;
+        }
+    }
+    if (c < 0) {
+        return 0 - EAGAIN;
+    }
+    if (share) {
+        uvm.borrow(pid, c);
+    } else if (uvm.clone(pid, c) < 0) {
+        return 0 - ENOMEM;
+    }
+    user.user_copy(pid, c);
+    user.user_set_reg(c, user.R_RAX, 0);
+    fs.proc_clone(pid, c);
+    tile.clone(pid, c);
+    for i in 0..16 {
+        comm[c * 16 + i] = comm[pid * 16 + i];
+    }
+    exec_at[c] = exec_at[pid];
+    job.clone(pid, c);
+    for i in 0..32 {
+        exe[c * 32 + i] = exe[pid * 32 + i];
+    }
+    exelen[c] = exelen[pid];
+    exe_ino[c] = exe_ino[pid];
+    brk_base[c] = brk_base[pid];
+    brk_now[c] = brk_now[pid];
+    mmap_next[c] = mmap_next[pid];
+    sres_va[c] = sres_va[pid];
+    sres_len[c] = sres_len[pid];
+    clock[c] = clock[pid];
+    zero_at[c] = zero_at[pid];
+    began[c] = stamp_s();
+    poll_wait[c] = 0;
+    poll_spent[c] = false;
+    sleep_until[c] = 0;
+    capture[c] = false;
+    caplen[c] = 0;
+    out_owner[c] = out_owner[pid];
+    parent[c] = pid;
+    if (pid == tile.tiler_pid()) {
+        windows += 1;                  // GV-1a: the desk's child starts a window
+        window[c] = windows;
+    } else {
+        window[c] = window[pid];
+    }
+    cool_end[c] = cool_end[pid];       // AC-D4: a cooled tree's child is cooled with it (the desk is never cooled)
+    root[c] = root[pid];
+    ticks[c] = 0;
+    facts.tick_fresh(c);               // KF-R1: a child's CPU time begins at 0
+    facts.role_fork(c, pid);           // DN-69 item 5: a Parent's child is a Parent's
+    forks[c] = 0;
+    vpid[c] = family_next;
+    family_next += 1;
+    trayf[c] = trayf[pid];         // SP-2: a resident program's children stay in its tray
+    traymin[c] = traymin[pid];     // SP-6: and keep its minimize to the tray
+    forks[pid] += 1;
+    state[c] = READY;
+    return c;
+}
+
+
+// Copies the NULL-ended vector of strings at vec in pid's memory (none when vec is 0) into
+// head from got[1] on, counting them in got[0]: 0, -EFAULT, or -E2BIG past 96 strings, a string
+// of ARG_STR bytes or more, or ARG_BYTES in all.
+I64 take_strings(I64 pid, U64 vec, inout I64[2] got) {
+    Bool[1] ok;
+    ok[0] = true;
+    I64 i = 0;
+    while (true) {
+        U64 sp = 0;
+        if (vec != 0) {
+            sp = peek_word(pid, vec + (8 * i) as U64, ok);
+        }
+        if (!ok[0]) {
+            return 0 - EFAULT;
+        }
+        if (sp == 0) {
+            return 0;
+        }
+        if (got[0] >= 96) {
+            return 0 - E2BIG;
+        }
+        I64 want = ARG_BYTES - got[1];
+        if (want > ARG_STR) {
+            want = ARG_STR;
+        }
+        if (want <= 0) {
+            return 0 - E2BIG;
+        }
+        I64 n = uvm.peek(pid, sp, head[got[1]..got[1] + want], want);
+        I64 slen = 0;
+        while (slen < n && head[got[1] + slen] != 0) {
+            slen += 1;
+        }
+        if (slen == n) {
+            if (n < want) {
+                return 0 - EFAULT;
+            }
+            return 0 - E2BIG;
+        }
+        got[1] += slen + 1;
+        got[0] += 1;
+        i += 1;
+    }
+    return 0;
+}
+
+// execve(path, argv, envp): the program at path (an image member, walked from the working
+// directory, src/fs.ci) replaces this one, with argv and envp (up to 96 strings and 8,192
+// bytes together, FS-4; CT-5b passes envp, which was empty before). Descriptors stay but
+// for FD_CLOEXEC ones; the pid the process sees stays. 0, -ENOENT with the old program intact,
+// or -ESRCH when the new one could not be loaded after the old was torn down.
+I64 sys_execve(I64 pid, U64 path, U64 argv, U64 envp) {
+    U8[32] nm;
+    U8[16] raw;
+    I64 k = 0;
+    I64 xi = 0;                        // K13: the volume inode of the program, 0 for an image member
+    Bool self = false;
+    if (path < uvm.USER_HI && uvm.peek(pid, path, raw, 15) == 15) {
+        self = same_text(raw, "/proc/self/exe");
+    }
+    if (self) {
+        // the image this process runs, under the name Linux gives the comm
+        k = exelen[pid];
+        for i in 0..k {
+            nm[i] = exe[pid * 32 + i];
+        }
+        xi = exe_ino[pid];
+    } else {
+        k = fs.exec_name(pid, path, nm);
+        if (k < 0) {
+            return k;
+        }
+        xi = fs.exec_ino();
+    }
+    I64 c = exec_check(nm[0..k], xi);
+    if (c < 0) {
+        return c;
+    }
+    I64[2] got;                        // strings taken, bytes taken
+    got[0] = 0;
+    got[1] = 0;
+    I64 r = take_strings(pid, argv, got);
+    if (r < 0) {
+        return r;
+    }
+    if (got[0] == 0) {
+        for i in 0..k {
+            head[i] = nm[i];
+        }
+        head[k] = 0;
+        got[0] = 1;
+        got[1] = k + 1;
+    }
+    I64 argc = got[0];
+    r = take_strings(pid, envp, got);
+    if (r < 0) {
+        return r;
+    }
+    I64 envc = got[0] - argc;
+    I64 argn = got[1];
+    tile.end(pid, false);
+    user.fb_present();
+    uvm.destroy(pid);
+    fs.proc_exec(pid);
+    pending_ino = xi;
+    if (load(pid, nm[0..k], argc, envc, argn) < 0) {
+        uvm.destroy(pid);
+        return 0 - ESRCH;
+    }
+    if (self) {
+        set_name(pid, "exe");
+    } else if (xi > 0) {
+        I64 base = 0;                  // K13: a volume program's comm is its file's name, the path's last part
+        for i in 0..k {
+            if (nm[i] == 47) {
+                base = i + 1;
+            }
+        }
+        set_name(pid, nm[base..k]);
+    } else {
+        set_name(pid, nm[0..k]);
+    }
+    execs += 1;
+    exec_at[pid] = execs;
+    return 0;
+}
+
+// BU-4f: true when path (a process address) names /proc/self/exe.
+Bool is_self_exe(I64 pid, U64 path) {
+    U8[16] raw;
+    return path < uvm.USER_HI && uvm.peek(pid, path, raw, 15) == 15 && same_text(raw, "/proc/self/exe");
+}
+
+// BU-4f: readlink of /proc/self/exe: the absolute path of the program the process runs, `/` and the image member's
+// name, or the volume path K13 loaded it from (which starts with `/`), cut at n bytes as Linux cuts it; its
+// length, -EINVAL for n 0 or past 2^31, -EFAULT for a buffer the process cannot write.
+I64 self_exe(I64 pid, U64 buf, U64 n) {
+    if (n == 0 || n > 0x7FFFFFFF) {
+        return 0 - EINVAL;
+    }
+    U8[33] t;
+    I64 k = exelen[pid];
+    I64 tl = 0;
+    if (k == 0 || exe[pid * 32] != 47) {
+        t[0] = 47;
+        tl = 1;
+    }
+    for i in 0..k {
+        t[tl + i] = exe[pid * 32 + i];
+    }
+    tl += k;
+    if (tl > (n as I64)) {
+        tl = n as I64;
+    }
+    if (buf >= uvm.USER_HI || uvm.poke(pid, buf, t, tl, true) != tl) {
+        return 0 - EFAULT;
+    }
+    return tl;
+}
+
+// True when the first m bytes of b are s and the byte after is 0.
+Bool same_text[m](in U8[16] b, in U8[m] s) {
+    if (m >= 16) {
+        return false;
+    }
+    for i in 0..m {
+        if (b[i] != s[i]) {
+            return false;
+        }
+    }
+    return b[m] == 0;
+}
+
+// wait4(pid, status, options, rusage): reaps a zombie child (any with -1), writing its status
+// as Linux packs it; WNOHANG (1) gives 0 instead of waiting; -ECHILD with no child to wait for. A rusage gets its
+// 144 bytes, all 0 but ru_maxrss (BU-4h2): the child's peak of frames since its last execve, in KiB.
+I64 sys_wait4(I64 pid, I64 which, U64 status, U64 options, U64 rusage) {
+    Bool have = false;
+    I64 z = -1;
+    for p in CHILD_LO..uvm.PROCS {
+        if (parent[p] == pid && (which == -1 || vpid[p] == which)) {
+            if (state[p] == READY || state[p] == WAITING) {
+                have = true;
+            }
+            if (z < 0 && state[p] == ZOMBIE) {
+                z = p;
+            }
+        }
+    }
+    if (z < 0) {
+        if (!have) {
+            return 0 - ECHILD;
+        }
+        if ((options & 1) != 0) {
+            return 0;
+        }
+        return fs.WOULD_BLOCK;
+    }
+    U64 st = (code[z] as U64) << 8;
+    if (signaled[z]) {
+        st = code[z] as U64;
+    }
+    if (status != 0) {
+        U8[4] b;
+        for j in 0..4 {
+            b[j] = ((st >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+        if (status >= uvm.USER_HI || uvm.poke(pid, status, b, 4, true) != 4) {
+            return 0 - EFAULT;
+        }
+    }
+    if (rusage != 0) {
+        U8[144] ru;
+        for j in 0..144 {
+            ru[j] = 0;
+        }
+        U64 kib = (uvm.frames_peak(z) * 4) as U64;
+        for j in 0..8 {
+            ru[32 + j] = ((kib >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+        if (rusage >= uvm.USER_HI || uvm.poke(pid, rusage, ru, 144, true) != 144) {
+            return 0 - EFAULT;
+        }
+    }
+    I64 vp = vpid[z];
+    state[z] = FREE;
+    return vp;
+}
+
+// --- the canonical state (docs/user.md) ---
+
+// The head of the digest (edition 6, unchanged in edition 7; edition 9, FS-4: the descriptors): the tag 0x54, the 15
+// general registers, RIP, RSP, the
+// RFLAGS a process may set, the FS base, the break base, the break and the clock (u64 each), then
+// the FPU state that is the process's: FCW, FSW, the abridged FTW, MXCSR, ST0 to ST7 (10 bytes
+// each) and XMM0 to XMM15; the open descriptors (fs.digest_fds, edition 9, FS-4); the working directory (fs.digest_cwd:
+// its filesystem u8 and inode u64); the grant word (u64, P-3); the surface (W-2,
+// tile.state: its kind u8, w, h and stride u32, the tile input queue's length u8); the comm (16 bytes); the
+// sockets (fs.digest_socks, N-2: 24 bytes for each descriptor that holds one, none for a process without); the
+// ring of the volume's changes (fs.digest_ring, edition 8, FF-1: 17 bytes for a process that holds /dev/fsidx, none
+// for a process without).
+// The pages follow in uvm.state_digest, the dead stack as zeros (edition 7, W-4): the bytes of the 128 KiB stack
+// below RSP and the 128 bytes of the red zone under it.
+void digest_now(I64 pid) {
+    head[0] = 0x54;
+    U64[22] regs;
+    for i in 0..15 {
+        regs[i] = user.user_reg(pid, i);
+    }
+    regs[15] = user.user_reg(pid, user.R_RIP);
+    regs[16] = user.user_reg(pid, user.R_RSP);
+    regs[17] = user.user_reg(pid, user.R_RFLAGS) & 0x0CD5;
+    regs[18] = user.user_reg(pid, user.R_FS);
+    regs[19] = brk_base[pid];
+    regs[20] = brk_now[pid];
+    regs[21] = clock[pid];
+    for i in 0..22 {
+        for k in 0..8 {
+            head[1 + 8 * i + k] = ((regs[i] >> ((8 * k) as U64)) & 0xFF) as U8;
+        }
+    }
+    U8[512] raw;
+    for i in 0..64 {
+        U64 v = user.user_fx(pid, i);
+        for k in 0..8 {
+            raw[8 * i + k] = ((v >> ((8 * k) as U64)) & 0xFF) as U8;
+        }
+    }
+    I64 at = 177;
+    for k in 0..5 {
+        head[at] = raw[k];
+        at += 1;
+    }
+    for k in 24..28 {
+        head[at] = raw[k];
+        at += 1;
+    }
+    for i in 0..8 {
+        for k in 0..10 {
+            head[at] = raw[32 + 16 * i + k];
+            at += 1;
+        }
+    }
+    for k in 160..416 {
+        head[at] = raw[k];
+        at += 1;
+    }
+    I64 nfd = fs.digest_fds(pid, head[at..at + 5122]);
+    at += nfd;
+    U8[9] wd;
+    fs.digest_cwd(pid, wd);
+    for k in 0..9 {
+        head[at] = wd[k];
+        at += 1;
+    }
+    U64 gw = fs.grant_of(pid);
+    for k in 0..8 {
+        head[at] = ((gw >> ((8 * k) as U64)) & 0xFF) as U8;   // the grant word
+        at += 1;
+    }
+    U8[14] sf;
+    tile.state(pid, sf);
+    for k in 0..14 {
+        head[at] = sf[k];
+        at += 1;
+    }
+    for k in 0..16 {
+        head[at] = comm[pid * 16 + k];
+        at += 1;
+    }
+    I64 nsk = fs.digest_socks(pid, head[at..at + 6144]);
+    at += nsk;
+    I64 nrg = fs.digest_ring(pid, head[at..at + 17]);
+    at += nrg;
+    U8[32] d;
+    U64 dlo = STACK_TOP - STACK_BYTES;     // the dead stack: below the stack pointer and its 128-byte red zone
+    U64 dhi = dlo;
+    if (regs[16] > dlo + 128 && regs[16] <= STACK_TOP) {
+        dhi = regs[16] - 128;
+    }
+    uvm.state_digest(pid, head[0..at], dlo, dhi, d);
+    for i in 0..32 {
+        digests[32 * pid + i] = d[i];
+    }
+}
+
+void put_state(I64 pid) {
+    serial.serial_write("daphnis: state ");
+    for i in 0..32 {
+        U8 b = digests[32 * pid + i];
+        serial.serial_putc(text.hex_digit(b >> 4));
+        serial.serial_putc(text.hex_digit(b));
+    }
+    serial.serial_write("\n");
+}
+
+// True when processes a and b ended in the same canonical state.
+export Bool same_state(I64 a, I64 b) {
+    Bool same = true;
+    for i in 0..32 {
+        if (digests[32 * a + i] != digests[32 * b + i]) {
+            same = false;
+        }
+    }
+    return same;
+}
+
+void finish(I64 pid, I64 c, Bool sig) {
+    sleep_until[pid] = 0;              // RS-SLEEP: a sleeper ended (a signal) leaves no parked sleep for the slot
+    // K12: a child still running in this process's space ends first; the space goes with this process
+    for ch in CHILD_LO..uvm.PROCS {
+        if (uvm.lender_of(ch) == pid + 1 && (state[ch] == READY || state[ch] == WAITING)) {
+            finish(ch, 9, true);
+        }
+    }
+    vfork_child[pid] = 0;
+    digest_now(pid);
+    code[pid] = c;
+    signaled[pid] = sig;
+    if (focus_p == pid) {
+        focus_p = -1;                  // SCHED-1: the slot may be another process's next
+    }
+    tile.end(pid, true);
+    user.fb_present();
+    uvm.destroy(pid);
+    kern_forget(pid);
+    fs.proc_close_all(pid);
+    job.end(pid);
+    if (job.session(pid) == vpid[pid]) {
+        pty.session_ended(root[pid], vpid[pid]);   // K-10: the leader's terminal has no session now
+    }
+    for ch in CHILD_LO..uvm.PROCS {
+        if (parent[ch] == pid) {
+            parent[ch] = -1;           // orphaned: nobody will wait
+            if (state[ch] == ZOMBIE) {
+                state[ch] = FREE;
+            }
+        }
+    }
+    I64 pa = parent[pid];
+    if (pa >= 0 && (state[pa] == READY || state[pa] == WAITING)) {
+        state[pid] = ZOMBIE;
+    } else if (pid >= CHILD_LO) {
+        state[pid] = FREE;
+    } else {
+        state[pid] = DONE;
+        if (!capture[pid]) {
+            print_end(pid);
+        }
+    }
+}
+
+// FF-4 (docs/specs/2026-11-07-ff-super-plane.md section 3, the actions): reboot(2), the desk's Shut down and
+// Restart. Linux's two magic words, then LINUX_REBOOT_CMD_POWER_OFF or _HALT (shut down) or _RESTART; the tiler
+// alone may ask (-EPERM for any other process). Every other process ends as SIGKILL ends it, then the caller with
+// status 0, and the flavor's main ends the machine by ending(): the exit port as today (HW-2 adds S5), or a reset
+// through the 8042 for a restart. 0 when it took (the caller has ended), else -errno.
+I64 ending_cmd = 0;
+
+export I64 ending() {
+    return ending_cmd;
+}
+
+I64 sys_reboot(I64 pid, U64 m1, U64 m2, U64 cmd) {
+    if (m1 != 0xFEE1DEAD || (m2 != 672274793 && m2 != 85072278 && m2 != 369367448 && m2 != 537993216)) {
+        return 0 - EINVAL;
+    }
+    I64 c = 0;
+    if (cmd == 0x4321FEDC || cmd == 0xCDEF0123) {
+        c = 1;
+    } else if (cmd == 0x01234567) {
+        c = 2;
+    } else {
+        return 0 - EINVAL;
+    }
+    if (tile.tiler_pid() != pid) {
+        return 0 - EPERM;
+    }
+    ending_cmd = c;
+    for p in 0..uvm.PROCS {
+        if (p != pid && (state[p] == READY || state[p] == WAITING)) {
+            finish(p, 9, true);
+        }
+    }
+    finish(pid, 0, false);
+    return 0;
+}
+
+void print_end(I64 pid) {
+    put_state(pid);
+    if (signaled[pid]) {
+        serial.serial_write("daphnis: signal ");
+    } else {
+        serial.serial_write("daphnis: exit ");
+    }
+    put_dec(code[pid]);
+    serial.serial_write("\n");
+    if (forks[pid] > 0) {
+        serial.serial_write("daphnis: pid ");
+        put_dec(pid);
+        serial.serial_write(" forked ");
+        put_dec(forks[pid]);
+        serial.serial_write("\n");
+    }
+}
+
+// The signal Linux sends for an exception in ring 3.
+I64 signal_of(U64 vector) {
+    I64 s = 11;
+    if (vector == 0 || vector == 16 || vector == 19) {
+        s = 8;
+    }
+    if (vector == 6) {
+        s = 4;
+    }
+    if (vector == 1 || vector == 3) {
+        s = 5;
+    }
+    if (vector == 17) {
+        s = 7;
+    }
+    return s;
+}
+
+void fault(I64 pid) {
+    U64 v = user.user_reg(pid, user.E_VECTOR);
+    if (v == 14 && (user.user_reg(pid, user.E_ERROR) & 1) == 0) {
+        // M-2: a not-present page that is a promise gets its frame and the process goes on, nothing printed
+        if (uvm.back(pid, user.user_reg(pid, user.E_ADDR) & 0xFFFFFFFFFFFFF000) == 0) {
+            return;
+        }
+    }
+    serial.serial_write("daphnis: fault vector ");
+    put_dec(v as I64);
+    serial.serial_write(" error ");
+    put_hex(user.user_reg(pid, user.E_ERROR));
+    serial.serial_write(" addr ");
+    put_hex(user.user_reg(pid, user.E_ADDR));
+    serial.serial_write(" rip ");
+    put_hex(user.user_reg(pid, user.R_RIP));
+    serial.serial_write("\n");
+    finish(pid, signal_of(v), true);
+}
+
+// --- running ---
+
+// The pid a process sees (getpid, set_tid_address) is vp: 1 for a process run alone, its number
+// from 1 among processes started together. The slot pid is the kernel's, so a program's state
+// does not depend on what ran before it (stage R: a sealed process sees pid 1).
+// Arguments after argv[0] for the next start (R-2d: `doom --sealed`), each with its NUL; start takes and
+// clears them.
+U8[64] next_args;
+I64 next_argc;
+I64 next_argn;
+
+export void push_arg[m](in U8[m] s) {
+    if (next_argn + m + 1 > 64) {
+        serial.serial_write("daphnis: arguments over 64 bytes, one dropped\n");
+        return;
+    }
+    for i in 0..m {
+        next_args[next_argn + i] = s[i];
+    }
+    next_args[next_argn + m] = 0;
+    next_argn = next_argn + m + 1;
+    next_argc = next_argc + 1;
+}
+
+Bool start[m](I64 pid, in U8[m] name, Bool cap_out, I64 vp) {
+    return start_as(pid, name, name, cap_out, vp);
+}
+
+// start, with argv[0] and the comm `name` and the executable `exename` (K13: a volume program's path, which
+// load records for /proc/self/exe; pending_ino names its inode).
+Bool start_as[m, q](I64 pid, in U8[m] name, in U8[q] exename, Bool cap_out, I64 vp) {
+    state[pid] = FREE;
+    vpid[pid] = vp;
+    set_comm(pid, name);
+    ticks[pid] = 0;
+    facts.tick_fresh(pid);             // KF-R1
+    facts.set_parent(pid, false);      // DN-69 item 5: a process the kernel starts is no account's
+    caplen[pid] = 0;
+    capture[pid] = cap_out;
+    parent[pid] = -1;
+    root[pid] = pid;
+    out_owner[pid] = pid;
+    forks[pid] = 0;
+    job.start(pid, pid, vp);
+    tile.reset(pid);
+    if (vp + 1 > family_next || vp == 1) {
+        family_next = vp + 1;
+    }
+    for i in 0..96 {
+        head[i] = 0;                   // the strings load reads (the front of the digest's head, as execve's)
+    }
+    for i in 0..m {
+        head[i] = name[i];
+    }
+    for i in 0..next_argn {
+        head[m + 1 + i] = next_args[i];
+    }
+    I64 argc = 1 + next_argc;
+    I64 argn = m + 1 + next_argn;
+    next_argc = 0;
+    next_argn = 0;
+    began[pid] = stamp_s();            // KF-3b, RS-CLK2: a process the kernel starts begins at the stamp time (at boot,
+                                       // the boot's base)
+    window[pid] = 0;                   // GV-1a: and belongs to no window
+    I64 r = load(pid, exename, argc, 0, argn);
+    if (r < 0) {
+        uvm.destroy(pid);
+        serial.serial_write("daphnis: cannot run ");
+        put_name(exename);
+        serial.serial_write(": step ");
+        put_dec(0 - r);
+        serial.serial_write("\n");
+        return false;
+    }
+    fs.proc_init(pid);
+    state[pid] = READY;
+    return true;
+}
+
+// With nothing ready, what the scheduler waits for, into o: o[0] the process it halts for, the first that waits for
+// the device and is not a parked sleep, else the first parked sleep (RS-SLEEP), else -1; o[1] the first that waits
+// on no device (a deadlock when o[0] is -1), else -1.
+void halt_for(inout I64[2] o) {
+    o[0] = -1;
+    o[1] = -1;
+    I64 slp = -1;
+    for p in 0..uvm.PROCS {
+        if (state[p] == WAITING) {
+            if (on_device[p] && sleep_until[p] != 0) {
+                if (slp < 0) {
+                    slp = p;
+                }
+            } else if (on_device[p]) {
+                if (o[0] < 0) {
+                    o[0] = p;
+                }
+            } else if (o[1] < 0) {
+                o[1] = p;
+            }
+        }
+    }
+    if (o[0] < 0) {
+        o[0] = slp;
+    }
+}
+
+// Whether to halt once more for dev after waited halts: the tiler (the session, W-4) and a parked sleep (RS-SLEEP,
+// which the PIT ends) without limit, any other device wait up to WAIT_MAX.
+Bool halt_ok(I64 dev, I64 waited) {
+    return sleep_until[dev] != 0 || waited < WAIT_MAX || dev == tile.tiler_pid();
+}
+
+// Runs the ready processes lo..=hi round robin until none is ready. A process keeps the CPU
+// across its system calls; the timer moves it to the back.
+// Runs every ready process round robin until none is ready and none waits. A process keeps
+// the CPU across its system calls; the timer moves it to the back. A process in a call that
+// must wait (wait4, a pipe) is retried before each pick; if nothing is ready and the waiting
+// ones can never be answered, they end with SIGKILL and the transcript says so. A process waiting
+// for the input device (F-2) can be answered by the hardware: the kernel halts until an interrupt
+// and tries again, up to WAIT_MAX halts, then ends it with SIGKILL and says so; the tiler, which is the
+// session, waits without that limit (W-4), as does a parked sleep (RS-SLEEP).
+// SCHED-1 (docs/specs/2026-11-07-ds-desk-speed.md section 3): when a turn
+// ends at the timer, an input interrupt or a wait, a ready process of the desk class (desk()) is picked before the
+// rest, and after DESK_RUN desk turns in a row that an interrupt ended, the rest get one pick; with no tiler the
+// class is empty and the pick is the plain round robin.
+void run(I64 lo, I64 hi) {
+    I64 cur = lo;
+    I64 ring_cur = lo;
+    Bool any = true;
+    I64 waited = 0;
+    while (any) {
+        dsp.pump();                    // AU-3: the device ring kept ahead of the controller, every turn
+        xhci.poll();                   // HW-4: the USB reports, every turn: a timed poll that is always due (the desk's
+                                       // clock) otherwise keeps the scheduler off the tick and device-wait paths
+        for p in 0..uvm.PROCS {
+            if (state[p] == WAITING) {
+                syscall(p);
+                tty_signals();
+            }
+        }
+        I64 pick = -1;                 // SCHED-1: a process keeps the CPU across its system calls, as before;
+        I64 ring = -1;                 // at any other pick the first ready desk-class process in ring order runs
+        if (keep && state[cur] == READY) {   // before the rest, and after DESK_RUN desk turns in a row that an
+            pick = cur;                // interrupt ended, one of the rest
+        } else {
+            Bool cls = tile.tiler_pid() >= 0;   // no tiler, no class: the plain round robin, at its old cost
+            for k in 0..uvm.PROCS {
+                I64 p = (cur + k) % uvm.PROCS;
+                if (state[p] == READY) {
+                    if (cls && desk(p)) {
+                        if (pick < 0) {
+                            pick = p;
+                        }
+                    } else if (ring < 0) {
+                        ring = p;
+                    }
+                }
+            }
+            if (cls) {
+                // Desk picks keep their cursor; background turns advance independently.
+                ring = -1;
+                for k in 0..uvm.PROCS {
+                    I64 p = (ring_cur + k) % uvm.PROCS;
+                    if (ring < 0 && state[p] == READY && !desk(p)) { ring = p; }
+                }
+            }
+            if (ring >= 0 && (pick < 0 || desk_run >= DESK_RUN)) {
+                if (pick >= 0) {
+                    desk_run = 0;
+                }
+                pick = ring;
+                if (cls) { ring_cur = (ring + 1) % uvm.PROCS; }
+            }
+        }
+        keep = false;
+        I64 due = -1;                  // E-1: with nothing ready, a parked timed poll expires before any halt;
+        Bool devw = false;             // a spent one only when no process waits for a device
+        I64 spent = -1;
+        for p in 0..uvm.PROCS {
+            if (pick < 0 && state[p] == WAITING) {
+                if (due < 0 && poll_wait[p] == 1) {
+                    due = p;
+                }
+                if (spent < 0 && poll_wait[p] == 3) {
+                    spent = p;
+                }
+                devw = devw || on_device[p];
+            }
+        }
+        if (due < 0 && !devw) {
+            due = spent;
+        }
+        if (due >= 0) {
+            poll_wait[due] = 2;
+        } else if (pick < 0) {
+            I64[2] hw;
+            halt_for(hw);
+            I64 dev = hw[0];
+            I64 stuck = hw[1];
+            Bool slept = dev >= 0 && sleep_until[dev] != 0;   // only sleepers wait: never toward WAIT_MAX
+            if (dev >= 0) {
+                if (halt_ok(dev, waited)) {
+                    facts.tick_mark(trap.timer_ticks());   // KF-R1: ticks that come in the wait are idle time
+                    Bool woke = udp.wait();    // NW-1: spin when TCP is open; unmask NIC IRQ across halt; count timer wakes
+                    facts.tick_idle(trap.timer_ticks());
+                    if (woke && !slept) {
+                        waited += 1;           // W-4: the tiler is the session (the desk): it waits without limit
+                    }
+                    xhci.poll();       // HW-4: the USB keyboard's reports, at each wake
+                    udp.pump();        // a network tick (N-3): only here, where every process is blocked
+                } else {
+                    serial.serial_write("daphnis: input timeout: pid ");
+                    put_dec(dev);
+                    serial.serial_write(" waited for the device\n");
+                    finish(dev, 9, true);
+                }
+            } else if (stuck < 0) {
+                any = false;
+            } else {
+                serial.serial_write("daphnis: deadlock: pid ");
+                put_dec(stuck);
+                serial.serial_write(" waits for what cannot come\n");
+                finish(stuck, 9, true);
+            }
+        } else {
+            waited = 0;
+            cur = pick;
+            facts.tick_mark(trap.timer_ticks());               // KF-R1: ticks that come in the turn are pick's
+            I64 why = user.user_enter(pick, uvm.root(pick));
+            facts.tick_ran(pick, trap.timer_ticks());
+            if (why == user.TURN_SYSCALL) {
+                syscall(pick);
+                tty_signals();
+                keep = true;
+            } else if (why == user.TURN_FAULT) {
+                fault(pick);
+                if (state[pick] == READY) { keep = true; }
+            } else if (why == user.TURN_TICK) {
+                ticks[pick] += 1;
+                xhci.poll();                   // HW-4: at the scheduler's tick, as a frame enters the record
+                if (tile.tiler_pid() >= 0 && desk(pick)) {
+                    desk_run += 1;
+                }
+                cur = (pick + 1) % uvm.PROCS;
+            } else {
+                serial.serial_write("daphnis: user_enter refused\n");
+                finish(pick, 0, true);
+            }
+        }
+    }
+}
+
+void put_run[m](I64 pid, in U8[m] name) {
+    serial.serial_write("daphnis: run ");
+    put_name(name);
+    for i in 0..next_argn {
+        if (next_args[i] == 0) {
+            if (i + 1 < next_argn) {
+                serial.serial_putc(32);
+            }
+        } else {
+            if (i == 0) {
+                serial.serial_putc(32);
+            }
+            serial.serial_putc(next_args[i]);
+        }
+    }
+    serial.serial_write(" pid ");
+    put_dec(pid);
+}
+
+// Runs one program alone, its output live.
+export void run_alone[m](I64 pid, in U8[m] name) {
+    put_run(pid, name);
+    serial.serial_write("\n");
+    if (start(pid, name, false, 1)) {
+        run(pid, pid);
+    }
+}
+
+// K13 (BU-4e): runs the volume's program at rel (a path from the volume's root) alone, as run_alone runs an
+// image member: argv[0] and the comm are its file's name, /proc/self/exe its path. Nothing is printed or run
+// when the volume has no such file.
+export void run_volume[m](I64 pid, in U8[m] rel) {
+    U8[32] nm;
+    I64 k = fs.vol_exec(rel, nm);
+    if (k <= 0) {
+        return;
+    }
+    I64 base = 0;
+    for i in 0..k {
+        if (nm[i] == 47) {
+            base = i + 1;
+        }
+    }
+    put_run(pid, nm[0..k]);
+    serial.serial_write("\n");
+    pending_ino = fs.exec_ino();
+    if (start_as(pid, nm[base..k], nm[0..k], false, 1)) {
+        run(pid, pid);
+    }
+    pending_ino = 0;
+}
+
+// True when the volume holds a regular file at rel (a path from its root).
+export Bool on_volume[m](in U8[m] rel) {
+    U8[32] nm;
+    return fs.vol_exec(rel, nm) > 0;
+}
+
+// Runs one program that draws on the surface (F-1), alone, its output live; the block is marked
+// so the Linux oracle skips it (tools/check-user.py). The surface digest is printed by the caller.
+export void run_device[m](I64 pid, in U8[m] name) {
+    put_run(pid, name);
+    serial.serial_write(" (device)\n");
+    if (start(pid, name, false, 1)) {
+        run(pid, pid);
+    }
+}
+
+// FS-3: run_device for a desk: the process starts in the home with the disk grant (fs.home) when a volume is
+// mounted, and says so.
+export void run_desk[m](I64 pid, in U8[m] name) {
+    put_run(pid, name);
+    serial.serial_write(" (device)\n");
+    if (start(pid, name, false, 1)) {
+        if (fs.home(pid)) {
+            serial.serial_write("daphnis: the desk starts in /home");
+            if (fs.held(pid, fs.GRANT_DISK)) {
+                serial.serial_write(", the disk grant held");
+            }
+            serial.serial_write("\n");
+        }
+        run(pid, pid);
+    }
+}
+
+// The 1-bit canary: runs `name` alone with bit 0 of register `reg` flipped before its first
+// instruction. Its end state must desync from a clean run; if it did not, the digest would not
+// be seeing that register.
+export void run_canary[m](I64 pid, in U8[m] name, I64 reg) {
+    put_run(pid, name);
+    serial.serial_write(" canary: bit 0 of register ");
+    put_dec(reg);
+    serial.serial_write(" flipped\n");
+    if (start(pid, name, false, 1)) {
+        user.user_set_reg(pid, reg, user.user_reg(pid, reg) ^ 1);
+        run(pid, pid);
+    }
+}
+
+// The FPU canary: bit 0 of MXCSR (the sticky invalid-operation flag) flipped before the first
+// instruction. Nothing a program does clears it, so the end state must desync.
+export void run_fx_canary[m](I64 pid, in U8[m] name) {
+    put_run(pid, name);
+    serial.serial_write(" canary: bit 0 of MXCSR flipped\n");
+    if (start(pid, name, false, 1)) {
+        user.user_set_fx(pid, user.FX_MXCSR, user.user_fx(pid, user.FX_MXCSR) ^ 1);
+        run(pid, pid);
+    }
+}
+
+// Loads `name` as pid with its output held, for a run with others under the timer; the process
+// sees itself as pid vp.
+export void start_held[m](I64 pid, in U8[m] name, I64 vp) {
+    Bool ok = start(pid, name, true, vp);
+    if (!ok) {
+        state[pid] = FREE;
+    }
+}
+
+// Runs lo..=hi together under the timer until every one has ended.
+export void run_range(I64 lo, I64 hi) {
+    run(lo, hi);
+}
+
+// Prints a held process's block as if it had run alone: its output, its state and its end.
+export void print_held[m](I64 pid, in U8[m] name) {
+    put_run(pid, name);
+    serial.serial_write("\n");
+    for i in 0..caplen[pid] {
+        serial.serial_putc(cap[pid * CAP + i]);
+    }
+    print_end(pid);
+}
+
+// Whether the timer ended at least one of pid's turns.
+export void print_preempted(I64 pid) {
+    serial.serial_write("daphnis: pid ");
+    put_dec(pid);
+    if (ticks[pid] > 0) {
+        serial.serial_write(" preempted yes\n");
+    } else {
+        serial.serial_write(" preempted no\n");
+    }
+}
+
+// Runs `name` as `copies` processes from pid lo on, together under the timer; then prints each
+// one's output and end in pid order, and whether the timer ended at least one of its turns.
+export void run_together[m](I64 lo, I64 copies, in U8[m] name) {
+    I64 hi = lo + copies - 1;
+    serial.serial_write("daphnis: together ");
+    put_name(name);
+    serial.serial_write(" pids ");
+    put_dec(lo);
+    serial.serial_write(" to ");
+    put_dec(hi);
+    serial.serial_write("\n");
+    for p in lo..hi + 1 {
+        start_held(p, name, p - lo + 1);
+    }
+    run(lo, hi);
+    for p in lo..hi + 1 {
+        print_held(p, name);
+    }
+    for p in lo..hi + 1 {
+        print_preempted(p);
+    }
+}
+
+// Every frame back once processes end, except the named filesystem tables and lifetime display backing.
+// Display ownership is counted only on successful allocator-to-display transfer, never inferred from a gap.
+// The pool's frames are the RAM
+// less the frame bitmap's own (FB), which are never handed out.
+export void report_pool() {
+    if (user.fb_held_frames() != 0) {
+        serial.serial_write("daphnis: display backing ");
+        put_dec(user.fb_held_frames());
+        serial.serial_write(" frames held\n");
+    }
+    serial.serial_write("daphnis: fs tables ");
+    put_dec(fs.table_frames());
+    serial.serial_write(" frames held\n");
+    serial.serial_write("daphnis: pool frames free ");
+    put_dec(frames.free_count());
+    serial.serial_write(" of ");
+    put_dec(frames.ram() - frames.bitmap_frames());
+    serial.serial_write("\n");
+}
+
+// Takes a run of n frames from the pool and keeps it: the ballast of the placement test (a
+// program run again with it held gets other frames for its tables and pages). The first frame,
+// or a negative frames status.
+export I64 hold_frames(I64 n) {
+    return frames.alloc(n);
+}
+
+export void release_frames(I64 first, I64 n) {
+    if (first < 0 || frames.release(first, n) < 0) {
+        serial.serial_write("daphnis: ballast not returned\n");
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

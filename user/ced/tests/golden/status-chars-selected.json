@@ -1,0 +1,33 @@
+{
+  "id": "status-chars-selected",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "h\u00e9llo",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b32431b5b313b32431b5b313b3243"
+  ],
+  "expect": {
+    "text": "h\u00e9llo",
+    "sel": [
+      0,
+      4
+    ],
+    "screen": [
+      "h\u00e9llo",
+      "",
+      "",
+      "",
+      " x  3 chars selected                1:4",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

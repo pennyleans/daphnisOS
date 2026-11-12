@@ -1,0 +1,182 @@
+// Tests use the production reader and parser with scripted filesystem outcomes.
+// Run by tools/check-account-store.py (check.sh), which copies tests/ac/store_shctl.ci over user/ci/shctl.ci in an
+// isolated root; `cint test` on the tree itself does not compile (the real shctl has no reset or file).
+import user.ci.acct;
+import user.ci.acctio;
+import user.ci.shctl;
+
+void two(inout U8[_] b, inout I64[_] n) {
+    U8[4096] o;
+    acct.clear();
+    I64 p = acct.add("ada", 3, acct.PARENT, 1000, 1000, 65536, 3, "000102030405060708090a0b0c0d0e0f",
+                     "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386", 7,
+                     "000102030405060708090a0b0c0d0e0f");
+    I64 c = acct.add("sam", 3, acct.CHILD, 1001, 1001, 64, 1, "f0e0d0c0b0a090807060504030201000",
+                     "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 1,
+                     "f0e0d0c0b0a090807060504030201000");
+    assert(p == 0 && c == 1);
+    n[0] = acct.write_text(o);
+    for k in 0..n[0] { b[k] = o[k]; }
+}
+
+
+void reset() { shctl.reset(); acct.clear(); }
+void errors(I64 a, I64 b, I64 want) {
+    U8[4096] buf;
+    I64[1] n;
+    reset();
+    two(buf, n);
+    shctl.file(0, buf, 0, a, 0, 512);
+    shctl.file(1, buf, 0, b, 0, 512);
+    assert(acctio.load(buf) == want);
+    assert(acct.accounts() == 0);
+}
+
+test "only two missing files permit first enrollment" { errors(-2, -2, 0); }
+test "two io errors refuse enrollment" { errors(-5, -5, -1); }
+test "two permission errors refuse enrollment" { errors(-13, -13, -1); }
+test "missing primary and unreadable backup refuse enrollment" { errors(-2, -5, -1); }
+test "unreadable primary and missing backup refuse enrollment" { errors(-13, -2, -1); }
+
+test "valid primary wins without opening backup" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(buf, n);
+    shctl.file(0, buf, n[0], 0, 0, 7);
+    assert(acctio.load(buf) == 2);
+    assert(acct.parents() == 1 && acct.uid_of(1) == 1001);
+    assert(shctl.closed(0) == 1 && shctl.opened(1) == 0);
+}
+
+test "read error after valid prefix uses the complete backup" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(buf, n);
+    shctl.file(0, buf, n[0], 0, -5, 512);
+    shctl.file(1, buf, n[0], 0, 0, 19);
+    assert(acctio.load(buf) == 2 && acct.parents() == 1);
+    assert(shctl.closed(0) == 1 && shctl.closed(1) == 1);
+}
+
+test "unreadable primary uses a valid backup" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(buf, n);
+    shctl.file(0, buf, 0, -13, 0, 512);
+    shctl.file(1, buf, n[0], 0, 0, 512);
+    assert(acctio.load(buf) == 2);
+    assert(shctl.closed(0) == 0 && shctl.closed(1) == 1);
+}
+
+test "damaged parent cannot hide behind a valid child" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(buf, n);
+    shctl.file(1, buf, n[0], 0, 0, 512);
+    for k in 0..n[0] - 5 {
+        if (buf[k] == 115 && buf[k + 1] == 97 && buf[k + 2] == 108 && buf[k + 3] == 116 && buf[k + 4] == 61) {
+            buf[k + 5] = 122;
+        }
+    }
+    shctl.file(0, buf, n[0], 0, 0, 512);
+    assert(acctio.load(buf) == 2 && acct.parents() == 1);
+    assert(acct.uid_of(0) == 1000 && acct.uid_of(1) == 1001);
+    assert(shctl.closed(0) == 1 && shctl.closed(1) == 1);
+}
+
+void child(inout U8[_] buf, inout I64[_] n) {
+    two(buf, n);
+    // We form a syntactically valid store containing only the child.
+    I64 a = 0;
+    while (buf[a] != 10) { a = a + 1; }
+    I64 header = a + 1;
+    a = header;
+    while (buf[a] != 10) { a = a + 1; }
+    a = a + 1;
+    I64 span = n[0] - a;
+    for k in 0..span { buf[header + k] = buf[a + k]; }
+    n[0] = header + span;
+}
+
+test "a parentless primary uses a complete backup" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(buf, n);
+    shctl.file(1, buf, n[0], 0, 0, 512);
+    child(buf, n);
+    shctl.file(0, buf, n[0], 0, 0, 512);
+    assert(acctio.load(buf) == 2 && acct.parents() == 1);
+    assert(shctl.closed(1) == 1);
+}
+
+test "two parentless copies leave no account set" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); child(buf, n);
+    shctl.file(0, buf, n[0], 0, 0, 512);
+    shctl.file(1, buf, n[0], 0, 0, 512);
+    assert(acctio.load(buf) == -1 && acct.accounts() == 0);
+}
+
+test "empty present files never permit enrollment" {
+    U8[4096] buf;
+    reset();
+    shctl.file(0, buf, 0, 0, 0, 512);
+    shctl.file(1, buf, 0, 0, 0, 512);
+    assert(acctio.load(buf) == -1 && acct.accounts() == 0);
+}
+
+test "oversized store never accepts a valid prefix" {
+    U8[4608] bytes;
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(bytes, n);
+    for k in n[0]..4097 { bytes[k] = 10; }
+    shctl.file(0, bytes, 4097, 0, 0, 512);
+    assert(acctio.read(b"/home/.daphnis/accounts", buf) == -27);
+    assert(shctl.closed(0) == 1);
+}
+
+test "exactly full store reads to eof" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(buf, n);
+    for k in n[0]..4096 { buf[k] = 10; }
+    shctl.file(0, buf, 4096, 0, 0, 512);
+    assert(acctio.load(buf) == 2);
+    assert(shctl.closed(0) == 1 && shctl.opened(1) == 0);
+}
+
+test "read failure after a full buffer is not eof" {
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(buf, n);
+    for k in n[0]..4096 { buf[k] = 10; }
+    shctl.file(0, buf, 4096, 0, -5, 512);
+    assert(acctio.read(b"/home/.daphnis/accounts", buf) == -5);
+    assert(shctl.closed(0) == 1);
+}
+
+
+test "oversized primary falls back rather than authenticating its prefix" {
+    U8[4608] bytes;
+    U8[4096] buf;
+    I64[1] n;
+    reset(); two(bytes, n);
+    shctl.file(1, bytes, n[0], 0, 0, 512);
+    for k in n[0]..4097 { bytes[k] = 10; }
+    shctl.file(0, bytes, 4097, 0, 0, 512);
+    assert(acctio.load(buf) == 2 && acct.parents() == 1);
+    assert(shctl.closed(0) == 1 && shctl.closed(1) == 1);
+}
+
+test "a small destination refuses excess bytes without a bounds fault" {
+    U8[4096] bytes;
+    U8[16] buf;
+    I64[1] n;
+    reset(); two(bytes, n);
+    shctl.file(0, bytes, n[0], 0, 0, 7);
+    assert(acctio.read(b"/home/.daphnis/accounts", buf) == -27);
+    assert(shctl.closed(0) == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

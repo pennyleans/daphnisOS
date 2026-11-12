@@ -1,0 +1,28 @@
+// src/stepapi.ci: the kernel's side of the K5 step interface (rt/task.c, rt/state.c). A task is a
+// step function: task_step runs one step on a fresh stack in the task's address space, and the
+// step ends by recording one request (src/taskside.ci), which the kernel reads with task_req.
+
+// Runs one step of the task. 0 if it ended with a request, 3 if the task faulted (rt prints the
+// record), -1 if it cannot run.
+export extern unrestricted I64 task_step(I64 id);
+// Field i of the request the last step made: 0 kind, 1 and 2 arguments, 3 value.
+export extern observe I64 task_req(I64 id, I64 i);
+// What the next step sees in its args after the role and network digits (up to 14 bytes).
+export extern unrestricted void task_args_set(I64 id, in U8[_] src);
+// The fuel a task has used in all its steps.
+export extern observe I64 task_fuel_total(I64 id);
+export extern unrestricted void task_fuel_set(I64 id, I64 v);
+// The root of the page tables of the task (0: the kernel's own). A frame of the pool.
+export extern unrestricted void task_space(I64 id, I64 root);
+// The canonical bytes of a task's module variables (docs/snapshot.md): their length, a slice of
+// them, and the way back (stage the bytes, then apply them to a task of the same length).
+export extern unrestricted I64 task_state_size(I64 id);
+export extern unrestricted I64 task_state_read(I64 id, I64 off, out U8[_] dst);
+export extern unrestricted void task_state_stage(I64 off, in U8[_] src);
+export extern unrestricted I64 task_state_apply(I64 id, I64 len);
+// K5: a store into the code (kind 0) and a jump into data (kind 1), which the hardware must refuse; the
+// error code of the trap (3, 17), or 0 if it did not trap. Needs the IDT and the TSS.
+export extern unrestricted I64 wx_probe(I64 kind);
+// Byte i of the program's revision (32 bytes), the same on every compiler for one source.
+export extern observe U8 rev_byte(I64 i);
+// SPDX-License-Identifier: Apache-2.0

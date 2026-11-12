@@ -1,0 +1,98 @@
+// user/ci/kit/launch.ci: what the desk types into a terminal it opens for a program (board 20261111T170652Z, the
+// launch defect l saw at 17:03Z; DN-60). An app of kit/apps.ci is typed as `exec CMD` and Enter: it takes the
+// shell's place, so its process is the terminal's and the terminal, its window with it, ends when the app ends. A
+// command (Fetch, or a /bin program that is no app) is typed as before, CMD and Enter, and keeps its Console, so
+// what it prints stays on screen. Console is the shell itself, and nothing is typed. When the shell cannot start an
+// exec'd program it ends at once with 127 (not found) or 126 (cannot run), and the desk says so on the bar (`note`).
+import user.ci.kit.apps;
+
+export const I64 MAX = 255;     // the longest command
+export const I64 LINE = 255;    // the pty's edited line (src/pty.ci EDIT): a byte past it is dropped (review on PR 300)
+export const I64 TYPED = 256;   // the most bytes typed: a line and its Enter
+
+const I64 WORD = 64;            // the longest program word
+
+// Whether cmd's program takes the shell's place (`exec`): an app of kit/apps.ci that is not a command (DN-60).
+export Bool replaces(in U8[_] cmd) {
+    U8[72] p;
+    I64 pn = program(cmd, p);
+    if (pn == 0) { return false; }
+    I64 a = apps.by_program(p[0..pn]);
+    return a != apps.NONE && !apps.is_command(a);
+}
+
+// The bytes typed for cmd into dst: none for Console (an empty cmd, or Console's program alone); `exec `, cmd and
+// Enter for an app (replaces); cmd and Enter for a command. -1 when the line would pass the pty's LINE (the shell may
+// still be in canonical mode when they arrive, so an app's command holds 250 bytes, a command's 255), or dst cannot
+// hold them.
+export I64 typed(in U8[_] cmd, inout U8[_] dst) {
+    I64 n = len(cmd);
+    if (n == 0 || (n == 4 && cmd[0] == 'c' && cmd[1] == 'i' && cmd[2] == 's' && cmd[3] == 'h')) { return 0; }
+    I64 at = 0;
+    if (replaces(cmd)) { at = 5; }
+    if (n > MAX || at + n > LINE || len(dst) < at + n + 1) { return -1; }
+    if (at == 5) {
+        U8[5] e = b"exec ";
+        for k in 0..5 { dst[k] = e[k]; }
+        at = 5;
+    }
+    for k in 0..n { dst[at + k] = cmd[k]; }
+    dst[at + n] = 10;
+    return at + n + 1;
+}
+
+// The program cmd's first word runs, /bin/WORD, into dst (PATH is /bin in every terminal the desk starts); its
+// length, or 0 with no word, a word longer than WORD, or no room in dst.
+export I64 program(in U8[_] cmd, inout U8[_] dst) {
+    I64 e = 0;
+    while (e < len(cmd) && cmd[e] != ' ') { e = e + 1; }
+    if (e == 0 || e > WORD || len(dst) < 5 + e) { return 0; }
+    U8[5] b = b"/bin/";
+    for k in 0..5 { dst[k] = b[k]; }
+    for k in 0..e { dst[5 + k] = cmd[k]; }
+    return 5 + e;
+}
+
+// Whether a terminal whose program was typed with exec ended as the shell does when exec fails: wait status ws an
+// exit with 127 (not found) or 126 (cannot run). Any other end, a signal included, is the program's own.
+export Bool failed(I64 ws) {
+    if (ws < 0 || (ws & 0x7F) != 0) { return false; }
+    I64 code = (ws >> 8) & 0xFF;
+    return code == 126 || code == 127;
+}
+
+// The name the bar gives cmd's program: its app's (kit/apps.ci) when it is one, else the command word; its length.
+export I64 name(in U8[_] cmd, inout U8[_] dst) {
+    U8[72] p;
+    I64 pn = program(cmd, p);
+    if (pn == 0) { return 0; }
+    I64 a = apps.by_program(p[0..pn]);
+    if (a != apps.NONE) { return apps.field(a, 0, dst); }
+    I64 n = pn - 5;
+    if (n > len(dst)) { n = len(dst); }
+    for k in 0..n { dst[k] = p[5 + k]; }
+    return n;
+}
+
+// The bar's sentence for a program that could not start, its words in one line (w, nm for its %), into dst, at
+// most 64 bytes (the bar message's most; nm is cut to fit); its length.
+export I64 note(in U8[_] nm, inout U8[_] dst) {
+    U8[16] w = b"Couldn't open %.";   // DN-60: the words are l's to give (card 17:46Z); this line alone changes
+    I64 room = 64 - (len(w) - 1);
+    if (room > len(dst) - (len(w) - 1)) { room = len(dst) - (len(w) - 1); }
+    I64 n = len(nm);
+    if (n > room) { n = room; }
+    if (n < 0) { return 0; }
+    I64 at = 0;
+    for k in 0..len(w) {
+        if (w[k] == '%') {
+            for q in 0..n { dst[at + q] = nm[q]; }
+            at = at + n;
+        } else {
+            dst[at] = w[k];
+            at = at + 1;
+        }
+    }
+    return at;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,144 @@
+import console;
+import fs;
+import state;
+import core;
+import keys;
+
+requires fs.read("/case");
+
+I64[64] r;
+U8[256] name;
+U8[768] f;
+U8[4096] held;
+const I64 READ_WAIT = 50;
+
+I64 num(in U8[_] all, I64 p) {
+    I64 v = 0;
+    for i in 0..8 {
+        v = v * 256 + (all[p + 7 - i] as I64);
+    }
+    return v;
+}
+
+fs.FsError!I64 read_all(Grants g, inout U8[_] all) {
+    I64 n = try fs.stat(g, "/case/all");
+    if (n > len(all)) {
+        return -1;
+    }
+    return try fs.read(g, "/case/all", 0, all[0..n]);
+}
+
+void screen(Grants g, in I64[_] grid) {
+    U8[4] s;
+    I64 rows = min(r[state.R_ROWS], state.MAX_ROWS);
+    I64 cols = min(r[state.R_COLS], state.MAX_COLS);
+    for y in 0..rows {
+        for x in 0..cols {
+            I64 n = keys.encode(grid[y * cols + x] % state.STYLE, s);
+            _ = console.write(g, s[0..n]);
+        }
+        "\n";
+    }
+}
+
+export void main(Grants g) {
+    U8[262144] all;
+    U8[65536] t;
+    I64[147456] u;
+    U8[65536] ub;
+    U8[65536] clip;
+    I64[40000] grid;
+    U8[200000] o;
+    U8[65536] text;
+    U8[1] nm;
+    nm[0] = 'x';
+
+    I64 total = read_all(g, all) catch -1;
+    if (total < 8) {
+        "replay: cannot read /case/all\n";
+        return;
+    }
+    I64 ncases = num(all, 0);
+    I64 p = 8;
+    for c in 0..ncases {
+        I64 rows = num(all, p);
+        I64 cols = num(all, p + 8);
+        I64 anchor = num(all, p + 16);
+        I64 head = num(all, p + 24);
+        Bool created = num(all, p + 32) >= 1;
+        Bool untitled = num(all, p + 32) == 2;   // no file
+        Bool on_desk = num(all, p + 40) == 1;
+        I64 tl = num(all, p + 48);
+        I64 nchunks = num(all, p + 56);
+        p += 64;
+        I64 lens = p;
+        p += 8 * nchunks;
+
+        core.init(r, t, rows, cols);
+        core.desk(r, on_desk);
+        I64 st = state.OK;
+        if (untitled) {
+            st = core.load(r, t, name, all[p..p + tl], b"Untitled", created);
+        } else {
+            st = core.load(r, t, name, all[p..p + tl], nm, created);
+        }
+        p += tl;
+        if (st != state.OK) {
+            "case {c} refused {st}\n";
+            for k in 0..nchunks {
+                p += num(all, lens + 8 * k);
+            }
+            continue;
+        }
+        if (untitled) {
+            core.untitled(r);
+        }
+        r[state.R_ANCHOR] = anchor;
+        r[state.R_HEAD] = head;
+
+        I64 h = 0;
+        for k in 0..nchunks {
+            I64 n = num(all, lens + 8 * k);
+            for i in 0..n {
+                held[h + i] = all[p + i];
+            }
+            p += n;
+            h += n;
+            Bool more = k + 1 < nchunks && num(all, lens + 8 * (k + 1)) > 0;
+            if (n > 0 && more && core.esc_pending(r, held[0..h])) {
+                continue;
+            }
+            if (n == 0) {
+                core.idle(r, READ_WAIT);
+                if (core.held_expired(r)) {
+                    h = 0;
+                }
+                continue;
+            }
+            I64 used = core.step(r, t, u, ub, clip, name, f, grid, o, held[0..h]);
+            for i in used..h {
+                held[i - used] = held[i];
+            }
+            h -= used;
+            if ((r[state.R_REQ] & state.REQ_SAVE) != 0) {
+                if (r[state.R_UNTITLED] == 1) {   // as ced.ci's save_as with no such file
+                    for i in 0..r[state.R_ASK_LEN] {
+                        name[i] = f[state.ASK_AT + i];
+                    }
+                    r[state.R_NAME_LEN] = r[state.R_ASK_LEN];
+                    core.named(r);
+                }
+                core.saved(r, true);
+                core.draw(r, t, name, f, grid, o);
+            }
+            r[state.R_REQ] = 0;
+        }
+        core.draw(r, t, name, f, grid, o);
+
+        I64 n = core.text_out(r, t, text);
+        "case {c} {n} {r[state.R_ANCHOR]} {r[state.R_HEAD]} {min(r[state.R_ROWS], state.MAX_ROWS)}\n";
+        _ = console.write(g, text[0..n]);
+        "\n";
+        screen(g, grid);
+    }
+}

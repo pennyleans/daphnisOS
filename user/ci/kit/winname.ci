@@ -1,0 +1,83 @@
+// user/ci/kit/winname.ci: a window's name in the desk's lists and bars (DN-22, DN-23, note 28; RG-1): its app's name
+// in the app list (kit/apps.ci), found by the window's program, else the title as the kernel names it. The title is
+// the program's comm (at most 16 bytes) and can carry its arguments ("bin/cvim /"): the first word is the program.
+// A word with a '/' is an image program's member path (bin/ced) under the root, else a name under /bin; the session
+// shell, sh or bin/sh, is cish (Console). Settings is the desk's own window. The icon follows the same program
+// (P2-b): a terminal running CVim shows CVim's, not Console's. Pure: hdesk.ci's win_name, prog_path, win_text and
+// win_icon3 call it; tests/rs/winname_test.ci runs it hosted.
+
+import user.ci.kit.apps;
+import user.ci.kit.bartitle;
+import user.ci.kit.icons3;
+
+// The program of a window titled t, as kit/apps.ci names programs, into p (40 bytes are enough): its length.
+export I64 prog(in U8[_] t, inout U8[_] p) {
+    I64 w = 0;
+    while (w < len(t) && t[w] != ' ') { w = w + 1; }
+    U8[5] bin = b"/bin/";
+    I64 m = 5;
+    for k in 0..5 { p[k] = bin[k]; }
+    for k in 0..w {
+        if (t[k] == '/') { m = 1; }
+    }
+    for k in 0..w { p[m + k] = t[k]; }
+    I64 n = m + w;
+    if (n == 7 && p[5] == 's' && p[6] == 'h') {
+        U8[9] cish = b"/bin/cish";
+        for k in 0..9 { p[k] = cish[k]; }
+        return 9;
+    }
+    return n;
+}
+
+// Window titled t's name into dst (Settings when settings): its app's name, else t as it is. Its length.
+export I64 name(in U8[_] t, Bool settings, inout U8[_] dst) {
+    I64 a = apps.NONE;
+    if (settings) {
+        U8[8] s = b"Settings";
+        I64 sn = 8;
+        if (sn > len(dst)) { sn = len(dst); }
+        for k in 0..sn { dst[k] = s[k]; }
+        return sn;
+    }
+    U8[40] p;
+    I64 pn = prog(t[0..min_of(len(t), 32)], p);
+    a = apps.by_program(p[0..pn]);
+    if (a != apps.NONE) { return apps.field(a, 0, dst); }
+    I64 n = len(t);
+    if (n > len(dst)) { n = len(dst); }
+    for k in 0..n { dst[k] = t[k]; }
+    return n;
+}
+
+// Window titled t's line in the window lists (the plane's rows, Grants, the menu) into dst: its name, and ` - ` and
+// its variable v when it has one (Settings has none), the variable cut at a character to fit. Its length.
+export I64 text(in U8[_] t, Bool settings, in U8[_] v, inout U8[_] dst) {
+    I64 n = name(t, settings, dst);
+    if (settings || len(v) == 0 || n + 3 >= len(dst)) { return n; }
+    I64 vl = bartitle.fit(v, len(v), len(dst) - n - 3);
+    if (vl <= 0) { return n; }
+    dst[n] = ' ';
+    dst[n + 1] = '-';
+    dst[n + 2] = ' ';
+    for k in 0..vl { dst[n + 3 + k] = v[k]; }
+    return n + 3 + vl;
+}
+
+// Window titled t's icon in kit/icons3.ci: Settings for Settings, its app's (found by prog, as name finds it), else
+// Terminal for a terminal window (a Console running no app's program) and Program for any other.
+export I64 icon(in U8[_] t, Bool settings, Bool term) {
+    if (settings) { return icons3.SETTINGS; }
+    U8[40] p;
+    I64 pn = prog(t[0..min_of(len(t), 32)], p);
+    I64 a = apps.by_program(p[0..pn]);
+    if (a != apps.NONE) { return apps.icon(a); }
+    if (term) { return icons3.TERMINAL; }
+    return icons3.PROGRAM;
+}
+
+I64 min_of(I64 a, I64 b) {
+    if (a < b) { return a; }
+    return b;
+}
+// SPDX-License-Identifier: Apache-2.0

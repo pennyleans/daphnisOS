@@ -1,0 +1,695 @@
+{
+  "review": "raw-end-name ascii-alpha restriction",
+  "source_revision": "acaf4b237c297b9d7f31edbd0a4049b8abbb10c7",
+  "source_sha256": "ba079709d613b5c3dab373de880bd302a32f376996202ddd537f974e548dbd3b",
+  "fixture_source_sha256": "ba079709d613b5c3dab373de880bd302a32f376996202ddd537f974e548dbd3b",
+  "standard_revision": "5fcc2318395821db61e353705e6368ad9a000af5",
+  "rows": [
+    {
+      "id": "review-nonalpha-1-a-b",
+      "input": "</a-b><b>",
+      "mode": 1,
+      "last": "a-b",
+      "want": [
+        [
+          "Character",
+          "</a-b><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-1-a1",
+      "input": "</a1><b>",
+      "mode": 1,
+      "last": "a1",
+      "want": [
+        [
+          "Character",
+          "</a1><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-1-a_b",
+      "input": "</a_b><b>",
+      "mode": 1,
+      "last": "a_b",
+      "want": [
+        [
+          "Character",
+          "</a_b><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-1-a\u00e9",
+      "input": "</a\u00e9><b>",
+      "mode": 1,
+      "last": "a\u00e9",
+      "want": [
+        [
+          "Character",
+          "</a\u00e9><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-2-a-b",
+      "input": "</a-b><b>",
+      "mode": 2,
+      "last": "a-b",
+      "want": [
+        [
+          "Character",
+          "</a-b><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-2-a1",
+      "input": "</a1><b>",
+      "mode": 2,
+      "last": "a1",
+      "want": [
+        [
+          "Character",
+          "</a1><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-2-a_b",
+      "input": "</a_b><b>",
+      "mode": 2,
+      "last": "a_b",
+      "want": [
+        [
+          "Character",
+          "</a_b><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-2-a\u00e9",
+      "input": "</a\u00e9><b>",
+      "mode": 2,
+      "last": "a\u00e9",
+      "want": [
+        [
+          "Character",
+          "</a\u00e9><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-3-a-b",
+      "input": "</a-b><b>",
+      "mode": 3,
+      "last": "a-b",
+      "want": [
+        [
+          "Character",
+          "</a-b><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-3-a1",
+      "input": "</a1><b>",
+      "mode": 3,
+      "last": "a1",
+      "want": [
+        [
+          "Character",
+          "</a1><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-3-a_b",
+      "input": "</a_b><b>",
+      "mode": 3,
+      "last": "a_b",
+      "want": [
+        [
+          "Character",
+          "</a_b><b>"
+        ]
+      ]
+    },
+    {
+      "id": "review-nonalpha-3-a\u00e9",
+      "input": "</a\u00e9><b>",
+      "mode": 3,
+      "last": "a\u00e9",
+      "want": [
+        [
+          "Character",
+          "</a\u00e9><b>"
+        ]
+      ]
+    }
+  ],
+  "toolchains": {
+    "gcc": {
+      "binary_sha256": "be30b40c8de9db5a6ccdb30de5114d49433523b3c224962a4bfbb24dec8c95c2",
+      "results": [
+        [
+          [
+            [
+              "EndTag",
+              "a-b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a1"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a_b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a\u00e9"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a-b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a1"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a_b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a\u00e9"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a-b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a1"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a_b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a\u00e9"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ]
+      ],
+      "mismatches": 12
+    },
+    "clang": {
+      "binary_sha256": "49251e7d1c58a68f7a2ba31f7c0d59d132ebd89856a9cb5c440e266bc083537b",
+      "results": [
+        [
+          [
+            [
+              "EndTag",
+              "a-b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a1"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a_b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a\u00e9"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a-b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a1"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a_b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a\u00e9"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a-b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a1"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a_b"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ],
+        [
+          [
+            [
+              "EndTag",
+              "a\u00e9"
+            ],
+            [
+              "StartTag",
+              "b",
+              {}
+            ]
+          ],
+          0,
+          0,
+          0,
+          [
+            {
+              "attributes": {},
+              "self_closing": false
+            }
+          ]
+        ]
+      ],
+      "mismatches": 12
+    }
+  }
+}

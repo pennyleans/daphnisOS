@@ -1,0 +1,26 @@
+{
+  "id": "new-file-keeps-its-lf",
+  "rules": [
+    "TEXT-1"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "new": true,
+  "chunks": [
+    "68690d"
+  ],
+  "expect": {
+    "text": "hi\n",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

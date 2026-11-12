@@ -1,0 +1,92 @@
+// user/ci/mwin.ci: `mwin W H [VAR]` (H-3c3, docs/specs/2026-11-05-h-hybrid.md HX-4, HX-6): a pixel window that asks
+// a W x H surface (FBIO_TILE_WANT; 0 0 takes the offer), sets VAR as its bar variable (FBIO_TILE_VAR) and asks
+// resize events (FBIO_TILE_RESIZE); draws mfb's pattern, then waits for its first EV_WIN_RESIZE, prints it and ends.
+// Status 2 for a usage error, 3 without a surface.
+import user.ci.dev;
+import user.ci.tilewin;
+
+const I64 EV_WIN_RESIZE = 5;
+
+U8[7680] row;       // one row of the widest surface (1920)
+U8[24] ev;
+U8[32] v;
+
+// Argument k (from 0) as a decimal number, or -1.
+I64 num(in U8[_] args, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k && at < len(args)) {
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    I64 n = 0;
+    I64 d = 0;
+    while (at < len(args) && args[at] >= 48 && args[at] <= 57 && d < 5) {
+        n = 10 * n + (args[at] - 48) as I64;
+        at = at + 1;
+        d = d + 1;
+    }
+    if (d == 0 || at >= len(args) || args[at] != 0) { return -1; }
+    return n;
+}
+
+void main(in U8[_] args) {
+    I64 ww = num(args, 0);
+    I64 wh = num(args, 1);
+    if (ww < 0 || wh < 0) {
+        "mwin: usage: mwin W H [VAR]\n";
+        dev.exit_now(2);
+    }
+    if (ww > 0 && wh > 0) {
+        I64 a = tilewin.win_want(ww, wh);
+    }
+    I64 st = dev.fb_open();
+    if (st < 0) {
+        "mwin: no surface ({st})\n";
+        dev.exit_now(3);
+    }
+    I64 at = 0;
+    I64 i = 0;
+    while (i < 2 && at < len(args)) {
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    I64 n = 0;
+    while (at + n < len(args) && args[at + n] != 0 && n < 32) {
+        v[n] = args[at + n];
+        n = n + 1;
+    }
+    I64 sv = tilewin.win_var(v[0..32]);
+    I64 sr = tilewin.win_resize(1);
+    I64 w = dev.fb_word(0) as I64;
+    I64 h = dev.fb_word(1) as I64;
+    "mwin: surface {w}x{h} var {sv} resize {sr}\n";
+    if (w > 1920 || h < 2 || w < 2) {
+        dev.exit_now(4);
+    }
+    for y in 0..h {
+        for x in 0..w {
+            row[4 * x] = ((x ^ y) & 255) as U8;
+            row[4 * x + 1] = (y * 255 / (h - 1)) as U8;
+            row[4 * x + 2] = (x * 255 / (w - 1)) as U8;
+            row[4 * x + 3] = 0;
+        }
+        dev.fb_row(y, row[0..4 * w]);
+    }
+    Bool told = false;
+    while (!told) {
+        I64 got = dev.ev_read(ev);
+        if (got < 0) {
+            "mwin: no events ({got})\n";
+            dev.exit_now(5);
+        }
+        I64 t = (ev[16] as I64) | ((ev[17] as I64) << 8);
+        if (t == EV_WIN_RESIZE) {
+            I64 cw = (ev[18] as I64) | ((ev[19] as I64) << 8);
+            I64 ch = (ev[20] as I64) | ((ev[21] as I64) << 8) | ((ev[22] as I64) << 16);
+            "mwin: resize {cw}x{ch}\n";
+            told = true;
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

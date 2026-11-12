@@ -1,0 +1,71 @@
+// user/ci/core/line.ci: a core tool's lines (docs/specs/2026-11-06-c-core.md sections 4 and 5, CT-3). begin(fd), then
+// next(buf) until it returns -1: each line's bytes without its newline, in a caller's buffer of LINE_MAX (65,536)
+// bytes. A last line without a newline is a line (ended() is then false). A longer line ends the tool with
+// `TOOL: limit: LINE_MAX`; a read error ends the input, and failed() gives its errno.
+import user.ci.shctl;
+import user.ci.core.msg;
+
+export const I64 LINE_MAX = 65536;
+
+U8[4096] blk;
+I64 have = 0;
+I64 at = 0;
+I64 fd = 0;
+Bool eof = false;
+Bool nl = false;
+I64 err = 0;
+
+export void begin(I64 f) {
+    fd = f;
+    have = 0;
+    at = 0;
+    eof = false;
+    err = 0;
+}
+
+// The next line into buf: its length, or -1 at the end of the input.
+export I64 next(inout U8[_] buf) {
+    I64 n = 0;
+    nl = false;
+    Bool any = false;
+    while (!nl) {
+        if (at == have) {
+            if (eof) {
+                if (any) { return n; }
+                return -1;
+            }
+            I64 r = shctl.fd_read(fd, blk);
+            at = 0;
+            have = 0;
+            if (r < 0) {
+                err = 0 - r;
+                eof = true;
+            } else if (r == 0) {
+                eof = true;
+            } else {
+                have = r;
+            }
+        } else {
+            any = true;
+            U8 c = blk[at];
+            at = at + 1;
+            if (c == '\n') {
+                nl = true;
+            } else {
+                if (n == LINE_MAX || n == len(buf)) { msg.limit(b"LINE_MAX"); }
+                buf[n] = c;
+                n = n + 1;
+            }
+        }
+    }
+    return n;
+}
+
+export Bool ended() {
+    return nl;
+}
+
+export I64 failed() {
+    return err;
+}
+// SPDX-License-Identifier: Apache-2.0

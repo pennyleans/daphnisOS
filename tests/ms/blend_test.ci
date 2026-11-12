@@ -1,0 +1,56 @@
+// tests/ms/blend_test.ci: hosted model tests of the one blend (MS-1, user/ci/kit/blend.ci;
+// docs/specs/2026-11-10-ms-motion-shadows.md section 5). Run by check.sh: cint test --root . tests/ms/blend_test.ci
+
+import user.ci.kit.blend;
+
+test "alpha 0 leaves the pixel and 256 gives the color" {
+    assert(blend.mix_px(0x123456, 0xABCDEF, 0) == 0x123456);
+    assert(blend.mix_px(0x123456, 0xABCDEF, 256) == 0xABCDEF);
+    assert(blend.mix_px(0xABCDEF, 0x123456, 256) == 0x123456);
+}
+
+test "alpha 1 and 255, both directions: the shift rounds toward minus infinity (law 1)" {
+    // 255 -> 0: step (255 * a) >> 8 is 0 at a = 1 and 254 at a = 255.
+    assert(blend.mix_px(0xFFFFFF, 0x000000, 1) == 0xFFFFFF);
+    assert(blend.mix_px(0xFFFFFF, 0x000000, 255) == 0x010101);
+    // 0 -> 255: step (-255 * a) >> 8 is -1 at a = 1 and -255 at a = 255.
+    assert(blend.mix_px(0x000000, 0xFFFFFF, 1) == 0x010101);
+    assert(blend.mix_px(0x000000, 0xFFFFFF, 255) == 0xFFFFFF);
+}
+
+test "half way" {
+    assert(blend.mix_px(0x000000, 0xFFFFFF, 128) == 0x808080);
+    assert(blend.mix_px(0xFFFFFF, 0x000000, 128) == 0x808080);
+    assert(blend.mix_px(0x141413, 0xEAE6DF, 128) == 0x7F7D79);
+}
+
+test "alpha outside 0..256 is clamped" {
+    assert(blend.mix_px(0x102030, 0x405060, -5) == 0x102030);
+    assert(blend.mix_px(0x102030, 0x405060, 999) == 0x405060);
+}
+
+test "a span is cut to the row and leaves the rest" {
+    U32[6] row = [0, 0, 0, 0, 0, 0];
+    blend.mix(row, -2, 2, 0xFFFFFF, 256);
+    blend.mix(row, 4, 9, 0x808080, 256);
+    assert(row[0] == 0xFFFFFF && row[1] == 0xFFFFFF);
+    assert(row[2] == 0 && row[3] == 0);
+    assert(row[4] == 0x808080 && row[5] == 0x808080);
+}
+
+test "a grid of pixels, colors and every alpha equals the twin's (tools/check-hdesk.py mix_px)" {
+    I64 h = 0;
+    for v in 0..52 {
+        for w in 0..37 {
+            for a in 0..257 {
+                I64 pv = v * 5;
+                I64 wv = w * 7;
+                U32 p = ((pv << 16) | (wv << 8) | ((pv * 3) & 255)) as U32;
+                U32 c = ((wv << 16) | (pv << 8) | ((wv * 5) & 255)) as U32;
+                h = (h * 31 + (blend.mix_px(p, c, a) as I64)) % 1000000007;
+            }
+        }
+    }
+    assert(h == 919929264);
+}
+// SPDX-License-Identifier: Apache-2.0

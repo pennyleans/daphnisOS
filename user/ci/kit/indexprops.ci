@@ -1,0 +1,222 @@
+// user/ci/kit/indexprops.ci: Properties (frame 32, design note 52; DN-58: Opens With is plain text), Index's small
+// window, one an entry, so two can be compared; a rename in its name field applies as made. Opened by Properties in
+// the right-click menu or Alt+Enter. It keeps what the program tells it (set_entry, set_row), reads no file and no
+// device, so tests/ix/indexprops_test.ci and tests/ix/ix_proof.ci run it hosted. The name field's editor is
+// kit/indexrename.ci's.
+//
+// Frame 32 (the window 312 wide, its surface W wide inside the 1 px sides; the desk draws the bar): PAPER, padding 20
+// at the sides and top, 12 at the foot. The 48 px file icon, 14 to the name field: 32 high, radius 6, MANTLE, the name
+// 10 in, NAME_BOLD; with the keyboard a 2 px ULTRAMARINE ring outside it. 16 below, five rows 32 high split by 1 px
+// SURF1 rules: the label in BODY INK_DIM at the left, the value in INK at the right, BODY for Type, Size and Opens
+// With, PATH (mono 12) for Location and Modified. A folder's second row is Contains, not Size. A value too long is cut
+// with an ellipsis, at its start for Location (the folder's own end stays), at its end for the rest, and stays
+// right aligned. The layout is a
+// function of the width (design note 65): the field and the rules take the slack.
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.shape;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.fileicons;
+import user.ci.kit.indexrename;
+
+export const I64 W = 310;            // the surface at its open width
+export const I64 PAD = 20;
+export const I64 PAD_FOOT = 12;
+export const I64 ICON = 48;
+export const I64 ICON_GAP = 14;
+export const I64 FIELD_H = 32;
+export const I64 FIELD_PAD = 10;
+export const I64 GAP = 16;           // the header to the rows
+export const I64 ROW_H = 32;
+export const I64 ROWS = 5;
+const I64 VALUE_GAP = 12;            // a label to its value at least
+
+// The rows (set_row).
+export const I64 TYPE = 0;
+export const I64 SIZE = 1;           // Contains for a folder
+export const I64 LOCATION = 2;
+export const I64 MODIFIED = 3;
+export const I64 OPENS_WITH = 4;
+
+// What a point is on (hit).
+export const I64 NOTHING = 0;
+export const I64 FIELD = 1;
+
+I64 sw = W;
+U8[255] nm;
+I64 nn = 0;
+Bool is_dir = false;
+I64 icon_k = 0;
+U8[1280] vt;                         // the rows' values, 256 bytes each
+I64[5] vn;
+
+U32 tok(I64 k) { return tokens.word(k); }
+
+// --- what the program tells it ---
+
+export void set_width(I64 w) { sw = w; }
+
+// The entry: its name, whether it is a folder, its file icon (kit/fileicons.ci's kind); the rows emptied.
+export void set_entry(in U8[_] name, Bool dir, I64 icon) {
+    nn = len(name);
+    if (nn > 255) { nn = 255; }
+    for k in 0..nn { nm[k] = name[k]; }
+    is_dir = dir;
+    icon_k = icon;
+    for r in 0..ROWS { vn[r] = 0; }
+}
+
+// Row r's value (TYPE .. OPENS_WITH): `Text`, `2 KiB` or `3 items`, `/home/ci`, the modified time's words, `Edit`.
+export void set_row(I64 r, in U8[_] s) {
+    if (r < 0 || r >= ROWS) { return; }
+    I64 n = len(s);
+    if (n > 256) { n = 256; }
+    for k in 0..n { vt[256 * r + k] = s[k]; }
+    vn[r] = n;
+}
+
+// The window's name on its bar: the entry's name.
+export I64 title(inout U8[_] dst) {
+    for k in 0..nn { dst[k] = nm[k]; }
+    return nn;
+}
+
+// The surface's height for the open width: padding, the header, the rows and their rules.
+export I64 height() { return PAD + ICON + GAP + ROWS * ROW_H + (ROWS - 1) + PAD_FOOT; }
+
+// --- places ---
+
+export I64 field_x0() { return PAD + ICON + ICON_GAP; }
+export I64 field_x1() { return sw - PAD; }
+export I64 field_y0() { return PAD + (ICON - FIELD_H) / 2; }
+export I64 text_x0() { return field_x0() + FIELD_PAD; }
+I64 row_y(I64 r) { return PAD + ICON + GAP + r * (ROW_H + 1); }
+
+I64 base_in(I64 t, I64 h, I64 f) {
+    I64 a = ctext.ascent(f, 1);
+    I64 d = ctext.descent(f, 1);
+    return t + (h - a - d) / 2 + a;
+}
+
+// What (x, y) is on: the name field or NOTHING.
+export I64 hit(I64 x, I64 y) {
+    I64 y0 = field_y0();
+    if (x >= field_x0() && x < field_x1() && y >= y0 && y < y0 + FIELD_H) { return FIELD; }
+    return NOTHING;
+}
+
+// Gives the name field the keyboard (a click on it, or Tab): the editor begins on the name, the stem selected.
+export void edit() { indexrename.begin(nm[0..nn], is_dir); }
+
+// A press at (x, y) while the field has the keyboard: in it the caret moves (indexrename.STAY); outside, what the
+// field's leave gives (COMMIT or CANCEL).
+export I64 click(I64 x, I64 y, Bool shift) {
+    if (!indexrename.active()) { return indexrename.PASS; }
+    if (hit(x, y) == FIELD) {
+        indexrename.click_line(x, text_x0(), faces.NAME_BOLD, shift);
+        return indexrename.STAY;
+    }
+    return indexrename.leave();
+}
+
+// --- drawing ---
+
+// s[0..n] in face f within [x0, x1), right aligned there; cut with an ellipsis at its start (head) or its end.
+void value(inout U32[_] row, I64 y, I64 x0, I64 x1, I64 base, in U8[_] s, I64 n, I64 f, Bool head) {
+    I64 w = ctext.width(s, n, f, 1);
+    U32 c = tok(tokens.INK);
+    if (w <= x1 - x0) {
+        I64 e = ctext.text(row, y, x1 - w, base, x1, s, n, c, f, 1);
+        return;
+    }
+    U8[3] el = [0xe2, 0x80, 0xa6];
+    I64 ew = ctext.width(el, 3, f, 1);
+    if (head) {
+        I64 k = 0;
+        while (k < n && (ctext.width(s[k..n], n - k, f, 1) + ew > x1 - x0 || (s[k] & 0xc0) == 0x80)) { k = k + 1; }
+        I64 at = ctext.text(row, y, x1 - ew - ctext.width(s[k..n], n - k, f, 1), base, x1, el, 3, c, f, 1);
+        I64 e = ctext.text(row, y, at, base, x1, s[k..n], n - k, c, f, 1);
+        return;
+    }
+    I64 k = n;
+    while (k > 0 && (ctext.width(s, k, f, 1) + ew > x1 - x0 || (s[k - 1] & 0xc0) == 0x80)) { k = k - 1; }
+    I64 at = ctext.text(row, y, x1 - ew - ctext.width(s, k, f, 1), base, x1, s, k, c, f, 1);
+    I64 e = ctext.text(row, y, at, base, x1, el, 3, c, f, 1);
+}
+
+I64 label(I64 r, inout U8[_] dst) {
+    if (r == TYPE) { return words(b"Type", dst); }
+    if (r == SIZE && is_dir) { return words(b"Contains", dst); }
+    if (r == SIZE) { return words(b"Size", dst); }
+    if (r == LOCATION) { return words(b"Location", dst); }
+    if (r == MODIFIED) { return words(b"Modified", dst); }
+    return words(b"Opens With", dst);
+}
+
+I64 words(in U8[_] s, inout U8[_] dst) {
+    for k in 0..len(s) { dst[k] = s[k]; }
+    return len(s);
+}
+
+I64 face_of(I64 r) {
+    if (r == LOCATION || r == MODIFIED) { return faces.PATH; }
+    return faces.BODY;
+}
+
+void field_row(inout U32[_] row, I64 y) {
+    I64 x0 = field_x0();
+    I64 x1 = field_x1();
+    I64 y0 = field_y0();
+    I64 y1 = y0 + FIELD_H;
+    Bool on = indexrename.active();
+    if (on) { shape.rounded(row, y, x0 - 2, y0 - 2, x1 + 2, y1 + 2, 8, tok(tokens.ULTRAMARINE)); }
+    shape.rounded(row, y, x0, y0, x1, y1, 6, tok(tokens.MANTLE));
+    if (y < y0 || y >= y1) { return; }
+    I64 f = faces.NAME_BOLD;
+    I64 base = base_in(y0, FIELD_H, f);
+    if (on) {
+        indexrename.line(row, y, text_x0(), x1 - FIELD_PAD, base, y0 + 7, y1 - 7, f);
+        return;
+    }
+    U8[3] el = [0xe2, 0x80, 0xa6];
+    I64 room = x1 - FIELD_PAD - text_x0();
+    if (ctext.width(nm, nn, f, 1) <= room) {
+        I64 e = ctext.text(row, y, text_x0(), base, x1 - FIELD_PAD, nm, nn, tok(tokens.INK), f, 1);
+        return;
+    }
+    I64 ew = ctext.width(el, 3, f, 1);
+    I64 k = nn;
+    while (k > 0 && (ctext.width(nm, k, f, 1) + ew > room || (nm[k - 1] & 0xc0) == 0x80)) { k = k - 1; }
+    I64 at = ctext.text(row, y, text_x0(), base, x1, nm, k, tok(tokens.INK), f, 1);
+    I64 e = ctext.text(row, y, at, base, x1, el, 3, tok(tokens.INK), f, 1);
+}
+
+// The surface's row y, x 0 to the width.
+export void row_at(inout U32[_] row, I64 y) {
+    draw.paint(row, 0, sw, tok(tokens.PAPER));
+    if (y >= PAD - 2 && y < PAD + ICON + 2) {
+        fileicons.icon_at(row, y, PAD, PAD, icon_k, ICON, 1);
+        field_row(row, y);
+        return;
+    }
+    for r in 0..ROWS {
+        I64 t0 = row_y(r);
+        if (r > 0 && y == t0 - 1) {
+            draw.paint(row, PAD, sw - PAD, tok(tokens.SURF1));
+            return;
+        }
+        if (y >= t0 && y < t0 + ROW_H) {
+            U8[16] lb;
+            I64 ln = label(r, lb);
+            I64 lw = ctext.width(lb, ln, faces.BODY, 1);
+            I64 e = ctext.text(row, y, PAD, base_in(t0, ROW_H, faces.BODY), sw - PAD, lb, ln, tok(tokens.INK_DIM),
+                               faces.BODY, 1);
+            I64 f = face_of(r);
+            value(row, y, PAD + lw + VALUE_GAP, sw - PAD, base_in(t0, ROW_H, f), vt[256 * r..256 * r + vn[r]], vn[r], f,
+                  r == LOCATION);
+            return;
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,32 @@
+// tests/rs/grtrack_test.ci: hosted tests of the desk's record of each window's grants (user/ci/kit/grtrack.ci),
+// the record the Grants page (frame 21) is told from: a new bit takes the time it was first seen, a word that
+// changes says so, and a window that ends with grants says so, so its rows leave the open page (a review's finding).
+// Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.grtrack;
+
+test "a new bit takes the time it was first seen; the same word again is no change" {
+    Bool f = grtrack.forget(3);
+    assert(grtrack.track(3, grtrack.DISK, 100));
+    assert(grtrack.at(3, 0) == 100 && grtrack.oldest(3) == 100);
+    assert(!grtrack.track(3, grtrack.DISK, 160));
+    assert(grtrack.track(3, grtrack.DISK | grtrack.NET, 200));
+    assert(grtrack.at(3, 0) == 100 && grtrack.at(3, 1) == 200 && grtrack.oldest(3) == 100);
+}
+
+test "a revoke drops the bit: a change, and the record no longer holds it" {
+    Bool f = grtrack.forget(4);
+    assert(grtrack.track(4, grtrack.DISK | grtrack.KERN, 10));
+    assert(grtrack.track(4, grtrack.KERN, 20));
+    assert(grtrack.seen(4) == grtrack.KERN && grtrack.oldest(4) == 10);
+}
+
+test "an app that ends with grants: forget says so and its record is empty; a slot with none says nothing" {
+    Bool f = grtrack.forget(5);
+    assert(grtrack.track(5, grtrack.NET, 50));
+    assert(grtrack.forget(5));                        // the host tells the open page again: the row leaves
+    assert(grtrack.seen(5) == 0 && grtrack.oldest(5) == -1);
+    assert(!grtrack.track(5, 0, 60));                 // the empty slot after it: nothing more to tell
+    assert(!grtrack.forget(5));
+    assert(grtrack.track(5, grtrack.DISK, 70) && grtrack.at(5, 0) == 70);   // the slot's next window starts afresh
+}
+// SPDX-License-Identifier: Apache-2.0

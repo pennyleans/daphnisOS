@@ -1,0 +1,14 @@
+// src/main_fault.ci: the FAULT=1 flavor of K1. Banner, then a deliberate checked overflow
+// (I64 maximum plus one, src/overflow.ci). The runtime prints the canonical fault record and
+// the kernel exits with the fault code.
+
+import src.serial;
+import src.overflow;
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("Daphnis K1 (FAULT=1): about to overflow I64\n");
+    I64 r = overflow.max_plus_one();
+    serial.serial_putc(r as U8);
+}
+// SPDX-License-Identifier: Apache-2.0

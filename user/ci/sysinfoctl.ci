@@ -1,0 +1,17 @@
+// user/ci/sysinfoctl.ci: the rows of KF-2 (user/ci/host.c, CI_ROWS_SYSINFO; docs/specs/2026-11-11-kf-facts.md
+// section 2) and of who asks, their own module so no other program's import table moves. Monitor binds these two
+// in place of user/ci/shctl.ci's twenty, which would pass the 48 rows a program with corectl may bind.
+//   co_sysinfo(rec): sysinfo (99) into rec, at least SI_WORDS words in the order of the SI_ names below; 0, or
+//     -errno. Under Daphnis uptime is the caller's own clock, not the machine's: the time since boot is wall.wall_ns.
+export extern unrestricted I64 co_sysinfo(out I64[_] rec);
+//   co_ids(ids): the caller's pid and effective uid (getpid, geteuid) into ids' first two words; 0, or -EINVAL for
+//     fewer than two.
+export extern unrestricted I64 co_ids(out I64[_] ids);
+
+export const I64 SI_UPTIME = 0;
+export const I64 SI_TOTALRAM = 1;          // in SI_MEM_UNIT bytes
+export const I64 SI_FREERAM = 2;
+export const I64 SI_PROCS = 3;             // ready, waiting, or ended and not yet waited for
+export const I64 SI_MEM_UNIT = 4;
+export const I64 SI_WORDS = 5;
+// SPDX-License-Identifier: Apache-2.0

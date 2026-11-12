@@ -1,0 +1,136 @@
+// tests/rs/calpop_test.ci: hosted tests of RS-CAL's calendar (user/ci/kit/calpop.ci, frame 44): today's month in
+// the zone, the weeks and the plate's height as each month and Week Starts On need, the steps and their bounds, the
+// chevrons, the month's name and a click outside, the keys, hover, today at midnight, and today's pill only in
+// today's month. Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.calpop;
+import user.ci.core.tz;
+import user.ci.core.cal;
+
+U32[1024] row;
+
+I64 utc(I64 yy, I64 mm, I64 dd, I64 h, I64 m, I64 s) { return cal.days(yy, mm, dd) * 86400 + h * 3600 + m * 60 + s; }
+
+I64 ny() { return tz.find(b"America/New_York"); }
+
+I64 now() { return utc(2026, 11, 9, 6, 59, 0); }   // 01:59 EST, Monday, November 9
+
+void at_frame(I64 week) { calpop.open(ny(), now(), week, 1016, 36); }   // frame 44: right 8 in a 1024 frame, top 36
+
+test "it opens on today's month in the zone, as frame 44 draws it" {
+    at_frame(0);
+    assert(calpop.is_up());
+    assert(calpop.left() == 744 && calpop.top() == 36);
+    assert(calpop.year() == 2026 && calpop.month() == 11);
+    assert(calpop.first() == 0 && calpop.days() == 30 && calpop.today() == 9);
+    assert(calpop.weeks() == 5 && calpop.height() == 229);
+    calpop.open(ny(), utc(2026, 12, 1, 3, 0, 0), 0, 1016, 36);   // 22:00 on November 30 in New York
+    assert(calpop.month() == 11 && calpop.today() == 30);
+    calpop.open(-1, utc(2026, 12, 1, 3, 0, 0), 0, 1016, 36);     // UTC: December 1
+    assert(calpop.month() == 12 && calpop.today() == 1);
+}
+
+test "the weeks follow the month and Week Starts On" {
+    at_frame(1);                                   // November 2026 from Monday: six of October's days lead
+    assert(calpop.weeks() == 6 && calpop.height() == 259);
+    calpop.set_week(0);
+    assert(calpop.weeks() == 5);
+    assert(calpop.step(-9));                       // February 2026: from Sunday, four weeks
+    assert(calpop.year() == 2026 && calpop.month() == 2 && calpop.first() == 0);
+    assert(calpop.weeks() == 4 && calpop.height() == 199);
+    calpop.set_week(1);
+    assert(calpop.weeks() == 5);
+    assert(calpop.step(6));                        // August 2026 starts on Saturday: six weeks from Sunday
+    calpop.set_week(0);
+    assert(calpop.first() == 6 && calpop.weeks() == 6);
+}
+
+test "steps cross years and stop at 0001-01 and 9999-12" {
+    at_frame(0);
+    assert(calpop.step(2));
+    assert(calpop.year() == 2027 && calpop.month() == 1);
+    assert(calpop.step(-2025 * 12));
+    assert(calpop.year() == 2 && calpop.month() == 1);
+    assert(calpop.step(-12));
+    assert(calpop.year() == 1 && calpop.month() == 1 && calpop.first() == 1);   // 0001-01-01, a Monday
+    assert(!calpop.step(-1));
+    assert(calpop.year() == 1 && calpop.month() == 1);
+    assert(calpop.step(9998 * 12 + 11));
+    assert(calpop.year() == 9999 && calpop.month() == 12);
+    assert(!calpop.step(1));
+    assert(calpop.go_today());
+    assert(calpop.year() == 2026 && calpop.month() == 11);
+    assert(!calpop.go_today());
+}
+
+test "the chevrons step, the month's name returns to today, a click outside closes" {
+    at_frame(0);
+    assert(calpop.click(950 + 12, 50 + 12) == calpop.DRAW);   // frame 44's back chevron at 950, 50
+    assert(calpop.month() == 10);
+    assert(calpop.click(976 + 12, 50 + 12) == calpop.DRAW);   // and its next at 976
+    assert(calpop.click(976 + 12, 50 + 12) == calpop.DRAW);
+    assert(calpop.month() == 12);
+    assert(calpop.click(974 + 1, 50 + 12) == calpop.NONE);    // the 2 between them
+    assert(calpop.click(764 + 10, 62) == calpop.DRAW);       // "December 2026" from 764
+    assert(calpop.month() == 11);
+    assert(calpop.click(764 + 10, 62) == calpop.NONE);       // already today's month
+    assert(calpop.click(800, 150) == calpop.NONE);           // a day
+    assert(calpop.is_up());
+    assert(calpop.click(743, 150) == calpop.CLOSE);
+    assert(!calpop.is_up());
+    assert(calpop.click(800, 150) == calpop.NONE);
+}
+
+test "Left and Right step, Esc closes, any other key is not the calendar's" {
+    at_frame(0);
+    assert(calpop.key(calpop.K_LEFT) == calpop.DRAW && calpop.month() == 10);
+    assert(calpop.key(calpop.K_RIGHT) == calpop.DRAW && calpop.month() == 11);
+    assert(calpop.key(30) == calpop.NONE);
+    assert(calpop.key(calpop.K_ESC) == calpop.CLOSE);
+    assert(!calpop.is_up());
+    assert(calpop.key(calpop.K_LEFT) == calpop.NONE);
+}
+
+test "hover changes only on a chevron, and today moves at midnight" {
+    at_frame(0);
+    assert(!calpop.hover(800, 150));
+    assert(calpop.hover(960, 60));
+    assert(!calpop.hover(961, 61));
+    assert(calpop.hover(980, 60));
+    assert(calpop.hover(900, 60));
+    assert(!calpop.set_now(ny(), utc(2026, 11, 10, 4, 59, 59)));   // 23:59:59 on the 9th in New York
+    assert(calpop.set_now(ny(), utc(2026, 11, 10, 5, 0, 0)));
+    assert(calpop.today() == 10);
+    calpop.close();
+    assert(!calpop.set_now(ny(), utc(2026, 11, 11, 5, 0, 0)));     // closed: nothing to redraw
+}
+
+Bool filled(I64 z, I64 x, I64 y) {
+    U32 pill = tokens.word(tokens.FILL);
+    for k in 0..len(row) { row[k] = 0 as U32; }
+    calpop.row_at(row, y * z, z, 0);
+    return row[x * z] == pill;
+}
+
+test "today's pill in today's month only; nothing drawn outside the area" {
+    tokens.set_theme(0);
+    calpop.open(ny(), now(), 0, 300, 36);          // the plate at 28 to 300
+    assert(calpop.area_left(1, 0) < 28 && calpop.area_right(1, 0) > 300);
+    assert(calpop.area_top(1, 0) <= 36 && calpop.area_bottom(1, 0) > 36 + 229);
+    assert(calpop.area_right(2, 0) - calpop.area_left(2, 0) > 2 * 272);
+    assert(filled(1, 28 + 52, 36 + 113));          // the 9th: column 1, week 1
+    assert(filled(2, 28 + 52, 36 + 113));
+    assert(!filled(1, 28 + 88, 36 + 113));         // the 10th
+    calpop.set_week(1);                            // from Monday: October's 26th to 31st lead
+    assert(filled(1, 28 + 16, 36 + 143));          // the 9th: column 0, week 2
+    assert(calpop.step(1));                        // December: today is not shown
+    assert(calpop.today() == 0);
+    for c in 0..7 {
+        for r in 0..calpop.weeks() { assert(!filled(1, 28 + 16 + 36 * c, 36 + 83 + 30 * r)); }
+    }
+    for k in 0..len(row) { row[k] = 7 as U32; }
+    calpop.row_at(row, calpop.area_bottom(1, 0), 1, 0);
+    calpop.row_at(row, calpop.area_top(1, 0) - 1, 1, 0);
+    for k in 0..len(row) { assert(row[k] == 7 as U32); }
+}
+// SPDX-License-Identifier: Apache-2.0

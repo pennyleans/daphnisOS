@@ -1,0 +1,86 @@
+$ -s 0 text.txt
+-- tree
+~ text.txt f 0644 0 e3b0c44298fc1c14
+status 0
+$ -s 10 text.txt
+-- tree
+~ text.txt f 0644 10 12fcf2dc7b34ec03
+status 0
+$ -s 5000 nonl.txt
+-- tree
+~ nonl.txt f 0644 5000 f0952a1760d0a703
+status 0
+$ -s 1k new
+-- tree
++ new f 0644 1024 5f70bf18a0860070
+status 0
+$ -s 1K new
+-- tree
++ new f 0644 1024 5f70bf18a0860070
+status 0
+$ -s 1M new
+-- tree
++ new f 0644 1048576 30e14955ebf13522
+status 0
+$ -s 1kB new
+-- tree
++ new f 0644 1000 541b3e9daa09b20b
+status 0
+$ -s 1MB new
+-- tree
++ new f 0644 1000000 d29751f2649b32ff
+status 0
+$ -s 01k new
+-- tree
++ new f 0644 1024 5f70bf18a0860070
+status 0
+$ -c -s 5 new
+status 0
+$ -c -s 5 text.txt
+-- tree
+~ text.txt f 0644 5 5d5a86be5f5057f2
+status 0
+$ -s 3 text.txt nonl.txt new
+-- tree
++ new f 0644 3 709e80c88487a241
+~ nonl.txt f 0644 3 bed9952c236e4c7c
+~ text.txt f 0644 3 7692c3ad3540bb80
+status 0
+$ -s 3 missing/x text.txt
+-- stderr
+truncate: missing/x: No such file or directory
+-- tree
+~ text.txt f 0644 3 7692c3ad3540bb80
+status 1
+$ -s 5 look
+-- stderr
+truncate: look: Is a directory
+status 1
+$ -s +5 text.txt
+-- stderr
+truncate: bad size
+status 2
+$ -s -5 text.txt
+-- stderr
+truncate: bad size
+status 2
+$ -s 1m new
+-- stderr
+truncate: bad size
+status 2
+$ -s 1T new
+-- stderr
+truncate: bad size
+status 2
+$ -s x new
+-- stderr
+truncate: bad size
+status 2
+$ text.txt
+-- stderr
+truncate: missing -s
+status 2
+$ -s 5
+-- stderr
+truncate: missing operand
+status 2

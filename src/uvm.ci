@@ -1,0 +1,810 @@
+// src/uvm.ci: user address spaces (U1-1, U1-2; docs/user.md), built in cint through the view shim.
+//
+// A space is a four-level table tree in frames of the pool. Its low 2 MiB is the kernel image:
+// PML4[0] -> PDPT[0] -> PD[0] -> boot.S's page table, supervisor only (that last entry has no U
+// bit), so the trap and syscall paths run in every space and ring 3 cannot touch them. Every other
+// mapping is a pool frame the kernel gave the process, with the U bit, writable only if asked,
+// and no-execute unless asked.
+//
+// The tables are the whole record of a process's memory (U1-2): a last-level entry is a page
+// ring 3 may use (present, U), or a reserved page (not present, bit 9: PROT_NONE, with the frame
+// it had if mprotect took its rights away, so they can come back), or nothing. destroy walks the
+// tree and gives back every table and page it finds.
+//
+// A device page (F-1, docs/specs/2026-11-05-f-surface.md section 3) is a last-level entry with
+// bit 10 set and a page of the canonical shadow in it: user, writable, no-execute, WB. It is
+// not a pool frame, it is not in the digest, fork maps the same page again, and destroy, unmap
+// and execve only clear the entry. translate refuses it: the kernel never copies for a process
+// through the device.
+//
+// User addresses are [2 MiB, 2^47). translate() walks the process's own tables and checks the
+// present and U bits at every level, and W at the page when the kernel will write for the
+// process, so a user pointer is checked by the same bits the CPU checks.
+
+import src.frames;
+import src.sha256;
+import src.phys;
+import src.pte;
+import src.trap;
+
+export const I64 PROCS = 64;
+// A process may hold frames.quota() frames (pages and tables): the pool's RAM less frames.RESERVE, its RLIMIT_AS
+// (M-1; 15,360 on the gates' pool, the machine's under M-3; 16,384 at G-0, 2,048 at U1) (R-2a: the cint doom
+// program holds about 11 MB, its module arrays twice: the emitted zero image and the live copy)
+export const U64 USER_LO = 0x200000;
+export const U64 USER_HI = 0x800000000000;
+export const I64 PROT_READ = 1;
+export const I64 PROT_WRITE = 2;
+export const I64 PROT_EXEC = 4;
+export const I64 KIND_NONE = 0;
+export const I64 KIND_PAGE = 1;
+export const I64 KIND_RESERVED = 2;
+export const I64 KIND_DEVICE = 3;
+const U64 FLAG_U = 4;
+const U64 FLAG_D = 64;                // bit 6, set by the CPU at a write (H-4b)
+const U64 FLAG_RESERVED = 512;        // bit 9, free for software: a PROT_NONE page, not present
+const U64 FLAG_DEVICE = 1024;         // leaf: external shadow page; upper levels: subtree may contain one
+const U64 FLAG_LAZY = 2048;           // bit 11, free for software: a page promised and not yet backed (M-2): not
+                                      // present, no frame, its rights in the W, NX and U bits; the first touch backs it
+const U64 DEVICE_FLAGS = 0x8000000000000407;   // external shadow RAM: present, writable, user, WB, no-execute
+const U64 TABLE = 7;                  // present, writable, user
+const U64 BOOT_PT = 3;                // present, writable, supervisor: the image's page table
+
+I64[64] nframes;
+I64[64] npeak;       // BU-4h2: the most frames each process has held since its space was made (wait4's ru_maxrss)
+U64[64] roots;
+I64[64] lender;      // K12 (BU-4a): 1 + the process whose space this one borrows (clone with CLONE_VM | CLONE_VFORK),
+                     // or 0; a borrower's pages are its lender's, counted on the lender
+
+// The process a frame taken for pid is counted on: its lender while it borrows, else itself.
+I64 acct(I64 pid) {
+    if (lender[pid] > 0) {
+        return lender[pid] - 1;
+    }
+    return pid;
+}
+
+// K12: child c runs in pid's space until its execve or its end (destroy): nothing is copied.
+export void borrow(I64 pid, I64 c) {
+    roots[c] = roots[pid];
+    nframes[c] = 0;
+    npeak[c] = 0;
+    lender[c] = pid + 1;
+}
+
+// K12: 1 + the process whose space c borrows, or 0.
+export I64 lender_of(I64 c) {
+    return lender[c];
+}
+
+U64 read_word(U64 pa) {
+    U64[1] w;
+    phys.phys_read64(pa, w);
+    return w[0];
+}
+
+void write_word(U64 pa, U64 v) {
+    U64[1] w;
+    w[0] = v;
+    phys.phys_write64(pa, w);
+}
+
+// One frame more on process a's count, and its peak.
+void count_up(I64 a) {
+    nframes[a] += 1;
+    if (nframes[a] > npeak[a]) {
+        npeak[a] = nframes[a];
+    }
+}
+
+// True when a frame more for pid is within its quota and leaves the kernel's reserve (M-1), the held frames
+// counted as taken (M-2).
+Bool may_take(I64 pid) {
+    return nframes[acct(pid)] < frames.quota() && frames.free_count() - frames.held_count() > frames.RESERVE;
+}
+
+// A frame for pid, zeroed, as a physical address: a fresh one from the pool (f < 0), or the frame f just
+// backed. 0 if the process is at its limit, the pool has only the kernel's reserve left, or f is bad.
+U64 take_frame(I64 pid, I64 f) {
+    I64 g = f;
+    if (g < 0) {
+        if (!may_take(pid)) {
+            return 0;
+        }
+        g = frames.alloc(1);
+        if (g < 0) {
+            return 0;
+        }
+        count_up(acct(pid));
+    }
+    U64 pa = frames.frame_addr(g) as U64;
+    U64[64] z;
+    for i in 0..64 {
+        z[i] = 0;
+    }
+    for k in 0..8 {
+        phys.phys_write64(pa + (512 * k) as U64, z);
+    }
+    return pa;
+}
+
+U64 take(I64 pid) {
+    return take_frame(pid, -1);
+}
+
+// A promise of one page for pid (M-2): held in the pool, counted on the process. -1 at the limit.
+I64 promise(I64 pid) {
+    if (!may_take(pid) || frames.hold(1) < 0) {
+        return -1;
+    }
+    count_up(acct(pid));
+    return 0;
+}
+
+// A promise unmade: the held frame free again, off the process's count.
+void unpromise(I64 pid) {
+    if (frames.unhold(1) >= 0) {
+        nframes[acct(pid)] -= 1;
+    }
+}
+
+// The frame at pa back to the pool, and off the process's count (M-1: release returns the free count, so the
+// count was never taken down before; under the G-0 limit of the whole pool that never showed).
+void give(I64 pid, U64 pa) {
+    I64 f = ((pa as I64) - frames.POOL_BASE) / frames.FRAME_BYTES;
+    I64 r = frames.release(f, 1);
+    if (r >= 0) {
+        nframes[acct(pid)] -= 1;
+    }
+}
+
+export U64 root(I64 pid) {
+    return roots[pid];
+}
+
+export I64 frames_owned(I64 pid) {
+    return nframes[pid];
+}
+
+// The most frames pid has held since its space was made (BU-4h2: wait4 gives it as ru_maxrss).
+export I64 frames_peak(I64 pid) {
+    return npeak[pid];
+}
+
+// A new space for pid: the PML4, PDPT and PD of the low gigabyte, the image's page table under
+// PD[0]. 0, or -1 when the pool is out of frames (destroy frees what was taken).
+export I64 create(I64 pid) {
+    lender[pid] = 0;
+    nframes[pid] = 0;
+    npeak[pid] = 0;
+    roots[pid] = take(pid);
+    if (roots[pid] == 0) {
+        return -1;
+    }
+    U64 l3 = take(pid);
+    if (l3 == 0) {
+        return -1;
+    }
+    write_word(roots[pid], pte.make(l3, TABLE));
+    U64 l2 = take(pid);
+    if (l2 == 0) {
+        return -1;
+    }
+    write_word(l3, pte.make(l2, TABLE));
+    write_word(l2, pte.make(trap.vm_root() + 12288, BOOT_PT));
+    return 0;
+}
+
+// The entries of the table at pa, 64 at a time: w gets entries 64 * part to 64 * part + 63.
+void table_part(U64 pa, I64 part, inout U64[64] w) {
+    phys.phys_read64(pa + (512 * part) as U64, w);
+}
+
+// A table of the process (present, user), at the three upper levels.
+Bool table_entry(U64 e) {
+    return pte.present(e) && (e & FLAG_U) != 0;
+}
+
+Bool device_entry(U64 e) {
+    return (e & FLAG_DEVICE) != 0;
+}
+
+// The frame a last-level entry holds: a mapped page's, or a reserved page's kept one; 0 if none
+// (a device page holds no frame of the pool).
+U64 page_frame(U64 e) {
+    if (device_entry(e)) {
+        return 0;
+    }
+    if (table_entry(e) || (e & FLAG_RESERVED) != 0) {
+        return pte.addr(e);
+    }
+    return 0;
+}
+
+// A last-level entry that is a page, a reserved page or a lazy page: what the digest and a clone see as
+// memory.
+Bool page_entry(U64 e) {
+    return !device_entry(e) && (table_entry(e) || (e & (FLAG_RESERVED | FLAG_LAZY)) != 0);
+}
+
+// A promise not yet backed (M-2): not present, no frame, bit 11.
+Bool lazy_entry(U64 e) {
+    return (e & FLAG_LAZY) != 0 && !pte.present(e);
+}
+
+// Gives back every frame pid holds: the pages, the kept frames of reserved pages, and the tables.
+export void destroy(I64 pid) {
+    if (lender[pid] > 0) {
+        roots[pid] = 0;                // K12: a borrower gives the space back to its lender, whole
+        nframes[pid] = 0;
+        lender[pid] = 0;
+        return;
+    }
+    U64 l4 = roots[pid];
+    if (l4 == 0) {
+        nframes[pid] = 0;
+        return;
+    }
+    U64[64] w4;
+    U64[64] w3;
+    U64[64] w2;
+    U64[64] w1;
+    for p4 in 0..8 {
+        table_part(l4, p4, w4);
+        for j4 in 0..64 {
+            if (table_entry(w4[j4])) {
+                U64 l3 = pte.addr(w4[j4]);
+                for p3 in 0..8 {
+                    table_part(l3, p3, w3);
+                    for j3 in 0..64 {
+                        if (table_entry(w3[j3])) {
+                            U64 l2 = pte.addr(w3[j3]);
+                            for p2 in 0..8 {
+                                table_part(l2, p2, w2);
+                                for j2 in 0..64 {
+                                    if (table_entry(w2[j2])) {
+                                        U64 l1 = pte.addr(w2[j2]);
+                                        for p1 in 0..8 {
+                                            table_part(l1, p1, w1);
+                                            for j1 in 0..64 {
+                                                U64 f = page_frame(w1[j1]);
+                                                if (f != 0) {
+                                                    give(pid, f);
+                                                } else if (lazy_entry(w1[j1])) {
+                                                    unpromise(pid);
+                                                }
+                                            }
+                                        }
+                                        give(pid, l1);
+                                    }
+                                }
+                            }
+                            give(pid, l2);
+                        }
+                    }
+                }
+                give(pid, l3);
+            }
+        }
+    }
+    give(pid, l4);
+    roots[pid] = 0;
+    nframes[pid] = 0;
+}
+
+Bool user_va(U64 va) {
+    return va >= USER_LO && va < USER_HI;
+}
+
+// The physical address of the last-level entry for va: made (tables taken as needed) when make,
+// else 0 if a table on the way is absent; 0 also when the pool is out.
+U64 slot(I64 pid, U64 va, Bool make) {
+    U64 t = roots[pid];
+    for level in 0..3 {
+        U64 shift = (39 - 9 * level) as U64;
+        U64 at = t + 8 * ((va >> shift) & 511);
+        U64 e = read_word(at);
+        if (pte.present(e)) {
+            t = pte.addr(e);
+        } else if (make) {
+            t = take(pid);
+            if (t == 0) {
+                return 0;
+            }
+            write_word(at, pte.make(t, TABLE));
+        } else {
+            return 0;
+        }
+    }
+    return t + 8 * ((va >> 12) & 511);
+}
+
+// What is at the page-aligned user address va: KIND_NONE, KIND_PAGE or KIND_RESERVED.
+export I64 kind(I64 pid, U64 va) {
+    if (!user_va(va)) {
+        return KIND_NONE;
+    }
+    U64 s = slot(pid, va, false);
+    if (s == 0) {
+        return KIND_NONE;
+    }
+    U64 e = read_word(s);
+    if (device_entry(e)) {
+        return KIND_DEVICE;
+    }
+    if (table_entry(e)) {
+        return KIND_PAGE;
+    }
+    if ((e & FLAG_RESERVED) != 0) {
+        return KIND_RESERVED;
+    }
+    if (lazy_entry(e)) {
+        return KIND_PAGE;
+    }
+    return KIND_NONE;
+}
+
+U64 page_flags(I64 prot) {
+    U64 flags = pte.FLAG_P | FLAG_U;
+    if ((prot & PROT_WRITE) != 0) {
+        flags = flags | pte.FLAG_W;
+    }
+    if ((prot & PROT_EXEC) == 0) {
+        flags = flags | pte.FLAG_NX;
+    }
+    return flags;
+}
+
+// Gives the page-aligned user address va the rights prot (PROT_READ, PROT_WRITE, PROT_EXEC; a
+// page with only PROT_WRITE is readable too, as on x86). prot 0 reserves it: the page keeps its
+// frame (or its promise) but ring 3 cannot touch it. A page that had no frame becomes a promise (M-2): a
+// lazy entry, held in the pool, backed by a zero frame at its first touch (back). 0, or -1 when the
+// address is not a user page, is a device page, or the quota or the pool is out.
+export I64 set_page(I64 pid, U64 va, I64 prot) {
+    if (!user_va(va) || (va & 4095) != 0) {
+        return -1;
+    }
+    U64 s = slot(pid, va, true);
+    if (s == 0) {
+        return -1;
+    }
+    U64 e = read_word(s);
+    if (device_entry(e)) {
+        return -1;
+    }
+    U64 frame = page_frame(e);
+    U64 lazy = e & FLAG_LAZY;
+    if (prot == 0) {
+        write_word(s, pte.make(frame, FLAG_RESERVED | lazy));
+        return 0;
+    }
+    if (frame == 0) {
+        if (lazy == 0) {
+            if (promise(pid) < 0) {
+                return -1;
+            }
+        }
+        write_word(s, pte.make(0, (page_flags(prot) ^ pte.FLAG_P) | FLAG_LAZY));
+        return 0;
+    }
+    write_word(s, pte.make(frame, page_flags(prot)));
+    return 0;
+}
+
+// Backs the promise at the page-aligned user address va (M-2): the held frame, zeroed, becomes the page with
+// the rights the promise carries. 0; -1 when va is not a lazy page a process may touch (reserved, backed,
+// a device page, nothing), or the pool breaks its promise (it cannot: alloc leaves the held frames).
+export I64 back(I64 pid, U64 va) {
+    if (!user_va(va) || (va & 4095) != 0) {
+        return -1;
+    }
+    U64 s = slot(pid, va, false);
+    if (s == 0) {
+        return -1;
+    }
+    U64 e = read_word(s);
+    if (!lazy_entry(e) || (e & FLAG_RESERVED) != 0) {
+        return -1;
+    }
+    I64 f = frames.back();
+    if (f < 0) {
+        return -1;
+    }
+    U64 frame = take_frame(pid, f);
+    write_word(s, pte.make(frame, (e & (pte.FLAG_W | pte.FLAG_NX)) | pte.FLAG_P | FLAG_U));
+    return 0;
+}
+
+// A page of the framebuffer at the page-aligned user address va (F-1): physical page pa, user,
+// writable, no-execute, WB like the kernel alias. 0, or -1 when va is not a free user page or no table frame is left.
+export I64 map_device(I64 pid, U64 va, U64 pa) {
+    if (!user_va(va) || (va & 4095) != 0 || (pa & 4095) != 0) {
+        return -1;
+    }
+    U64 s = slot(pid, va, true);
+    if (s == 0) {
+        return -1;
+    }
+    if (read_word(s) != 0) {
+        return -1;
+    }
+    // HW-1: mark the resolved ancestor path before publishing the external leaf. The C
+    // dirty collector can skip every unrelated subtree. Stale marks after unmap are safe.
+    U64 a4 = roots[pid] + 8 * ((va >> 39) & 511);
+    U64 e4 = read_word(a4);
+    U64 a3 = pte.addr(e4) + 8 * ((va >> 30) & 511);
+    U64 e3 = read_word(a3);
+    U64 a2 = pte.addr(e3) + 8 * ((va >> 21) & 511);
+    U64 e2 = read_word(a2);
+    if ((e4 & FLAG_DEVICE) == 0) { write_word(a4, e4 | FLAG_DEVICE); }
+    if ((e3 & FLAG_DEVICE) == 0) { write_word(a3, e3 | FLAG_DEVICE); }
+    if ((e2 & FLAG_DEVICE) == 0) { write_word(a2, e2 | FLAG_DEVICE); }
+    write_word(s, pte.make(pa, DEVICE_FLAGS));
+    return 0;
+}
+
+// Takes the page at va away from the process, its frame back to the pool (a device page: the
+// entry only).
+export void unmap_page(I64 pid, U64 va) {
+    if (!user_va(va) || (va & 4095) != 0) {
+        return;
+    }
+    U64 s = slot(pid, va, false);
+    if (s == 0) {
+        return;
+    }
+    U64 e = read_word(s);
+    U64 frame = page_frame(e);
+    if (frame != 0) {
+        give(pid, frame);
+    } else if (lazy_entry(e)) {
+        unpromise(pid);
+    }
+    write_word(s, 0);
+}
+
+// The loader's map: a fresh zero page at va with the rights asked, or, if a page is there
+// already, that page with the rights added (two segments can share a page). 0, or -1.
+export I64 map(I64 pid, U64 va, Bool w, Bool x) {
+    if (!user_va(va) || (va & 4095) != 0) {
+        return -1;
+    }
+    I64 prot = PROT_READ;
+    if (w) {
+        prot = prot | PROT_WRITE;
+    }
+    if (x) {
+        prot = prot | PROT_EXEC;
+    }
+    U64 s = slot(pid, va, false);
+    if (s != 0) {
+        U64 e = read_word(s);
+        if (device_entry(e)) {
+            return -1;
+        }
+        if (table_entry(e) || (lazy_entry(e) && (e & FLAG_RESERVED) == 0)) {
+            if (w) {
+                e = e | pte.FLAG_W;
+            }
+            if (x) {
+                e = e & (pte.FLAG_NX ^ 0xFFFFFFFFFFFFFFFF);
+            }
+            write_word(s, e);
+            return 0;
+        }
+    }
+    return set_page(pid, va, prot);
+}
+
+// fork (U1-4): dst becomes a copy of src, page for page: the same addresses, rights and bytes,
+// reserved pages reserved, in fresh frames; a device page is the same device page (F-1). 0, or -1
+// when the pool or dst's limit is out (dst is then destroyed).
+export I64 clone(I64 src, I64 dst) {
+    if (create(dst) < 0) {
+        destroy(dst);
+        return -1;
+    }
+    U64[64] w4;
+    U64[64] w3;
+    U64[64] w2;
+    U64[64] w1;
+    for p4 in 0..8 {
+        table_part(roots[src], p4, w4);
+        for j4 in 0..64 {
+            if (table_entry(w4[j4])) {
+                U64 va4 = ((64 * p4 + j4) as U64) << 39;
+                for p3 in 0..8 {
+                    table_part(pte.addr(w4[j4]), p3, w3);
+                    for j3 in 0..64 {
+                        if (table_entry(w3[j3])) {
+                            U64 va3 = va4 | (((64 * p3 + j3) as U64) << 30);
+                            for p2 in 0..8 {
+                                table_part(pte.addr(w3[j3]), p2, w2);
+                                for j2 in 0..64 {
+                                    if (table_entry(w2[j2])) {
+                                        U64 va2 = va3 | (((64 * p2 + j2) as U64) << 21);
+                                        for p1 in 0..8 {
+                                            table_part(pte.addr(w2[j2]), p1, w1);
+                                            for j1 in 0..64 {
+                                                U64 va = va2 | (((64 * p1 + j1) as U64) << 12);
+                                                I64 cr = 0;
+                                                if (device_entry(w1[j1])) {
+                                                    cr = map_device(dst, va, pte.addr(w1[j1]));
+                                                } else if (page_entry(w1[j1])) {
+                                                    cr = clone_page(dst, va, w1[j1]);
+                                                }
+                                                if (cr < 0) {
+                                                    destroy(dst);
+                                                    return -1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+// One page of a clone: the entry e of the source at va, made again in dst with its bytes.
+I64 clone_page(I64 dst, U64 va, U64 e) {
+    U64 src_frame = page_frame(e);
+    I64 prot = 0;
+    if (table_entry(e)) {
+        prot = PROT_READ;
+        if (pte.writable(e)) {
+            prot = prot | PROT_WRITE;
+        }
+        if (!pte.no_exec(e)) {
+            prot = prot | PROT_EXEC;
+        }
+    }
+    if (src_frame == 0) {
+        if (lazy_entry(e)) {
+            I64 lp = PROT_READ;
+            if (pte.writable(e)) {
+                lp = lp | PROT_WRITE;
+            }
+            if (!pte.no_exec(e)) {
+                lp = lp | PROT_EXEC;
+            }
+            if (set_page(dst, va, lp) < 0) {
+                return -1;
+            }
+            if ((e & FLAG_RESERVED) != 0) {
+                return set_page(dst, va, 0);
+            }
+            return 0;
+        }
+        return set_page(dst, va, 0);
+    }
+    if (set_page(dst, va, PROT_READ) < 0 || back(dst, va) < 0) {   // the promise, and its frame now: the copy
+        return -1;
+    }
+    U64 s = slot(dst, va, false);
+    U64 dst_frame = page_frame(read_word(s));
+    U8[512] b;
+    for k in 0..8 {
+        phys.phys_read8(src_frame + (512 * k) as U64, b);
+        phys.phys_write8(dst_frame + (512 * k) as U64, b);
+    }
+    return set_page(dst, va, prot);
+}
+
+// The physical address of the user address va in pid's space, or -1 if it is not mapped for
+// ring 3 (or not writable, when write is true), or is a device page.
+export I64 translate(I64 pid, U64 va, Bool write) {
+    if (!user_va(va)) {
+        return -1;
+    }
+    U64 t = roots[pid];
+    for level in 0..4 {
+        U64 shift = (39 - 9 * level) as U64;
+        U64 at = t + 8 * ((va >> shift) & 511);
+        U64 e = read_word(at);
+        if (level == 3 && lazy_entry(e) && (e & FLAG_RESERVED) == 0) {
+            if (back(pid, va & 0xFFFFFFFFFFFFF000) < 0) {   // the kernel's touch (M-2)
+                return -1;
+            }
+            e = read_word(at);
+        }
+        if (!pte.present(e) || (e & FLAG_U) == 0) {
+            return -1;
+        }
+        if (level == 3 && ((write && !pte.writable(e)) || device_entry(e))) {
+            return -1;
+        }
+        t = pte.addr(e);
+    }
+    return (t + (va & 4095)) as I64;
+}
+
+// H-4b: whether ring 3 wrote a page of [va, va + bytes) since the last call, by the pages' dirty bits (SDM vol. 3,
+// 4.8), which are cleared. One CPU and no PCID: the process's TLB entries went at the switch to the caller's
+// CR3, so its next write sets the bit again (the caller must not be pid). A page not present was not written.
+export Bool written(I64 pid, U64 va, U64 bytes) {
+    Bool any = false;
+    U64 p = va - (va & 4095);
+    U64 end = va + bytes;
+    U64 pt = 0;
+    U64 at2 = 0xFFFFFFFFFFFFFFFF;
+    while (p < end && user_va(p)) {
+        if ((p >> 21) != at2) {
+            at2 = p >> 21;
+            pt = slot(pid, p, false);
+            if (pt != 0) {
+                pt = pt - 8 * ((p >> 12) & 511);
+            }
+        }
+        if (pt != 0) {
+            U64 at = pt + 8 * ((p >> 12) & 511);
+            U64 e = read_word(at);
+            if (pte.present(e) && (e & FLAG_D) != 0) {
+                any = true;
+                write_word(at, e - FLAG_D);
+            }
+        }
+        p += 4096;
+    }
+    return any;
+}
+
+// Copies up to k bytes of user memory at va into dst; returns the count copied before the first
+// address that is not readable by ring 3.
+export I64 peek[n](I64 pid, U64 va, inout U8[n] dst, I64 k) {
+    I64 done = 0;
+    while (done < k) {
+        U64 at = va + done as U64;
+        I64 pa = translate(pid, at, false);
+        if (pa < 0) {
+            return done;
+        }
+        I64 room = 4096 - (at & 4095) as I64;
+        I64 c = k - done;
+        if (c > room) {
+            c = room;
+        }
+        phys.phys_read8(pa as U64, dst[done..done + c]);
+        done += c;
+    }
+    return done;
+}
+
+// Copies k bytes of src into pid's memory at va. With check, only where ring 3 may write (what a
+// system call writes for a process); without, anywhere ring 3 may read (the loader filling
+// read-only text). Returns the count copied.
+export I64 poke[n](I64 pid, U64 va, in U8[n] src, I64 k, Bool check) {
+    I64 done = 0;
+    while (done < k) {
+        U64 at = va + done as U64;
+        I64 pa = translate(pid, at, check);
+        if (pa < 0) {
+            return done;
+        }
+        I64 room = 4096 - (at & 4095) as I64;
+        I64 c = k - done;
+        if (c > room) {
+            c = room;
+        }
+        phys.phys_write8(pa as U64, src[done..done + c]);
+        done += c;
+    }
+    return done;
+}
+
+// --- the canonical state of a process (docs/user.md) ---
+//
+// SHA-256 of: the head the caller built (the tag, the registers, the process words and the FPU
+// state, src/proc.ci), then per page of the process in address order its address (u64), its
+// rights (u8: 1 writable, 2 executable; 0x80 reserved, plus 0x40 if it keeps a frame) and, if it
+// has a frame, its 4,096 bytes, then the page count (u32). All little endian. Nothing physical
+// is in it: not a frame number, not a table, not the order frames were taken in, so the same
+// program in the same state has the same digest whatever ran before it and wherever its pages
+// landed. A device page is not a page of the process: the surface is digested on its own (F-1).
+// Edition 7 (W-4): the bytes in [dlo, dhi), the dead stack below the stack pointer, are hashed as zeros. What a
+// return leaves below the stack pointer is whatever the last deeper calls wrote, so it follows the order in
+// which independent events (a key's release, a client's end, a pty's output) reached the process; nothing
+// the process can still read without writing it first.
+
+void put_u64(inout sha256.Sha256[1] s, U64 v, I64 width) {
+    U8[8] b;
+    for k in 0..width {
+        b[k] = ((v >> ((8 * k) as U64)) & 0xFF) as U8;
+    }
+    sha256.sha_update(s, b, 0, width);
+}
+
+void put_page(inout sha256.Sha256[1] s, U64 va, U64 e, U64 dlo, U64 dhi) {
+    U64 frame = page_frame(e);
+    U64 rights = 0;
+    Bool lazy = lazy_entry(e);
+    if (table_entry(e) || (lazy && (e & FLAG_RESERVED) == 0)) {
+        if (pte.writable(e)) {
+            rights = 1;
+        }
+        if (!pte.no_exec(e)) {
+            rights = rights | 2;
+        }
+    } else {
+        rights = 0x80;
+        if (frame != 0 || lazy) {
+            rights = rights | 0x40;
+        }
+    }
+    put_u64(s, va, 8);
+    put_u64(s, rights, 1);
+    if (lazy) {
+        U8[512] z;
+        for j in 0..512 {
+            z[j] = 0;
+        }
+        for k in 0..8 {
+            sha256.sha_update(s, z, 0, 512);
+        }
+    } else if (frame != 0) {
+        U8[512] b;
+        for k in 0..8 {
+            phys.phys_read8(frame + (512 * k) as U64, b);
+            U64 at = va + (512 * k) as U64;
+            if (at < dhi && at + 512 > dlo) {
+                for j in 0..512 {
+                    U64 x = at + j as U64;
+                    if (x >= dlo && x < dhi) { b[j] = 0; }
+                }
+            }
+            sha256.sha_update(s, b, 0, 512);
+        }
+    }
+}
+
+export void state_digest[n](I64 pid, in U8[n] head, U64 dlo, U64 dhi, inout U8[32] digest) {
+    sha256.Sha256[1] s;
+    sha256.sha_init(s);
+    sha256.sha_update(s, head, 0, n);
+    I64 pages = 0;
+    U64[64] w4;
+    U64[64] w3;
+    U64[64] w2;
+    U64[64] w1;
+    for p4 in 0..8 {
+        table_part(roots[pid], p4, w4);
+        for j4 in 0..64 {
+            if (table_entry(w4[j4])) {
+                U64 va4 = ((64 * p4 + j4) as U64) << 39;
+                for p3 in 0..8 {
+                    table_part(pte.addr(w4[j4]), p3, w3);
+                    for j3 in 0..64 {
+                        if (table_entry(w3[j3])) {
+                            U64 va3 = va4 | (((64 * p3 + j3) as U64) << 30);
+                            for p2 in 0..8 {
+                                table_part(pte.addr(w3[j3]), p2, w2);
+                                for j2 in 0..64 {
+                                    if (table_entry(w2[j2])) {
+                                        U64 va2 = va3 | (((64 * p2 + j2) as U64) << 21);
+                                        for p1 in 0..8 {
+                                            table_part(pte.addr(w2[j2]), p1, w1);
+                                            for j1 in 0..64 {
+                                                if (page_entry(w1[j1])) {
+                                                    put_page(s, va2 | (((64 * p1 + j1) as U64) << 12), w1[j1], dlo, dhi);
+                                                    pages += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    put_u64(s, pages as U64, 4);
+    sha256.sha_final(s, digest);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,121 @@
+// tests/rs/stgrant_test.ci: hosted tests of Settings' Grants page (user/ci/kit/stgrant.ci, frame 21, GV-2, GV-R3).
+// Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+import user.ci.kit.stgrant;
+
+U32[1600] row;
+
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for k in 0..n { if (a[k] != b[k]) { return false; } }
+    return true;
+}
+
+void put(I64 w, in U8[_] nm, I64 b, in U8[_] t, in U8[_] o) {
+    Bool ok = stgrant.line(w, nm, len(nm), b, t, len(t), o, len(o));
+}
+
+// Frame 21's three windows, Edit with a second grant.
+void frame21() {
+    stgrant.lines_clear();
+    put(4, b"Fetch", stgrant.NET, b"01:42", b"fetch example.org");
+    put(2, b"Edit", stgrant.DISK, b"01:51", b"ced /home/ci/notes.txt");
+    put(2, b"Edit", stgrant.NET, b"01:53", b"");
+    put(7, b"Console", stgrant.DISK, b"01:58", b"");
+    stgrant.refreshed();
+    stgrant.open();
+}
+
+test "GV-R3: one Revoke a window, its grants on lines of their own with no rule between" {
+    frame21();
+    assert(stgrant.windows() == 3);
+    assert(stgrant.first(0) && stgrant.first(1) && !stgrant.first(2) && stgrant.first(3));
+    assert(stgrant.line_y(Y0, 1) == Y0 + stpage.BODY + 40 + 9);
+    assert(stgrant.line_y(Y0, 2) == Y0 + stpage.BODY + 2 * 40 + 9);                     // Edit's second line
+    assert(stgrant.line_y(Y0, 3) == Y0 + stpage.BODY + 3 * 40 + 2 * 9);
+    assert(stgrant.tall() == stpage.BODY + 4 * 40 + 2 * 9 + stpage.GAP + stpage.BTN + stpage.FOOT);
+}
+
+test "Revoke names its window; Revoke All is the last stop; Tab leaves after it" {
+    frame21();
+    assert(stgrant.enter());
+    assert(stgrant.key(stpage.K_ENTER) == stgrant.REVOKE && stgrant.arg() == 4);
+    assert(stgrant.key(stpage.K_TAB) == stpage.DRAW);
+    assert(stgrant.key(stpage.K_SPACE) == stgrant.REVOKE && stgrant.arg() == 2);
+    assert(stgrant.key(stpage.K_DOWN) == stpage.DRAW);
+    assert(stgrant.key(stpage.K_ENTER) == stgrant.REVOKE && stgrant.arg() == 7);
+    assert(stgrant.key(stpage.K_TAB) == stpage.DRAW);
+    assert(stgrant.key(stpage.K_ENTER) == stgrant.REVOKE_ALL);
+    assert(stgrant.key(stpage.K_DOWN) == stpage.DRAW);                                  // the arrows stay in the page
+    assert(stgrant.key(stpage.K_ENTER) == stgrant.REVOKE_ALL);
+    assert(stgrant.key(stpage.K_TAB) == stpage.BACK);
+    assert(stgrant.enter_last());
+    assert(stgrant.key(stpage.K_ENTER) == stgrant.REVOKE_ALL);
+}
+
+test "a press on a Revoke, on Revoke All, and between them" {
+    frame21();
+    I64 rx = CR - 10;
+    assert(stgrant.click(CX, Y0, CR, YB, rx, stgrant.line_y(Y0, 1) + 20) == stgrant.REVOKE && stgrant.arg() == 2);
+    assert(stgrant.click(CX, Y0, CR, YB, rx, stgrant.line_y(Y0, 2) + 20) == stpage.NONE);    // Edit's second line
+    assert(stgrant.click(CX, Y0, CR, YB, rx, stgrant.line_y(Y0, 3) + 20) == stgrant.REVOKE && stgrant.arg() == 7);
+    assert(stgrant.click(CX, Y0, CR, YB, CX + 40, stgrant.line_y(Y0, 0) + 20) == stpage.NONE);
+    I64 ay = YB - stpage.FOOT - stpage.BTN;                       // frame 21: Revoke All at the page's foot
+    assert(stgrant.click(CX, Y0, CR, YB, rx, ay + 10) == stgrant.REVOKE_ALL);
+    I64 under = stgrant.line_y(Y0, 3) + 40 + stpage.GAP;            // not under the list while the box is taller
+    assert(stgrant.click(CX, Y0, CR, YB, rx, under + 10) == stpage.NONE);
+    I64 y0 = YB - stgrant.tall();                                   // a list as long as the box: 24 under it
+    assert(stgrant.click(CX, y0, CR, YB, rx, stgrant.line_y(y0, 3) + 40 + stpage.GAP + 10) == stgrant.REVOKE_ALL);
+}
+
+test "no grant: None active, Revoke All at 40 percent with no stop and no press" {
+    stgrant.lines_clear();
+    stgrant.refreshed();
+    stgrant.open();
+    assert(!stgrant.enter());
+    assert(stgrant.key(stpage.K_ENTER) == stpage.NONE);
+    I64 ay = Y0 + stpage.BODY + 40 + stpage.GAP;
+    assert(stgrant.click(CX, Y0, CR, YB, CR - 10, ay + 10) == stpage.NONE);
+    assert(stgrant.tall() == stpage.BODY + 40 + stpage.GAP + stpage.BTN + stpage.FOOT);
+}
+
+test "the object: one line, cut with ..., never wrapped" {
+    frame21();
+    U8[64] t;
+    assert(same(t, stgrant.object_fit(0, 400, t), b"fetch example.org"));
+    I64 n = stgrant.object_fit(1, 60, t);
+    assert(n > 3 && t[n - 1] == '.' && t[n - 2] == '.' && t[n - 3] == '.');
+    assert(stpage.tw(t, n, 0) <= 60);
+    assert(stgrant.object_fit(2, 400, t) == 0);
+}
+
+test "a revoke that leaves fewer windows keeps the focus within the stops" {
+    frame21();
+    assert(stgrant.enter_last());                                                       // Revoke All, stop 4
+    stgrant.lines_clear();
+    put(4, b"Fetch", stgrant.NET, b"01:42", b"");
+    stgrant.refreshed();
+    assert(stgrant.key(stpage.K_ENTER) == stgrant.REVOKE_ALL);
+}
+
+test "every row of the page draws at both zooms in both themes" {
+    frame21();
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            for dy in 0..(YB - Y0) * z {
+                pen.at(0, 0, z, Y0 * z + dy);
+                stgrant.row_at(row, CX, Y0, CR, YB, Y0 + dy / z);
+            }
+        }
+    }
+    tokens.set_theme(0);
+}
+// SPDX-License-Identifier: Apache-2.0

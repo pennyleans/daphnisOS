@@ -1,0 +1,236 @@
+// user/ci/kit/faces.ci: the chrome faces of FONT-1 by role (F4), each at 1x and 2x, over the modules
+// tools/glyphs.py writes; written by tools/glyphs.py; do not edit. kit/ctext.ci draws with it.
+import user.ci.kit.jbm12_r1;
+import user.ci.kit.jbm12_r2;
+import user.ci.kit.inter13_r1;
+import user.ci.kit.inter13_r2;
+import user.ci.kit.inter13_m1;
+import user.ci.kit.inter13_m2;
+import user.ci.kit.inter11_s1;
+import user.ci.kit.inter11_s2;
+import user.ci.kit.inter16_r1;
+import user.ci.kit.inter16_r2;
+import user.ci.kit.inter20_s1;
+import user.ci.kit.inter20_s2;
+import user.ci.kit.inter13_s1;
+import user.ci.kit.inter13_s2;
+import user.ci.kit.inter12_r1;
+import user.ci.kit.inter12_r2;
+import user.ci.kit.jbm13_s1;
+import user.ci.kit.jbm13_s2;
+import user.ci.kit.jbm11_r1;
+import user.ci.kit.jbm11_r2;
+import user.ci.kit.inter16_s1;
+import user.ci.kit.inter16_s2;
+import user.ci.kit.jbm40_s1;
+import user.ci.kit.jbm40_s2;
+import user.ci.kit.inter11_r1;
+import user.ci.kit.inter11_r2;
+import user.ci.kit.inter12_m1;
+import user.ci.kit.inter12_m2;
+import user.ci.kit.inter10_r1;
+import user.ci.kit.inter10_r2;
+
+export const I64 PATH = 0;    // paths and sizes in chrome, 12 px 400
+export const I64 BODY = 1;    // chrome body and labels, 13 px 400
+export const I64 NAME = 2;    // chrome names (Super plane 'Sans medium'), 13 px 500
+export const I64 LABEL = 3;   // section labels, uppercase, 11 px 600, tracking 0.08 em
+export const I64 SEARCH = 4;  // search field and empty-state titles, 16 px 400 (the approved sheet: search input 16 px regular)
+export const I64 TITLE = 5;   // preview titles, 20 px 600 (the approved sheet: type specimen 20 px semibold)
+export const I64 NAME_BOLD = 6; // the window bar's name and selected names, 13 px 600 (DN-23)
+export const I64 SMALL = 7;   // the tray's tooltip, 12 px 400 (DN-20, design note 20)
+export const I64 MONO_BOLD = 8; // the elevation prompt's command, mono 13 px 600 (design note 24, FV-1)
+export const I64 SHORTCUT = 9; // the right-click menu's shortcuts, mono 11 px 400 (design note 32)
+export const I64 NAME_LARGE = 10; // the About sheet's app name, 16 px 600 (design note 43)
+export const I64 CLOCK = 11;   // the Date and Time page's clock (frame 36) and the account screens' (frame 12), mono 40 px 600, tracking -0.01 em, digits
+export const I64 CAPTION = 12; // a slider's end words (frame 37) and pinned names of 10 or 11 characters (DN-52 (e)), 11 px 400
+export const I64 SMALL_NAME = 13; // a small button's name, 12 px 500 (frame 38's Empty Trash)
+export const I64 PIN11 = 14;   // a slider's end words (frame 37) and pinned names of 10 or 11 characters (DN-52 (e)), 11 px 400
+export const I64 PIN10 = 15;   // pinned names of 12 characters or more, 10 px 400 (DN-52 (e))
+export const I64 FACES = 16;
+
+// The glyph of code point cp in face f at scale z (1 or 2), or the face's stand-in.
+export I64 index(I64 f, I64 z, I64 cp) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.index(cp); } return jbm12_r1.index(cp); }
+    if (f == 1) { if (z == 2) { return inter13_r2.index(cp); } return inter13_r1.index(cp); }
+    if (f == 2) { if (z == 2) { return inter13_m2.index(cp); } return inter13_m1.index(cp); }
+    if (f == 3) { if (z == 2) { return inter11_s2.index(cp); } return inter11_s1.index(cp); }
+    if (f == 4) { if (z == 2) { return inter16_r2.index(cp); } return inter16_r1.index(cp); }
+    if (f == 5) { if (z == 2) { return inter20_s2.index(cp); } return inter20_s1.index(cp); }
+    if (f == 6) { if (z == 2) { return inter13_s2.index(cp); } return inter13_s1.index(cp); }
+    if (f == 7) { if (z == 2) { return inter12_r2.index(cp); } return inter12_r1.index(cp); }
+    if (f == 8) { if (z == 2) { return jbm13_s2.index(cp); } return jbm13_s1.index(cp); }
+    if (f == 9) { if (z == 2) { return jbm11_r2.index(cp); } return jbm11_r1.index(cp); }
+    if (f == 10) { if (z == 2) { return inter16_s2.index(cp); } return inter16_s1.index(cp); }
+    if (f == 11) { if (z == 2) { return jbm40_s2.index(cp); } return jbm40_s1.index(cp); }
+    if (f == 12) { if (z == 2) { return inter11_r2.index(cp); } return inter11_r1.index(cp); }
+    if (f == 13) { if (z == 2) { return inter12_m2.index(cp); } return inter12_m1.index(cp); }
+    if (f == 14) { if (z == 2) { return inter11_r2.index(cp); } return inter11_r1.index(cp); }
+    if (f == 15) { if (z == 2) { return inter10_r2.index(cp); } return inter10_r1.index(cp); }
+    return 0;
+}
+
+// Glyph g's advance in whole pixels.
+export I64 advance(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.advance(g); } return jbm12_r1.advance(g); }
+    if (f == 1) { if (z == 2) { return inter13_r2.advance(g); } return inter13_r1.advance(g); }
+    if (f == 2) { if (z == 2) { return inter13_m2.advance(g); } return inter13_m1.advance(g); }
+    if (f == 3) { if (z == 2) { return inter11_s2.advance(g); } return inter11_s1.advance(g); }
+    if (f == 4) { if (z == 2) { return inter16_r2.advance(g); } return inter16_r1.advance(g); }
+    if (f == 5) { if (z == 2) { return inter20_s2.advance(g); } return inter20_s1.advance(g); }
+    if (f == 6) { if (z == 2) { return inter13_s2.advance(g); } return inter13_s1.advance(g); }
+    if (f == 7) { if (z == 2) { return inter12_r2.advance(g); } return inter12_r1.advance(g); }
+    if (f == 8) { if (z == 2) { return jbm13_s2.advance(g); } return jbm13_s1.advance(g); }
+    if (f == 9) { if (z == 2) { return jbm11_r2.advance(g); } return jbm11_r1.advance(g); }
+    if (f == 10) { if (z == 2) { return inter16_s2.advance(g); } return inter16_s1.advance(g); }
+    if (f == 11) { if (z == 2) { return jbm40_s2.advance(g); } return jbm40_s1.advance(g); }
+    if (f == 12) { if (z == 2) { return inter11_r2.advance(g); } return inter11_r1.advance(g); }
+    if (f == 13) { if (z == 2) { return inter12_m2.advance(g); } return inter12_m1.advance(g); }
+    if (f == 14) { if (z == 2) { return inter11_r2.advance(g); } return inter11_r1.advance(g); }
+    if (f == 15) { if (z == 2) { return inter10_r2.advance(g); } return inter10_r1.advance(g); }
+    return 0;
+}
+
+// Glyph g's ink box from the pen on the baseline, y down: left, top, width, height.
+export I64 left(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.left(g); } return jbm12_r1.left(g); }
+    if (f == 1) { if (z == 2) { return inter13_r2.left(g); } return inter13_r1.left(g); }
+    if (f == 2) { if (z == 2) { return inter13_m2.left(g); } return inter13_m1.left(g); }
+    if (f == 3) { if (z == 2) { return inter11_s2.left(g); } return inter11_s1.left(g); }
+    if (f == 4) { if (z == 2) { return inter16_r2.left(g); } return inter16_r1.left(g); }
+    if (f == 5) { if (z == 2) { return inter20_s2.left(g); } return inter20_s1.left(g); }
+    if (f == 6) { if (z == 2) { return inter13_s2.left(g); } return inter13_s1.left(g); }
+    if (f == 7) { if (z == 2) { return inter12_r2.left(g); } return inter12_r1.left(g); }
+    if (f == 8) { if (z == 2) { return jbm13_s2.left(g); } return jbm13_s1.left(g); }
+    if (f == 9) { if (z == 2) { return jbm11_r2.left(g); } return jbm11_r1.left(g); }
+    if (f == 10) { if (z == 2) { return inter16_s2.left(g); } return inter16_s1.left(g); }
+    if (f == 11) { if (z == 2) { return jbm40_s2.left(g); } return jbm40_s1.left(g); }
+    if (f == 12) { if (z == 2) { return inter11_r2.left(g); } return inter11_r1.left(g); }
+    if (f == 13) { if (z == 2) { return inter12_m2.left(g); } return inter12_m1.left(g); }
+    if (f == 14) { if (z == 2) { return inter11_r2.left(g); } return inter11_r1.left(g); }
+    if (f == 15) { if (z == 2) { return inter10_r2.left(g); } return inter10_r1.left(g); }
+    return 0;
+}
+
+export I64 top(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.top(g); } return jbm12_r1.top(g); }
+    if (f == 1) { if (z == 2) { return inter13_r2.top(g); } return inter13_r1.top(g); }
+    if (f == 2) { if (z == 2) { return inter13_m2.top(g); } return inter13_m1.top(g); }
+    if (f == 3) { if (z == 2) { return inter11_s2.top(g); } return inter11_s1.top(g); }
+    if (f == 4) { if (z == 2) { return inter16_r2.top(g); } return inter16_r1.top(g); }
+    if (f == 5) { if (z == 2) { return inter20_s2.top(g); } return inter20_s1.top(g); }
+    if (f == 6) { if (z == 2) { return inter13_s2.top(g); } return inter13_s1.top(g); }
+    if (f == 7) { if (z == 2) { return inter12_r2.top(g); } return inter12_r1.top(g); }
+    if (f == 8) { if (z == 2) { return jbm13_s2.top(g); } return jbm13_s1.top(g); }
+    if (f == 9) { if (z == 2) { return jbm11_r2.top(g); } return jbm11_r1.top(g); }
+    if (f == 10) { if (z == 2) { return inter16_s2.top(g); } return inter16_s1.top(g); }
+    if (f == 11) { if (z == 2) { return jbm40_s2.top(g); } return jbm40_s1.top(g); }
+    if (f == 12) { if (z == 2) { return inter11_r2.top(g); } return inter11_r1.top(g); }
+    if (f == 13) { if (z == 2) { return inter12_m2.top(g); } return inter12_m1.top(g); }
+    if (f == 14) { if (z == 2) { return inter11_r2.top(g); } return inter11_r1.top(g); }
+    if (f == 15) { if (z == 2) { return inter10_r2.top(g); } return inter10_r1.top(g); }
+    return 0;
+}
+
+export I64 width(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.width(g); } return jbm12_r1.width(g); }
+    if (f == 1) { if (z == 2) { return inter13_r2.width(g); } return inter13_r1.width(g); }
+    if (f == 2) { if (z == 2) { return inter13_m2.width(g); } return inter13_m1.width(g); }
+    if (f == 3) { if (z == 2) { return inter11_s2.width(g); } return inter11_s1.width(g); }
+    if (f == 4) { if (z == 2) { return inter16_r2.width(g); } return inter16_r1.width(g); }
+    if (f == 5) { if (z == 2) { return inter20_s2.width(g); } return inter20_s1.width(g); }
+    if (f == 6) { if (z == 2) { return inter13_s2.width(g); } return inter13_s1.width(g); }
+    if (f == 7) { if (z == 2) { return inter12_r2.width(g); } return inter12_r1.width(g); }
+    if (f == 8) { if (z == 2) { return jbm13_s2.width(g); } return jbm13_s1.width(g); }
+    if (f == 9) { if (z == 2) { return jbm11_r2.width(g); } return jbm11_r1.width(g); }
+    if (f == 10) { if (z == 2) { return inter16_s2.width(g); } return inter16_s1.width(g); }
+    if (f == 11) { if (z == 2) { return jbm40_s2.width(g); } return jbm40_s1.width(g); }
+    if (f == 12) { if (z == 2) { return inter11_r2.width(g); } return inter11_r1.width(g); }
+    if (f == 13) { if (z == 2) { return inter12_m2.width(g); } return inter12_m1.width(g); }
+    if (f == 14) { if (z == 2) { return inter11_r2.width(g); } return inter11_r1.width(g); }
+    if (f == 15) { if (z == 2) { return inter10_r2.width(g); } return inter10_r1.width(g); }
+    return 0;
+}
+
+export I64 height(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.height(g); } return jbm12_r1.height(g); }
+    if (f == 1) { if (z == 2) { return inter13_r2.height(g); } return inter13_r1.height(g); }
+    if (f == 2) { if (z == 2) { return inter13_m2.height(g); } return inter13_m1.height(g); }
+    if (f == 3) { if (z == 2) { return inter11_s2.height(g); } return inter11_s1.height(g); }
+    if (f == 4) { if (z == 2) { return inter16_r2.height(g); } return inter16_r1.height(g); }
+    if (f == 5) { if (z == 2) { return inter20_s2.height(g); } return inter20_s1.height(g); }
+    if (f == 6) { if (z == 2) { return inter13_s2.height(g); } return inter13_s1.height(g); }
+    if (f == 7) { if (z == 2) { return inter12_r2.height(g); } return inter12_r1.height(g); }
+    if (f == 8) { if (z == 2) { return jbm13_s2.height(g); } return jbm13_s1.height(g); }
+    if (f == 9) { if (z == 2) { return jbm11_r2.height(g); } return jbm11_r1.height(g); }
+    if (f == 10) { if (z == 2) { return inter16_s2.height(g); } return inter16_s1.height(g); }
+    if (f == 11) { if (z == 2) { return jbm40_s2.height(g); } return jbm40_s1.height(g); }
+    if (f == 12) { if (z == 2) { return inter11_r2.height(g); } return inter11_r1.height(g); }
+    if (f == 13) { if (z == 2) { return inter12_m2.height(g); } return inter12_m1.height(g); }
+    if (f == 14) { if (z == 2) { return inter11_r2.height(g); } return inter11_r1.height(g); }
+    if (f == 15) { if (z == 2) { return inter10_r2.height(g); } return inter10_r1.height(g); }
+    return 0;
+}
+
+// Coverage 0 to 15 of pixel (x, y) of glyph g's box.
+export I64 at(I64 f, I64 z, I64 g, I64 x, I64 y) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.at(g, x, y); } return jbm12_r1.at(g, x, y); }
+    if (f == 1) { if (z == 2) { return inter13_r2.at(g, x, y); } return inter13_r1.at(g, x, y); }
+    if (f == 2) { if (z == 2) { return inter13_m2.at(g, x, y); } return inter13_m1.at(g, x, y); }
+    if (f == 3) { if (z == 2) { return inter11_s2.at(g, x, y); } return inter11_s1.at(g, x, y); }
+    if (f == 4) { if (z == 2) { return inter16_r2.at(g, x, y); } return inter16_r1.at(g, x, y); }
+    if (f == 5) { if (z == 2) { return inter20_s2.at(g, x, y); } return inter20_s1.at(g, x, y); }
+    if (f == 6) { if (z == 2) { return inter13_s2.at(g, x, y); } return inter13_s1.at(g, x, y); }
+    if (f == 7) { if (z == 2) { return inter12_r2.at(g, x, y); } return inter12_r1.at(g, x, y); }
+    if (f == 8) { if (z == 2) { return jbm13_s2.at(g, x, y); } return jbm13_s1.at(g, x, y); }
+    if (f == 9) { if (z == 2) { return jbm11_r2.at(g, x, y); } return jbm11_r1.at(g, x, y); }
+    if (f == 10) { if (z == 2) { return inter16_s2.at(g, x, y); } return inter16_s1.at(g, x, y); }
+    if (f == 11) { if (z == 2) { return jbm40_s2.at(g, x, y); } return jbm40_s1.at(g, x, y); }
+    if (f == 12) { if (z == 2) { return inter11_r2.at(g, x, y); } return inter11_r1.at(g, x, y); }
+    if (f == 13) { if (z == 2) { return inter12_m2.at(g, x, y); } return inter12_m1.at(g, x, y); }
+    if (f == 14) { if (z == 2) { return inter11_r2.at(g, x, y); } return inter11_r1.at(g, x, y); }
+    if (f == 15) { if (z == 2) { return inter10_r2.at(g, x, y); } return inter10_r1.at(g, x, y); }
+    return 0;
+}
+
+// The face's line box above and below the baseline, whole pixels.
+export I64 ascent(I64 f, I64 z) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.ASCENT; } return jbm12_r1.ASCENT; }
+    if (f == 1) { if (z == 2) { return inter13_r2.ASCENT; } return inter13_r1.ASCENT; }
+    if (f == 2) { if (z == 2) { return inter13_m2.ASCENT; } return inter13_m1.ASCENT; }
+    if (f == 3) { if (z == 2) { return inter11_s2.ASCENT; } return inter11_s1.ASCENT; }
+    if (f == 4) { if (z == 2) { return inter16_r2.ASCENT; } return inter16_r1.ASCENT; }
+    if (f == 5) { if (z == 2) { return inter20_s2.ASCENT; } return inter20_s1.ASCENT; }
+    if (f == 6) { if (z == 2) { return inter13_s2.ASCENT; } return inter13_s1.ASCENT; }
+    if (f == 7) { if (z == 2) { return inter12_r2.ASCENT; } return inter12_r1.ASCENT; }
+    if (f == 8) { if (z == 2) { return jbm13_s2.ASCENT; } return jbm13_s1.ASCENT; }
+    if (f == 9) { if (z == 2) { return jbm11_r2.ASCENT; } return jbm11_r1.ASCENT; }
+    if (f == 10) { if (z == 2) { return inter16_s2.ASCENT; } return inter16_s1.ASCENT; }
+    if (f == 11) { if (z == 2) { return jbm40_s2.ASCENT; } return jbm40_s1.ASCENT; }
+    if (f == 12) { if (z == 2) { return inter11_r2.ASCENT; } return inter11_r1.ASCENT; }
+    if (f == 13) { if (z == 2) { return inter12_m2.ASCENT; } return inter12_m1.ASCENT; }
+    if (f == 14) { if (z == 2) { return inter11_r2.ASCENT; } return inter11_r1.ASCENT; }
+    if (f == 15) { if (z == 2) { return inter10_r2.ASCENT; } return inter10_r1.ASCENT; }
+    return 0;
+}
+
+export I64 descent(I64 f, I64 z) {
+    if (f == 0) { if (z == 2) { return jbm12_r2.DESCENT; } return jbm12_r1.DESCENT; }
+    if (f == 1) { if (z == 2) { return inter13_r2.DESCENT; } return inter13_r1.DESCENT; }
+    if (f == 2) { if (z == 2) { return inter13_m2.DESCENT; } return inter13_m1.DESCENT; }
+    if (f == 3) { if (z == 2) { return inter11_s2.DESCENT; } return inter11_s1.DESCENT; }
+    if (f == 4) { if (z == 2) { return inter16_r2.DESCENT; } return inter16_r1.DESCENT; }
+    if (f == 5) { if (z == 2) { return inter20_s2.DESCENT; } return inter20_s1.DESCENT; }
+    if (f == 6) { if (z == 2) { return inter13_s2.DESCENT; } return inter13_s1.DESCENT; }
+    if (f == 7) { if (z == 2) { return inter12_r2.DESCENT; } return inter12_r1.DESCENT; }
+    if (f == 8) { if (z == 2) { return jbm13_s2.DESCENT; } return jbm13_s1.DESCENT; }
+    if (f == 9) { if (z == 2) { return jbm11_r2.DESCENT; } return jbm11_r1.DESCENT; }
+    if (f == 10) { if (z == 2) { return inter16_s2.DESCENT; } return inter16_s1.DESCENT; }
+    if (f == 11) { if (z == 2) { return jbm40_s2.DESCENT; } return jbm40_s1.DESCENT; }
+    if (f == 12) { if (z == 2) { return inter11_r2.DESCENT; } return inter11_r1.DESCENT; }
+    if (f == 13) { if (z == 2) { return inter12_m2.DESCENT; } return inter12_m1.DESCENT; }
+    if (f == 14) { if (z == 2) { return inter11_r2.DESCENT; } return inter11_r1.DESCENT; }
+    if (f == 15) { if (z == 2) { return inter10_r2.DESCENT; } return inter10_r1.DESCENT; }
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

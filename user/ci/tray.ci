@@ -1,0 +1,31 @@
+// user/ci/tray.ci: `tray [-m] CMD [ARG...]`, SP-2 (docs/specs/2026-11-08-sp-system-panel.md, SP-R3 A): runs CMD as a
+// resident program in the desk's tray. The process asks for the tray (call 1002) and then runs CMD, which keeps the
+// ask, as its children do; the desk hides the window and lists it under the bar's chevron, `Click to open /
+// Right-click quit`. SP-6: with -m it asks instead that CMD's window minimize to the tray (call 1002 with 2, DN-16;
+// an app built that way calls it itself, DN-19): the window stays where it is until it is minimized. CMD is a path, or a name looked up in PATH and then taken as it is (BU-2c), as with grant and
+// kern. Status 2 for a usage error, 1 when the tray could not be asked, 127 when CMD could not be run.
+import user.ci.dev;
+import user.ci.grantcall;
+import user.ci.traycall;
+
+void main(in U8[_] args) {
+    I64 at = 0;
+    I64 how = 1;
+    if (len(args) >= 3 && args[0] == '-' && args[1] == 'm' && args[2] == 0) {
+        at = 3;
+        how = 2;
+    }
+    if (at >= len(args)) {
+        "tray: usage: tray [-m] CMD [ARG...]\n";
+        dev.exit_now(2);
+    }
+    I64 r = traycall.tray_ask(how);
+    if (r < 0) {
+        "tray: the tray could not be asked: error {0 - r}\n";
+        dev.exit_now(1);
+    }
+    I64 e = grantcall.exec_from(args, at);
+    "tray: cannot run the command: error {0 - e}\n";
+    dev.exit_now(127);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,132 @@
+// user/ci/cish/input.ci: `read [-r] [NAME...]` (CS-4, XCU read). One line of descriptor 0, a byte a call so nothing
+// past its newline is taken from a pipe another process reads next. Without -r a backslash quotes the byte after
+// it (that byte never delimits) and a backslash-newline joins the next line. The line is split on IFS as fields
+// are (XCU 2.6.5): each NAME but the last takes one field; the last takes the rest, its trailing IFS white space
+// dropped, and one trailing IFS byte too when the rest is a single field (as busybox ash). No NAME: REPLY takes the
+// whole line. Status 0, or 1 at the end of the input (the names still set), 2 on a bad option or name.
+import user.ci.shctl;
+import user.ci.cish.limits;
+import user.ci.cish.vars;
+import user.ci.cish.expand;
+import user.ci.cish.msg;
+
+U8[4096] lb;      // the line, its backslashes undone
+Bool[4096] lq;    // the byte was quoted by a backslash
+I64 ln = 0;
+
+Bool good_name(in U8[_] f) {
+    if (len(f) == 0) { return false; }
+    for i in 0..len(f) {
+        U8 c = f[i];
+        Bool ok = c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9');
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
+// The line into lb and lq: 0 at its newline, 1 at the end of the input, 2 past LINE (said).
+I64 take(Bool raw) {
+    ln = 0;
+    Bool escaped = false;
+    while (true) {
+        U8[1] b;
+        if (shctl.fd_read(0, b) != 1) { return 1; }
+        U8 c = b[0];
+        if (escaped) {
+            escaped = false;
+            if (c != '\n') {
+                if (ln == limits.LINE) {
+                    msg.say_limit(b"LINE", limits.LINE);
+                    return 2;
+                }
+                lb[ln] = c;
+                lq[ln] = true;
+                ln = ln + 1;
+            }
+        } else if (c == '\n') {
+            return 0;
+        } else if (c == '\\' && !raw) {
+            escaped = true;
+        } else {
+            if (ln == limits.LINE) {
+                msg.say_limit(b"LINE", limits.LINE);
+                return 2;
+            }
+            lb[ln] = c;
+            lq[ln] = false;
+            ln = ln + 1;
+        }
+    }
+    return 1;
+}
+
+// Byte i delimits: IFS white space, or another IFS byte.
+Bool delim_ws(I64 i) { return !lq[i] && expand.white(lb[i]) && expand.is_ifs(lb[i]); }
+Bool delim_other(I64 i) { return !lq[i] && !expand.white(lb[i]) && expand.is_ifs(lb[i]); }
+
+Bool put(in U8[_] name, I64 a, I64 b) {
+    if (!vars.set(name, lb[a..b])) {
+        msg.say_limit(b"VARS or VARBYTES", limits.VARS);
+        return false;
+    }
+    return true;
+}
+
+export I64 run(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    Bool raw = false;
+    I64 first = 1;
+    while (first < nf && fe[first] - fo[first] >= 2 && ab[fo[first]] == '-') {
+        if (fe[first] - fo[first] == 2 && ab[fo[first] + 1] == 'r') {
+            raw = true;
+            first = first + 1;
+        } else {
+            msg.begin();
+            msg.text(b"read: illegal option ");
+            msg.text(ab[fo[first]..fe[first]]);
+            msg.send();
+            return 2;
+        }
+    }
+    for k in first..nf {
+        if (!good_name(ab[fo[k]..fe[k]])) {
+            msg.begin();
+            msg.text(b"read: bad variable name: ");
+            msg.text(ab[fo[k]..fe[k]]);
+            msg.send();
+            return 2;
+        }
+    }
+    I64 st = take(raw);
+    if (st == 2) { return 2; }
+    if (first == nf) {
+        if (!put(b"REPLY", 0, ln)) { return 2; }
+        return st;
+    }
+    expand.load_ifs();
+    I64 i = 0;
+    while (i < ln && delim_ws(i)) { i = i + 1; }
+    for k in first..nf - 1 {
+        I64 a = i;
+        while (i < ln && !delim_ws(i) && !delim_other(i)) { i = i + 1; }
+        if (!put(ab[fo[k]..fe[k]], a, i)) { return 2; }
+        while (i < ln && delim_ws(i)) { i = i + 1; }
+        if (i < ln && delim_other(i)) {
+            i = i + 1;
+            while (i < ln && delim_ws(i)) { i = i + 1; }
+        }
+    }
+    I64 e = ln;
+    while (e > i && delim_ws(e - 1)) { e = e - 1; }
+    if (e > i && delim_other(e - 1)) {
+        I64 e2 = e - 1;
+        while (e2 > i && delim_ws(e2 - 1)) { e2 = e2 - 1; }
+        Bool single = true;
+        for j in i..e2 {
+            if (delim_ws(j) || delim_other(j)) { single = false; }
+        }
+        if (single) { e = e2; }
+    }
+    if (!put(ab[fo[nf - 1]..fe[nf - 1]], i, e)) { return 2; }
+    return st;
+}
+// SPDX-License-Identifier: Apache-2.0

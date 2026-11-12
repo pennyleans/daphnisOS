@@ -1,0 +1,56 @@
+import src.capture_format;
+
+test "canonical header and revision" {
+    U8[16] stream;
+    U8[32] revision;
+    U8[64] h;
+    for i in 0..16 { stream[i] = i as U8; }
+    for i in 0..32 { revision[i] = (32 + i) as U8; }
+    assert(capture_format.header(stream, revision, h) == 64);
+    assert(capture_format.valid_header(h, revision));
+    for i in 0..16 {
+        U8 saved = h[i];
+        h[i] = saved ^ 128;
+        assert(!capture_format.valid_header(h, revision));
+        h[i] = saved;
+    }
+    h[63] = h[63] ^ 1;
+    assert(!capture_format.valid_header(h, revision));
+    assert(!capture_format.valid_header(h[0..63], revision));
+    h[0] = 77;
+    assert(capture_format.header(stream[0..15], revision, h) == -1);
+    assert(h[0] == 77);
+    assert(capture_format.header(stream, revision, h[0..63]) == -1);
+    assert(h[0] == 77);
+}
+
+test "little endian sequence full width" {
+    U8[8] b;
+    capture_format.put64(0xFEDCBA9876543210, b);
+    assert(b[0] == 0x10 && b[7] == 0xFE);
+    assert(capture_format.get64(b) == 0xFEDCBA9876543210);
+}
+
+test "frame bounds and reserved bits" {
+    U8[16] previous;
+    U8[4144] b;
+    for i in 0..16 { previous[i] = (80 + i) as U8; }
+    assert(capture_format.prefix(0, 4096, false, previous, b[0..32]) == 32);
+    assert(capture_format.payload(b) == 4096);
+    assert(capture_format.payload(b[0..4143]) == -2);
+    assert(capture_format.payload(b[0..31]) == -2);
+    for i in 10..16 {
+        b[i] = 2;
+        assert(capture_format.payload(b) == -1);
+        b[i] = 0;
+    }
+    assert(capture_format.prefix(1, 0, true, previous, b[0..32]) == 32);
+    assert(capture_format.payload(b[0..48]) == 0);
+    assert(capture_format.payload(b[0..49]) == -1);
+    assert(capture_format.payload(b[0..47]) == -2);
+    assert(capture_format.prefix(1, 0, false, previous, b[0..32]) == -1);
+    assert(capture_format.prefix(1, 1, true, previous, b[0..32]) == -1);
+    assert(capture_format.prefix(1, 4097, false, previous, b[0..32]) == -1);
+    assert(capture_format.prefix(1, -1, false, previous, b[0..32]) == -1);
+}
+// SPDX-License-Identifier: Apache-2.0

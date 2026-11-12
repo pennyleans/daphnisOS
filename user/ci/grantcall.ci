@@ -1,0 +1,11 @@
+// user/ci/grantcall.ci: the externs of user/ci/grant.ci (P-3, GR-1 A), rows of user/ci/host.c built only into a
+// program that imports this module (user/ci/build.sh defines CI_ROWS_GRANT).
+//   grant_set(w): Daphnis's call 1000, the process's grant word becomes w; 0, or -errno (-ENOSYS on Linux)
+//   grant_ask(args, at, w): AC-1c, call 1004: the grants of w past the ceiling asked of the desk, args from at the
+//   command line its prompt names; 0 on a parent's yes or with nothing to ask, -EPERM on a no
+//   exec_from(args, at): execve of the NUL-terminated strings of args from byte at on (a name with no slash looked up
+//   in PATH first, BU-2c); only a failure returns
+export extern unrestricted I64 grant_set(U64 w);
+export extern unrestricted I64 grant_ask(in U8[_] args, I64 at, U64 w);
+export extern unrestricted I64 exec_from(in U8[_] args, I64 at);
+// SPDX-License-Identifier: Apache-2.0

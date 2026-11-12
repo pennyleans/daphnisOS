@@ -1,0 +1,252 @@
+// src/eth.ci: Ethernet II and ARP (N-2, docs/specs/2026-11-05-n-net.md section 2; NW-5,
+// docs/specs/2026-11-07-nw-window.md section 3). Default address 10.0.2.15/24 behind QEMU's user
+// network (gateway 10.0.2.2), or configured at boot by DHCP or daphnis.net=. A frame is a U8[1514]
+// whose bytes 0..14 are the Ethernet header; the layers above write theirs after it.
+//
+// The ARP table holds 16 entries, learned from every ARP frame addressed to this host and replaced
+// oldest first. A send to an address the table lacks sends one ARP request (again only after
+// ASK_TICKS of the network's ticks) and reports a miss; the caller waits and tries again, and the
+// reply, polled at a later tick, fills the entry. Requests for cur_ip are answered, and taking an
+// address via DHCP or daphnis.net= sends one gratuitous ARP.
+
+import src.net;
+
+export const I64 FRAME = 1514;
+export const I64 HDR = 14;
+export const I64 OUR_IP = 0x0A00020F;      // 10.0.2.15 (default on QEMU user net)
+export const I64 GATEWAY = 0x0A000202;     // 10.0.2.2
+export const I64 NETMASK = 0xFFFFFF00;
+export const I64 BROADCAST = 0xFFFFFFFF;
+export const I64 TYPE_IPV4 = 0x0800;
+export const I64 TYPE_ARP = 0x0806;
+const I64 ENTRIES = 16;
+const I64 ASK_TICKS = 100;
+
+I64 cur_ip = 0x0A00020F;
+I64 cur_gw = 0x0A000202;
+I64 cur_mask = 0xFFFFFF00;
+I64 cur_dns = 0;
+
+I64[16] arp_ip;
+U8[96] arp_mac;
+Bool[16] arp_ok;
+I64 arp_next = 0;
+I64 asked_ip = -1;
+I64 asked_at = 0;
+I64 learned = 0;
+
+export I64 our_ip() {
+    return cur_ip;
+}
+
+export I64 gateway() {
+    return cur_gw;
+}
+
+export I64 netmask() {
+    return cur_mask;
+}
+
+export I64 dns_ip() {
+    return cur_dns;
+}
+
+export I64 prefix_len() {
+    I64 p = 0;
+    while (p < 32 && ((cur_mask >> (31 - p)) & 1) != 0) {
+        p += 1;
+    }
+    return p;
+}
+
+// True when the NIC holds QEMU's default user-network MAC (52:54:00:12:34:56).
+export Bool is_qemu_user_mac() {
+    return net.mac_byte(0) == 0x52 && net.mac_byte(1) == 0x54 && net.mac_byte(2) == 0x00
+        && net.mac_byte(3) == 0x12 && net.mac_byte(4) == 0x34 && net.mac_byte(5) == 0x56;
+}
+
+export I64 get16(in U8[1514] f, I64 at) {
+    return ((f[at] as I64) << 8) | (f[at + 1] as I64);
+}
+
+export I64 get32(in U8[1514] f, I64 at) {
+    return (get16(f, at) << 16) | get16(f, at + 2);
+}
+
+export void put16(inout U8[1514] f, I64 at, I64 v) {
+    f[at] = ((v >> 8) & 0xFF) as U8;
+    f[at + 1] = (v & 0xFF) as U8;
+}
+
+export void put32(inout U8[1514] f, I64 at, I64 v) {
+    put16(f, at, (v >> 16) & 0xFFFF);
+    put16(f, at + 2, v & 0xFFFF);
+}
+
+// The entry for ip, or -1.
+I64 find(I64 ip) {
+    for e in 0..ENTRIES {
+        if (arp_ok[e] && arp_ip[e] == ip) {
+            return e;
+        }
+    }
+    return -1;
+}
+
+// Records that ip is at the MAC f[at..at + 6).
+void learn(I64 ip, in U8[1514] f, I64 at) {
+    I64 e = find(ip);
+    if (e < 0) {
+        e = arp_next;
+        arp_next = (arp_next + 1) % ENTRIES;
+        learned += 1;
+    }
+    arp_ip[e] = ip;
+    arp_ok[e] = true;
+    for i in 0..6 {
+        arp_mac[6 * e + i] = f[at + i];
+    }
+}
+
+export Bool known(I64 ip) {
+    return find(ip) >= 0;
+}
+
+// The ARP packet of `op` (1 request, 2 reply) to the Ethernet address dst (all ones for a broadcast)
+// for target ip, its hardware address tha.
+void arp_send(I64 op, in U8[6] dst, in U8[6] tha, I64 ip) {
+    U8[1514] f;
+    for i in 0..6 {
+        f[i] = dst[i];
+        f[6 + i] = net.mac_byte(i);
+        f[22 + i] = net.mac_byte(i);
+        f[32 + i] = tha[i];
+    }
+    put16(f, 12, TYPE_ARP);
+    put16(f, 14, 1);
+    put16(f, 16, TYPE_IPV4);
+    f[18] = 6;
+    f[19] = 4;
+    put16(f, 20, op);
+    put32(f, 28, cur_ip);
+    put32(f, 38, ip);
+    net.send(f, 42);
+}
+
+export void set_unconfigured() {
+    cur_ip = 0;
+    cur_gw = 0;
+    cur_mask = 0;
+    cur_dns = 0;
+    asked_ip = -1;
+}
+
+// Installs ip/mask, gateway gw and resolver dns; sends one gratuitous ARP when gratuitous is set.
+export void configure(I64 ip, I64 mask, I64 gw, I64 dns, Bool gratuitous) {
+    cur_ip = ip;
+    cur_mask = mask;
+    cur_gw = gw;
+    cur_dns = dns;
+    asked_ip = -1;
+    if (gratuitous && ip != 0) {
+        U8[6] all;
+        U8[6] none;
+        for i in 0..6 {
+            all[i] = 0xFF;
+            none[i] = 0;
+        }
+        arp_send(1, all, none, ip);
+    }
+}
+
+// Asks who has ip, unless the same question went out less than ASK_TICKS ago.
+export void request(I64 ip) {
+    if (cur_ip == 0 || ip == 0 || ip == BROADCAST) {
+        return;
+    }
+    if (ip == asked_ip && net.ticks() - asked_at < ASK_TICKS) {
+        return;
+    }
+    asked_ip = ip;
+    asked_at = net.ticks();
+    U8[6] all;
+    U8[6] none;
+    for i in 0..6 {
+        all[i] = 0xFF;
+        none[i] = 0;
+    }
+    arp_send(1, all, none, ip);
+}
+
+// The hop a packet to ip leaves through: broadcast, ip itself on the local subnet, else the gateway.
+export I64 hop(I64 ip) {
+    if (ip == BROADCAST) {
+        return BROADCAST;
+    }
+    if (cur_mask != 0 && (ip & cur_mask) == (cur_ip & cur_mask)) {
+        return ip;
+    }
+    if (cur_gw != 0) {
+        return cur_gw;
+    }
+    return ip;
+}
+
+// Sends f[0..n) (the layers above filled f[14..n)) to the host at next_hop as `ethertype`. False when
+// the hop's address is not known yet: a request went out, and the caller tries again later.
+export Bool output(I64 next_hop, I64 ethertype, inout U8[1514] f, I64 n) {
+    if (next_hop == BROADCAST) {
+        for i in 0..6 {
+            f[i] = 0xFF;
+            f[6 + i] = net.mac_byte(i);
+        }
+        put16(f, 12, ethertype);
+        net.send(f, n);
+        return true;
+    }
+    I64 e = find(next_hop);
+    if (e < 0) {
+        request(next_hop);
+        return false;
+    }
+    for i in 0..6 {
+        f[i] = arp_mac[6 * e + i];
+        f[6 + i] = net.mac_byte(i);
+    }
+    put16(f, 12, ethertype);
+    net.send(f, n);
+    return true;
+}
+
+// An ARP frame of n bytes: an IPv4-over-Ethernet request or reply addressed to cur_ip fills the
+// table; a request is answered.
+export void arp_input(in U8[1514] f, I64 n) {
+    if (n < 42 || get16(f, 14) != 1 || get16(f, 16) != TYPE_IPV4 || f[18] != 6 || f[19] != 4) {
+        return;
+    }
+    if (cur_ip == 0 || get32(f, 38) != cur_ip) {
+        return;
+    }
+    I64 op = get16(f, 20);
+    I64 spa = get32(f, 28);
+    if (spa != 0 && spa != cur_ip) {
+        learn(spa, f, 22);
+    }
+    if (op == 1 && spa != cur_ip) {
+        U8[6] sha;
+        for i in 0..6 {
+            sha[i] = f[22 + i];
+        }
+        arp_send(2, sha, sha, spa);
+    }
+}
+
+// The MAC of ip, byte i (after known(ip)).
+export U8 mac_of(I64 ip, I64 i) {
+    I64 e = find(ip);
+    if (e < 0) {
+        return 0;
+    }
+    return arp_mac[6 * e + i];
+}
+// SPDX-License-Identifier: Apache-2.0

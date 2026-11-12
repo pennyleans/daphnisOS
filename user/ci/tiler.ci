@@ -1,0 +1,734 @@
+// user/ci/tiler.ci: the tiler of stage W, unit W-1 (docs/specs/2026-11-05-w-tiler.md sections 2, 3 and 5):
+//   tiler [--cols N] [--rows N] [--mark-only | --face-only | --term-only] [--surface-out PATH | --start PROG ...]
+// lays out a grid of N x N cells (1 to 16 a side, 2 x 2 by default) on the surface and draws it with the kit:
+// paper, the 1 px ink hairlines, in each tile a title band (the tile's column, row and inside size in the
+// terminal's JetBrains Mono cells, kit/mtext.ci, under it a rule) and in tile 0,0 the mark before its title and
+// the 2 px ultramarine focus frame. --mark-only draws the mark at 1x and at 2x; --face-only draws Daphnis Mono's
+// 95 glyphs (kit/face.ci) and prints each glyph's 16 rows, so a glyph that differs from tools/face.py's is named.
+// --term-only (E-2) feeds what it reads from its
+// standard input, to its end, into a terminal of 72 x 26 cells (user/ci/terms.ci, slot 0), prints each row as
+// `tiler: term R |TEXT|` and `tiler: cursor X,Y shown|hidden`, and draws the terminal from (16, 16) on paper, so
+// tools/check-tiler.py's model of the escapes is compared with it. The surface is the framebuffer's when
+// /dev/fb0 opens, else 640 x 480; --surface-out writes it to PATH, 4 * w bytes a row. The last line is
+// `tiler: surface WxH stride S sha256 HEX`, over the pixels row by row (never the padding past 4 * w),
+// the digest tools/check-tiler.py computes from the same rules. Status 2 for a usage error or a surface
+// the tiler cannot draw (wider than 5120 px, or cells under 32 x 24).
+// W-2 and W-3 (sections 2 and 5, ruling WT-1 A): --start PROG, on the framebuffer only and up to 8 times,
+// makes this process the tiler (FBIO_TILER), draws the grid and starts each PROG in the next tile, from 0,0 in
+// row order: the tile's client area (inside the focus frame, under the rule) is set with FBIO_TILE_NEXT
+// {w, h, x, y} before the fork, so the child's surface is that tile. Then it waits in FBIO_TILE_SYNC: on an input
+// event it reads the device and routes the event to the client in the focused tile (FBIO_TILE_INPUT), but for
+// the chords: Super with an arrow moves the focus frame, Super+q ends the focused client with SIGTERM, and no
+// key pressed with Super, nor Super, reaches a client. On an end it reaps and prints `tiler: client K in tile
+// C,R ended, status S`; it ends when every client has. Status 2 if the screen is taken.
+// H-2 (docs/specs/2026-11-05-h-hybrid.md section 5 item 2): --place with --start places each client's window with
+// FBIO_TILE_PLACE before it starts (see place()), then settles once (`tiler: settle 0`).
+// W-4 (section 2): --desk, on the framebuffer only and with at least two tiles, makes this process the tiler and
+// runs the desk: a terminal (user/ci/terms.ci, slot 0) in tile 0,0's client area, as many cells of 8 x 16 as fit (at most
+// 480 x 135), on a pty whose slave is /sh's descriptors 0, 1 and 2; and 320 x 200 centered in tile 1's client area
+// (doom's frame at 1x; the whole area if smaller) set with FBIO_TILE_NEXT for the first process that opens
+// /dev/fb0 (the kernel binds it at its open; set again after each end). Keys typed with
+// the focus on tile 0,0 go to the pty as a terminal sends them, a key's bytes in one write (user/ci/keymap.ci
+// seq_of); the chords are as for
+// --start; other tiles take no keys. On sync 3 it reads one write of the master (src/pty.ci keeps them apart) and
+// draws the rows that changed. When the shell ends it prints `tiler: desk shell ended, status S`, `tiler: term
+// bytes N sha256 HEX` over every byte the master gave, and each row of the terminal as `tiler: term R |TEXT|`.
+import src.sha256;
+import user.ci.dev;
+import user.ci.outfile;
+import user.ci.tilectl;
+import user.ci.tileplace;
+import user.ci.kit.face;
+import user.ci.kit.face2;
+import user.ci.kit.grid;
+import user.ci.kit.mark;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;   // after face and mark, which it imports: user/ci/build.sh emits in this order
+import user.ci.kit.jbm_r1;
+import user.ci.kit.jbm_r2;
+import user.ci.kit.jbm_b1;
+import user.ci.kit.jbm_b2;
+import user.ci.kit.blend;
+import user.ci.kit.mtext;  // after the four jbm modules and blend, which it imports
+import user.ci.ptyctl;
+import user.ci.keymap;
+import user.ci.terms;      // after the kit, which it imports
+
+const I64 MAX_W = 5120;   // HX-0 A, RES-1: the screen is the boot's, up to 5120 wide (5120 x 1440)
+const I64 MIN_CELL_W = 32;
+const I64 MIN_CELL_H = 24;
+const I64 PAD = 4;       // the title's inset from the tile's left and right
+const I64 TOP = 2;       // the title line's first row in the tile
+const I64 BAND = 20;     // the band's rows: 2, the cell's 16, 2; the rule is the next row
+const I64 GAP = 8;       // between the mark and the title
+const I64 FOCUS = 2;     // the focus frame's thickness
+
+const I64 FBIO_TILER = 0x4680;
+const I64 FBIO_TILE_NEXT = 0x4681;
+const I64 FBIO_TILE_SYNC = 0x4683;
+const I64 FBIO_TILE_INPUT = 0x4684;
+const I64 SETTLE = 1;     // FBIO_TILE_SYNC's flags (H-2): every window whole now
+const I64 CLIENTS = 8;
+const I64 KEY_Q = 16;
+const I64 KEY_UP = 103;
+const I64 KEY_LEFT = 105;
+const I64 KEY_RIGHT = 106;
+const I64 KEY_DOWN = 108;
+const I64 KEY_LEFTMETA = 125;
+const I64 KEY_RIGHTMETA = 126;
+const I64 SIGTERM = 15;
+const I64 EAGAIN = 11;
+
+const I64 TILES = 0;
+const I64 MARK_ONLY = 1;
+const I64 FACE_ONLY = 2;
+const I64 DESK = 3;
+const I64 TERM_ONLY = 4;
+const I64 TERM_COLS = 72;   // --term-only's terminal, from (TERM_AT, TERM_AT)
+const I64 TERM_ROWS = 26;
+const I64 TERM_AT = 16;
+const I64 OFFER_W = 320;  // the desk's second tile: doom's frame at 1x (W-4, layout A)
+const I64 OFFER_H = 200;
+
+U32[5120] row;      // one row of the widest screen (RES-1), a word a pixel (D-ROW)
+U8[20480] bytes;    // the row as its bytes, for the digest and the surface file
+U8[4096] word;
+U8[32] title;
+U8[32] glyphs;
+U8[32] digest;
+U8[16] req;
+U8[536] place_arg;  // FBIO_TILE_PLACE's head and up to 32 rectangles (H-2)
+Bool placing = false;
+U8[24] ev;
+U8[256] progs;      // the --start programs, one after another
+I64[8] poff;
+I64[8] plen;
+I64 nprog = 0;
+I64[8] cpid;        // the client of each --start, as the tiler's child
+Bool[8] alive;
+I64 focus = 0;      // the focused tile, c + cols * r
+Bool meta = false;  // Super is down
+Bool sent = false;  // an event went to a client since the last EV_SYN
+Bool shift = false;
+Bool ctrl = false;
+I64 master = -1;    // the desk's pty
+I64 tx0 = 0;        // the desk's terminal: its first pixel
+I64 ty0 = 0;
+U8[512] obuf;
+U8[6] kb;         // a key's bytes, one write (E-3)
+U8[480] tline;
+I64 tbytes = 0;
+
+I64 w;
+I64 h;
+I64 cols;
+I64 rows;
+I64 mode;
+
+void usage() {
+    "tiler: usage: tiler [--cols N] [--rows N] [--mark-only | --face-only | --term-only] [--surface-out PATH | [--place] --start PROG ... | --desk]\n";
+    dev.exit_now(2);
+}
+
+// Argument k (from 0) into `word`: its length, or -1 past the last.
+I64 arg(in U8[_] args, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(args)) { return -1; }
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return -1; }
+    I64 n = 0;
+    while (args[at + n] != 0) {
+        if (n == len(word)) { usage(); }
+        word[n] = args[at + n];
+        n = n + 1;
+    }
+    return n;
+}
+
+// Argument k as a count of cells, 1 to grid.MAX_CELLS.
+I64 cells(in U8[_] args, I64 k) {
+    I64 n = arg(args, k);
+    if (n < 1 || n > 2) { usage(); }
+    I64 v = 0;
+    for i in 0..n {
+        if (word[i] < '0' || word[i] > '9') { usage(); }
+        v = 10 * v + (word[i] - '0') as I64;
+    }
+    if (v < 1 || v > grid.MAX_CELLS) { usage(); }
+    return v;
+}
+
+Bool is(I64 n, in U8[_] s) {
+    return n == len(s) && equal(word[0..n], s);
+}
+
+// v in decimal into title from at; the index after it.
+I64 decimal(I64 at, I64 v) {
+    I64 d = 1;
+    while (v / d >= 10) { d = d * 10; }
+    I64 i = at;
+    while (d > 0) {
+        title[i] = ('0' as I64 + v / d % 10) as U8;
+        i = i + 1;
+        d = d / 10;
+    }
+    return i;
+}
+
+// The title of tile (c, r) with an inside of tw x th: "C,R TWxTH"; its length.
+I64 title_of(I64 c, I64 r, I64 tw, I64 th) {
+    I64 i = decimal(0, c);
+    title[i] = ',';
+    i = decimal(i + 1, r);
+    title[i] = ' ';
+    i = decimal(i + 1, tw);
+    title[i] = 'x';
+    return decimal(i + 1, th);
+}
+
+// The first n bytes of s as terminal cells (kit/mtext.ci, 1x) from (x0, y0) on row y, ink fg on ground bg: whole
+// cells only, none past x1.
+void title_cells(I64 y, I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 fg, U32 bg) {
+    if (y < y0 || y >= y0 + mtext.cell_h(1)) { return; }
+    I64 x = x0;
+    for k in 0..n {
+        if (x + mtext.cell_w(1) > x1) { return; }
+        mtext.cell_row(row, x, y - y0, mtext.index(s[k] as I64), false, fg, bg, 1);
+        x = x + mtext.cell_w(1);
+    }
+}
+
+// One tile's share of row y: the inside is [x0, x1) x [y0, y1).
+void tile(I64 y, I64 c, I64 r, I64 x0, I64 y0, I64 x1, I64 y1) {
+    U32 ink = tokens.word(tokens.INK);
+    draw.rect(row, y, x0, y0 + BAND, x1, y0 + BAND + 1, ink);
+    I64 tx = x0 + PAD;
+    Bool first = c == 0 && r == 0;
+    Bool lit = c + cols * r == focus;
+    if (first && x0 + PAD + mark.W <= x1 - PAD) {
+        draw.mark_at(row, y, x0 + PAD, y0 + TOP, 1, ink);
+        tx = x0 + PAD + mark.W + GAP;
+    }
+    if (y >= y0 + TOP && y < y0 + TOP + mtext.cell_h(1)) {
+        I64 n = title_of(c, r, x1 - x0, y1 - y0);
+        title_cells(y, tx, y0 + TOP, x1 - PAD, title, n, ink, tokens.word(tokens.PAPER));
+    }
+    if (lit) { draw.frame(row, y, x0, y0, x1, y1, FOCUS, tokens.word(tokens.ULTRAMARINE)); }
+}
+
+void compose(I64 y) {
+    U32 paper = tokens.word(tokens.PAPER);
+    U32 ink = tokens.word(tokens.INK);
+    draw.paint(row, 0, w, paper);
+    if (mode == MARK_ONLY) {
+        draw.mark_at(row, y, 16, 16, 1, ink);
+        draw.mark_at(row, y, 16, 32 + mark.H, 2, ink);
+        return;
+    }
+    if (mode == FACE_ONLY) {
+        for k in 0..3 {
+            I64 n = 0;
+            while (n < 32 && 32 + 32 * k + n < 127) {
+                glyphs[n] = (32 + 32 * k + n) as U8;
+                n = n + 1;
+            }
+            I64 end = draw.text(row, y, 16, 16 + face.H * k, w, glyphs, n, ink);
+        }
+        return;
+    }
+    if (mode == TERM_ONLY) {
+        if (y >= TERM_AT && y < TERM_AT + mtext.cell_h(1) * TERM_ROWS) {
+            terms.draw_row(0, row[TERM_AT..TERM_AT + mtext.cell_w(1) * TERM_COLS], y - TERM_AT, 1);
+        }
+        return;
+    }
+    if (grid.hairline(h, rows, y)) {
+        draw.paint(row, 0, w, ink);
+        return;
+    }
+    I64 r = grid.cell(h, rows, y);
+    I64 y0 = grid.edge(h, rows, r);
+    I64 y1 = grid.edge(h, rows, r + 1) - 1;
+    for c in 0..cols {
+        I64 x0 = grid.edge(w, cols, c);
+        I64 x1 = grid.edge(w, cols, c + 1) - 1;
+        draw.put(row, x1, ink);
+        tile(y, c, r, x0, y0, x1, y1);
+    }
+}
+
+// v as a little-endian u32 at word i of req.
+void put_word(I64 i, I64 v) {
+    for k in 0..4 {
+        req[4 * i + k] = ((v >> (8 * k)) & 255) as U8;
+    }
+}
+
+// Tile t's inside, [x0, x1) x [y0, y1), t = c + cols * r.
+I64 tile_x0(I64 t) { return grid.edge(w, cols, t % cols); }
+I64 tile_y0(I64 t) { return grid.edge(h, rows, t / cols); }
+I64 tile_x1(I64 t) { return grid.edge(w, cols, t % cols + 1) - 1; }
+I64 tile_y1(I64 t) { return grid.edge(h, rows, t / cols + 1) - 1; }
+
+// The focus frame of tile t drawn again as compose draws it now, the rest of the tile untouched.
+void reframe(I64 t) {
+    I64 x0 = tile_x0(t);
+    I64 x1 = tile_x1(t);
+    I64 y0 = tile_y0(t);
+    I64 y1 = tile_y1(t);
+    for y in y0..y1 {
+        compose(y);
+        if (y < y0 + FOCUS || y >= y1 - FOCUS) {
+            I64 a = tilectl.fb_span(y, x0, row[x0..x1]);
+        } else {
+            I64 a = tilectl.fb_span(y, x0, row[x0..x0 + FOCUS]);
+            I64 b = tilectl.fb_span(y, x1 - FOCUS, row[x1 - FOCUS..x1]);
+        }
+    }
+}
+
+// The client of the focused tile, or -1.
+I64 focused() {
+    I64 k = -1;
+    for i in 0..nprog {
+        if (alive[i] && i == focus) { k = i; }
+    }
+    return k;
+}
+
+void forward(I64 kind, I64 code, I64 value) {
+    I64 k = focused();
+    if (k < 0) { return; }
+    put_word(0, cpid[k]);
+    put_word(1, kind | (code << 16));
+    put_word(2, value & 0xFFFFFFFF);
+    I64 st = tilectl.tile_ctl(FBIO_TILE_INPUT, req);
+    sent = true;
+}
+
+// A key pressed with Super: a move of the focus, or the end of the focused client.
+void chord(I64 code) {
+    I64 c = focus % cols;
+    I64 r = focus / cols;
+    if (code == KEY_LEFT && c > 0) { c = c - 1; }
+    if (code == KEY_RIGHT && c + 1 < cols) { c = c + 1; }
+    if (code == KEY_UP && r > 0) { r = r - 1; }
+    if (code == KEY_DOWN && r + 1 < rows) { r = r + 1; }
+    if (c + cols * r != focus) {
+        I64 old = focus;
+        focus = c + cols * r;
+        reframe(old);
+        reframe(focus);
+        "tiler: focus {c},{r}\n";
+    }
+    I64 k = focused();
+    if (code == KEY_Q && k >= 0) {
+        "tiler: end client {k} in tile {c},{r}\n";
+        I64 st = tilectl.stop(cpid[k], SIGTERM);
+    }
+}
+
+// One event of the device: the tiler's own, or the focused client's.
+void route() {
+    if (dev.ev_read(ev) != 1) { return; }
+    I64 kind = ev[16] as I64 | (ev[17] as I64 << 8);
+    I64 code = ev[18] as I64 | (ev[19] as I64 << 8);
+    I64 value = ev[20] as I64 | (ev[21] as I64 << 8) | (ev[22] as I64 << 16) | (ev[23] as I64 << 24);
+    if (value >= 0x80000000) { value = value - 0x100000000; }
+    if (kind == 1 && (code == keymap.KEY_LEFTSHIFT || code == keymap.KEY_RIGHTSHIFT)) { shift = value != 0; }
+    if (kind == 1 && (code == keymap.KEY_LEFTCTRL || code == keymap.KEY_RIGHTCTRL)) { ctrl = value != 0; }
+    if (kind == 1 && (code == KEY_LEFTMETA || code == KEY_RIGHTMETA)) {
+        meta = value != 0;
+        return;
+    }
+    if (meta && kind == 1) {
+        if (value == 1) { chord(code); }
+        return;
+    }
+    if (master >= 0) {
+        if (kind == 1 && value != 0 && focus == 0) {
+            I64 n = keymap.seq_of(code, shift, ctrl, kb);
+            if (n > 0) { I64 put = ptyctl.pty_write(master, kb[0..n]); }
+        }
+        return;
+    }
+    if (kind == 0) {
+        if (sent) { forward(0, 0, 0); }
+        sent = false;
+        return;
+    }
+    forward(kind, code, value);
+}
+
+// --start: each PROG in its tile; the input routed; until every client has ended.
+void start() {
+    for k in 0..nprog {
+        I64 cx = tile_x0(k) + FOCUS;
+        I64 cy = tile_y0(k) + BAND + 1;
+        I64 cw = tile_x1(k) - FOCUS - cx;
+        I64 ch = tile_y1(k) - FOCUS - cy;
+        put_word(0, cw);
+        put_word(1, ch);
+        put_word(2, cx);
+        put_word(3, cy);
+        I64 st = tilectl.tile_ctl(FBIO_TILE_NEXT, req);
+        if (st < 0) {
+            "tiler: the tile was refused ({st})\n";
+            dev.exit_now(2);
+        }
+        I64 c = k % cols;
+        I64 r = k / cols;
+        "tiler: start client {k} in tile {c},{r} at {cx},{cy} inside {cw}x{ch}\n";
+        if (placing) { place(k, cx, cy, cw, ch); }
+        cpid[k] = tilectl.spawn(progs[poff[k]..poff[k] + plen[k]]);
+        if (cpid[k] < 0) {
+            "tiler: cannot start client {k} ({cpid[k]})\n";
+            dev.exit_now(2);
+        }
+        alive[k] = true;
+        if (placing && k % 3 == 0) {
+            put32(0, cpid[k]);         // the same placement again by the pid: 0, or -ESRCH once the client ended
+            I64 again = tileplace.tile_place(place_arg[0..24 + 16 * (place_arg[14] as I64)]);
+        }
+    }
+    if (placing) {
+        put_word(0, SETTLE);
+        I64 st = tilectl.tile_ctl(FBIO_TILE_SYNC, req);
+        "tiler: settle {st}\n";
+    }
+    I64 live = nprog;
+    while (live > 0) {
+        put_word(0, 0);
+        I64 s = tilectl.tile_ctl(FBIO_TILE_SYNC, req);
+        if (s == 1) {
+            route();
+        } else if (s == 2) {
+            for k in 0..nprog {
+                if (alive[k]) {
+                    I64 ws = tilectl.reap(cpid[k], true);
+                    if (ws != 0 - EAGAIN) {
+                        alive[k] = false;
+                        live = live - 1;
+                        I64 c = k % cols;
+                        I64 r = k / cols;
+                        "tiler: client {k} in tile {c},{r} ended, status {ws}\n";
+                    }
+                }
+            }
+        } else if (s < 0) {
+            "tiler: sync failed ({s})\n";
+            dev.exit_now(2);
+        }
+    }
+}
+
+void put32(I64 at, I64 v) {
+    for k in 0..4 {
+        place_arg[at + k] = ((v >> (8 * k)) & 255) as U8;
+    }
+}
+
+// --place (H-2): client k's window placed before it starts (pid 0, the tile set next), by k % 3: 0 at 2x, its
+// client area showing the surface's top left quarter; 1 at 1x, the area less its bottom right quarter in two
+// rectangles; 2 hidden, no rectangles. tools/check-tiler.py --place composes the screen by the same rule.
+void place(I64 k, I64 cx, I64 cy, I64 cw, I64 ch) {
+    I64 s = 1;
+    I64 n = 0;
+    if (k % 3 == 0) {
+        s = 2;
+        n = 1;
+        put32(24, cx);
+        put32(28, cy);
+        put32(32, cw);
+        put32(36, ch);
+    } else if (k % 3 == 1) {
+        n = 2;
+        put32(24, cx);
+        put32(28, cy);
+        put32(32, cw);
+        put32(36, ch / 2);
+        put32(40, cx);
+        put32(44, cy + ch / 2);
+        put32(48, cw / 2);
+        put32(52, ch - ch / 2);
+    }
+    put32(0, 0);
+    put32(4, cx);
+    put32(8, cy);
+    place_arg[12] = s as U8;
+    place_arg[13] = 0;
+    place_arg[14] = n as U8;
+    place_arg[15] = 0;
+    I64 st = tileplace.tile_place(place_arg[0..24 + 16 * n]);
+    if (st < 0) {
+        "tiler: the placement was refused ({st})\n";
+        dev.exit_now(2);
+    }
+    "tiler: place client {k} at {cx},{cy} scale {s} rects {n}\n";
+}
+
+// The client area of tile t: x, y, w, h into `req` for FBIO_TILE_NEXT; at most the screen's w x h (RES-1, as the
+// kernel's FBIO_TILE_WANT; HX-0's cap was 1920 x 1080), centered in a larger area.
+void client_area(I64 t) {
+    I64 cx = tile_x0(t) + FOCUS;
+    I64 cy = tile_y0(t) + BAND + 1;
+    I64 cw = tile_x1(t) - FOCUS - cx;
+    I64 ch = tile_y1(t) - FOCUS - cy;
+    if (cw > w) { cx = cx + (cw - w) / 2; cw = w; }
+    if (ch > h) { cy = cy + (ch - h) / 2; ch = h; }
+    put_word(0, cw);
+    put_word(1, ch);
+    put_word(2, cx);
+    put_word(3, cy);
+}
+
+I64 req_word(I64 i) {
+    return req[4 * i] as I64 | (req[4 * i + 1] as I64 << 8) | (req[4 * i + 2] as I64 << 16) | (req[4 * i + 3] as I64 << 24);
+}
+
+// The terminal's rows that changed, drawn.
+void draw_term() {
+    I64 n = mtext.cell_w(1) * terms.width(0);
+    for r in 0..terms.height(0) {
+        if (terms.is_dirty(0, r)) {
+            for y in mtext.cell_h(1) * r..mtext.cell_h(1) * (r + 1) {
+                terms.draw_row(0, row, y, 1);
+                I64 a = tilectl.fb_span(ty0 + y, tx0, row[0..n]);
+            }
+            terms.clean(0, r);
+        }
+    }
+}
+
+// Tile 1 for the next process that opens /dev/fb0, centered in its client area: doom's frame at 1x when that fits
+// (HX-4: the surface stays 320 x 200 at any screen size; stage H's kernel scaling enlarges it); said the first time.
+void offer(Bool say) {
+    client_area(1);
+    I64 k = 1;
+    if (req_word(0) >= k * OFFER_W && req_word(1) >= k * OFFER_H) {
+        I64 ox = req_word(2) + (req_word(0) - k * OFFER_W) / 2;
+        I64 oy = req_word(3) + (req_word(1) - k * OFFER_H) / 2;
+        put_word(0, k * OFFER_W);
+        put_word(1, k * OFFER_H);
+        put_word(2, ox);
+        put_word(3, oy);
+    }
+    I64 st = tilectl.tile_ctl(FBIO_TILE_NEXT, req);
+    I64 x = req_word(2);
+    I64 y = req_word(3);
+    I64 cw = req_word(0);
+    I64 ch = req_word(1);
+    if (say || st < 0) { "tiler: desk tile 1 at {x},{y} inside {cw}x{ch} for the next client ({st})\n"; }
+}
+
+// --desk: the shell on a pty in tile 0,0, tile 1 offered; until the shell ends. Each wake does one thing: route
+// one event, read one write of the master and draw the rows it changed, or take one end; so the tiler's work, and
+// its state, never depend on how the shell's output was timed.
+void desk() {
+    client_area(0);
+    tx0 = req_word(2);
+    ty0 = req_word(3);
+    I64 tc = req_word(0) / mtext.cell_w(1);
+    I64 tr = req_word(1) / mtext.cell_h(1);
+    if (tc > terms.MAX_COLS) { tc = terms.MAX_COLS; }
+    if (tr > terms.MAX_ROWS) { tr = terms.MAX_ROWS; }
+    terms.init(0, tc, tr);
+    master = ptyctl.pty_open(tc, tr);
+    if (master < 0) {
+        "tiler: no pty ({master})\n";
+        dev.exit_now(2);
+    }
+    "tiler: desk terminal {tc}x{tr} in tile 0,0 at {tx0},{ty0}\n";
+    draw_term();
+    I64 shell = ptyctl.pty_spawn(b"/sh", b"PATH=/bin\x00EDITOR=/bin/ced\x00VISUAL=/bin/ced\x00", master);   // ced is the editor (E-6); one /bin (BU-2c)
+    if (shell < 0) {
+        "tiler: cannot start the shell ({shell})\n";
+        dev.exit_now(2);
+    }
+    offer(true);
+    sha256.Sha256[1] tsum;   // every byte the master gave
+    sha256.sha_init(tsum);
+    I64 ws = 0 - EAGAIN;
+    while (ws == 0 - EAGAIN) {
+        put_word(0, 0);
+        I64 s = tilectl.tile_ctl(FBIO_TILE_SYNC, req);
+        if (s == 1) {
+            route();
+        } else if (s == 3) {
+            I64 got = ptyctl.pty_read(master, obuf);
+            if (got > 0 && tbytes == 0) { "tiler: desk shell first output\n"; }   // the prompt: keys may follow (W-4b)
+            if (got > 0) {
+                sha256.sha_update(tsum, obuf, 0, got);
+                tbytes = tbytes + got;
+            }
+            for i in 0..got { terms.feed(0, obuf[i]); }
+            draw_term();
+        } else if (s == 2) {
+            ws = tilectl.reap(shell, true);
+            if (ws == 0 - EAGAIN) { offer(false); }
+        } else if (s < 0) {
+            "tiler: sync failed ({s})\n";
+            dev.exit_now(2);
+        }
+    }
+    "tiler: desk shell ended, status {ws}\n";
+    sha256.sha_final(tsum, digest);
+    "tiler: term bytes {tbytes} sha256 ";
+    for i in 0..32 { "{digest[i]:02x}"; }
+    "\n";
+    for r in 0..terms.height(0) {
+        I64 n = terms.text_of(0, r, tline);
+        "tiler: term {r:02} |";
+        I64 put = ptyctl.pty_write(1, tline[0..n]);
+        "|\n";
+    }
+}
+
+// --term-only: standard input, to its end, into the terminal; its rows and cursor.
+void term_only() {
+    terms.init(0, TERM_COLS, TERM_ROWS);
+    I64 got = ptyctl.pty_read(0, obuf);
+    while (got > 0) {
+        for i in 0..got { terms.feed(0, obuf[i]); }
+        got = ptyctl.pty_read(0, obuf);
+    }
+    for r in 0..TERM_ROWS {
+        I64 n = terms.text_of(0, r, tline);
+        "tiler: term {r:02} |";
+        I64 put = ptyctl.pty_write(1, tline[0..n]);
+        "|\n";
+    }
+    I64 x = terms.cursor_x(0);
+    I64 y = terms.cursor_y(0);
+    "tiler: cursor {x},{y} ";
+    if (terms.cursor_shown(0)) { "shown\n"; } else { "hidden\n"; }
+}
+
+void main(in U8[_] args) {
+    cols = 2;
+    rows = 2;
+    mode = TILES;
+    I64 k = 0;
+    Bool to_file = false;
+    I64 n = arg(args, k);
+    while (n >= 0) {
+        if (is(n, b"--cols")) {
+            cols = cells(args, k + 1);
+            k = k + 1;
+        } else if (is(n, b"--rows")) {
+            rows = cells(args, k + 1);
+            k = k + 1;
+        } else if (is(n, b"--mark-only") && mode == TILES) {
+            mode = MARK_ONLY;
+        } else if (is(n, b"--face-only") && mode == TILES) {
+            mode = FACE_ONLY;
+        } else if (is(n, b"--term-only") && mode == TILES) {
+            mode = TERM_ONLY;
+        } else if (is(n, b"--start") && nprog < CLIENTS && !to_file && mode != DESK) {
+            I64 p = arg(args, k + 1);
+            I64 at = 0;
+            if (nprog > 0) { at = poff[nprog - 1] + plen[nprog - 1]; }
+            if (p < 1 || at + p > len(progs)) { usage(); }
+            for i in 0..p { progs[at + i] = word[i]; }
+            poff[nprog] = at;
+            plen[nprog] = p;
+            nprog = nprog + 1;
+            k = k + 1;
+        } else if (is(n, b"--place") && mode == TILES && !to_file) {
+            placing = true;
+        } else if (is(n, b"--desk") && mode == TILES && nprog == 0 && !to_file) {
+            mode = DESK;
+        } else if (is(n, b"--surface-out") && !to_file && nprog == 0 && mode != DESK) {
+            I64 p = arg(args, k + 1);
+            if (p < 1) { usage(); }
+            I64 st = outfile.out_open(word[0..p]);
+            if (st < 0) {
+                "tiler: cannot write the surface file ({st})\n";
+                dev.exit_now(2);
+            }
+            to_file = true;
+            k = k + 1;
+        } else {
+            usage();
+        }
+        k = k + 1;
+        n = arg(args, k);
+    }
+
+    w = 640;
+    h = 480;
+    I64 stride = 2560;
+    Bool to_fb = !to_file && dev.fb_open() == 0;
+    if (to_fb) {
+        w = dev.fb_word(0) as I64;
+        h = dev.fb_word(1) as I64;
+        stride = dev.fb_word(2) as I64;
+    }
+    if (to_file) { stride = 4 * w; }
+    if (mode == DESK && (!to_fb || cols * rows < 2)) { usage(); }
+    if (placing && nprog == 0) { usage(); }
+    if (nprog > 0 || mode == DESK) {
+        if (!to_fb || (mode != TILES && mode != DESK) || nprog > cols * rows) { usage(); }
+        I64 st = tilectl.tile_ctl(FBIO_TILER, req);
+        if (st < 0) {
+            "tiler: the screen is taken ({st})\n";
+            dev.exit_now(2);
+        }
+    }
+    if (w > MAX_W || w / cols < MIN_CELL_W || h / rows < MIN_CELL_H) {
+        "tiler: a surface of {w}x{h} in {cols}x{rows} cells cannot be drawn (at most {MAX_W} wide, cells of at least {MIN_CELL_W}x{MIN_CELL_H})\n";
+        dev.exit_now(2);
+    }
+    if (mode == TILES || mode == DESK) {
+        for r in 0..rows {
+            for c in 0..cols {
+                I64 x0 = grid.edge(w, cols, c);
+                I64 y0 = grid.edge(h, rows, r);
+                I64 tw = grid.edge(w, cols, c + 1) - 1 - x0;
+                I64 th = grid.edge(h, rows, r + 1) - 1 - y0;
+                "tiler: tile {c},{r} at {x0},{y0} inside {tw}x{th}\n";
+            }
+        }
+    }
+    if (mode == TERM_ONLY) { term_only(); }
+    if (mode == FACE_ONLY) {
+        for c in 32..127 {
+            "tiler: face {c:02x} ";
+            for y in 0..face.H { "{face.row(c, y):02x}"; }
+            "\n";
+        }
+    }
+
+    sha256.Sha256[1] state;
+    sha256.sha_init(state);
+    for y in 0..h {
+        compose(y);
+        for x in 0..w {
+            U32 c = row[x];
+            bytes[4 * x] = (c & 255) as U8;
+            bytes[4 * x + 1] = ((c >> 8) & 255) as U8;
+            bytes[4 * x + 2] = ((c >> 16) & 255) as U8;
+            bytes[4 * x + 3] = 0;
+        }
+        sha256.sha_update(state, bytes, 0, 4 * w);
+        if (to_file) {
+            I64 put = outfile.out_put(bytes[0..4 * w]);
+            if (put != 4 * w) {
+                "tiler: the surface file took {put} of {4 * w} bytes at row {y}\n";
+                dev.exit_now(2);
+            }
+        }
+        if (to_fb) { dev.fb_row(y, bytes[0..4 * w]); }
+    }
+    sha256.sha_final(state, digest);
+    "tiler: surface {w}x{h} stride {stride} sha256 ";
+    for i in 0..32 { "{digest[i]:02x}"; }
+    "\n";
+    if (nprog > 0) { start(); }
+    if (mode == DESK) { desk(); }
+}
+// SPDX-License-Identifier: Apache-2.0

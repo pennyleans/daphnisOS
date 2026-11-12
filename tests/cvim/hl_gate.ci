@@ -1,0 +1,96 @@
+// tests/cvim/hl_gate.ci: hl.ci's tokens against the vendored scan.ci's (CV-6, spec section 7), built by
+// tests/cvim/hl_gate.py in a root of its own (scan.ci imports `limits` from its root). For each packed file that
+// scan.ci accepts: the tokens hl.ci gives line by line, comments left out, must be scan.ci's, kind, start and
+// length, in order. One line a file: `F i skip`, `F i ok N`, or `F i bad K want KIND START LEN got KIND START LEN`.
+import console;
+import fs;
+import scan;
+import user.ci.cvim.hl;
+requires fs.read("/case");
+
+I64 num(in U8[_] a, I64 p) {
+    I64 v = 0;
+    for i in 0..8 { v = v * 256 + (a[p + 7 - i] as I64); }
+    return v;
+}
+
+export void main(Grants g) {
+    U8[16777216] all;
+    U8[1048576] src;
+    I64[196608] want_t;            // scan.ci's tokens: kind, start, length (gate_tokens, added by hl_gate.py)
+    I64[16385] sp;
+    I64[262144] mine;              // hl.ci's non-comment tokens: kind, start, length
+    I64 n = fs.stat(g, "/case/all") catch -1;
+    assert(n >= 8 && n <= len(all));
+    I64 got = fs.read(g, "/case/all", 0, all[0..n]) catch -1;
+    assert(got == n);
+    I64 p = 8;
+    for f in 0..num(all, 0) {
+        I64 fl = num(all, p);
+        p += 8;
+        if (fl > len(src)) {
+            "F {f} skip\n";
+            p += fl;
+            continue;
+        }
+        for i in 0..fl { src[i] = all[p + i]; }
+        p += fl;
+        I64 want = scan.gate_tokens(src[0..fl], want_t);
+        if (want < 0) {
+            "F {f} skip\n";
+            continue;
+        }
+        I64 m = 0;
+        I64 st = 0;
+        I64 ls = 0;
+        while (ls <= fl) {
+            I64 le = ls;
+            while (le < fl && src[le] != 10) { le += 1; }
+            if (ls == fl) { break; }
+            st = hl.line(src[ls..le], hl.LANG_CINT, st, sp);
+            for k in 0..hl.n_spans(sp) {
+                if (hl.span_kind(sp, k) != hl.K_COMMENT && m < 87381) {
+                    mine[3 * m] = hl.span_kind(sp, k);
+                    mine[3 * m + 1] = ls + hl.span_start(sp, k);
+                    mine[3 * m + 2] = hl.span_len(sp, k);
+                    m += 1;
+                }
+            }
+            ls = le + 1;
+        }
+        Bool same = true;
+        I64 bad = -1;
+        for k in 0..max(want, m) {
+            if (same) {
+                Bool eq = k < want && k < m && want_t[3 * k] == mine[3 * k] && want_t[3 * k + 1] == mine[3 * k + 1] &&
+                          want_t[3 * k + 2] == mine[3 * k + 2];
+                if (!eq) {
+                    same = false;
+                    bad = k;
+                }
+            }
+        }
+        if (same) {
+            "F {f} ok {want}\n";
+        } else {
+            I64 wk = -1;
+            I64 ws = -1;
+            I64 wl = -1;
+            if (bad < want) {
+                wk = want_t[3 * bad];
+                ws = want_t[3 * bad + 1];
+                wl = want_t[3 * bad + 2];
+            }
+            I64 gk = -1;
+            I64 gs = -1;
+            I64 gl = -1;
+            if (bad < m) {
+                gk = mine[3 * bad];
+                gs = mine[3 * bad + 1];
+                gl = mine[3 * bad + 2];
+            }
+            "F {f} bad {bad} want {wk} {ws} {wl} got {gk} {gs} {gl}\n";
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

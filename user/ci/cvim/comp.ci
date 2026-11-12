@@ -1,0 +1,592 @@
+// user/ci/cvim/comp.ci: cvim's completion (CV-7, docs/specs/2026-11-07-cv-cvim.md section 8; CV-R4 A; CV-R6 A).
+//
+// In Insert mode the menu opens by itself once the word before the cursor holds two identifier characters and some
+// name goes on from it; Ctrl+Space and Ctrl+N open it at once. Down and Ctrl+N, Up and Ctrl+P move the choice; Tab
+// and Enter take it (the word becomes the name, as typed keys, so undo and . see typing); Esc closes the menu and
+// stays in Insert mode; any other key goes to the editor and the menu follows the new word, closing when nothing
+// matches or the key is not part of a word.
+//
+// Sources, in order: the cint keywords and builtins (scan.ci's words, a .ci file only); the declarations of the
+// current file (functions, structs, enums, types, consts, imports; a .ci file only); the names the program adds
+// (add_name: each imported module's exports, read from its file and found by export_names, and the words of the other
+// open buffers); the words of the current buffer. Within 2,000 lines of the cursor for the last two, so a keystroke
+// stays inside the step budget. Ranking: a prefix before a substring, then the source's order, then shorter, then by
+// bytes. Nothing is learned and nothing leaves the machine.
+//
+// The menu is terminal cells under the word (above it at the screen's foot): at most 7 rows of 38 cells, the name,
+// its kind (FN, CONST, TYPE, KEY, WORD) and its source, in the S1 sheet's cells-only form (provisional). Pure: every
+// table is the caller's ct (TABLE words).
+import user.ced.keys;
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.key;
+import user.ci.cvim.hl;
+import user.ci.cvim.view;
+
+export const I64 TABLE = 217088;
+
+export const I64 NOT_MINE = 0;
+export const I64 TAKEN = 1;
+
+export const I64 KIND_FN = 1;
+export const I64 KIND_CONST = 2;
+export const I64 KIND_TYPE = 3;
+export const I64 KIND_KEY = 4;
+export const I64 KIND_WORD = 5;
+
+export const I64 SRC_CINT = 0;
+export const I64 SRC_FILE = 1;
+export const I64 SRC_BUFFER = 2;
+export const I64 SRC_MODULE = 3;           // 3 + k: the k-th label the program gave (a module's name)
+
+export const I64 K_CTRL_SPACE = 67108896;  // keys.M_CTRL + ' ': cvim.ci reads a NUL byte as Ctrl+Space
+
+const I64 C_OPEN = 0;
+const I64 C_SEL = 1;
+const I64 C_N = 2;
+const I64 C_WSTART = 3;
+const I64 C_WLEN = 4;
+const I64 C_TOP = 5;
+const I64 C_XN = 6;                       // the program's names
+const I64 C_XB = 7;
+const I64 C_PB = 8;                       // the candidates' bytes used
+const I64 C_LANG = 9;
+const I64 C_BUSY = 10;                    // taking a name: its keys do not refilter
+const I64 C_NLABELS = 11;
+const I64 IT0 = 64;                       // candidates: pool offset, length, kind, source, rank
+const I64 IW = 5;
+export const I64 ITEMS = 256;
+const I64 PL0 = 1344;
+const I64 PL_MAX = 65536;
+const I64 XN0 = 66880;                    // the program's names: offset, length, kind, source
+const I64 XN_MAX = 4096;
+const I64 XB0 = 83264;
+const I64 XB_MAX = 131072;
+const I64 LB0 = 214336;                   // labels: 32 a label, the first its length
+const I64 LABELS = 64;
+export const I64 ROWS = 7;
+export const I64 WIDTH = 38;
+const I64 NEAR = 2000;
+
+export void init(inout I64[_] ct, I64 lang) {
+    for i in 0..IT0 { ct[i] = 0; }
+    ct[C_LANG] = lang;
+}
+
+export Bool is_open(in I64[_] ct) { return ct[C_OPEN] != 0; }
+export I64 n_items(in I64[_] ct) { return ct[C_N]; }
+export I64 chosen(in I64[_] ct) { return ct[C_SEL]; }
+
+// Candidate i's name into dst; its length.
+export I64 item(in I64[_] ct, I64 i, inout U8[_] dst) {
+    I64 o = IT0 + IW * i;
+    I64 n = min(ct[o + 1], len(dst));
+    for k in 0..n { dst[k] = ct[PL0 + ct[o] + k] as U8; }
+    return n;
+}
+
+export I64 item_kind(in I64[_] ct, I64 i) { return ct[IT0 + IW * i + 2]; }
+
+// --- the program's names ---
+
+// A label for the names of one module (its last name part); its source number.
+export I64 add_label(inout I64[_] ct, in U8[_] s) {
+    I64 k = ct[C_NLABELS];
+    if (k >= LABELS) { return SRC_MODULE + LABELS - 1; }
+    I64 n = min(len(s), 31);
+    ct[LB0 + 32 * k] = n;
+    for i in 0..n { ct[LB0 + 32 * k + 1 + i] = s[i] as I64; }
+    ct[C_NLABELS] = k + 1;
+    return SRC_MODULE + k;
+}
+
+// The program's names forgotten (a new buffer).
+export void clear_names(inout I64[_] ct) {
+    ct[C_XN] = 0;
+    ct[C_XB] = 0;
+    ct[C_NLABELS] = 0;
+}
+
+// One name from the program: an export of a module (src from add_label) or a word of another buffer (SRC_BUFFER).
+export void add_name(inout I64[_] ct, in U8[_] s, I64 kind, I64 src) {
+    I64 k = ct[C_XN];
+    I64 b = ct[C_XB];
+    if (k >= XN_MAX || b + len(s) > XB_MAX || len(s) == 0) { return; }
+    for i in 0..k {
+        if (ct[XN0 + 4 * i + 1] == len(s)) {
+            Bool same = true;
+            for j in 0..len(s) {
+                if (ct[XB0 + ct[XN0 + 4 * i] + j] != s[j] as I64) { same = false; }
+            }
+            if (same) { return; }
+        }
+    }
+    ct[XN0 + 4 * k] = b;
+    ct[XN0 + 4 * k + 1] = len(s);
+    ct[XN0 + 4 * k + 2] = kind;
+    ct[XN0 + 4 * k + 3] = src;
+    for i in 0..len(s) { ct[XB0 + b + i] = s[i] as I64; }
+    ct[C_XN] = k + 1;
+    ct[C_XB] = b + len(s);
+}
+
+// --- names in cint text (hl.ci's tokens, no parser) ---
+
+// The tokens of a line: ident and keyword spans with their bytes, for the patterns below.
+Bool tok_is(in U8[_] s, in I64[_] sp, I64 k, in U8[_] w) {
+    if (k >= hl.n_spans(sp)) { return false; }
+    I64 a = hl.span_start(sp, k);
+    I64 n = hl.span_len(sp, k);
+    if (n != len(w)) { return false; }
+    for i in 0..n {
+        if (s[a + i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+Bool tok_kind(in I64[_] sp, I64 k, I64 kind) { return k < hl.n_spans(sp) && hl.span_kind(sp, k) == kind; }
+
+// The declared name of a cint line s (its spans sp), skipping comments: [start, length] into res and its kind, or 0.
+// With exported: only `export` lines, the export taken off. struct, enum, type, distinct: TYPE; const: CONST (the
+// name before =); a name before ( or [ then (: FN; import a.b.c: c, a WORD.
+I64 decl(in U8[_] s, in I64[_] sp, Bool exported, inout I64[2] res) {
+    I64 k = 0;
+    while (k < hl.n_spans(sp) && hl.span_kind(sp, k) == hl.K_COMMENT) { k += 1; }
+    if (k >= hl.n_spans(sp)) { return 0; }
+    if (hl.span_start(sp, k) != 0 && !exported) { return 0; }       // a declaration starts its line
+    Bool ex = tok_is(s, sp, k, b"export");
+    if (exported && !ex) { return 0; }
+    if (ex) { k += 1; }
+    if (tok_is(s, sp, k, b"import") && !exported) {
+        I64 last = -1;
+        I64 j = k + 1;
+        while (j < hl.n_spans(sp) && !tok_is(s, sp, j, b";")) {
+            if (tok_kind(sp, j, hl.K_IDENT)) { last = j; }
+            j += 1;
+        }
+        if (last < 0) { return 0; }
+        res[0] = hl.span_start(sp, last);
+        res[1] = hl.span_len(sp, last);
+        return KIND_WORD;
+    }
+    if (tok_is(s, sp, k, b"struct") || tok_is(s, sp, k, b"enum") || tok_is(s, sp, k, b"type") ||
+        tok_is(s, sp, k, b"distinct")) {
+        if (!tok_kind(sp, k + 1, hl.K_IDENT)) { return 0; }
+        res[0] = hl.span_start(sp, k + 1);
+        res[1] = hl.span_len(sp, k + 1);
+        return KIND_TYPE;
+    }
+    if (tok_is(s, sp, k, b"const")) {
+        I64 last = -1;
+        I64 j = k + 1;
+        while (j < hl.n_spans(sp) && !tok_is(s, sp, j, b"=") && !tok_is(s, sp, j, b";")) {
+            if (tok_kind(sp, j, hl.K_IDENT)) { last = j; }
+            j += 1;
+        }
+        if (last < 0) { return 0; }
+        res[0] = hl.span_start(sp, last);
+        res[1] = hl.span_len(sp, last);
+        return KIND_CONST;
+    }
+    I64 j = k;
+    while (j + 1 < hl.n_spans(sp)) {
+        if (tok_kind(sp, j, hl.K_IDENT) && (tok_is(s, sp, j + 1, b"(") || tok_is(s, sp, j + 1, b"["))) {
+            if (tok_is(s, sp, j + 1, b"(") || has_paren_after(s, sp, j + 1)) {
+                res[0] = hl.span_start(sp, j);
+                res[1] = hl.span_len(sp, j);
+                return KIND_FN;
+            }
+        }
+        if (tok_is(s, sp, j, b"=") || tok_is(s, sp, j, b";")) { return 0; }
+        j += 1;
+    }
+    return 0;
+}
+
+// [ ... ] then ( : a generic function's size parameters.
+Bool has_paren_after(in U8[_] s, in I64[_] sp, I64 k0) {
+    I64 k = k0;
+    while (k < hl.n_spans(sp) && !tok_is(s, sp, k, b"]")) { k += 1; }
+    return tok_is(s, sp, k + 1, b"(");
+}
+
+// The exported names of a cint module's text m, each added under src (add_label's): the program reads the file.
+export void export_names(inout I64[_] ct, in U8[_] m, I64 src) {
+    I64[16385] sp;
+    I64[2] res;
+    I64 st = 0;
+    I64 ls = 0;
+    while (ls < len(m)) {
+        I64 le = ls;
+        while (le < len(m) && m[le] != 10) { le += 1; }
+        if (le - ls <= 65536) {
+            st = hl.line(m[ls..le], hl.LANG_CINT, st, sp);
+            I64 kind = decl(m[ls..le], sp, true, res);
+            if (kind != 0) { add_name(ct, m[ls + res[0]..ls + res[0] + res[1]], kind, src); }
+        }
+        ls = le + 1;
+    }
+}
+
+// The module paths a cint text imports, `a.b.c` as `a/b/c.ci`, into dst (NUL after each); how many.
+export I64 imports(in U8[_] m, inout U8[_] dst, inout I64[1] used) {
+    I64[16385] sp;
+    I64 st = 0;
+    I64 ls = 0;
+    I64 n = 0;
+    I64 at = 0;
+    while (ls < len(m)) {
+        I64 le = ls;
+        while (le < len(m) && m[le] != 10) { le += 1; }
+        if (le - ls <= 65536) {
+            st = hl.line(m[ls..le], hl.LANG_CINT, st, sp);
+            if (tok_is(m[ls..le], sp, 0, b"import") && hl.span_start(sp, 0) == 0) {
+                I64 j = 1;
+                while (j < hl.n_spans(sp) && !tok_is(m[ls..le], sp, j, b";")) {
+                    I64 a = ls + hl.span_start(sp, j);
+                    I64 l = hl.span_len(sp, j);
+                    if (at + l + 5 < len(dst)) {
+                        if (tok_kind(sp, j, hl.K_IDENT)) {
+                            for q in 0..l { dst[at + q] = m[a + q]; }
+                            at += l;
+                        } else if (tok_is(m[ls..le], sp, j, b".")) {
+                            dst[at] = '/';
+                            at += 1;
+                        }
+                    }
+                    j += 1;
+                }
+                if (at + 4 < len(dst)) {
+                    dst[at] = '.';
+                    dst[at + 1] = 'c';
+                    dst[at + 2] = 'i';
+                    dst[at + 3] = 0;
+                    at += 4;
+                    n += 1;
+                }
+            }
+        }
+        ls = le + 1;
+    }
+    used[0] = at;
+    return n;
+}
+
+// --- the candidates ---
+
+Bool idc(I64 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'; }
+
+// The word before the cursor: its start into ct; its length.
+I64 word_before(inout I64[_] ct, in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    I64 p = r[state.R_CUR];
+    I64 ls = text.lstart(x, orig, add, text.lineof(x, orig, add, p));
+    I64 a = p;
+    while (a > ls && idc(text.ch(x, orig, add, a - 1) as I64)) { a -= 1; }
+    ct[C_WSTART] = a;
+    ct[C_WLEN] = p - a;
+    return p - a;
+}
+
+// How w (the typed word) goes with name s: 0 a prefix (and longer), 1 inside it, -1 neither.
+I64 rank_of(in I64[_] ct, I64 wa, I64 wn, in U8[_] s) {
+    if (len(s) <= wn) { return -1; }
+    Bool pre = true;
+    for i in 0..wn {
+        if (s[i] as I64 != ct[PL0 + PL_MAX - 256 + i]) { pre = false; }
+    }
+    if (pre) { return 0; }
+    for st in 1..len(s) - wn + 1 {
+        Bool here = true;
+        for i in 0..wn {
+            if (here && s[st + i] as I64 != ct[PL0 + PL_MAX - 256 + i]) { here = false; }
+        }
+        if (here) { return 1; }
+    }
+    return -1;
+}
+
+// Name s offered from source src as kind, when it goes with the word and is not there yet.
+void offer(inout I64[_] ct, in U8[_] s, I64 kind, I64 src) {
+    I64 wn = ct[C_WLEN];
+    I64 rk = rank_of(ct, 0, wn, s);
+    if (rk < 0) { return; }
+    I64 n = ct[C_N];
+    for i in 0..n {
+        I64 o = IT0 + IW * i;
+        if (ct[o + 1] == len(s)) {
+            Bool same = true;
+            for j in 0..len(s) {
+                if (ct[PL0 + ct[o] + j] != s[j] as I64) { same = false; }
+            }
+            if (same) { return; }
+        }
+    }
+    if (n >= ITEMS || ct[C_PB] + len(s) > PL_MAX - 256) { return; }
+    I64 o = IT0 + IW * n;
+    ct[o] = ct[C_PB];
+    ct[o + 1] = len(s);
+    ct[o + 2] = kind;
+    ct[o + 3] = src;
+    ct[o + 4] = rk;
+    for j in 0..len(s) { ct[PL0 + ct[C_PB] + j] = s[j] as I64; }
+    ct[C_PB] += len(s);
+    ct[C_N] = n + 1;
+}
+
+// Whether candidate a goes before b: prefix before substring, the source's order, shorter, by bytes.
+Bool before(in I64[_] ct, I64 a, I64 b) {
+    I64 oa = IT0 + IW * a;
+    I64 ob = IT0 + IW * b;
+    if (ct[oa + 4] != ct[ob + 4]) { return ct[oa + 4] < ct[ob + 4]; }
+    I64 sa = min(ct[oa + 3], SRC_MODULE);
+    I64 sb = min(ct[ob + 3], SRC_MODULE);
+    I64 ra = 0;
+    if (sa == SRC_FILE) { ra = 1; } else if (sa == SRC_MODULE) { ra = 2; } else if (sa == SRC_BUFFER) { ra = 3; }
+    I64 rb = 0;
+    if (sb == SRC_FILE) { rb = 1; } else if (sb == SRC_MODULE) { rb = 2; } else if (sb == SRC_BUFFER) { rb = 3; }
+    if (ra != rb) { return ra < rb; }
+    if (ct[oa + 1] != ct[ob + 1]) { return ct[oa + 1] < ct[ob + 1]; }
+    for i in 0..ct[oa + 1] {
+        I64 ca = ct[PL0 + ct[oa] + i];
+        I64 cb = ct[PL0 + ct[ob] + i];
+        if (ca != cb) { return ca < cb; }
+    }
+    return false;
+}
+
+void swap_items(inout I64[_] ct, I64 a, I64 b) {
+    for w in 0..IW {
+        I64 t = ct[IT0 + IW * a + w];
+        ct[IT0 + IW * a + w] = ct[IT0 + IW * b + w];
+        ct[IT0 + IW * b + w] = t;
+    }
+}
+
+void offer_list(inout I64[_] ct, in U8[_] names, I64 kind) {
+    I64 a = 0;
+    while (a < len(names)) {
+        I64 e = a;
+        while (e < len(names) && names[e] != ' ') { e += 1; }
+        if (e > a) { offer(ct, names[a..e], kind, SRC_CINT); }
+        a = e + 1;
+    }
+}
+
+// The candidates for the word before the cursor, collected and ranked; how many.
+I64 collect(inout I64[_] ct, in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    ct[C_N] = 0;
+    ct[C_PB] = 0;
+    ct[C_SEL] = 0;
+    ct[C_TOP] = 0;
+    I64 wn = ct[C_WLEN];
+    if (wn == 0 || wn > 255) { return 0; }
+    for i in 0..wn { ct[PL0 + PL_MAX - 256 + i] = text.ch(x, orig, add, ct[C_WSTART] + i) as I64; }
+    Bool cint = ct[C_LANG] == hl.LANG_CINT;
+    if (cint) {
+        offer_list(ct, b"as assert break by case catch const continue default defer distinct do else enum errdefer error expect_fault export extern fallthrough false for if import in in_place inout kernel out over profile reduce requires return schedule secret static_assert struct switch test true try type var void where while", KIND_KEY);
+        offer_list(ct, b"len min max sum count dot copy transpose fold_checked sum_wrap sum_sat", KIND_FN);
+        offer_list(ct, b"I8 I16 I32 I64 I128 I256 I512 I1024 U8 U16 U32 U64 U128 U256 U512 Bool Str Arena Pool Handle Grants", KIND_TYPE);
+    }
+    I64 cl = text.lineof(x, orig, add, r[state.R_CUR]);
+    I64 nl = text.nlines(x);
+    I64 l0 = max(cl - NEAR, 0);
+    I64 l1 = min(cl + NEAR, nl - 1);
+    U8[65536] lb;
+    I64[16385] sp;
+    I64[2] res;
+    if (cint) {
+        I64 st = 0;
+        for l in l0..l1 + 1 {
+            I64 s = text.lstart(x, orig, add, l);
+            I64 e = text.lend(x, orig, add, l);
+            if (e - s <= len(lb)) {
+                if (e > s) { buf.copy_out(x, orig, add, s, lb[0..e - s]); }
+                st = hl.line(lb[0..e - s], hl.LANG_CINT, st, sp);
+                I64 kind = decl(lb[0..e - s], sp, false, res);
+                if (kind != 0) { offer(ct, lb[res[0]..res[0] + res[1]], kind, SRC_FILE); }
+            }
+        }
+    }
+    for i in 0..ct[C_XN] {
+        U8[256] nm;
+        I64 n = min(ct[XN0 + 4 * i + 1], 256);
+        for j in 0..n { nm[j] = ct[XB0 + ct[XN0 + 4 * i] + j] as U8; }
+        offer(ct, nm[0..n], ct[XN0 + 4 * i + 2], ct[XN0 + 4 * i + 3]);
+    }
+    // the words of this buffer near the cursor, the typed word itself left out
+    for l in l0..l1 + 1 {
+        I64 s = text.lstart(x, orig, add, l);
+        I64 e = text.lend(x, orig, add, l);
+        if (e - s <= len(lb)) {
+            if (e > s) { buf.copy_out(x, orig, add, s, lb[0..e - s]); }
+            I64 i = 0;
+            while (i < e - s) {
+                if (idc(lb[i] as I64) && !(lb[i] >= '0' && lb[i] <= '9')) {
+                    I64 j = i;
+                    while (j < e - s && idc(lb[j] as I64)) { j += 1; }
+                    if (!(s + i == ct[C_WSTART])) { offer(ct, lb[i..j], KIND_WORD, SRC_BUFFER); }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+    // rank: an insertion sort of at most ITEMS
+    I64 n = ct[C_N];
+    for i in 1..n {
+        I64 j = i;
+        while (j > 0 && before(ct, j, j - 1)) {
+            swap_items(ct, j, j - 1);
+            j -= 1;
+        }
+    }
+    return n;
+}
+
+void close(inout I64[_] ct) {
+    ct[C_OPEN] = 0;
+    ct[C_N] = 0;
+}
+
+// The menu for the word before the cursor (force: open whatever the word's length).
+void refilter(inout I64[_] ct, in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, Bool force) {
+    I64 wn = word_before(ct, r, x, orig, add);
+    if (wn < 2 && !(force && wn >= 1) && !(ct[C_OPEN] != 0 && wn >= 1)) {
+        close(ct);
+        return;
+    }
+    if (collect(ct, r, x, orig, add) > 0) { ct[C_OPEN] = 1; } else { close(ct); }
+}
+
+// --- keys ---
+
+// A key before the editor sees it: the menu's when open (or a key that opens it); TAKEN, or NOT_MINE.
+export I64 feed(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                inout I64[_] ct, I64 k) {
+    if (r[state.R_MODE] != state.MODE_INSERT) {
+        close(ct);
+        return NOT_MINE;
+    }
+    if (ct[C_OPEN] == 0) {
+        if (k == K_CTRL_SPACE || k == keys.M_CTRL + 'n') {
+            refilter(ct, r, x, orig, add, true);
+            if (ct[C_OPEN] == 0) { r[state.R_BELL] = 1; }
+            return TAKEN;
+        }
+        return NOT_MINE;
+    }
+    I64 n = ct[C_N];
+    if (k == keys.K_DOWN || k == keys.M_CTRL + 'n') {
+        ct[C_SEL] = (ct[C_SEL] + 1) % n;
+        follow(ct);
+        return TAKEN;
+    }
+    if (k == keys.K_UP || k == keys.M_CTRL + 'p') {
+        ct[C_SEL] = (ct[C_SEL] + n - 1) % n;
+        follow(ct);
+        return TAKEN;
+    }
+    if (k == keys.K_ESC || k == keys.M_CTRL + 'e') {
+        close(ct);
+        return TAKEN;
+    }
+    if (k == keys.K_TAB || k == keys.K_ENTER) {
+        take(r, x, orig, add, sp, u, ct);
+        return TAKEN;
+    }
+    return NOT_MINE;
+}
+
+void follow(inout I64[_] ct) {
+    if (ct[C_SEL] < ct[C_TOP]) { ct[C_TOP] = ct[C_SEL]; }
+    if (ct[C_SEL] >= ct[C_TOP] + ROWS) { ct[C_TOP] = ct[C_SEL] - ROWS + 1; }
+}
+
+// The chosen name in place of the word, as Backspaces and its characters typed.
+void take(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+          inout I64[_] ct) {
+    U8[256] nm;
+    I64 n = item(ct, ct[C_SEL], nm);
+    I64 wn = ct[C_WLEN];
+    close(ct);
+    ct[C_BUSY] = 1;
+    for i in 0..wn { key.step(r, x, orig, add, sp, u, keys.K_BACKSPACE); }
+    for i in 0..n { key.step(r, x, orig, add, sp, u, nm[i] as I64); }
+    ct[C_BUSY] = 0;
+}
+
+// After the editor took key k: the menu follows the word (a word's character or Backspace), or closes.
+export void after(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, inout I64[_] ct, I64 k) {
+    if (ct[C_BUSY] != 0) { return; }
+    if (r[state.R_MODE] != state.MODE_INSERT) {
+        close(ct);
+        return;
+    }
+    if (idc(k) || (k == keys.K_BACKSPACE && ct[C_OPEN] != 0)) {
+        refilter(ct, r, x, orig, add, false);
+    } else {
+        close(ct);
+    }
+}
+
+// --- drawing ---
+
+I64 put_text(inout I64[_] g, I64 cols, I64 row, I64 c0, I64 c1, in U8[_] s, I64 role) {
+    I64 c = c0;
+    for i in 0..len(s) {
+        if (c < c1 && c < cols) {
+            g[row * cols + c] = (s[i] as I64) + role * view.ROLE;
+            c += 1;
+        }
+    }
+    return c;
+}
+
+// The menu's cells over g (rows x cols): under the word whose cursor cell is at (cursor row * 65536 + column), or
+// above it when the rows under it would cross the status line.
+export void draw(in I64[_] ct, inout I64[_] g, I64 rows, I64 cols, I64 at) {
+    if (ct[C_OPEN] == 0 || cols < 10) { return; }
+    I64 crow = at / 65536;
+    I64 ccol = at % 65536;
+    I64 h = min(ct[C_N] - ct[C_TOP], ROWS);
+    I64 row0 = crow + 1;
+    if (row0 + h > rows - 2) { row0 = max(crow - h, 1); }
+    I64 w = min(WIDTH, cols);
+    I64 c0 = max(min(ccol - ct[C_WLEN], cols - w), 0);
+    for i in 0..h {
+        I64 it = ct[C_TOP] + i;
+        I64 rw = row0 + i;
+        if (rw >= 1 && rw < rows - 2) {
+            I64 role = view.R_MENU;
+            if (it == ct[C_SEL]) { role = view.R_MENU_SEL; }
+            for c in c0..c0 + w { g[rw * cols + c] = ' ' + role * view.ROLE; }
+            U8[256] nm;
+            I64 n = item(ct, it, nm);
+            _ = put_text(g, cols, rw, c0 + 1, c0 + w - 15, nm[0..min(n, w - 16)], role);
+            I64 dim = view.R_MENU_DIM;
+            if (it == ct[C_SEL]) { dim = role; }
+            I64 kd = ct[IT0 + IW * it + 2];
+            I64 kc = c0 + w - 14;
+            if (kd == KIND_FN) { kc = put_text(g, cols, rw, kc, c0 + w, b"FN", dim); }
+            else if (kd == KIND_CONST) { kc = put_text(g, cols, rw, kc, c0 + w, b"CONST", dim); }
+            else if (kd == KIND_TYPE) { kc = put_text(g, cols, rw, kc, c0 + w, b"TYPE", dim); }
+            else if (kd == KIND_KEY) { kc = put_text(g, cols, rw, kc, c0 + w, b"KEY", dim); }
+            else { kc = put_text(g, cols, rw, kc, c0 + w, b"WORD", dim); }
+            I64 sc = c0 + w - 8;
+            I64 src = ct[IT0 + IW * it + 3];
+            if (src == SRC_CINT) { sc = put_text(g, cols, rw, sc, c0 + w, b"cint", dim); }
+            else if (src == SRC_FILE) { sc = put_text(g, cols, rw, sc, c0 + w, b"file", dim); }
+            else if (src == SRC_BUFFER) { sc = put_text(g, cols, rw, sc, c0 + w, b"buffer", dim); }
+            else {
+                I64 lk = src - SRC_MODULE;
+                U8[31] lbl;
+                I64 ln = min(ct[LB0 + 32 * lk], 7);
+                for q in 0..ln { lbl[q] = ct[LB0 + 32 * lk + 1 + q] as U8; }
+                sc = put_text(g, cols, rw, sc, c0 + w, lbl[0..ln], dim);
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,8 @@
+Daphnis N: the network device
+daphnis: net no device
+daphnis: run mrng pid 7
+mrng: getrandom -38
+mrng: realtime 1767225600
+daphnis: state 14adc97a81a87ab87025b87c5118a118df5489a3345ce0d8e277cc8c7e38026a
+daphnis: exit 1
+net: done

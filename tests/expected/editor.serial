@@ -1,0 +1,34 @@
+Daphnis W: the desk
+daphnis: pool 122848 frames usable of 2088960 to 511 MiB
+daphnis: framebuffer 640x480 stride 2560
+daphnis: keyboard and mouse on
+daphnis: image 21327748 bytes from the loader module
+daphnis: desk
+daphnis: run tiler --cols 1 --rows 2 --desk pid 1 (device)
+tiler: tile 0,0 at 0,0 inside 639x239
+tiler: tile 0,1 at 0,240 inside 639x239
+tiler: surface 640x480 stride 2560 sha256 e87b9b267f5995e0cb71952565d36a90c5e104e58e912e2e8f916aaee174ceed
+tiler: desk terminal 79x13 in tile 0,0 at 2,21
+tiler: desk tile 1 at 159,269 inside 320x200 for the next client (0)
+tiler: desk shell first output
+tiler: desk shell ended, status 0
+tiler: term 00 |# cat notes.txt|
+tiler: term 01 |first line|
+tiler: term 02 |second LINE|
+tiler: term 03 |# exit|
+tiler: term 04 ||
+tiler: term 05 ||
+tiler: term 06 ||
+tiler: term 07 ||
+tiler: term 08 ||
+tiler: term 09 ||
+tiler: term 10 ||
+tiler: term 11 ||
+tiler: term 12 ||
+daphnis: state 42e432c715a174f49df3132b4bbdd3b11d0754c4ddbc348d1094af3110210a89
+daphnis: exit 0
+daphnis: pid 1 forked 1
+daphnis: surface 640x480 stride 2560 sha256 ef930a0b4e1b0df2dc8a859adc337dec3d0e83cfa6bf80018995bfd82144778a
+daphnis: fs tables 19 frames held
+daphnis: pool frames free 122763 of 122784
+daphnis: done

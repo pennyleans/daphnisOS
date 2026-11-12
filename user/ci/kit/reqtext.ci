@@ -1,0 +1,31 @@
+// user/ci/kit/reqtext.ci: the request text the approval prompts show, AC-V-R1 (ruled A by l, 20:12Z;
+// docs/specs/2026-11-11-ac-v-prompt-words.md edition 2). Pure. The kernel's copy of the bytes the asker passed to
+// grant_ask (src/proc.ci ask, at most 56, NUL padded) is the asker's claim about what it will run. The desk draws it
+// in one place, frame 8's command field, and logs it on one line, and only through `clean`: printable ASCII, 32 to
+// 126, is kept; a NUL, which parts the arguments in the kernel's copy, becomes a space; every other byte becomes one
+// `?`, as `ls -q` shows a name. Trailing spaces go. So no control byte, DEL or byte past 126 reaches either.
+
+export const I64 MARK = 63;            // `?`: one for each byte that is not shown
+
+// Whether b is printable ASCII, 32 to 126.
+export Bool printable(I64 b) { return b >= 32 && b <= 126; }
+
+// raw[0..n) as the prompt shows it, into dst; its length. n is held to 0 .. len(raw) and to len(dst).
+export I64 clean(in U8[_] raw, I64 n, inout U8[_] dst) {
+    I64 m = n;
+    if (m < 0) { m = 0; }
+    if (m > len(raw)) { m = len(raw); }
+    if (m > len(dst)) { m = len(dst); }
+    for k in 0..m {
+        I64 b = raw[k] as I64;
+        if (b == 0) {
+            b = 32;
+        } else if (!printable(b)) {
+            b = MARK;
+        }
+        dst[k] = b as U8;
+    }
+    while (m > 0 && dst[m - 1] == ' ') { m = m - 1; }
+    return m;
+}
+// SPDX-License-Identifier: Apache-2.0

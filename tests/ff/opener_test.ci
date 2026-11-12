@@ -1,0 +1,55 @@
+// tests/ff/opener_test.ci: hosted tests of the Super plane's open table (FF-3, user/ci/kit/opener.ci; docs/specs/
+// 2026-11-07-ff-super-plane.md section 6). Run by check.sh: cint test --root . tests/ff/opener_test.ci
+
+import user.ci.kit.opener;
+
+Bool prog_is(I64 r, in U8[_] want) {
+    U8[64] b;
+    I64 n = opener.prog_of(r, b);
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (b[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "the first boot's table: section 6" {
+    assert(opener.load_default() == 8);
+    U8[1] none;
+    assert(prog_is(opener.kind_of("/disk/a/b.ci", false, none[0..0]), "editor"));
+    assert(prog_is(opener.kind_of("notes.md", false, none[0..0]), "editor"));
+    assert(prog_is(opener.kind_of("x.TXT", false, none[0..0]), "editor"));
+    assert(prog_is(opener.kind_of("run.sh", false, none[0..0]), "editor"));
+    assert(prog_is(opener.kind_of("/disk/doom1.wad", false, none[0..0]), "doom"));
+    assert(prog_is(opener.kind_of("shot.png", false, none[0..0]), "cview"));
+    assert(prog_is(opener.kind_of("shot.qoi", false, none[0..0]), "cview"));
+    assert(prog_is(opener.kind_of("shot.ppm", false, none[0..0]), "cview"));
+}
+
+test "a directory, text without an extension, and nothing" {
+    assert(opener.load_default() == 8);
+    U8[1] none;
+    assert(opener.kind_of("/disk/m", true, none[0..0]) == opener.DIR);
+    assert(opener.kind_of("/disk/README", false, "plain words\n") == opener.TEXT);
+    U8[3] bin;
+    bin[0] = 0x7F;
+    bin[1] = 'E';
+    bin[2] = 0;
+    assert(opener.kind_of("/disk/prog", false, bin) == opener.NOTHING);
+    assert(opener.kind_of("/disk/a.tar", false, none[0..0]) == opener.NOTHING);
+}
+
+test "extensions: the last component's, a leading dot is a name" {
+    assert(opener.ext_start("a/b.c/d") == -1);
+    assert(opener.ext_start("a/.profile") == -1);
+    assert(opener.ext_start("a/x.tar.gz") == 7);
+    assert(opener.ext_start("x.") == 1);
+}
+
+test "a table that is not rules is refused" {
+    assert(opener.load("ci editor\n") == -1);
+    assert(opener.load(".ci\n") == -1);
+    assert(opener.load(".x y\n") == 1);
+    assert(opener.rules() == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

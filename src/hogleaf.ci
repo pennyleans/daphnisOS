@@ -1,0 +1,7 @@
+// src/hogleaf.ci: touches both ends of an array, in a module of its own (see src/hog.ci).
+
+export void touch(inout U64[_] a) {
+    a[0] = 1;
+    a[len(a) - 1] = 2;
+}
+// SPDX-License-Identifier: Apache-2.0

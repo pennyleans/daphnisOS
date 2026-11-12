@@ -1,0 +1,33 @@
+{
+  "id": "selected-lf-is-not-text",
+  "rules": [
+    "VIEW-3"
+  ],
+  "text": "a\n\nb",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b32421b5b313b3242"
+  ],
+  "expect": {
+    "text": "a\n\nb",
+    "sel": [
+      0,
+      3
+    ],
+    "screen": [
+      "a",
+      "",
+      "b",
+      "",
+      " x  2 lines selected                3:1",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

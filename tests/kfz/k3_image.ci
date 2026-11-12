@@ -1,0 +1,277 @@
+// tests/kfz/k3_image.ci: CT-5a and the image's names (src/fs.ci scan_image). A name is taken as far as a path from a
+// process goes, 4096 bytes with its NUL (PATH_BYTES), a part at a time up to 255 (NAME_MAX); a member refused is named
+// on the serial line, the boot fails (RT_EXIT_PANIC, 0x1F at port 0xF4), and the scan goes on, so a member after it is
+// still there. Each test boots (k0_kit.ci), makes an image (tests/kfz/machine.ci kfz_image) and scans it with
+// fs.reset(), as a boot's fs.init() does.
+
+const U64 KZI_OPEN = 2;
+const U64 KZI_CLOSE = 3;
+const U64 KZI_CHDIR = 80;
+const I64 KZI_DIR = 0x41ED;        // a directory, 0755
+const I64 KZI_FILE = 0x81A4;       // a file, 0644
+
+U8[65536] kzi_img;     // the image being made
+I64 kzi_n = 0;
+U8[4200] kzi_nm;       // the name of the member being made
+I64 kzi_nl = 0;
+
+void kzi_hex(I64 v) {
+    for i in 0..8 {
+        I64 d = (v >> ((28 - 4 * i) as I64)) & 15;
+        if (d < 10) {
+            kzi_img[kzi_n + i] = (48 + d) as U8;
+        } else {
+            kzi_img[kzi_n + i] = (55 + d) as U8;
+        }
+    }
+    kzi_n += 8;
+}
+
+// s into b at at: the place after it.
+I64 kzi_cat[m, d](in U8[m] s, I64 at, inout U8[d] b) {
+    for i in 0..m {
+        b[at + i] = s[i];
+    }
+    return at + m;
+}
+
+void kzi_name[m](in U8[m] s) {
+    for i in 0..m {
+        kzi_nm[kzi_nl + i] = s[i];
+    }
+    kzi_nl += m;
+}
+
+// k bytes c onto the name.
+void kzi_run(I64 c, I64 k) {
+    for i in 0..k {
+        kzi_nm[kzi_nl + i] = c as U8;
+    }
+    kzi_nl += k;
+}
+
+// A newc member named kzi_nm[0..kzi_nl), then the name cleared: mode, inode ino, bytes bytes of x.
+void kzi_member(I64 mode, I64 bytes, I64 ino) {
+    kzi_n = kzi_cat("070701", kzi_n, kzi_img);
+    kzi_hex(ino);
+    kzi_hex(mode);
+    kzi_hex(0);                        // uid
+    kzi_hex(0);                        // gid
+    kzi_hex(1);                        // nlink
+    kzi_hex(0);                        // mtime
+    kzi_hex(bytes);
+    for i in 0..4 {
+        kzi_hex(0);                    // devmajor, devminor, rdevmajor, rdevminor
+    }
+    kzi_hex(kzi_nl + 1);               // namesize, its NUL included
+    kzi_hex(0);                        // check
+    for i in 0..kzi_nl {
+        kzi_img[kzi_n + i] = kzi_nm[i];
+    }
+    kzi_n += kzi_nl;
+    kzi_img[kzi_n] = 0;
+    kzi_n += 1;
+    while (kzi_n % 4 != 0) {
+        kzi_img[kzi_n] = 0;
+        kzi_n += 1;
+    }
+    for i in 0..bytes {
+        kzi_img[kzi_n + i] = 120;
+    }
+    kzi_n += bytes;
+    while (kzi_n % 4 != 0) {
+        kzi_img[kzi_n] = 0;
+        kzi_n += 1;
+    }
+    kzi_nl = 0;
+}
+
+void kzi_trailer() {
+    kzi_name("TRAILER!!!");
+    kzi_member(0, 0, 0);
+}
+
+// The image made so far, scanned by fs.reset() with the serial line cleared first.
+void kzi_load() {
+    machine.kfz_image(kzi_img[0..kzi_n]);
+    machine.kfz_said_clear();
+    fs.reset();
+    kzi_n = 0;
+}
+
+// The named entries of the empty image's tree; the tree is the empty image's after.
+I64 kzi_empty() {
+    kz_boot();
+    kzi_n = 0;
+    kzi_load();
+    return fs.file_count();
+}
+
+// True when p opens path, a path of up to 256 bytes; the descriptor closed again.
+Bool kzi_opens[m](I64 p, in U8[m] path) {
+    kz_put(p, PATHS, path);
+    I64 fd = kz_call(p, KZI_OPEN, PATHS, 0, 0, 0, 0, 0);
+    if (fd >= 0) {
+        assert(kz_call(p, KZI_CLOSE, fd as U64, 0, 0, 0, 0, 0) == 0);
+    }
+    return fd >= 0;
+}
+
+// True when the serial line holds the line of a refused member: daphnis: image: member "name" at byte at, then why.
+Bool kzi_refused[m, w](in U8[m] name, I64 at, in U8[w] why) {
+    U8[400] b;
+    I64 n = kzi_cat("daphnis: image: member ", 0, b);
+    b[n] = 34;
+    n = kzi_cat(name, n + 1, b);
+    b[n] = 34;
+    n = kzi_cat(" at byte ", n + 1, b);
+    U8[20] d;
+    I64 k = 0;
+    I64 x = at;
+    while (k == 0 || x > 0) {
+        d[k] = (48 + x % 10) as U8;
+        x = x / 10;
+        k += 1;
+    }
+    for i in 0..k {
+        b[n + i] = d[k - 1 - i];
+    }
+    n = kzi_cat(why, n + k, b);
+    return machine.kfz_said(b[0..n]);
+}
+
+// The first 255 bytes of a long name in q: "kzj/", then 251 of c, then "...".
+void kzi_cut(inout U8[300] q, I64 c) {
+    _ = kzi_cat("kzj/", 0, q);
+    for i in 0..251 {
+        q[4 + i] = c as U8;
+    }
+    _ = kzi_cat("...", 255, q);
+}
+
+test "CT-5a: a name past 64 bytes, then a short one, and a ten-byte name that starts with T: all present, none refused" {
+    I64 base = kzi_empty();
+    kzi_name("kzi");
+    kzi_member(KZI_DIR, 0, 1);
+    kzi_name("kzi/");
+    kzi_run(108, 100);                 // l: a name of 104 bytes, 105 with its NUL
+    kzi_member(KZI_FILE, 3, 2);
+    kzi_name("Tablet.cfg");            // 11 bytes with its NUL, as the trailer's
+    kzi_member(KZI_FILE, 3, 3);
+    kzi_name("kzi/s");
+    kzi_member(KZI_FILE, 3, 4);
+    kzi_trailer();
+    kzi_load();
+    assert(!machine.kfz_said("daphnis: image") && machine.kfz_exit() == -1);
+    assert(fs.file_count() == base + 4);
+    I64 p = kz_proc(0, fs.GRANT_ALL, 0);
+    U8[110] path;
+    _ = kzi_cat("/kzi/", 0, path);
+    for i in 0..100 {
+        path[5 + i] = 108;
+    }
+    assert(kzi_opens(p, path[0..105]));
+    assert(kzi_opens(p, "/kzi/s") && kzi_opens(p, "/Tablet.cfg"));
+    kz_end(p);
+    _ = kzi_empty();
+}
+
+test "CT-5a: a name past 4096 bytes, a part past 255, an empty part, a member under no directory: each refused and named; the boot fails; the scan goes on" {
+    I64 base = kzi_empty();
+    kzi_name("kzj");
+    kzi_member(KZI_DIR, 0, 1);
+    I64 a1 = kzi_n;
+    kzi_name("kzm/x");                 // no directory kzm before it
+    kzi_member(KZI_FILE, 3, 2);
+    I64 a2 = kzi_n;
+    kzi_name("kzj/");
+    kzi_run(113, 4092);                // q: 4096 bytes, 4097 with its NUL
+    kzi_member(KZI_FILE, 3, 3);
+    I64 a3 = kzi_n;
+    kzi_name("kzj/");
+    kzi_run(112, 256);                 // p: the last part, 256
+    kzi_member(KZI_FILE, 3, 4);
+    I64 a4 = kzi_n;
+    kzi_name("kzj/");
+    kzi_run(114, 256);                 // r: a part before the last, 256
+    kzi_name("/x");
+    kzi_member(KZI_FILE, 3, 5);
+    I64 a5 = kzi_n;
+    kzi_name("kzj//e");
+    kzi_member(KZI_FILE, 3, 6);
+    kzi_name("kzj/t");
+    kzi_member(KZI_FILE, 3, 7);
+    kzi_trailer();
+    kzi_load();
+    assert(kzi_refused("kzm/x", a1, ": no directory member before it holds it\n"));
+    U8[300] q;
+    kzi_cut(q, 113);
+    assert(kzi_refused(q[0..258], a2, ": its name is 4097 bytes with its NUL, past the path bound, 4096\n"));
+    kzi_cut(q, 112);
+    assert(kzi_refused(q[0..258], a3, ": a part of its name is past NAME_MAX, 255\n"));
+    kzi_cut(q, 114);
+    assert(kzi_refused(q[0..258], a4, ": a part of its name is past NAME_MAX, 255\n"));
+    assert(kzi_refused("kzj//e", a5, ": a part of its name is empty\n"));
+    assert(machine.kfz_said("daphnis: image refused: 5 members named above\n"));
+    assert(machine.kfz_exit() == 0x1F);
+    assert(fs.file_count() == base + 2);
+    I64 p = kz_proc(0, fs.GRANT_ALL, 0);
+    assert(kzi_opens(p, "/kzj/t") && !kzi_opens(p, "/kzm/x"));
+    kz_end(p);
+    _ = kzi_empty();
+}
+
+test "CT-5a: a name of exactly 4096 bytes with its NUL, sixteen parts of 255, is kept under its fifteen directories" {
+    I64 base = kzi_empty();
+    for lv in 0..16 {
+        for k in 0..lv + 1 {
+            if (k > 0) {
+                kzi_run(47, 1);
+            }
+            kzi_run(97 + k, 255);      // part k is 255 of the letter a + k
+        }
+        if (lv < 15) {
+            kzi_member(KZI_DIR, 0, lv + 1);
+        } else {
+            assert(kzi_nl == 4095);
+            kzi_member(KZI_FILE, 3, lv + 1);
+        }
+    }
+    kzi_name("kzk");
+    kzi_member(KZI_FILE, 3, 17);
+    kzi_trailer();
+    kzi_load();
+    assert(!machine.kfz_said("daphnis: image") && machine.kfz_exit() == -1);
+    assert(fs.file_count() == base + 17);
+    I64 p = kz_proc(0, fs.GRANT_ALL, 0);
+    U8[255] part;
+    for k in 0..15 {
+        for i in 0..255 {
+            part[i] = (97 + k) as U8;
+        }
+        kz_put(p, PATHS, part);
+        assert(kz_call(p, KZI_CHDIR, PATHS, 0, 0, 0, 0, 0) == 0);
+    }
+    for i in 0..255 {
+        part[i] = 112;                 // p, the sixteenth letter
+    }
+    assert(kzi_opens(p, part) && kzi_opens(p, "/kzk"));
+    kz_end(p);
+    _ = kzi_empty();
+}
+
+test "CT-5a: a header that does not read before the trailer is refused, at its byte" {
+    I64 base = kzi_empty();
+    kzi_name("kzh");
+    kzi_member(KZI_FILE, 3, 1);        // 110 + 4, then 3 bytes: the next header at byte 120
+    for i in 0..120 {
+        kzi_img[kzi_n + i] = 122;
+    }
+    kzi_n += 120;
+    kzi_load();
+    assert(machine.kfz_said("daphnis: image: no member header that reads at byte 120, before the trailer"));
+    assert(machine.kfz_said("daphnis: image refused: 1 members named above\n") && machine.kfz_exit() == 0x1F);
+    assert(fs.file_count() == base + 1);
+    _ = kzi_empty();
+}
+// SPDX-License-Identifier: Apache-2.0

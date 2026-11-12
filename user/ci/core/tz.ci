@@ -1,0 +1,209 @@
+// user/ci/core/tz.ci: RS-TZa, time zones with daylight rules (docs/specs/2026-11-11-rs-tza.md), over the IANA time
+// zone database in user/ci/core/tzdata.ci. Integer arithmetic only; pure, so hosted tests reach it.
+// A city is an index from 0 to cities() - 1, in the order of its shown name; any other index is UTC. t is seconds since
+// 1970-01-01 00:00:00 UTC.
+//   cities(); city(i, o): the shown name ("New York"); name(i, o): the zone's name ("America/New_York"), the form
+//     kept in /home/.daphnis-zone. Both copy what fits in o and return the full length, -1 for no city.
+//   find(n): the city of zone name n, -1 for none (UTC).
+//   offset(i, t): the seconds to add to t for the local time; dst(i, t): 1 in daylight time, else 0;
+//     abbr(i, t, o): the letters ("EST", "+0530"), as city() returns.
+//   next(i, t): the first time after t at which offset, daylight flag or letters change; -1 for none.
+//   local(i, t): offset(i, t), and cal.at() of the local time, so cal.year() to cal.weekday() read its fields.
+//   utc_of(i, l): RS-TZc, the inverse (docs/specs/2026-11-11-rs-tzc.md section 2): the t whose local time is l
+//     (seconds since 1970-01-01 00:00:00 on the zone's clock, held within FIRST to LAST). A local time the zone
+//     repeats (a change back) is taken under the offset in force before the change, so the earlier t; a local time
+//     the zone skips (a change forward) has none: GAP.
+// The table lists each zone's changes from 1970 to 2037. Before 1970 a zone reads as on 1970-01-01 00:00:00 UTC.
+// From its last listed change on, the zone's rule (the TZ string of its file) runs on without end; for Gaza and
+// Hebron, whose listed changes run past 2037, the rule takes over at 2038-01-01. local() takes t within FIRST to
+// LAST, and a local time outside 0001-01-01 00:00:00 to 9999-12-31 23:59:59 as the first or last second, so its
+// year is always 1 to 9999.
+import user.ci.core.tzdata;
+import user.ci.core.cal;
+
+export const I64 FIRST = -62135596800;   // 0001-01-01 00:00:00 UTC
+export const I64 LAST = 253402300799;    // 9999-12-31 23:59:59 UTC
+export const I64 GAP = -9223372036854775807;   // utc_of: a local time the zone skips
+const I64 REACH = 57600;                 // every offset lies within 16 hours of UTC
+
+export I64 cities() { return tzdata.CITIES; }
+
+Bool known(I64 i) { return i >= 0 && i < tzdata.CITIES; }
+
+export I64 city(I64 i, inout U8[_] o) {
+    if (!known(i)) { return -1; }
+    I64 a = tzdata.city_at(i);
+    I64 n = tzdata.city_at(i + 1) - a;
+    for k in 0..n {
+        if (k < len(o)) { o[k] = tzdata.city_char(a + k) as U8; }
+    }
+    return n;
+}
+
+export I64 name(I64 i, inout U8[_] o) {
+    if (!known(i)) { return -1; }
+    I64 a = tzdata.name_at(i);
+    I64 n = tzdata.name_at(i + 1) - a;
+    for k in 0..n {
+        if (k < len(o)) { o[k] = tzdata.name_char(a + k) as U8; }
+    }
+    return n;
+}
+
+export I64 find(in U8[_] n) {
+    for i in 0..tzdata.CITIES {
+        I64 a = tzdata.name_at(i);
+        if (tzdata.name_at(i + 1) - a == len(n)) {
+            Bool same = true;
+            for k in 0..len(n) {
+                if (tzdata.name_char(a + k) != n[k] as I64) { same = false; }
+            }
+            if (same) { return i; }
+        }
+    }
+    return -1;
+}
+
+// The time, in seconds from 1970-01-01, of rule edge f of zone z in year y (f 2 the start, 6 the end), in the local
+// clock the edge is given in: Mm.w.d, the d-th weekday of week w (5 the last) of month m, then the edge's seconds.
+I64 edge(I64 z, I64 f, I64 y) {
+    I64 m = tzdata.rule(z, f);
+    I64 d0 = cal.days(y, m, 1);
+    I64 first = (d0 + 4) % 7;                         // 1970-01-01 was a Thursday; % floors
+    I64 day = 1 + (tzdata.rule(z, f + 2) - first + 7) % 7 + 7 * (tzdata.rule(z, f + 1) - 1);
+    I64 md = cal.month_days(y, m);
+    while (day > md) { day = day - 7; }
+    return (d0 + day - 1) * 86400 + tzdata.rule(z, f + 3);
+}
+
+// The type the rule of zone z gives at u.
+I64 ruled(I64 z, I64 u) {
+    I64 sty = tzdata.rule(z, 0);
+    I64 dty = tzdata.rule(z, 1);
+    I64 so = tzdata.off(sty);
+    I64 y = cal.year_of(u + so);
+    I64 a = edge(z, 2, y) - so;
+    I64 b = edge(z, 6, y) - tzdata.off(dty);
+    Bool on = !(u >= b && u < a);                     // daylight across the new year (south)
+    if (a < b) { on = u >= a && u < b; }
+    if (on) { return dty; }
+    return sty;
+}
+
+// The type in force in zone z at t.
+I64 type_at(I64 z, I64 t) {
+    I64 u = t;
+    if (u < 0) { u = 0; }
+    if (u > LAST) { u = LAST; }
+    if (tzdata.rule(z, 1) >= 0 && u >= tzdata.from(z)) { return ruled(z, u); }
+    I64 lo = tzdata.first(z);
+    I64 hi = tzdata.first(z + 1);
+    if (lo == hi || tzdata.change(lo) > u) { return tzdata.init(z); }
+    while (hi - lo > 1) {                             // the last change at or before u
+        I64 mid = (lo + hi) / 2;
+        if (tzdata.change(mid) <= u) { lo = mid; } else { hi = mid; }
+    }
+    return tzdata.change_type(lo);
+}
+
+// The type in force for city i at t; -1 for UTC.
+I64 type_of(I64 i, I64 t) {
+    if (!known(i)) { return -1; }
+    return type_at(tzdata.zone_of(i), t);
+}
+
+export I64 offset(I64 i, I64 t) {
+    I64 ty = type_of(i, t);
+    if (ty < 0) { return 0; }
+    return tzdata.off(ty);
+}
+
+export I64 dst(I64 i, I64 t) {
+    I64 ty = type_of(i, t);
+    if (ty < 0) { return 0; }
+    return tzdata.dst(ty);
+}
+
+export I64 abbr(I64 i, I64 t, inout U8[_] o) {
+    I64 ty = type_of(i, t);
+    if (ty < 0) {
+        for k in 0..3 {
+            if (k < len(o)) { o[k] = b"UTC"[k]; }
+        }
+        return 3;
+    }
+    I64 a = tzdata.abbr_at(ty);
+    I64 n = tzdata.abbr_at(ty + 1) - a;
+    for k in 0..n {
+        if (k < len(o)) { o[k] = tzdata.abbr_char(a + k) as U8; }
+    }
+    return n;
+}
+
+// Whether the type of zone z changes at u.
+Bool turns(I64 z, I64 u) {
+    return type_at(z, u) != type_at(z, u - 1);
+}
+
+export I64 next(I64 i, I64 t) {
+    if (!known(i) || t >= LAST) { return -1; }
+    I64 z = tzdata.zone_of(i);
+    I64 s = t;
+    if (s < -1) { s = -1; }
+    I64 lo = tzdata.first(z);
+    I64 hi = tzdata.first(z + 1);
+    while (lo < hi) {                                 // the first listed change after s
+        I64 mid = (lo + hi) / 2;
+        if (tzdata.change(mid) <= s) { lo = mid + 1; } else { hi = mid; }
+    }
+    for k in lo..tzdata.first(z + 1) {
+        if (turns(z, tzdata.change(k))) { return tzdata.change(k); }
+    }
+    I64 sty = tzdata.rule(z, 0);
+    I64 dty = tzdata.rule(z, 1);
+    if (dty < 0) { return -1; }
+    I64 base = s;
+    I64 from = tzdata.from(z);
+    if (from > s) {
+        if (from > 0 && turns(z, from)) { return from; }
+        base = from;
+    }
+    I64 so = tzdata.off(sty);
+    I64 y0 = cal.year_of(base + so) - 1;
+    I64 best = -1;
+    for y in y0..y0 + 3 {
+        I64 a = edge(z, 2, y) - so;
+        I64 b = edge(z, 6, y) - tzdata.off(dty);
+        if (a > base && (best < 0 || a < best) && turns(z, a)) { best = a; }
+        if (b > base && (best < 0 || b < best) && turns(z, b)) { best = b; }
+    }
+    if (best > LAST) { return -1; }
+    return best;
+}
+
+export I64 local(I64 i, I64 t) {
+    I64 u = t;
+    if (u < FIRST) { u = FIRST; }
+    if (u > LAST) { u = LAST; }
+    I64 o = offset(i, u);
+    I64 l = u + o;
+    if (l < FIRST) { l = FIRST; }
+    if (l > LAST) { l = LAST; }
+    cal.at(l);
+    return o;
+}
+
+export I64 utc_of(I64 i, I64 l) {
+    I64 w = max(FIRST, min(l, LAST));
+    I64 a = w - REACH;
+    I64 hi = w + REACH;
+    while (a <= hi) {                    // each stretch [a, b) of one offset, earliest first
+        I64 b = next(i, a);
+        if (b < 0 || b > hi) { b = hi + 1; }
+        I64 t = w - offset(i, a);
+        if (t >= a && t < b) { return t; }
+        a = b;
+    }
+    return GAP;
+}
+// SPDX-License-Identifier: Apache-2.0

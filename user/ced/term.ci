@@ -1,0 +1,94 @@
+import state;
+import keys;
+
+void b1(inout I64[_] n, inout U8[_] o, I64 v) {
+    o[n[0]] = v as U8;
+    n[0] = n[0] + 1;
+}
+
+void put(inout I64[_] n, inout U8[_] o, in U8[_] b) {
+    for i in 0..len(b) {
+        b1(n, o, b[i] as I64);
+    }
+}
+
+void num(inout I64[_] n, inout U8[_] o, I64 v) {
+    if (v >= 10) {
+        num(n, o, v / 10);
+    }
+    b1(n, o, '0' + v % 10);
+}
+
+void move(inout I64[_] n, inout U8[_] o, I64 row, I64 col) {
+    put(n, o, b"\x1b[");
+    num(n, o, row + 1);
+    b1(n, o, ';');
+    num(n, o, col + 1);
+    b1(n, o, 'H');
+}
+
+// 0 plain, 1 reverse, 2 bright black
+I64 pen(I64 style) {
+    if (style == state.S_PLAIN) {
+        return 0;
+    }
+    if (style == state.S_DIM) {
+        return 2;
+    }
+    return 1;
+}
+
+void sgr(inout I64[_] n, inout U8[_] o, I64 style) {
+    I64 p = pen(style);
+    if (p == 0) {
+        put(n, o, b"\x1b[0m");
+    } else if (p == 1) {
+        put(n, o, b"\x1b[7m");
+    } else {
+        put(n, o, b"\x1b[0;90m");
+    }
+}
+
+// draws the grid, returns the length
+export I64 frame(I64 rows, I64 cols, I64 cur_row, I64 cur_col, in I64[_] grid, inout U8[_] o) {
+    I64 nrows = min(rows, state.MAX_ROWS);
+    I64 ncols = min(cols, state.MAX_COLS);
+    I64[1] n;
+    n[0] = 0;
+    put(n, o, b"\x1b[?25l");
+    U8[4] s;
+    for row in 0..nrows {
+        move(n, o, row, 0);
+        sgr(n, o, state.S_PLAIN);
+        I64 style = state.S_PLAIN;
+        for col in 0..ncols {
+            I64 v = grid[row * ncols + col];
+            I64 st = v / state.STYLE;
+            if (pen(st) != pen(style)) {
+                sgr(n, o, st);
+            }
+            style = st;
+            I64 w = keys.encode(v % state.STYLE, s);
+            put(n, o, s[0..w]);
+        }
+    }
+    sgr(n, o, state.S_PLAIN);
+    move(n, o, max(cur_row, 0), max(cur_col, 0));
+    put(n, o, b"\x1b[?25h");
+    return n[0];
+}
+
+test "a one-row frame" {
+    I64[2] grid = ['h', 'i' + state.S_SELECTED * state.STYLE];
+    U8[64] o;
+    I64 used = frame(1, 2, 0, 1, grid, o);
+    assert(equal(o[0..used], b"\x1b[?25l\x1b[1;1H\x1b[0mh\x1b[7mi\x1b[0m\x1b[1;2H\x1b[?25h"));
+    assert(used == 38);
+}
+
+test "a dim cell is bright black; selection and status line share one reverse pen" {
+    I64[3] grid = ['a' + state.S_SELECTED * state.STYLE, 'b' + state.S_BAR * state.STYLE, '1' + state.S_DIM * state.STYLE];
+    U8[96] o;
+    I64 used = frame(1, 3, 0, 0, grid, o);
+    assert(equal(o[0..used], b"\x1b[?25l\x1b[1;1H\x1b[0m\x1b[7mab\x1b[0;90m1\x1b[0m\x1b[1;1H\x1b[?25h"));
+}

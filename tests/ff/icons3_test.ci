@@ -1,0 +1,160 @@
+// tests/ff/icons3_test.ci: hosted tests of the icons of DN-5, DN-8, DN-9 and DN-12 (user/ci/kit/icons3.ci,
+// fileicons.ci and iconrle.ci from tools/svgicons.py): the name index, the tables each size and scale has, the
+// file kind lookup, the light twin and the cut at the row's ends. The pixels themselves are tests/ff/icons3_proof.ci's
+// against tools/iconwin.py. Run by check.sh: cint test --root . tests/ff/icons3_test.ci
+import user.ci.kit.icons3;
+import user.ci.kit.fileicons;
+import user.ci.kit.iconrle;
+
+const U32 DARK = 0x141413;
+const U32 LIGHT = 0xECEEF2;
+
+U32[256] row;
+U32[256] other;
+
+void ground_both(U32 g) {
+    for i in 0..256 {
+        row[i] = g;
+        other[i] = g;
+    }
+}
+
+test "an app icon is found by its name" {
+    assert(icons3.named("finder") == icons3.FINDER);
+    assert(icons3.named("terminal") == icons3.TERMINAL);
+    assert(icons3.named("program") == icons3.PROGRAM);
+    assert(icons3.named("program_light") == icons3.PROGRAM_LIGHT);
+    assert(icons3.named("allapps") == icons3.ALLAPPS);
+    assert(icons3.named("doom") == -1);
+    assert(icons3.named("find") == -1);
+    assert(icons3.named("") == -1);
+    assert(icons3.named("cvim") == icons3.CVIM && icons3.CVIM == 11);   // DN-30: appended, no index moved
+    assert(icons3.named("browser") == icons3.BROWSER && icons3.BROWSER == 12);   // DN-31
+    assert(icons3.named("trash") == icons3.TRASH && icons3.TRASH == 13);   // DN-46 (d)
+    assert(icons3.named("trash_full") == icons3.TRASH_FULL && icons3.TRASH_FULL == 14);
+    assert(icons3.named("monitor") == icons3.MONITOR && icons3.MONITOR == 15);   // DN-59: Monitor's gauge, appended
+    assert(icons3.N == 16);
+}
+
+test "a file icon is found by its name" {
+    assert(fileicons.named("dir") == fileicons.DIR);
+    assert(fileicons.named("wad") == fileicons.WAD);
+    assert(fileicons.named("images") == -1);
+    assert(fileicons.N == 5);
+}
+
+test "every app icon has 16, 28, 32, 40, 48, 56, 64, 72 and 80 px at 1x and 2x (DN-49: 28, 40, 48), and nothing else" {
+    for k in 0..icons3.N {
+        for z in 1..3 {
+            assert(icons3.has(k, 16, z));
+            assert(icons3.has(k, 32, z));
+            assert(icons3.has(k, 56, z));
+            assert(icons3.has(k, 64, z));
+            assert(icons3.has(k, 72, z));
+            assert(icons3.has(k, 80, z));
+            assert(icons3.has(k, 28, z) && icons3.has(k, 40, z) && icons3.has(k, 48, z));   // DN-49's density
+            assert(!icons3.has(k, 44, z));
+        }
+        assert(!icons3.has(k, 64, 3));
+        assert(!icons3.has(k, 64, 0));
+    }
+    assert(!icons3.has(icons3.N, 64, 1));
+    assert(!icons3.has(-1, 64, 1));
+}
+
+test "every file icon has 16, 32 and 64 px at 1x and 2x" {
+    for k in 0..fileicons.N {
+        for z in 1..3 {
+            assert(fileicons.has(k, 16, z));
+            assert(fileicons.has(k, 32, z));
+            assert(fileicons.has(k, 64, z));
+            assert(!fileicons.has(k, 80, z));
+        }
+    }
+}
+
+test "a hand-drawn 16 px drawing is its own table; 16 px at 2x of a scaled drawing is its 32 px at 1x" {
+    assert(icons3.raster(icons3.FINDER, 16, 2) != icons3.raster(icons3.FINDER, 32, 1));
+    assert(icons3.raster(icons3.EDITOR, 16, 2) != icons3.raster(icons3.EDITOR, 32, 1));
+    assert(icons3.raster(icons3.TERMINAL, 16, 2) == icons3.raster(icons3.TERMINAL, 32, 1));
+    assert(icons3.raster(icons3.PROGRAM, 32, 2) == icons3.raster(icons3.PROGRAM, 64, 1));
+    assert(fileicons.raster(fileicons.TEXT, 16, 2) != fileicons.raster(fileicons.TEXT, 32, 1));
+    assert(fileicons.raster(fileicons.WAD, 16, 2) == fileicons.raster(fileicons.WAD, 32, 1));
+}
+
+test "a file's icon is its kind" {
+    assert(fileicons.kind("bin", 3, true) == fileicons.DIR);
+    assert(fileicons.kind("hdesk.ci", 8, true) == fileicons.DIR);
+    assert(fileicons.kind("hdesk.ci", 8, false) == fileicons.CI);
+    assert(fileicons.kind("shot.png", 8, false) == fileicons.IMAGE);
+    assert(fileicons.kind("shot.QOI", 8, false) == fileicons.IMAGE);
+    assert(fileicons.kind("a.ppm", 5, false) == fileicons.IMAGE);
+    assert(fileicons.kind("DOOM1.WAD", 9, false) == fileicons.WAD);
+    assert(fileicons.kind("notes.txt", 9, false) == fileicons.TEXT);
+    assert(fileicons.kind(".ci", 3, false) == fileicons.TEXT);
+    assert(fileicons.kind("ci", 2, false) == fileicons.TEXT);
+    assert(fileicons.kind("x.cis", 5, false) == fileicons.TEXT);
+    assert(fileicons.kind("x.ci.bak", 4, false) == fileicons.CI);
+}
+
+test "a light ground is told from a dark one" {
+    assert(iconrle.light(LIGHT));
+    assert(iconrle.light(0xFFFFFF));
+    assert(!iconrle.light(DARK));
+    assert(!iconrle.light(0x000000));
+}
+
+test "program draws program_light on a light ground and itself on a dark one" {
+    ground_both(LIGHT);
+    icons3.icon_at(row, 40, 8, 0, icons3.PROGRAM, 64, 1, LIGHT);
+    icons3.icon_at(other, 40, 8, 0, icons3.PROGRAM_LIGHT, 64, 1, LIGHT);
+    for i in 0..256 { assert(row[i] == other[i]); }
+    ground_both(DARK);
+    icons3.icon_at(row, 40, 8, 0, icons3.PROGRAM, 64, 1, DARK);
+    icons3.icon_at(other, 40, 8, 0, icons3.PROGRAM_LIGHT, 64, 1, DARK);
+    Bool same = true;
+    for i in 0..256 { if (row[i] != other[i]) { same = false; } }
+    assert(!same);
+}
+
+test "an icon covers its side and nothing past it; its plate is opaque" {
+    ground_both(DARK);
+    icons3.icon_at(row, 40, 8, 0, icons3.TERMINAL, 64, 1, DARK);
+    for i in 0..8 { assert(row[i] == DARK); }
+    for i in 72..256 { assert(row[i] == DARK); }
+    U32 plate = row[40];
+    ground_both(LIGHT);
+    icons3.icon_at(other, 40, 8, 0, icons3.TERMINAL, 64, 1, LIGHT);
+    assert(other[40] == plate);
+    ground_both(DARK);
+    icons3.icon_at(row, 64, 8, 0, icons3.TERMINAL, 32, 2, DARK);
+    for i in 0..8 { assert(row[i] == DARK); }
+    for i in 72..256 { assert(row[i] == DARK); }
+}
+
+test "a row outside the icon, an unknown size or scale draws nothing" {
+    ground_both(DARK);
+    icons3.icon_at(row, 64, 0, 0, icons3.FINDER, 64, 1, DARK);
+    icons3.icon_at(row, -1, 0, 0, icons3.FINDER, 64, 1, DARK);
+    icons3.icon_at(row, 10, 0, 0, icons3.FINDER, 44, 1, DARK);
+    icons3.icon_at(row, 10, 0, 0, icons3.FINDER, 64, 3, DARK);
+    icons3.icon_at(row, 10, 0, 0, -1, 64, 1, DARK);
+    fileicons.icon_at(row, 10, 0, 0, fileicons.DIR, 80, 1);
+    for i in 0..256 { assert(row[i] == DARK); }
+}
+
+test "an icon cut by either end of the row draws the part inside it" {
+    ground_both(DARK);
+    icons3.icon_at(row, 40, -32, 0, icons3.CALCULATOR, 64, 1, DARK);
+    icons3.icon_at(other, 40, 0, 0, icons3.CALCULATOR, 64, 1, DARK);
+    for i in 0..32 { assert(row[i] == other[i + 32]); }
+    ground_both(DARK);
+    icons3.icon_at(row, 40, 224, 0, icons3.CALCULATOR, 64, 1, DARK);
+    icons3.icon_at(other, 40, 0, 0, icons3.CALCULATOR, 64, 1, DARK);
+    for i in 0..32 { assert(row[224 + i] == other[i]); }
+    ground_both(DARK);
+    fileicons.icon_at(row, 100, 230, 0, fileicons.WAD, 64, 2);
+    fileicons.icon_at(other, 100, 0, 0, fileicons.WAD, 64, 2);
+    for i in 0..26 { assert(row[230 + i] == other[i]); }
+}
+// SPDX-License-Identifier: Apache-2.0

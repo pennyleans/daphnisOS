@@ -1,0 +1,85 @@
+// src/surface.ci: the surface digest (F-1, docs/specs/2026-11-05-f-surface.md section 3): SHA-256
+// over the w * h pixels of the framebuffer row by row, 4 bytes a pixel, never the padding past
+// 4 * w, read from canonical shadow RAM through the narrow rt/phys.c window (HW-1).
+// Native VRAM readback is a separate final check, never digest input. Printed after a device program
+// ends; two runs of the same program must give the same surface.
+
+import src.serial;
+import src.text;
+import src.phys;
+import src.sha256;
+import src.user;
+
+U8[32] last;        // the digest printed last, and the one before it
+U8[32] prev;
+I64 printed = 0;
+
+void put_num(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+// Digests the surface into digest.
+export void digest(inout U8[32] result) {
+    I64 w = user.fb_word(0) as I64;
+    I64 h = user.fb_word(1) as I64;
+    U64 stride = user.fb_word(2);
+    U64 base = user.fb_word(3);
+    sha256.Sha256[1] s;
+    sha256.sha_init(s);
+    U8[512] b;
+    for y in 0..h {
+        U64 row = base + (y as U64) * stride;
+        I64 done = 0;
+        while (done < 4 * w) {
+            I64 c = 4 * w - done;
+            if (c > 512) {
+                c = 512;
+            }
+            phys.phys_read8(row + done as U64, b[0..c]);
+            sha256.sha_update(s, b, 0, c);
+            done += c;
+        }
+    }
+    sha256.sha_final(s, result);
+}
+
+// Prints `daphnis: surface WxH stride S sha256 HEX` and keeps the digest for same_as_previous.
+export void print() {
+    U8[32] d;
+    digest(d);
+    serial.serial_write("daphnis: surface ");
+    put_num(user.fb_word(0) as I64);
+    serial.serial_write("x");
+    put_num(user.fb_word(1) as I64);
+    serial.serial_write(" stride ");
+    put_num(user.fb_word(2) as I64);
+    serial.serial_write(" sha256 ");
+    for i in 0..32 {
+        serial.serial_putc(text.hex_digit((d[i] >> 4) as U8));
+        serial.serial_putc(text.hex_digit((d[i] & 15) as U8));
+    }
+    serial.serial_write("\n");
+    for i in 0..32 {
+        prev[i] = last[i];
+        last[i] = d[i];
+    }
+    printed += 1;
+}
+
+// True when the two surfaces printed last were the same.
+export Bool same_as_previous() {
+    if (printed < 2) {
+        return false;
+    }
+    for i in 0..32 {
+        if (last[i] != prev[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

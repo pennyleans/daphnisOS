@@ -1,0 +1,27 @@
+{
+  "id": "esc-tail-with-text-stays-text",
+  "rules": [
+    "KEY-2"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "5b4462"
+  ],
+  "expect": {
+    "text": "[Dbabc",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

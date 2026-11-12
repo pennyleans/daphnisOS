@@ -1,0 +1,198 @@
+// user/ci/dns.ci: a stub resolver, A-2 (docs/specs/2026-11-06-a-agent.md section 3) and NW-5
+// (docs/specs/2026-11-07-nw-window.md section 3). resolve(name, server, port) asks server:port over
+// UDP for name's IPv4 address (one query, type A, class IN, recursion desired) and reads the first
+// A record of the answer, following no pointer it does not need: a CNAME before it is skipped. When
+// server is 0 or the default 10.0.2.3:53, /etc/resolv.conf is consulted first so DHCP and static
+// `daphnis.net=` resolvers apply automatically without flags. The query's ID is fixed (0x4441), so
+// the same question is the same bytes on every run and replays from the record. Three tries, each a
+// send and one receive. The address as a word (10.0.2.2 is 0x0A000202), or -1 for a name it cannot
+// ask (a label over 63 bytes, a name over 253), -2 for no answer, -3 for an answer without an A
+// record or with an error code.
+import user.ci.shctl;
+import user.ci.udp;
+import user.ci.tcp;   // fd_read, fd_close
+
+U8[512] q;
+U8[1500] r;
+U8[512] rc_buf;
+const I64 ID = 0x4441;
+const U64 DEFAULT_DNS = 0x0A000203;
+
+I64 parse_quad(in U8[_] s, I64 a, I64 b) {
+    if (a >= b) { return -1; }
+    I64 v = 0;
+    I64 cur = 0;
+    I64 digits = 0;
+    I64 parts = 0;
+    for i in a..b + 1 {
+        if (i == b || s[i] == '.') {
+            if (digits == 0 || cur > 255) { return -1; }
+            v = 256 * v + cur;
+            parts = parts + 1;
+            cur = 0;
+            digits = 0;
+        } else {
+            if (s[i] < '0' || s[i] > '9' || digits == 3) { return -1; }
+            cur = 10 * cur + ((s[i] - 48) as I64);
+            digits = digits + 1;
+        }
+    }
+    if (parts != 4 || v <= 0) { return -1; }
+    return v;
+}
+
+// First `nameserver A.B.C.D` in s[0..n), or -1.
+export I64 parse_resolv(in U8[_] s, I64 n) {
+    U8[10] kw = b"nameserver";
+    I64 i = 0;
+    while (i < n) {
+        I64 le = i;
+        while (le < n && s[le] != 10) { le = le + 1; }
+        I64 p = i;
+        while (p < le && (s[p] == ' ' || s[p] == 9)) { p = p + 1; }
+        if (p + 10 < le && (s[p + 10] == ' ' || s[p + 10] == 9)) {
+            Bool ok = true;
+            for k in 0..10 {
+                if (s[p + k] != kw[k]) { ok = false; }
+            }
+            if (ok) {
+                I64 a = p + 10;
+                while (a < le && (s[a] == ' ' || s[a] == 9)) { a = a + 1; }
+                I64 b = a;
+                while (b < le && s[b] != ' ' && s[b] != 9 && s[b] != '#' && s[b] != ';' && s[b] != 13) {
+                    b = b + 1;
+                }
+                I64 ip = parse_quad(s, a, b);
+                if (ip > 0) { return ip; }
+            }
+        }
+        i = le + 1;
+    }
+    return -1;
+}
+
+U64 pick_server(U64 server, I64 port) {
+    if (server != 0 && (server != DEFAULT_DNS || port != 53)) {
+        return server;
+    }
+    I64 fd = shctl.sh_open(b"/etc/resolv.conf", 0, 0);
+    if (fd >= 0) {
+        I64 got = 0;
+        Bool more = true;
+        while (more && got < len(rc_buf)) {
+            I64 k = tcp.fd_read(fd, rc_buf[got..len(rc_buf)]);
+            if (k > 0) {
+                got = got + k;
+            } else {
+                more = false;
+            }
+        }
+        _ = tcp.fd_close(fd);
+        I64 ip = parse_resolv(rc_buf, got);
+        if (ip > 0) {
+            return ip as U64;
+        }
+    }
+    if (server != 0) {
+        return server;
+    }
+    return DEFAULT_DNS;
+}
+
+// The query for name into q; its length, or -1.
+I64 query(in U8[_] name) {
+    if (len(name) < 1 || len(name) > 253) { return -1; }
+    // header: ID, flags (RD), QDCOUNT 1, ANCOUNT, NSCOUNT, ARCOUNT 0
+    q[0] = (ID / 256) as U8;
+    q[1] = (ID % 256) as U8;
+    q[2] = 1;
+    q[3] = 0;
+    q[4] = 0;
+    q[5] = 1;
+    for i in 6..12 { q[i] = 0; }
+    I64 at = 12;
+    I64 start = 0;
+    for i in 0..len(name) + 1 {
+        if (i == len(name) || name[i] == '.') {
+            I64 n = i - start;
+            if (n < 1 || n > 63) { return -1; }
+            q[at] = n as U8;
+            at = at + 1;
+            for k in start..i {
+                q[at] = name[k];
+                at = at + 1;
+            }
+            start = i + 1;
+        }
+    }
+    q[at] = 0;          // the root
+    q[at + 1] = 0;
+    q[at + 2] = 1;      // QTYPE A
+    q[at + 3] = 0;
+    q[at + 4] = 1;      // QCLASS IN
+    return at + 5;
+}
+
+I64 u16(I64 at) {
+    return (r[at] as I64) * 256 + r[at + 1] as I64;
+}
+
+// The index after the name at r[at] (labels, or a pointer that ends it), or -1 past n.
+I64 skip_name(I64 at, I64 n) {
+    I64 i = at;
+    while (i < n) {
+        I64 b = r[i] as I64;
+        if (b == 0) { return i + 1; }
+        if (b >= 192) {
+            if (i + 2 > n) { return -1; }
+            return i + 2;
+        }
+        i = i + 1 + b;
+    }
+    return -1;
+}
+
+// The first A record of the reply in r[0..n] to the query of length qn: the address, or -3.
+I64 answer(I64 n, I64 qn) {
+    if (n < qn || u16(0) != ID || (r[2] as I64) < 128 || (r[3] as I64) % 16 != 0 || u16(4) != 1) { return -3; }
+    I64 records = u16(6);
+    I64 at = qn;        // the question, as asked
+    for k in 0..records {
+        at = skip_name(at, n);
+        if (at < 0 || at + 10 > n) { return -3; }
+        I64 kind = u16(at);
+        I64 klass = u16(at + 2);
+        I64 rdlen = u16(at + 8);
+        at = at + 10;
+        if (at + rdlen > n) { return -3; }
+        if (kind == 1 && klass == 1 && rdlen == 4) {
+            I64 v = 0;
+            for i in at..at + 4 { v = 256 * v + r[i] as I64; }
+            return v;
+        }
+        at = at + rdlen;
+    }
+    return -3;
+}
+
+export I64 resolve(in U8[_] name, U64 server, I64 port) {
+    I64 qn = query(name);
+    if (qn < 0) { return -1; }
+    U64 srv = pick_server(server, port);
+    I64 fd = udp.udp_open();
+    if (fd < 0) { return -2; }
+    for t in 0..3 {
+        I64 s = udp.udp_send(fd, srv, port, q[0..qn]);
+        if (s == qn) {
+            I64 n = udp.udp_recv(fd, r);
+            if (n > 0 && udp.udp_from(0) == srv && udp.udp_from(1) == port as U64) {
+                I64 a = answer(n, qn);
+                I64 c = tcp.fd_close(fd);
+                return a;
+            }
+        }
+    }
+    I64 c = tcp.fd_close(fd);
+    return -2;
+}
+// SPDX-License-Identifier: Apache-2.0

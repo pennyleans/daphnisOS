@@ -1,0 +1,29 @@
+// src/fair.ci: how often the tiler's sync reports pty output (board 20261110T234031Z and MS-9's flood). The
+// scheduler keeps a process on the CPU across its system calls (src/proc.ci, SCHED-1), so a sync that returned 3
+// whenever a master held output kept the desk running while a shell refilled it, and the processes that were not
+// running starved: a new terminal's shell never printed its prompt. Output is reported at most PER_TICK times a
+// timer tick; past that the sync waits like any other, the rest run, and the next tick reports the output again.
+// Input, an end, a bind and the rest are reported as before. Pure.
+
+export const I64 PER_TICK = 2;
+I64 tick_seen = -1;
+I64 told = 0;
+
+// Whether output may be reported at timer tick t (and, if so, counted).
+export Bool out_due(I64 t) {
+    if (t != tick_seen) {
+        tick_seen = t;
+        told = 0;
+    }
+    if (told >= PER_TICK) {
+        return false;
+    }
+    told += 1;
+    return true;
+}
+
+export void reset() {
+    tick_seen = -1;
+    told = 0;
+}
+// SPDX-License-Identifier: Apache-2.0

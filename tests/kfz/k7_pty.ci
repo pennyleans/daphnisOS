@@ -1,0 +1,80 @@
+// tests/kfz/k7_pty.ci: a pty's slave through the entries themselves: open of /dev/ptmx and /dev/pts/n (src/fs.ci
+// sys_open) and the slave's requests (src/pty.ci ioctl). The plan's P1 (board 20261111T211136Z, PR 393): a slave is its
+// owner session's. Here, what must stay allowed under that rule: the maker, and a background job of the owner session,
+// its terminal or not. tests/kfz/defects/d3_pty.ci holds what must be refused, which fails until PR 393 is in the base.
+
+const U64 NR_SETPGID = 109;
+const U64 NR_SETSID = 112;
+const U64 KZ_O_NOCTTY = 0x100;
+const U64 KZ_TCGETS = 0x5401;
+const U64 KZ_TCSETS = 0x5402;
+const U64 KZ_TIOCSWINSZ = 0x5414;
+const U64 KZ_TIOCSPGRP = 0x5410;
+const U64 KZ_TIOCSCTTY = 0x540E;
+const U64 KZ_TIOCGPTN = 0x80045430;
+
+// p's new pair: its master's descriptor.
+I64 kz_ptm(I64 p) {
+    kz_put(p, KZ_RW + 512, "/dev/ptmx");
+    I64 m = kz_call(p, NR_OPEN, KZ_RW + 512, KZ_O_RDWR | KZ_O_NOCTTY, 0, 0, 0, 0);
+    assert(m >= 3);
+    return m;
+}
+
+// The index of the pair whose master p holds as m (TIOCGPTN).
+I64 kz_ptn(I64 p, I64 m) {
+    kz_own(p, KZ_RW + 768, 8);
+    assert(kz_call(p, NR_IOCTL, m as U64, KZ_TIOCGPTN, KZ_RW + 768, 0, 0, 0) == 0);
+    return (kz_u64(p, KZ_RW + 768) & 0xFFFFFFFF) as I64;
+}
+
+// p opens /dev/pts/n with flags: the descriptor or the error.
+I64 kz_pts(I64 p, I64 n, U64 flags) {
+    kz_put(p, KZ_RW + 640, "/dev/pts/0");
+    U8[1] d;
+    d[0] = (48 + n) as U8;
+    assert(uvm.poke(p, KZ_RW + 649, d, 1, false) == 1);
+    return kz_call(p, NR_OPEN, KZ_RW + 640, flags, 0, 0, 0, 0);
+}
+
+// p's changes of the slave it holds as s: TCSETS of what its TCGETS read, TIOCSWINSZ, TIOCSPGRP to p's own group,
+// TIOCSCTTY; their answers in r.
+void kz_changes(I64 p, I64 s, inout I64[4] r) {
+    kz_own(p, KZ_RW + 1280, 256);
+    assert(kz_call(p, NR_IOCTL, s as U64, KZ_TCGETS, KZ_RW + 1280, 0, 0, 0) == 0);   // a read: anyone holding it
+    r[0] = kz_call(p, NR_IOCTL, s as U64, KZ_TCSETS, KZ_RW + 1280, 0, 0, 0);
+    r[1] = kz_call(p, NR_IOCTL, s as U64, KZ_TIOCSWINSZ, KZ_RW + 1280, 0, 0, 0);
+    kz_set_u32(p, KZ_RW + 1400, job.group(p) as U64);
+    r[2] = kz_call(p, NR_IOCTL, s as U64, KZ_TIOCSPGRP, KZ_RW + 1400, 0, 0, 0);
+    r[3] = kz_call(p, NR_IOCTL, s as U64, KZ_TIOCSCTTY, 0, 0, 0, 0);
+}
+
+test "pty: the maker opens its slave and changes it; a background job of its session does too, its terminal or not" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 m = kz_ptm(a);
+    I64 n = kz_ptn(a, m);
+    I64 s = kz_pts(a, n, KZ_O_RDWR);                      // a session leader without O_NOCTTY: its terminal now
+    assert(s >= 3 && job.terminal(a) == n);
+    I64[4] r;
+    kz_changes(a, s, r);
+    assert(r[0] == 0 && r[1] == 0 && r[2] == 0 && r[3] == 0);
+    // a background job (a group of its own in a's session) that inherited the terminal
+    I64 j = kz_fork(a);
+    assert(kz_call(j, NR_SETPGID, 0, 0, 0, 0, 0, 0) == 0 && job.session(j) == job.session(a));
+    I64 t = kz_pts(j, n, KZ_O_RDWR | KZ_O_NOCTTY);
+    assert(t >= 3);
+    kz_changes(j, t, r);
+    assert(r[0] == 0 && r[1] == 0 && r[2] == 0 && r[3] == 0);
+    // a second pair the session never took as its terminal: a job still opens and changes it; TIOCSPGRP and TIOCSCTTY
+    // then answer as for a terminal that is not the caller's
+    I64 m2 = kz_ptm(a);
+    I64 n2 = kz_ptn(a, m2);
+    assert(n2 != n && kz_pts(a, n2, KZ_O_RDWR | KZ_O_NOCTTY) >= 3);
+    I64 t2 = kz_pts(j, n2, KZ_O_RDWR | KZ_O_NOCTTY);
+    assert(t2 >= 3);
+    kz_changes(j, t2, r);
+    assert(r[0] == 0 && r[1] == 0 && r[2] == E_NOTTY && r[3] == E_PERM);
+    kz_end(j);
+    kz_end(a);
+}
+// SPDX-License-Identifier: Apache-2.0

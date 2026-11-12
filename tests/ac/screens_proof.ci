@@ -1,0 +1,78 @@
+// tests/ac/screens_proof.ci: frame 12 (DN-52, DN-53) drawn by kit/acscreen.ci on the host, the screen under the bar
+// at 1024 x 768, UI scale 1 and 2, dark: login with two names and five characters typed, the lock after a fourth wrong
+// password (AC-D2's 4 s), first boot with the name typed and the first password half done. For each frame it prints
+// `name NAME`, `frame W H` and each device row as runs `rgb count`, as tests/ff/plane_proof.ci does;
+// `python3 tools/acscreen_proof.py OUTPUT DIR` writes them as PNGs under the bar of DN-41 (a).
+// cint run --root . tests/ac/screens_proof.ci > OUTPUT
+import user.ci.kit.acscreen;
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.acct;
+
+U32[2048] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+// The screen at 1x size 1024 x 740 under the bar, at zoom z.
+void frame(I64 z) {
+    I64 w = 1024 * z;
+    I64 h = 740 * z;
+    "frame {w} {h}\n";
+    for y in 0..h {
+        pen.at(0, 0, z, y);
+        acscreen.row_at(row, 0, 0, 1024, 740);
+        emit(w);
+    }
+}
+
+void common() {
+    acscreen.set_clock(b"01:59", 5);
+    U8[40] d;
+    I64 n = acscreen.date_text(1, 11, 9, d);
+    acscreen.set_date(d, n);
+    for k in 0..3 { acscreen.set_len(k, 0); }
+    acscreen.set_note(b"", 0, false);
+}
+
+void main() {
+    tokens.set_theme(tokens.DARK);
+    for z in 1..3 {
+        common();
+        acscreen.set_screen(acscreen.LOGIN);
+        acscreen.set_rows(2, 0);
+        acscreen.set_row(0, b"ci", 2, true);
+        acscreen.set_row(1, b"sam", 3, false);
+        acscreen.set_len(0, 5);
+        "name login-1024x768-{z}x-dark\n";
+        frame(z);
+        common();
+        acscreen.set_screen(acscreen.LOCK);
+        acscreen.set_who(b"ci", 2);
+        U8[48] t;
+        I64 n = acscreen.wait_text(4, t);
+        acscreen.set_note(t, n, true);
+        "name lock-1024x768-{z}x-dark\n";
+        frame(z);
+        common();
+        acscreen.set_screen(acscreen.FIRST);
+        U8[32] r;
+        I64 rn = acscreen.rule_text(acct.PARENT_MIN, r);
+        acscreen.set_rule(r, rn);
+        acscreen.set_first(b"ci", 2, 1, false);
+        acscreen.set_len(1, 12);
+        "name first-boot-1024x768-{z}x-dark\n";
+        frame(z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

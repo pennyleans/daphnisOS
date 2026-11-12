@@ -1,0 +1,199 @@
+Daphnis CS: cish
+daphnis: image 2803640 bytes from the loader module
+daphnis: input 3176 bytes
+daphnis: run cish pid 1
+if then
+if else
+elif
+if none 0
+multi line if
+while 0
+n=x
+n=xx
+n=xxx
+until
+for one
+for two three
+for four
+empty for 0
+pos a
+pos b c
+pos d
+quoted a
+quoted b c
+quoted d
+count 3 first a
+after shift 2 b c
+after shift 2 0
+shift too far 1
+1a
+1c
+loops done
+apple starts with a
+banana matched b or c
+cherry matched b or c
+a star
+q one letter
+case none 0
+quoted subject
+paren pattern
+hello world with 2 args
+hello with 0 args
+greet status 0
+returned 2
+early 1
+early status 7
+in pp 2 1 2
+shifted 2
+outer 3 x
+v is inner
+v after outer
+3
+2
+1
+liftoff
+brace one
+brace two
+in subshell
+subshell 4
+/etc
+/
+PIPED 1
+PIPED 2
+text
+files ok
+n 0
+z 0
+eq 0
+ne 1
+lt 0
+le 1
+ge 0
+and 0
+or 0
+empty 1
+one 0
+bang 1
+size 0
+rw 0
+exec 0
+plain echo spaced   kept  
+-n not an option
+word|42|right|left|007|ff|FF|10|c
+one
+two
+three
+no args |
+   03|005|0xff|010|+4| 4|-9   |
+tab	here|
+octA|
+esc AB	|
+31 15 65 -12
+   9|ab |he|
+percent % done
+last
+stopafter stop
+end
+daphnis: state 392a05eef2c3ef7be71e13eba0f417e04c27fd8d2a35ab952ba8d8501c4e0043
+daphnis: exit 5
+daphnis: pid 1 forked 8
+daphnis: run cish pid 2
+if then
+if else
+elif
+if none 0
+multi line if
+while 0
+n=x
+n=xx
+n=xxx
+until
+for one
+for two three
+for four
+empty for 0
+pos a
+pos b c
+pos d
+quoted a
+quoted b c
+quoted d
+count 3 first a
+after shift 2 b c
+after shift 2 0
+shift too far 1
+1a
+1c
+loops done
+apple starts with a
+banana matched b or c
+cherry matched b or c
+a star
+q one letter
+case none 0
+quoted subject
+paren pattern
+hello world with 2 args
+hello with 0 args
+greet status 0
+returned 2
+early 1
+early status 7
+in pp 2 1 2
+shifted 2
+outer 3 x
+v is inner
+v after outer
+3
+2
+1
+liftoff
+brace one
+brace two
+in subshell
+subshell 4
+/etc
+/
+PIPED 1
+PIPED 2
+text
+files ok
+n 0
+z 0
+eq 0
+ne 1
+lt 0
+le 1
+ge 0
+and 0
+or 0
+empty 1
+one 0
+bang 1
+size 0
+rw 0
+exec 0
+plain echo spaced   kept  
+-n not an option
+word|42|right|left|007|ff|FF|10|c
+one
+two
+three
+no args |
+   03|005|0xff|010|+4| 4|-9   |
+tab	here|
+octA|
+esc AB	|
+31 15 65 -12
+   9|ab |he|
+percent % done
+last
+stopafter stop
+end
+daphnis: state 392a05eef2c3ef7be71e13eba0f417e04c27fd8d2a35ab952ba8d8501c4e0043
+daphnis: exit 5
+daphnis: pid 2 forked 8
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16366 of 16383
+cish: done

@@ -1,0 +1,180 @@
+// tests/ix/indexrename_test.ci: rename in place (frame 32; user/ci/kit/indexrename.ci), hosted: the stem selected,
+// the keys, the refusals, the field's box over a Grid cell and a List row, the slow second click, and the field drawn
+// over a chosen cell. Run by check.sh with every tests/ix/*_test.ci.
+import user.ci.kit.indexrename;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+
+const I64 K_ESC = 1;
+const I64 K_BACKSPACE = 14;
+const I64 K_ENTER = 28;
+const I64 K_A = 30;
+const I64 K_HOME = 102;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+const I64 K_END = 107;
+const I64 K_DELETE = 111;
+
+U8[256] got;
+
+Bool is(in U8[_] want) {
+    I64 n = indexrename.text(got);
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+I64 key(I64 c) { return indexrename.key(c, false, false); }
+
+test "the stem is selected, the ending is not; a folder and a name with no ending are selected whole" {
+    indexrename.begin(b"notes.txt", false);
+    assert(indexrename.active());
+    assert(indexrename.sel_lo() == 0 && indexrename.sel_hi() == 5 && indexrename.caret() == 5);
+    indexrename.begin(b"archive.tar.gz", false);
+    assert(indexrename.sel_hi() == 11);
+    indexrename.begin(b"kit.d", true);
+    assert(indexrename.sel_hi() == 5);
+    indexrename.begin(b"README", false);
+    assert(indexrename.sel_hi() == 6);
+    assert(indexrename.verdict() == indexrename.SAME);
+}
+
+test "typing replaces the stem; Enter commits a new name, a same name too, and Esc cancels" {
+    indexrename.begin(b"notes.txt", false);
+    assert(indexrename.typed('t') && indexrename.typed('o') && indexrename.typed('d') && indexrename.typed('o'));
+    assert(is(b"todo.txt"));
+    assert(indexrename.verdict() == indexrename.NEW);
+    assert(key(K_ENTER) == indexrename.COMMIT);
+    indexrename.begin(b"notes.txt", false);
+    assert(key(K_ENTER) == indexrename.COMMIT && indexrename.verdict() == indexrename.SAME);
+    assert(key(K_ESC) == indexrename.CANCEL);
+    indexrename.end();
+    assert(!indexrename.active() && key(K_ENTER) == indexrename.PASS);
+}
+
+test "'/', control bytes and a 256th byte are never taken" {
+    indexrename.begin(b"a", false);
+    assert(!indexrename.typed('/') && !indexrename.typed(10) && !indexrename.typed(0) && !indexrename.typed(127));
+    assert(is(b"a"));
+    U8[255] long;
+    for k in 0..255 { long[k] = 'x'; }
+    indexrename.begin(long, true);
+    assert(key(K_END) == indexrename.STAY);
+    assert(!indexrename.typed('y'));
+    assert(indexrename.typed('z') == false && indexrename.text(got) == 255);
+    assert(key(K_BACKSPACE) == indexrename.STAY && indexrename.typed('y') && got[0] == 'x');
+}
+
+test "an empty name, a dot name and a taken name keep the field open, all selected" {
+    indexrename.begin(b"notes.txt", false);
+    assert(indexrename.key(K_A, false, true) == indexrename.STAY && key(K_BACKSPACE) == indexrename.STAY);
+    assert(is(b"") && indexrename.verdict() == indexrename.BAD);
+    assert(key(K_ENTER) == indexrename.STAY && indexrename.active());
+    assert(indexrename.typed('.') && indexrename.typed('x'));
+    assert(indexrename.verdict() == indexrename.BAD && key(K_ENTER) == indexrename.STAY);
+    assert(indexrename.sel_lo() == 0 && indexrename.sel_hi() == 2);
+    assert(indexrename.typed('b') && is(b"b") && key(K_ENTER) == indexrename.COMMIT);
+    indexrename.refuse();                                   // the program found "b" taken
+    assert(indexrename.sel_lo() == 0 && indexrename.sel_hi() == 1 && indexrename.active());
+    assert(indexrename.leave() == indexrename.COMMIT);
+    assert(key(K_BACKSPACE) == indexrename.STAY && indexrename.leave() == indexrename.CANCEL);
+}
+
+test "Left, Right, Home and End move the caret, Shift extends, Delete takes the next code point" {
+    indexrename.begin(b"notes.txt", false);
+    assert(key(K_LEFT) == indexrename.STAY && indexrename.caret() == 0 && indexrename.sel_hi() == 0);
+    assert(key(K_RIGHT) == indexrename.STAY && indexrename.caret() == 1);
+    assert(indexrename.key(K_END, true, false) == indexrename.STAY);
+    assert(indexrename.sel_lo() == 1 && indexrename.sel_hi() == 9);
+    assert(key(K_DELETE) == indexrename.STAY && is(b"n"));
+    assert(key(K_HOME) == indexrename.STAY && key(K_DELETE) == indexrename.STAY && is(b""));
+    assert(key(K_DELETE) == indexrename.STAY && key(K_BACKSPACE) == indexrename.STAY && is(b""));
+}
+
+test "the caret steps over a whole code point" {
+    U8[7] s = [0x63, 0x61, 0x66, 0xC3, 0xA9, 0x2E, 0x63];   // "café.c"
+    indexrename.begin(s, false);
+    assert(indexrename.sel_hi() == 5);
+    assert(key(K_RIGHT) == indexrename.STAY && indexrename.caret() == 5);
+    assert(key(K_LEFT) == indexrename.STAY && indexrename.caret() == 3);
+    assert(key(K_BACKSPACE) == indexrename.STAY && indexrename.text(got) == 6 && got[2] == 0xC3);
+    assert(key(K_RIGHT) == indexrename.STAY && key(K_BACKSPACE) == indexrename.STAY);
+    assert(indexrename.text(got) == 4 && got[2] == 0x2E);
+}
+
+test "the field over a Grid cell: centered on the name's line, as wide as its text and 12, at most 100" {
+    indexrename.begin(b"notes.txt", false);
+    indexrename.at_grid(200, 60);
+    I64 w = ctext.width(b"notes.txt", 9, faces.SMALL, 1) + 12;
+    assert(indexrename.box_x1() - indexrename.box_x0() == w);
+    assert(indexrename.box_x0() == 200 + (112 - w) / 2);
+    assert(indexrename.box_y0() == 60 + 72);
+    U8[60] long;
+    for k in 0..60 { long[k] = 'm'; }
+    indexrename.begin(long, false);
+    assert(indexrename.box_x0() == 206 && indexrename.box_x1() == 306);
+    indexrename.begin(b"a", false);
+    assert(indexrename.box_x1() - indexrename.box_x0() == indexrename.MIN_W);
+}
+
+test "the field over a List row: from 6 before the name to at most the column's end, centered in the row" {
+    indexrename.begin(b"roundel.ci", false);
+    indexrename.at_list(228, 600, 82);
+    I64 w = ctext.width(b"roundel.ci", 10, faces.BODY, 1) + 12;
+    assert(indexrename.box_x0() == 222 && indexrename.box_x1() == 222 + w && indexrename.box_y0() == 86);
+    indexrename.at_list(228, 260, 82);
+    assert(indexrename.box_x1() == 260);
+}
+
+test "a click in the field moves the caret, outside it commits" {
+    indexrename.begin(b"notes.txt", false);
+    indexrename.at_grid(0, 0);
+    I64 x0 = indexrename.box_x0() + 6;
+    assert(indexrename.click(x0 + 1, 80, false) == indexrename.STAY && indexrename.caret() == 0);
+    I64 e = x0 + ctext.width(b"notes.txt", 9, faces.SMALL, 1);
+    assert(indexrename.click(e, 80, true) == indexrename.STAY);
+    assert(indexrename.sel_lo() == 0 && indexrename.sel_hi() == 9);
+    assert(indexrename.click(x0, 40, false) == indexrename.COMMIT);
+}
+
+test "a slow second click on the name renames, a quick one opens, a slow one off the name does nothing" {
+    assert(indexrename.second(120, true) == indexrename.OPEN);
+    assert(indexrename.second(399, false) == indexrename.OPEN);
+    assert(indexrename.second(400, true) == indexrename.RENAME);
+    assert(indexrename.second(2000, false) == indexrename.NOTHING);
+    assert(indexrename.on_name_grid(256, 80, 200, 0, b"notes.txt"));
+    assert(!indexrename.on_name_grid(256, 40, 200, 0, b"notes.txt"));
+    assert(!indexrename.on_name_grid(205, 80, 200, 0, b"a"));
+    assert(indexrename.on_name_list(230, 90, 228, 600, 82, b"roundel.ci"));
+    assert(!indexrename.on_name_list(227, 90, 228, 600, 82, b"roundel.ci"));
+    assert(!indexrename.on_name_list(500, 90, 228, 600, 82, b"roundel.ci"));
+}
+
+test "drawn over a chosen cell: the ring, MANTLE inside, FILL behind the stem, the ending in INK" {
+    tokens.set_theme(tokens.DARK);
+    U32[400] row;
+    indexrename.begin(b"notes.txt", false);
+    indexrename.at_grid(100, 0);
+    I64 bx0 = indexrename.box_x0();
+    I64 bx1 = indexrename.box_x1();
+    draw.paint(row, 0, 400, tokens.word(tokens.FILL));
+    indexrename.row_at(row, 72 + 4);                         // over the lower case letters' tops
+    assert(row[bx0 - 1] == tokens.word(tokens.ULTRAMARINE) && row[bx1] == tokens.word(tokens.ULTRAMARINE));
+    assert(row[bx0 + 1] == tokens.word(tokens.MANTLE) && row[bx1 - 2] == tokens.word(tokens.MANTLE));
+    assert(row[bx0 + 7] == tokens.word(tokens.FILL));       // the selection behind "notes"
+    assert(row[bx0 - 3] == tokens.word(tokens.FILL));       // the cell's ground around the ring
+    draw.paint(row, 0, 400, tokens.word(tokens.PAPER));
+    indexrename.row_at(row, 72 - 2);
+    assert(row[bx0 + 4] == tokens.word(tokens.ULTRAMARINE) && row[bx0 - 6] == tokens.word(tokens.FILL));
+    draw.paint(row, 0, 400, tokens.word(tokens.PAPER));
+    indexrename.row_at(row, 72 + 22);                       // past the ring: nothing drawn
+    assert(row[bx0 + 4] == tokens.word(tokens.PAPER));
+    indexrename.end();
+    indexrename.row_at(row, 82);
+    assert(row[bx0 + 4] == tokens.word(tokens.PAPER));
+}
+// SPDX-License-Identifier: Apache-2.0

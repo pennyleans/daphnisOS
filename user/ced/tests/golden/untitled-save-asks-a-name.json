@@ -1,0 +1,36 @@
+{
+ "id": "untitled-save-asks-a-name",
+ "rules": [
+  "RUN-8",
+  "RUN-7"
+ ],
+ "desk": true,
+ "untitled": true,
+ "text": "",
+ "size": [
+  3,
+  24
+ ],
+ "sel": [
+  0,
+  0
+ ],
+ "chunks": [
+  "6869",
+  "13",
+  "6e2e747874",
+  "0d"
+ ],
+ "expect": {
+  "text": "hi\n",
+  "sel": [
+   2,
+   2
+  ],
+  "screen": [
+   "hi",
+   "",
+   "saved               1:3"
+  ]
+ }
+}

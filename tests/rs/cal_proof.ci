@@ -1,0 +1,57 @@
+// tests/rs/cal_proof.ci: RS-CAL's proof, frame 44: the calendar open under the bar's clock at 01:59 on Monday,
+// November 9, 2026 in New York, the week from Sunday; with a third argument M, the week from Monday (the days of
+// October lead the first week, dim); S, stepped on to August 2026 (six weeks) with the pointer on the next chevron.
+// Theme TH (0 dark, 1 light) at zoom Z (1 or 2). The bar is the proof's own drawing of the desk's bar and its open
+// clock, not the desk's code.
+// Run: cint run --root . tests/rs/cal_proof.ci -- TH Z [M|S]
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.calpop;
+import user.ci.kit.clocktext;
+import user.ci.core.cal;
+import user.ci.core.tz;
+import tests.rs.stwin;
+
+const I64 FW = 304;
+const I64 FH = 340;
+const I64 BAR = 28;
+
+U32[1024] row;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    I64 z = 1;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    if (len(a) > 2 && a[2] == '2') { z = 2; }
+    U8 v = ' ';
+    if (len(a) > 4) { v = a[4]; }
+    tokens.set_theme(th);
+    I64 ny = tz.find(b"America/New_York");
+    I64 now = cal.days(2026, 11, 9) * 86400 + 6 * 3600 + 59 * 60;
+    I64 week = 0;
+    if (v == 'M') { week = 1; }
+    calpop.open(ny, now, week, FW - 8, BAR + 8);
+    if (v == 'S') {
+        for k in 0..3 { Bool m = calpop.step(-1); }
+        Bool h = calpop.hover(calpop.left() + calpop.W - 20, calpop.top() + 20);
+    }
+    U8[24] ct;
+    I64 cn = clocktext.bar(ct, 0, ny, now, true);
+    "frame {FW * z} {FH * z}\n";
+    for dy in 0..FH * z {
+        pen.at(0, 0, z, dy);
+        I64 y = dy / z;
+        for x in 0..FW * z { row[x] = tok(tokens.MANTLE); }
+        if (y < BAR) {
+            for x in 0..FW * z { row[x] = tok(tokens.BAR); }
+            pen.round(row, FW - 8 - 140, 4, FW - 8, BAR - 4, 6, tok(tokens.BAR_SLOT));
+            I64 e = pen.text_right(row, FW - 8 - 12, 19, ct, cn, tok(tokens.INK), faces.PATH);
+        }
+        calpop.row_at(row, dy, z, th);
+        stwin.emit(row, FW * z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

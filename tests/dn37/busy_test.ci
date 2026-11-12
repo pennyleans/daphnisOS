@@ -1,0 +1,48 @@
+// tests/dn37/busy_test.ci: the Busy pointer's kernel half, hosted (docs/specs/2026-11-10-busy-pointer.md): the wheel
+// sprite FBIO_TILE_BUSY takes (kit/wheel.ci sprite) equals tools/wheel.py's twin, and the kernel's blend
+// (src/cursor.ci) is the kit's, so the screen under a busy pointer is wheel.busy_row's. Run by check.sh.
+import src.cursor;
+import user.ci.kit.wheel;
+
+I64 sprite_sum(I64 z, I64 t) {
+    U8[9216] b;
+    I64 side = wheel.sprite(b, 0, z, t, true);
+    I64 s = 0;
+    for k in 0..side * side {
+        I64 w = 0;
+        for q in 0..4 { w = w | ((b[4 * k + q] as I64) << (8 * q)); }
+        s = (s * 31 + w) % 1000000007;
+    }
+    return s;
+}
+
+test "the sprite at 1x and 2x, at 0 and 600 ms, equals the twin's (tools/wheel.py --sums)" {
+    assert(sprite_sum(1, 0) == 817855427 && sprite_sum(1, 600) == 251879354);
+    assert(sprite_sum(2, 0) == 959672320 && sprite_sum(2, 600) == 77058158);
+}
+
+test "the kernel's blend is the kit's: every coverage over grounds and colors" {
+    U64[4] grounds = [0x1e2124, 0xf4f2ee, 0x000000, 0xffffff];
+    U64[4] colors = [0x141413, 0xf3efe6, 0xfabd2f, 0x808080];
+    for g in 0..4 {
+        for c in 0..4 {
+            for a in 0..18 {
+                U64 px = ((a as U64) << 24) | colors[c];
+                U64 k = cursor.blend(grounds[g], px);
+                U32 w = wheel.blend(grounds[g] as U32, px as I64);
+                assert(k == w as U64);
+            }
+        }
+    }
+}
+
+test "a sprite of 21 x 21 at 2x (r4.5); none outside its box; coverage at most 16" {
+    U8[9216] b;
+    assert(wheel.sprite(b, 0, 2, 0, true) == 21 && wheel.sprite(b, 0, 1, 0, true) == 11);
+    I64 side = wheel.sprite(b, 0, 2, 0, true);
+    for k in 0..side * side { assert(b[4 * k + 3] <= 16); }
+    assert(b[3] == 0);                                  // a corner is outside the disc
+    I64 mid = 4 * (10 * side + 10);
+    assert(b[mid + 3] == 16);                           // the middle is covered
+}
+// SPDX-License-Identifier: Apache-2.0

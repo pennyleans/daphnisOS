@@ -1,0 +1,6014 @@
+{
+  "motion-0": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-1": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-2": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-3": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-4": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-5": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-6": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-7": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-8": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      18
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-9": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-10": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-11": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-12": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-13": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-14": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-15": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-16": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      31
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-17": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-18": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-19": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-20": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-21": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-22": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-23": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-24": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-25": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      31
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-26": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-27": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-28": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-29": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-30": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-31": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      35
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-32": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-33": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-34": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      35
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-35": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-36": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-37": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-38": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-39": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-40": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-41": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-42": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      35
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-43": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      18
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-44": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-45": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-46": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-47": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-48": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-49": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-50": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-51": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-52": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-53": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-54": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-55": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-56": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-57": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-58": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-59": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-60": {
+    "text": "a (b [c] d) z\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-61": {
+    "text": "a (b [c] d) z\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-62": {
+    "text": "a (b [c] d) z\n",
+    "cursor": [
+      1,
+      13
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-63": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-64": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-65": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-66": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-67": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-68": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-69": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-70": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-71": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      18
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-72": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-73": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-74": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-75": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-76": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-77": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-78": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      35
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-79": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      18
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "motion-80": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-81": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-82": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-83": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-84": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-85": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-86": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-87": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-88": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-89": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-90": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-91": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-92": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-93": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-94": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-95": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "find-96": {
+    "text": "axbxcxdxe\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-97": {
+    "text": "  one two three\n  (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc "
+    ]
+  },
+  "operator-98": {
+    "text": "  one two three\n   (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc"
+    ]
+  },
+  "operator-99": {
+    "text": "  one two axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "three\n  "
+    ]
+  },
+  "operator-100": {
+    "text": "  one two three\n  \n  three four\n\nend\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc (q) tail"
+    ]
+  },
+  "operator-101": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  "
+    ]
+  },
+  "operator-102": {
+    "text": "  one two three\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n"
+    ]
+  },
+  "operator-103": {
+    "text": "  three four\n\nend\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one two three\n  axbxc (q) tail\n"
+    ]
+  },
+  "operator-104": {
+    "text": "  three four\n\nend\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one two three\n  axbxc (q) tail\n"
+    ]
+  },
+  "operator-105": {
+    "text": "  one two three\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n\nend\n"
+    ]
+  },
+  "operator-106": {
+    "text": "  one two three\n  bxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "ax"
+    ]
+  },
+  "operator-107": {
+    "text": "  one two three\n  xbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a"
+    ]
+  },
+  "operator-108": {
+    "text": "  one two three\n   tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc (q)"
+    ]
+  },
+  "operator-109": {
+    "text": "  one two three\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n"
+    ]
+  },
+  "operator-110": {
+    "text": "axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one two three\n  "
+    ]
+  },
+  "line-d1": {
+    "text": "  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "line-d2": {
+    "text": "last word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "line-d3": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\nlast word\n"
+    ]
+  },
+  "operator-114": {
+    "text": "  one two three\n  Q (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc"
+    ]
+  },
+  "operator-115": {
+    "text": "  one two three\n  Q (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc"
+    ]
+  },
+  "operator-116": {
+    "text": "  one two Qaxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "three\n  "
+    ]
+  },
+  "operator-117": {
+    "text": "  one two three\n  Q\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc (q) tail"
+    ]
+  },
+  "operator-118": {
+    "text": "  one two three\nQaxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  "
+    ]
+  },
+  "operator-119": {
+    "text": "  one two three\n  Q\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n"
+    ]
+  },
+  "operator-120": {
+    "text": "  Q\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one two three\n  axbxc (q) tail\n"
+    ]
+  },
+  "operator-121": {
+    "text": "  Q\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one two three\n  axbxc (q) tail\n"
+    ]
+  },
+  "operator-122": {
+    "text": "  one two three\n  Q\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n\nend\n"
+    ]
+  },
+  "operator-123": {
+    "text": "  one two three\n  Qbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "ax"
+    ]
+  },
+  "operator-124": {
+    "text": "  one two three\n  Qxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a"
+    ]
+  },
+  "operator-125": {
+    "text": "  one two three\n  Q tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc (q)"
+    ]
+  },
+  "operator-126": {
+    "text": "  one two three\n  Q\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n"
+    ]
+  },
+  "operator-127": {
+    "text": "Qaxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one two three\n  "
+    ]
+  },
+  "line-c1": {
+    "text": "Q\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "line-c2": {
+    "text": "Q\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "line-c3": {
+    "text": "Q\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\nlast word\n"
+    ]
+  },
+  "operator-131": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc "
+    ]
+  },
+  "operator-132": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc"
+    ]
+  },
+  "operator-133": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "three\n  "
+    ]
+  },
+  "operator-134": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc (q) tail"
+    ]
+  },
+  "operator-135": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  "
+    ]
+  },
+  "operator-136": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n"
+    ]
+  },
+  "operator-137": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one two three\n  axbxc (q) tail\n"
+    ]
+  },
+  "operator-138": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one two three\n  axbxc (q) tail\n"
+    ]
+  },
+  "operator-139": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n\nend\n"
+    ]
+  },
+  "operator-140": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "ax"
+    ]
+  },
+  "operator-141": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a"
+    ]
+  },
+  "operator-142": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "axbxc (q)"
+    ]
+  },
+  "operator-143": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  axbxc (q) tail\n  three four\n"
+    ]
+  },
+  "operator-144": {
+    "text": "  one two three\n  axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one two three\n  "
+    ]
+  },
+  "line-y1": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "line-y2": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "line-y3": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\nlast word\n"
+    ]
+  },
+  "operator-148": {
+    "text": "  one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-149": {
+    "text": "  one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-150": {
+    "text": "      one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-151": {
+    "text": "  one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-152": {
+    "text": "  one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-153": {
+    "text": "  one two three\n      axbxc (q) tail\n      three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-154": {
+    "text": "      one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-155": {
+    "text": "      one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-156": {
+    "text": "  one two three\n      axbxc (q) tail\n      three four\n\n    end\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-157": {
+    "text": "  one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-158": {
+    "text": "  one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-159": {
+    "text": "  one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-160": {
+    "text": "  one two three\n      axbxc (q) tail\n      three four\n\nend\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-161": {
+    "text": "      one two three\n      axbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "line->1": {
+    "text": "    one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "line->2": {
+    "text": "    one two, three! four five six seven\n      alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "line->3": {
+    "text": "    one two, three! four five six seven\n      alpha beta gamma\n    last word\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-165": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-166": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-167": {
+    "text": "one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-168": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-169": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-170": {
+    "text": "  one two three\naxbxc (q) tail\nthree four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-171": {
+    "text": "one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-172": {
+    "text": "one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-173": {
+    "text": "  one two three\naxbxc (q) tail\nthree four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-174": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-175": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-176": {
+    "text": "  one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-177": {
+    "text": "  one two three\naxbxc (q) tail\nthree four\n\nend\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "operator-178": {
+    "text": "one two three\naxbxc (q) tail\n  three four\n\nend\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "line-<1": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "line-<2": {
+    "text": "one two, three! four five six seven\nalpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "line-<3": {
+    "text": "one two, three! four five six seven\nalpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count-182": {
+    "text": "five six seven\n  alpha beta gamma\nlast word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one two, three! four "
+    ]
+  },
+  "count-183": {
+    "text": "three! four five six seven\n  alpha beta gamma\nlast word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one two, "
+    ]
+  },
+  "count-184": {
+    "text": "three! four five six seven\n  alpha beta gamma\nlast word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one two, "
+    ]
+  },
+  "count-185": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one two, three"
+    ]
+  },
+  "count-186": {
+    "text": "Z! four five six seven\n  alpha beta gamma\nlast word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one two, three"
+    ]
+  },
+  "count-187": {
+    "text": "    one two, three! four five six seven\n      alpha beta gamma\n    last word\n    one two, three! four five six seven\n      alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count-188": {
+    "text": "one two, three! four five six seven\nalpha beta gamma\nlast word\none two, three! four five six seven\nalpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count-189": {
+    "text": "last word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\nlast word\none two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "count-190": {
+    "text": "last word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "count-191": {
+    "text": "last word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "count-192": {
+    "text": "last word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "count-193": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "count-194": {
+    "text": "X\nlast word\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "direct-195": {
+    "text": "\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one two, three! four five six seven"
+    ]
+  },
+  "direct-196": {
+    "text": "one two, three! four five six seven\n  \nlast word\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "alpha beta gamma"
+    ]
+  },
+  "direct-197": {
+    "text": "Z\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one two, three! four five six seven"
+    ]
+  },
+  "direct-198": {
+    "text": "one two, three! four five six seven\n  Z\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "alpha beta gamma"
+    ]
+  },
+  "direct-199": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "direct-200": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  alpha beta gamma\n"
+    ]
+  },
+  "direct-201": {
+    "text": "ne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "o"
+    ]
+  },
+  "direct-202": {
+    "text": "one two, three! four five six seven\n  lpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a"
+    ]
+  },
+  "direct-203": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "direct-204": {
+    "text": "one two, three! four five six seven\n alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      " "
+    ]
+  },
+  "direct-205": {
+    "text": "Zne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "o"
+    ]
+  },
+  "direct-206": {
+    "text": "one two, three! four five six seven\n  Zlpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a"
+    ]
+  },
+  "direct-207": {
+    "text": "Z\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "direct-208": {
+    "text": "one two, three! four five six seven\n  Z\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  alpha beta gamma\n"
+    ]
+  },
+  "direct-209": {
+    "text": "Zne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "direct-210": {
+    "text": "one two, three! four five six seven\n  Zlpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "direct-211": {
+    "text": "one two, three! four five six seven alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      36
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "direct-212": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma last word\n",
+    "cursor": [
+      2,
+      19
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "direct-213": {
+    "text": "One two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "direct-214": {
+    "text": "one two, three! four five six seven\n  Alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "direct-215": {
+    "text": "one two, three! four five six seven\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "direct-216": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  alpha beta gamma\n"
+    ]
+  },
+  "direct-217": {
+    "text": "one two, three! four five six seven\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "direct-218": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  alpha beta gamma\n"
+    ]
+  },
+  "insert-219": {
+    "text": "xyone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-220": {
+    "text": "aZone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-221": {
+    "text": "x\nyone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-222": {
+    "text": "one two, three! four five six seven\n  xyalpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-223": {
+    "text": "one two, three! four five six seven\n  aZalpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-224": {
+    "text": "one two, three! four five six seven\n  x\n  yalpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-225": {
+    "text": "oxyne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-226": {
+    "text": "oaZne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-227": {
+    "text": "ox\nyne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-228": {
+    "text": "one two, three! four five six seven\n  axylpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-229": {
+    "text": "one two, three! four five six seven\n  aaZlpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-230": {
+    "text": "one two, three! four five six seven\n  ax\n  ylpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-231": {
+    "text": "xyone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-232": {
+    "text": "aZone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-233": {
+    "text": "x\nyone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-234": {
+    "text": "one two, three! four five six seven\n  xyalpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-235": {
+    "text": "one two, three! four five six seven\n  aZalpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-236": {
+    "text": "one two, three! four five six seven\n  x\n  yalpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-237": {
+    "text": "one two, three! four five six sevenxy\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      37
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-238": {
+    "text": "one two, three! four five six sevenaZ\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      37
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-239": {
+    "text": "one two, three! four five six sevenx\ny\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-240": {
+    "text": "one two, three! four five six seven\n  alpha beta gammaxy\nlast word\n",
+    "cursor": [
+      2,
+      20
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-241": {
+    "text": "one two, three! four five six seven\n  alpha beta gammaaZ\nlast word\n",
+    "cursor": [
+      2,
+      20
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-242": {
+    "text": "one two, three! four five six seven\n  alpha beta gammax\n  y\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-243": {
+    "text": "one two, three! four five six seven\nxy\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-244": {
+    "text": "one two, three! four five six seven\naZ\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-245": {
+    "text": "one two, three! four five six seven\nx\ny\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-246": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\n  xy\nlast word\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-247": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\n  aZ\nlast word\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-248": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\n  x\n  y\nlast word\n",
+    "cursor": [
+      4,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-249": {
+    "text": "xy\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-250": {
+    "text": "aZ\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-251": {
+    "text": "x\ny\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-252": {
+    "text": "one two, three! four five six seven\n  xy\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-253": {
+    "text": "one two, three! four five six seven\n  aZ\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-254": {
+    "text": "one two, three! four five six seven\n  x\n  y\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-255": {
+    "text": "xye two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-256": {
+    "text": "aZe two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-257": {
+    "text": "x\nye two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-258": {
+    "text": "one two, three! four five six seven\n  xypha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-259": {
+    "text": "one two, three! four five six seven\n  aZpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert-260": {
+    "text": "one two, three! four five six seven\n  x\n  ypha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-261": {
+    "text": "XYXYXYone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-262": {
+    "text": "oXYXYXYne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-263": {
+    "text": "one two, three! four five six seven\nXY\nXY\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      3,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-264": {
+    "text": "XY\nXY\none two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-265": {
+    "text": "XYXYtwo, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-266": {
+    "text": "    xone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-267": {
+    "text": "ne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-268": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-269": {
+    "text": "xZe two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-270": {
+    "text": "XZYone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-271": {
+    "text": "XYoZne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-272": {
+    "text": "XYone two, three! four five six sevenZ\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      38
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-273": {
+    "text": "ZXYone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-274": {
+    "text": "XYone two, three! four five six seven\n  Zalpha beta gamma\nlast word\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-275": {
+    "text": "one two, three! foZur five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      19
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-276": {
+    "text": "XZYone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "insert_keys-277": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-278": {
+    "text": "  if (x) {\n      x\n    y;\n  }\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-279": {
+    "text": "  if (x) {\n\n    y;\n  }\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-280": {
+    "text": "  if (x) {\n\n\n    y;\n  }\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-281": {
+    "text": "  if (x) {\n  }\n    y;\n  }\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-282": {
+    "text": "  if (x) {\n     x\n    y;\n  }\n",
+    "cursor": [
+      2,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-283": {
+    "text": "  if (x) {\n        x\n    y;\n  }\n",
+    "cursor": [
+      2,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-284": {
+    "text": "\n  if (x) {\n    y;\n  }\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-285": {
+    "text": "  if (x) {\n\n      x\n    y;\n  }\n",
+    "cursor": [
+      3,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-286": {
+    "text": "  if (x) {\n      foo\n  }\n    y;\n  }\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "indent-287": {
+    "text": "  if (x) {\n  }\n    y;\n  }\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-288": {
+    "text": "ne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "o"
+    ]
+  },
+  "undo-289": {
+    "text": "ne two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "o"
+    ]
+  },
+  "undo-290": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-291": {
+    "text": "xyone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-292": {
+    "text": "xone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-293": {
+    "text": "xone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-294": {
+    "text": "  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "undo-295": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n"
+    ]
+  },
+  "undo-296": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-297": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-298": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "one two, three! four five six seven\n  alpha beta gamma\n"
+    ]
+  },
+  "undo-299": {
+    "text": "XYone two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "undo-300": {
+    "text": "one two, three! four five six seven\n  alpha beta gamma\nlast word\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-301": {
+    "text": "x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-302": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-303": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-304": {
+    "text": "\n\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "edge-305": {
+    "text": "z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-306": {
+    "text": "Q\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-307": {
+    "text": "\nX\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-308": {
+    "text": "x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-309": {
+    "text": "\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-310": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "edge-311": {
+    "text": "\n\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "edge-312": {
+    "text": "z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-313": {
+    "text": "Q\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-314": {
+    "text": "\nX\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-315": {
+    "text": "xx\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-316": {
+    "text": "\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "x"
+    ]
+  },
+  "edge-317": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "x\n"
+    ]
+  },
+  "edge-318": {
+    "text": "x\nx\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "x\n"
+    ]
+  },
+  "edge-319": {
+    "text": "z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-320": {
+    "text": "xQ\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-321": {
+    "text": "x\nX\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-322": {
+    "text": "xéλ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-323": {
+    "text": "λ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "é"
+    ]
+  },
+  "edge-324": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "éλ文\n"
+    ]
+  },
+  "edge-325": {
+    "text": "éλ文\néλ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "éλ文\n"
+    ]
+  },
+  "edge-326": {
+    "text": "zλ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-327": {
+    "text": "éλ文Q\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "edge-328": {
+    "text": "éλ文\nX\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-329": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a b c\n"
+    ]
+  },
+  "boundary-330": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-331": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-332": {
+    "text": "\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a b c\n"
+    ]
+  },
+  "boundary-333": {
+    "text": "  X\n\n last\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a b c\n"
+    ]
+  },
+  "boundary-334": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-335": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a b c\n"
+    ]
+  },
+  "boundary-336": {
+    "text": "\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a b c\n"
+    ]
+  },
+  "boundary-337": {
+    "text": "  a b c\n\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      " last\n"
+    ]
+  },
+  "boundary-338": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      3,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      " last\n"
+    ]
+  },
+  "boundary-339": {
+    "text": "  a b c\n\n X\n",
+    "cursor": [
+      3,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      " last\n"
+    ]
+  },
+  "boundary-340": {
+    "text": "  a b c\n\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      " last\n"
+    ]
+  },
+  "boundary-341": {
+    "text": "  a b c\n\n\n last\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "boundary-342": {
+    "text": "  a b c\n\n\n\n last\n",
+    "cursor": [
+      4,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "boundary-343": {
+    "text": "  a b c\n last\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "boundary-344": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      " "
+    ]
+  },
+  "boundary-345": {
+    "text": " a b c\n\n last\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      " "
+    ]
+  },
+  "boundary-346": {
+    "text": "  a b c\n last\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-347": {
+    "text": "  a b c last\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-348": {
+    "text": "\n\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  a b c"
+    ]
+  },
+  "boundary-349": {
+    "text": "  a b c\n\n last\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-350": {
+    "text": "XXa b c\n\n last\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-351": {
+    "text": "\na b c\n\n last\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-352": {
+    "text": "\na b c\n\n last\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-353": {
+    "text": "    xa b c\n\n last\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-354": {
+    "text": "xy\nZ b c\n\n last\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-355": {
+    "text": "xyZ b c\n\n last\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "boundary-356": {
+    "text": "    a b c\n\n last\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-357": {
+    "text": "abc\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-358": {
+    "text": "abc\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-359": {
+    "text": "Xabc\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-360": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "abc\n"
+    ]
+  },
+  "file_edge-361": {
+    "text": "abc\nabc\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "abc\n"
+    ]
+  },
+  "file_edge-362": {
+    "text": "abc\nX\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-363": {
+    "text": "xbc\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-364": {
+    "text": "abc\ndef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-365": {
+    "text": "abc\ndef\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-366": {
+    "text": "Xabc\ndef\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-367": {
+    "text": "def\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "abc\n"
+    ]
+  },
+  "file_edge-368": {
+    "text": "abc\nabc\ndef\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "abc\n"
+    ]
+  },
+  "file_edge-369": {
+    "text": "abc\nX\ndef\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-370": {
+    "text": "xbc\ndef\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-371": {
+    "text": "éλ文\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-372": {
+    "text": "éλ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-373": {
+    "text": "Xéλ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-374": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "éλ文\n"
+    ]
+  },
+  "file_edge-375": {
+    "text": "éλ文\néλ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "éλ文\n"
+    ]
+  },
+  "file_edge-376": {
+    "text": "éλ文\nX\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-377": {
+    "text": "xλ文\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-378": {
+    "text": "a\tb\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-379": {
+    "text": "a\tb\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-380": {
+    "text": "Xa\tb\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-381": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "a\tb\n"
+    ]
+  },
+  "file_edge-382": {
+    "text": "a\tb\na\tb\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "a\tb\n"
+    ]
+  },
+  "file_edge-383": {
+    "text": "a\tb\nX\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-384": {
+    "text": "x\tb\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-385": {
+    "text": "   \n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-386": {
+    "text": "   \n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-387": {
+    "text": "X   \n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-388": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "   \n"
+    ]
+  },
+  "file_edge-389": {
+    "text": "   \n   \n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "   \n"
+    ]
+  },
+  "file_edge-390": {
+    "text": "   \n   X\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-391": {
+    "text": "x  \n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-392": {
+    "text": "\n\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-393": {
+    "text": "\n\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-394": {
+    "text": "X\n\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-395": {
+    "text": "\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "file_edge-396": {
+    "text": "\n\n\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "\n"
+    ]
+  },
+  "file_edge-397": {
+    "text": "\nX\n\n",
+    "cursor": [
+      2,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "file_edge-398": {
+    "text": "x\n\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-399": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-400": {
+    "text": "  onX, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-401": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-402": {
+    "text": "  one two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-403": {
+    "text": "  oneX two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-404": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-405": {
+    "text": ", two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-406": {
+    "text": "X, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-407": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-408": {
+    "text": "  , two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-409": {
+    "text": "  X, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-410": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-411": {
+    "text": "  onetwo (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", "
+    ]
+  },
+  "composition-412": {
+    "text": "  oneX two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-413": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", "
+    ]
+  },
+  "composition-414": {
+    "text": "  onetwo (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", "
+    ]
+  },
+  "composition-415": {
+    "text": "  oneX two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-416": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", "
+    ]
+  },
+  "composition-417": {
+    "text": "  , two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-418": {
+    "text": "  X, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-419": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-420": {
+    "text": "  , two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-421": {
+    "text": "  X, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-422": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "one"
+    ]
+  },
+  "composition-423": {
+    "text": "  one (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two"
+    ]
+  },
+  "composition-424": {
+    "text": "  oneX (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two"
+    ]
+  },
+  "composition-425": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two"
+    ]
+  },
+  "composition-426": {
+    "text": "  one (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two"
+    ]
+  },
+  "composition-427": {
+    "text": "  oneX (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two"
+    ]
+  },
+  "composition-428": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two"
+    ]
+  },
+  "composition-429": {
+    "text": "  on two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e,"
+    ]
+  },
+  "composition-430": {
+    "text": "  onX two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e,"
+    ]
+  },
+  "composition-431": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e,"
+    ]
+  },
+  "composition-432": {
+    "text": " two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one,"
+    ]
+  },
+  "composition-433": {
+    "text": "X two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one,"
+    ]
+  },
+  "composition-434": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one,"
+    ]
+  },
+  "composition-435": {
+    "text": "  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one, two (three)\n"
+    ]
+  },
+  "composition-436": {
+    "text": "  X\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one, two (three)\n"
+    ]
+  },
+  "composition-437": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one, two (three)\n"
+    ]
+  },
+  "composition-438": {
+    "text": "",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one, two (three)\n  four, five\n\nsix\n"
+    ]
+  },
+  "composition-439": {
+    "text": "  X\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one, two (three)\n  four, five\n\nsix\n"
+    ]
+  },
+  "composition-440": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  one, two (three)\n  four, five\n\nsix\n"
+    ]
+  },
+  "composition-441": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-442": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-443": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-444": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-445": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-446": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-447": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-448": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-449": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-450": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-451": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-452": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-453": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-454": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-455": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-456": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-457": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-458": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-459": {
+    "text": "  one\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)"
+    ]
+  },
+  "composition-460": {
+    "text": "  oneX\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)"
+    ]
+  },
+  "composition-461": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)"
+    ]
+  },
+  "composition-462": {
+    "text": ", two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-463": {
+    "text": "X, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-464": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-465": {
+    "text": "  one\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)\n  four, five"
+    ]
+  },
+  "composition-466": {
+    "text": "  oneX\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)\n  four, five"
+    ]
+  },
+  "composition-467": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)\n  four, five"
+    ]
+  },
+  "composition-468": {
+    "text": "  on, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-469": {
+    "text": "  onX, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-470": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "e"
+    ]
+  },
+  "composition-471": {
+    "text": "  one two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-472": {
+    "text": "  oneX two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-473": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ","
+    ]
+  },
+  "composition-474": {
+    "text": ", two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-475": {
+    "text": "X, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-476": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "  one"
+    ]
+  },
+  "composition-477": {
+    "text": "  one\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)"
+    ]
+  },
+  "composition-478": {
+    "text": "  oneX\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)"
+    ]
+  },
+  "composition-479": {
+    "text": "  one, two (three)\n  four, five\n\nsix\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ", two (three)"
+    ]
+  },
+  "utf8-480": {
+    "text": "λ文 x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "é"
+    ]
+  },
+  "utf8-481": {
+    "text": "éλ x\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "文"
+    ]
+  },
+  "utf8-482": {
+    "text": "éλ x\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "文"
+    ]
+  },
+  "utf8-483": {
+    "text": "él文 x\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-484": {
+    "text": "ÉΛ文 x\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-485": {
+    "text": "文λ文 x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-486": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-487": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-488": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-489": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-490": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      5
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-491": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-492": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "utf8-493": {
+    "text": "éλ文 x\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-494": {
+    "text": "  a\n  X{ tail{\n",
+    "cursor": [
+      2,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-495": {
+    "text": " \n Xaa{\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-496": {
+    "text": "  ab{\n      Xcd\n",
+    "cursor": [
+      2,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-497": {
+    "text": "xyzde\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-498": {
+    "text": "xZzde\n",
+    "cursor": [
+      1,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-499": {
+    "text": "ÉiẞZ\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "composition-500": {
+    "text": "XYZXYZabc\n",
+    "cursor": [
+      1,
+      6
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  }
+}

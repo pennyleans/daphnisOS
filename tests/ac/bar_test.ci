@@ -1,0 +1,39 @@
+// tests/ac/bar_test.ci: DN-41 (a) (design note 41, AC spec edition 5): the bar of login, lock and first boot shows the
+// roundel and the clock and nothing else; a session's bar keeps its pills, its panel squares and its tray. hdesk.ci is
+// a program, so bar_items and the screen numbers below are its own, copied verbatim; bar_row draws only the items it
+// names (and tools/check-hdesk.py --ac-bar-proof draws the bar both ways). Run by check.sh.
+
+const I64 SCR_NONE = 0;
+const I64 SCR_FIRST = 1;
+const I64 SCR_LOGIN = 2;
+const I64 SCR_LOCK = 3;
+const I64 SCR_BROKEN = 4;
+
+const I64 BAR_ROUNDEL = 1;
+const I64 BAR_CLOCK = 2;
+const I64 BAR_APP = 4;
+const I64 BAR_DESKS = 8;
+const I64 BAR_PILLS = 16;
+const I64 BAR_PANEL = 32;
+const I64 BAR_TRAY = 64;
+I64 bar_items(I64 scr) {
+    if (scr != 0) { return BAR_ROUNDEL | BAR_CLOCK; }
+    return BAR_ROUNDEL | BAR_CLOCK | BAR_APP | BAR_DESKS | BAR_PILLS | BAR_PANEL | BAR_TRAY;
+}
+
+test "DN-41 (a): first boot, login and lock: the roundel and the clock, no status pill, no squares, no tray" {
+    I64[4] scr = [SCR_FIRST, SCR_LOGIN, SCR_LOCK, SCR_BROKEN];
+    for k in 0..4 {
+        I64 b = bar_items(scr[k]);
+        assert(b == (BAR_ROUNDEL | BAR_CLOCK));
+        assert((b & BAR_PILLS) == 0 && (b & BAR_PANEL) == 0 && (b & BAR_TRAY) == 0 && (b & BAR_APP) == 0);
+        assert((b & BAR_DESKS) == 0);
+    }
+}
+
+test "a session's bar keeps everything: the App pill, the desktops, the status pills, the squares, the tray" {
+    I64 b = bar_items(SCR_NONE);
+    assert((b & BAR_ROUNDEL) != 0 && (b & BAR_CLOCK) != 0 && (b & BAR_PILLS) != 0);
+    assert((b & BAR_PANEL) != 0 && (b & BAR_TRAY) != 0 && (b & BAR_APP) != 0 && (b & BAR_DESKS) != 0);
+}
+// SPDX-License-Identifier: Apache-2.0

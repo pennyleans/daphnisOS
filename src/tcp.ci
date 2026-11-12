@@ -1,0 +1,1467 @@
+// src/tcp.ci: TCP with a 64 KiB window, out-of-order reassembly, NewReno, RFC 6298 RTO, and delayed ACK
+// (N-3, docs/specs/2026-11-05-n-net.md; NW-1 and NW-2, docs/specs/2026-11-07-nw-window.md section 3).
+//
+// A table of CONNS connections. Each open slot holds 32 pool frames (128 KiB): 16 frames (64 KiB) for the
+// receive ring and 16 frames (64 KiB) for the send ring. The offered window fits 16 bits without scaling
+// (at most 65,535 bytes). Up to W = 32 segments are in flight at once. Out-of-order segments inside the
+// offered window are kept in the receive ring and coalesced when the gap fills.
+//
+// Congestion control is NewReno (RFC 5681, RFC 6582, RFC 6928): initial cwnd of 10 segments, slow start,
+// congestion avoidance, and fast retransmit / fast recovery on three duplicate ACKs. RTO follows RFC 6298
+// in kernel timer interrupts (net.timers(), 100 ticks = 1 s floor, exponential backoff up to TRIES = 6).
+// Delayed ACK sends one ACK every second full segment, or at the next network tick. No SACK, timestamps,
+// or window scaling.
+
+import src.net;
+import src.eth;
+import src.ip;
+import src.phys;
+import src.frames;
+
+export const I64 CONNS = 8;
+export const I64 MSS = 1460;
+export const I64 WAIT = -1001;         // the call must wait for the network
+export const I64 PROTO_TCP = 6;
+
+const I64 CONN_FRAMES = 32;
+const I64 RX_FRAMES = 16;
+const I64 RX = 65536;
+const I64 TX = 65536;
+const I64 MAX_WND = 65535;
+const I64 W = 32;                      // max segments in flight
+const I64 OOO_SLOTS = 32;              // out-of-order intervals per connection
+
+const I64 RTO_MIN = 100;               // 1.0 s floor at 100 Hz (RFC 6298)
+const I64 RTO_MAX = 6000;              // 60.0 s cap (RFC 6298)
+const I64 TRIES = 6;
+const I64 TIME_WAIT_TICKS = 200;
+const I64 EPHEMERAL = 49152;
+const I64 M32 = 0xFFFFFFFF;
+
+// states (RFC 793); FREE is a slot not in use
+export const I64 FREE = 0;
+export const I64 CLOSED = 1;           // open, not connected: a new socket, or one whose connection ended
+export const I64 LISTEN = 2;
+export const I64 SYN_SENT = 3;
+export const I64 SYN_RCVD = 4;
+export const I64 ESTABLISHED = 5;
+export const I64 FIN_WAIT_1 = 6;
+export const I64 FIN_WAIT_2 = 7;
+export const I64 CLOSE_WAIT = 8;
+export const I64 CLOSING = 9;
+export const I64 LAST_ACK = 10;
+export const I64 TIME_WAIT = 11;
+
+const I64 F_FIN = 1;
+const I64 F_SYN = 2;
+const I64 F_RST = 4;
+const I64 F_PSH = 8;
+const I64 F_ACK = 16;
+
+const I64 ECONNREFUSED = 111;
+const I64 ECONNRESET = 104;
+const I64 ETIMEDOUT = 110;
+const I64 EADDRINUSE = 98;
+const I64 ENOMEM = 12;
+const I64 ENFILE = 23;
+
+I64[8] st;
+Bool[8] owned;          // a descriptor holds it
+Bool[8] fresh;          // connect established it and has not said so yet
+I64[8] parent;          // the listener a SYN_RCVD or unaccepted connection came through; -1
+Bool[8] taken;          // accept handed it out
+I64[8] mem;             // the first of its CONN_FRAMES pool frames
+I64[8] lport;
+I64[8] raddr;
+I64[8] rport;
+
+I64[8] snd_una;
+I64[8] snd_nxt;
+I64[8] snd_max;
+I64[8] rcv_nxt;
+I64[8] peer_wnd;
+I64[8] peer_mss;
+
+Bool[8] syn_out;        // our SYN is unacknowledged
+Bool[8] fin_queued;     // our FIN is queued after tx_len bytes
+Bool[8] fin_out;        // our FIN has been transmitted at least once
+Bool[8] fin_in;         // the peer's FIN came in order
+
+I64[8] tx_head;
+I64[8] tx_len;
+
+I64[8] rx_head;
+I64[8] rxn;
+I64[8] adv;             // remaining window promised to the peer past rcv_nxt
+
+// Out-of-order intervals relative to rcv_nxt: [ooo_s, ooo_e), unused when ooo_e == 0
+I64[256] ooo_s;
+I64[256] ooo_e;
+Bool[8] ooo_fin;        // peer FIN arrived inside window at offset ooo_fin_off
+I64[8] ooo_fin_off;
+
+// Delayed ACK state
+Bool[8] ack_pend;
+I64[8] ack_segs;
+I64[8] ack_bytes;
+I64[8] ack_tick;        // net.ticks() when ack_pend became true
+
+// NewReno congestion control (RFC 5681, RFC 6582, RFC 6928)
+I64[8] cwnd;
+I64[8] ssthresh;
+I64[8] cwnd_cnt;
+I64[8] dupacks;
+Bool[8] in_recovery;
+I64[8] recover;
+Bool[8] partial_seen;
+
+// RFC 6298 RTT and RTO state (in net.timers() ticks)
+Bool[8] rtt_valid;
+I64[8] srtt8;
+I64[8] rttvar4;
+Bool[8] rtt_on;
+I64[8] rtt_end;
+I64[8] rtt_at;
+I64[8] rto_base;
+I64[8] rto_cur;
+I64[8] sent_at;
+I64[8] tries;
+I64[8] err;             // a failure the next call reports (positive errno), 0 none
+
+I64 next_iss = 0x10000;
+I64 next_eph = EPHEMERAL;
+I64 resets = 0;
+I64 fast_rexmits = 0;
+I64 ooo_kept_count = 0;
+U8[1514] sf;
+
+U64 rx_at(I64 c, I64 k) {
+    return frames.frame_addr(mem[c]) as U64 + k as U64;
+}
+
+U64 tx_at(I64 c, I64 k) {
+    return frames.frame_addr(mem[c] + RX_FRAMES) as U64 + k as U64;
+}
+
+I64 add32(I64 a, I64 b) {
+    return (a + b) & M32;
+}
+
+I64 sub32(I64 a, I64 b) {
+    return (a - b + 0x100000000) & M32;
+}
+
+Bool seq_ge(I64 a, I64 b) {
+    return sub32(a, b) < 0x80000000;
+}
+
+I64 clamp_mss(I64 m) {
+    if (m < 64) {
+        return 64;
+    }
+    if (m > MSS) {
+        return MSS;
+    }
+    return m;
+}
+
+I64 eff_mss(I64 c) {
+    return clamp_mss(peer_mss[c]);
+}
+
+void clear_ooo(I64 c) {
+    I64 base = c * OOO_SLOTS;
+    for i in 0..OOO_SLOTS {
+        ooo_s[base + i] = 0;
+        ooo_e[base + i] = 0;
+    }
+    ooo_fin[c] = false;
+    ooo_fin_off[c] = 0;
+}
+
+// A slot for a new connection, its 32 frames taken; the slot, or -ENFILE or -ENOMEM.
+I64 slot() {
+    for c in 0..CONNS {
+        if (st[c] == FREE) {
+            I64 m = frames.alloc(CONN_FRAMES);
+            if (m < 0) {
+                return 0 - ENOMEM;
+            }
+            mem[c] = m;
+            st[c] = CLOSED;
+            owned[c] = false;
+            parent[c] = -1;
+            taken[c] = false;
+            lport[c] = 0;
+            raddr[c] = 0;
+            rport[c] = 0;
+            snd_una[c] = 0;
+            snd_nxt[c] = 0;
+            snd_max[c] = 0;
+            rcv_nxt[c] = 0;
+            fresh[c] = false;
+            syn_out[c] = false;
+            fin_queued[c] = false;
+            fin_out[c] = false;
+            fin_in[c] = false;
+            tx_head[c] = 0;
+            tx_len[c] = 0;
+            rx_head[c] = 0;
+            rxn[c] = 0;
+            adv[c] = 0;
+            clear_ooo(c);
+            ack_pend[c] = false;
+            ack_segs[c] = 0;
+            ack_bytes[c] = 0;
+            ack_tick[c] = 0;
+            cwnd[c] = 10 * MSS;
+            ssthresh[c] = MAX_WND;
+            cwnd_cnt[c] = 0;
+            dupacks[c] = 0;
+            in_recovery[c] = false;
+            recover[c] = 0;
+            partial_seen[c] = false;
+            rtt_valid[c] = false;
+            srtt8[c] = 0;
+            rttvar4[c] = 0;
+            rtt_on[c] = false;
+            rtt_end[c] = 0;
+            rtt_at[c] = 0;
+            rto_base[c] = RTO_MIN;
+            rto_cur[c] = RTO_MIN;
+            sent_at[c] = 0;
+            tries[c] = 0;
+            err[c] = 0;
+            peer_wnd[c] = 0;
+            peer_mss[c] = 536;
+            return c;
+        }
+    }
+    return 0 - ENFILE;
+}
+
+void free_slot(I64 c) {
+    if (st[c] != FREE) {
+        _ = frames.release(mem[c], CONN_FRAMES);
+        st[c] = FREE;
+    }
+}
+
+// The connection is over: freed if nothing holds it, else CLOSED with err for the holder's next call.
+void ended(I64 c, I64 e) {
+    if (owned[c]) {
+        st[c] = CLOSED;
+        if (err[c] == 0) {
+            err[c] = e;
+        }
+        syn_out[c] = false;
+        fin_queued[c] = false;
+        fin_out[c] = false;
+        tx_head[c] = 0;
+        tx_len[c] = 0;
+        ack_pend[c] = false;
+        ack_segs[c] = 0;
+        ack_bytes[c] = 0;
+        in_recovery[c] = false;
+        dupacks[c] = 0;
+        rtt_on[c] = false;
+        clear_ooo(c);
+    } else {
+        free_slot(c);
+    }
+}
+
+Bool has_ooo(I64 c) {
+    if (ooo_fin[c]) {
+        return true;
+    }
+    I64 base = c * OOO_SLOTS;
+    for i in 0..OOO_SLOTS {
+        if (ooo_e[base + i] > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+I64 window(I64 c) {
+    I64 w = RX - rxn[c];
+    if (w > MAX_WND) {
+        w = MAX_WND;
+    }
+    if (w < 0) {
+        w = 0;
+    }
+    if ((st[c] == ESTABLISHED || st[c] == FIN_WAIT_1 || st[c] == FIN_WAIT_2) && has_ooo(c) && adv[c] >= RX / 4 && adv[c] <= w) {
+        return adv[c];
+    }
+    return w;
+}
+
+// Builds and sends one segment of connection c: seq, flags, and n bytes from TX ring offset tx_off.
+void emit_seg(I64 c, I64 seq, I64 flags, I64 tx_off, I64 n) {
+    I64 hl = 20;
+    if ((flags & F_SYN) != 0) {
+        hl = 24;
+    }
+    I64 t = ip.DATA;
+    eth.put16(sf, t, lport[c]);
+    eth.put16(sf, t + 2, rport[c]);
+    eth.put32(sf, t + 4, seq);
+    I64 a = 0;
+    if ((flags & F_ACK) != 0) {
+        a = rcv_nxt[c];
+        ack_pend[c] = false;
+        ack_segs[c] = 0;
+        ack_bytes[c] = 0;
+    }
+    eth.put32(sf, t + 8, a);
+    sf[t + 12] = ((hl / 4) << 4) as U8;
+    sf[t + 13] = flags as U8;
+    I64 w = window(c);
+    if ((flags & F_RST) == 0) {
+        adv[c] = w;
+    }
+    eth.put16(sf, t + 14, w);
+    eth.put16(sf, t + 16, 0);
+    eth.put16(sf, t + 18, 0);
+    if (hl == 24) {
+        sf[t + 20] = 2;
+        sf[t + 21] = 4;
+        eth.put16(sf, t + 22, MSS);
+    }
+    if (n > 0) {
+        I64 at = (tx_head[c] + tx_off) % TX;
+        I64 first = n;
+        if (at + first > TX) {
+            first = TX - at;
+        }
+        phys.phys_read8(tx_at(c, at), sf[t + hl..t + hl + first]);
+        if (n > first) {
+            phys.phys_read8(tx_at(c, 0), sf[t + hl + first..t + hl + n]);
+        }
+    }
+    I64 tl = hl + n;
+    I64 me = eth.our_ip();
+    I64 ps = ((me >> 16) & 0xFFFF) + (me & 0xFFFF) + ((raddr[c] >> 16) & 0xFFFF) + (raddr[c] & 0xFFFF) + PROTO_TCP + tl;
+    eth.put16(sf, t + 16, 0xFFFF - ip.csum(sf, t, tl, ps));
+    _ = ip.output(raddr[c], PROTO_TCP, sf, tl);
+}
+
+void emit_ctrl(I64 c, I64 seq, I64 flags) {
+    emit_seg(c, seq, flags, 0, 0);
+}
+
+void ack_now(I64 c) {
+    emit_ctrl(c, snd_nxt[c], F_ACK);
+}
+
+I64 flight_bytes(I64 c) {
+    return sub32(snd_max[c], snd_una[c]);
+}
+
+I64 total_queued_seq(I64 c) {
+    I64 tot = tx_len[c];
+    if (fin_queued[c]) {
+        tot += 1;
+    }
+    return tot;
+}
+
+// Retransmits one segment at snd_una[c] (NewReno fast retransmit / partial ACK).
+void retransmit_one(I64 c) {
+    if (tx_len[c] == 0 && !fin_queued[c]) {
+        return;
+    }
+    I64 n = tx_len[c];
+    I64 m = eff_mss(c);
+    if (n > m) {
+        n = m;
+    }
+    I64 flags = F_ACK;
+    if (n > 0) {
+        flags = flags | F_PSH;
+    }
+    if (fin_out[c] && fin_queued[c] && n == tx_len[c]) {
+        flags = flags | F_FIN;
+    }
+    rtt_on[c] = false;
+    emit_seg(c, snd_una[c], flags, 0, n);
+    fast_rexmits += 1;
+}
+
+// Transmits queued data and/or FIN from snd_nxt[c] while within cwnd, peer_wnd, and W = 32 segments.
+void output(I64 c) {
+    if (syn_out[c] || st[c] < ESTABLISHED || st[c] > LAST_ACK) {
+        return;
+    }
+    I64 m = eff_mss(c);
+    I64 swnd = cwnd[c];
+    if (!in_recovery[c] && dupacks[c] > 0 && dupacks[c] < 3) {
+        swnd += dupacks[c] * m;
+    }
+    if (peer_wnd[c] < swnd) {
+        swnd = peer_wnd[c];
+    }
+    I64 cap = W * m;
+    if (cap < swnd) {
+        swnd = cap;
+    }
+    Bool had_flight = flight_bytes(c) > 0;
+    I64 burst = 0;
+    Bool more = true;
+    while (more && burst < W) {
+        I64 off = sub32(snd_nxt[c], snd_una[c]);
+        I64 tot = total_queued_seq(c);
+        if (off >= tot) {
+            more = false;
+        } else if (off < tx_len[c]) {
+            if (off >= swnd) {
+                more = false;
+            } else {
+                I64 n = tx_len[c] - off;
+                if (n > m) {
+                    n = m;
+                }
+                if (n > swnd - off) {
+                    n = swnd - off;
+                }
+                I64 flags = F_ACK | F_PSH;
+                I64 seq_adv = n;
+                if (fin_queued[c] && off + n == tx_len[c]) {
+                    flags = flags | F_FIN;
+                    fin_out[c] = true;
+                    seq_adv += 1;
+                }
+                emit_seg(c, snd_nxt[c], flags, off, n);
+                snd_nxt[c] = add32(snd_nxt[c], seq_adv);
+                if (sub32(snd_nxt[c], snd_una[c]) > sub32(snd_max[c], snd_una[c])) {
+                    snd_max[c] = snd_nxt[c];
+                    if (!rtt_on[c] && !in_recovery[c]) {
+                        rtt_on[c] = true;
+                        rtt_end[c] = snd_max[c];
+                        rtt_at[c] = net.timers();
+                    }
+                }
+                burst += 1;
+            }
+        } else {
+            // off == tx_len[c] and fin_queued[c] is true: send standalone FIN
+            emit_ctrl(c, snd_nxt[c], F_ACK | F_FIN);
+            fin_out[c] = true;
+            snd_nxt[c] = add32(snd_nxt[c], 1);
+            if (sub32(snd_nxt[c], snd_una[c]) > sub32(snd_max[c], snd_una[c])) {
+                snd_max[c] = snd_nxt[c];
+                if (!rtt_on[c] && !in_recovery[c]) {
+                    rtt_on[c] = true;
+                    rtt_end[c] = snd_max[c];
+                    rtt_at[c] = net.timers();
+                }
+            }
+            burst += 1;
+            more = false;
+        }
+    }
+    if (!had_flight && flight_bytes(c) > 0) {
+        sent_at[c] = net.timers();
+        tries[c] = 0;
+    }
+}
+
+// Updates RFC 6298 SRTT, RTTVAR, and RTO from a sample r (in 10 ms timer ticks).
+void rtt_sample(I64 c, I64 r_in) {
+    I64 r = r_in;
+    if (r < 0) {
+        r = 0;
+    }
+    if (!rtt_valid[c]) {
+        rtt_valid[c] = true;
+        srtt8[c] = r * 8;
+        rttvar4[c] = r * 2;
+    } else {
+        I64 diff = (srtt8[c] >> 3) - r;
+        if (diff < 0) {
+            diff = 0 - diff;
+        }
+        rttvar4[c] = rttvar4[c] - (rttvar4[c] >> 2) + diff;
+        srtt8[c] = srtt8[c] - (srtt8[c] >> 3) + r;
+    }
+    I64 kvar = rttvar4[c];
+    if (kvar < 1) {
+        kvar = 1;
+    }
+    I64 rto = (srtt8[c] >> 3) + kvar;
+    if (rto < RTO_MIN) {
+        rto = RTO_MIN;
+    }
+    if (rto > RTO_MAX) {
+        rto = RTO_MAX;
+    }
+    rto_base[c] = rto;
+    rto_cur[c] = rto;
+}
+
+I64 port_free(I64 p) {
+    for c in 0..CONNS {
+        if (st[c] != FREE && lport[c] == p) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// --- the calls (src/sock.ci) ---
+
+export I64 open() {
+    I64 c = slot();
+    if (c >= 0) {
+        owned[c] = true;
+    }
+    return c;
+}
+
+export I64 bind(I64 c, I64 port) {
+    if (lport[c] != 0) {
+        return 0 - 22;                 // EINVAL: bound already
+    }
+    if (port == 0) {
+        I64 p = next_eph;
+        I64 tried = 0;
+        while (tried < 65536 - EPHEMERAL && port_free(p) == 0) {
+            p += 1;
+            if (p == 65536) {
+                p = EPHEMERAL;
+            }
+            tried += 1;
+        }
+        if (tried == 65536 - EPHEMERAL) {
+            return 0 - EADDRINUSE;
+        }
+        lport[c] = p;
+        next_eph = p + 1;
+        if (next_eph == 65536) {
+            next_eph = EPHEMERAL;
+        }
+        return 0;
+    }
+    if (port_free(port) == 0) {
+        return 0 - EADDRINUSE;
+    }
+    lport[c] = port;
+    return 0;
+}
+
+export I64 listen(I64 c) {
+    if (st[c] == LISTEN) {
+        return 0;
+    }
+    if (st[c] != CLOSED || raddr[c] != 0) {
+        return 0 - 22;
+    }
+    if (lport[c] == 0) {
+        I64 b = bind(c, 0);
+        if (b < 0) {
+            return b;
+        }
+    }
+    st[c] = LISTEN;
+    return 0;
+}
+
+// connect: 0 once established, WAIT while the handshake runs (the call is made again), or -errno.
+export I64 connect(I64 c, I64 addr, I64 port) {
+    if (st[c] == SYN_SENT) {
+        return WAIT;
+    }
+    if (fresh[c]) {
+        fresh[c] = false;
+        return 0;
+    }
+    if (st[c] == CLOSED && err[c] != 0 && raddr[c] != 0) {
+        I64 e = err[c];
+        err[c] = 0;
+        return 0 - e;
+    }
+    if (st[c] != CLOSED) {
+        return 0 - 106;                // EISCONN
+    }
+    if (lport[c] == 0) {
+        I64 b = bind(c, 0);
+        if (b < 0) {
+            return b;
+        }
+    }
+    raddr[c] = addr;
+    rport[c] = port;
+    snd_una[c] = next_iss;
+    next_iss = add32(next_iss, 0x10000);
+    snd_nxt[c] = add32(snd_una[c], 1);
+    snd_max[c] = snd_nxt[c];
+    recover[c] = snd_una[c];
+    syn_out[c] = true;
+    rto_base[c] = RTO_MIN;
+    rto_cur[c] = RTO_MIN;
+    tries[c] = 0;
+    rtt_on[c] = true;
+    rtt_end[c] = snd_nxt[c];
+    rtt_at[c] = net.timers();
+    st[c] = SYN_SENT;
+    emit_ctrl(c, snd_una[c], F_SYN);
+    sent_at[c] = net.timers();
+    return WAIT;
+}
+
+// accept on listener l: a connection established through it and not yet handed out, or WAIT.
+export I64 accept(I64 l) {
+    for c in 0..CONNS {
+        if (st[c] != FREE && parent[c] == l && !taken[c] && st[c] != SYN_RCVD) {
+            taken[c] = true;
+            parent[c] = -1;
+            owned[c] = true;
+            return c;
+        }
+    }
+    return WAIT;
+}
+
+// Up to n bytes of what came in, into b: the count, 0 at the end of the stream, WAIT, or -errno.
+export I64 recv(I64 c, inout U8[4096] b, I64 n) {
+    if (rxn[c] == 0) {
+        if (err[c] != 0) {
+            I64 e = err[c];
+            err[c] = 0;
+            return 0 - e;
+        }
+        if (fin_in[c] || st[c] == CLOSED) {
+            return 0;
+        }
+        if (st[c] == LISTEN) {
+            return 0 - 107;            // ENOTCONN
+        }
+        return WAIT;
+    }
+    I64 k = n;
+    if (k > rxn[c]) {
+        k = rxn[c];
+    }
+    I64 first = k;
+    if (rx_head[c] + first > RX) {
+        first = RX - rx_head[c];
+    }
+    phys.phys_read8(rx_at(c, rx_head[c]), b[0..first]);
+    if (k > first) {
+        phys.phys_read8(rx_at(c, 0), b[first..k]);
+    }
+    rx_head[c] = (rx_head[c] + k) % RX;
+    rxn[c] -= k;
+    I64 nw = window(c);
+    I64 m2 = 2 * eff_mss(c);
+    if ((st[c] == ESTABLISHED || st[c] == FIN_WAIT_1 || st[c] == FIN_WAIT_2) && !fin_in[c]) {
+        if ((adv[c] < m2 && nw >= m2) || (adv[c] < RX / 2 && nw - adv[c] >= RX / 4)) {
+            ack_now(c);
+        }
+    }
+    return k;
+}
+
+// Queues up to n bytes of b into the 64 KiB send buffer and transmits as the window allows:
+// the count queued, WAIT when the send buffer is full, -EPIPE once our side is shut, or -errno.
+export I64 send(I64 c, in U8[4096] b, I64 n) {
+    if (err[c] != 0) {
+        I64 e = err[c];
+        err[c] = 0;
+        return 0 - e;
+    }
+    if (st[c] == SYN_SENT || st[c] == SYN_RCVD) {
+        return WAIT;
+    }
+    if ((st[c] != ESTABLISHED && st[c] != CLOSE_WAIT) || fin_queued[c]) {
+        return 0 - 32;                 // EPIPE
+    }
+    I64 room = TX - tx_len[c];
+    if (room <= 0) {
+        return WAIT;
+    }
+    I64 k = n;
+    if (k > room) {
+        k = room;
+    }
+    if (k > 0) {
+        Bool was_empty = (tx_len[c] == 0);
+        I64 at = (tx_head[c] + tx_len[c]) % TX;
+        I64 first = k;
+        if (at + first > TX) {
+            first = TX - at;
+        }
+        phys.phys_write8(tx_at(c, at), b[0..first]);
+        if (k > first) {
+            phys.phys_write8(tx_at(c, 0), b[first..k]);
+        }
+        tx_len[c] += k;
+        if (was_empty && peer_wnd[c] == 0) {
+            sent_at[c] = net.timers();
+        }
+        output(c);
+    }
+    return k;
+}
+
+// shutdown(SHUT_WR) and the last close: queues FIN after queued data.
+export void shut(I64 c) {
+    if (st[c] == ESTABLISHED) {
+        st[c] = FIN_WAIT_1;
+        fin_queued[c] = true;
+        output(c);
+    } else if (st[c] == CLOSE_WAIT) {
+        st[c] = LAST_ACK;
+        fin_queued[c] = true;
+        output(c);
+    }
+}
+
+// The descriptor is gone: a listener and its unaccepted connections are reset and freed; a connection
+// closes (FIN) or, if never connected, is freed.
+export void release(I64 c) {
+    owned[c] = false;
+    if (st[c] == LISTEN) {
+        for k in 0..CONNS {
+            if (st[k] != FREE && parent[k] == c && !taken[k]) {
+                emit_ctrl(k, snd_nxt[k], F_RST | F_ACK);
+                free_slot(k);
+            }
+        }
+        free_slot(c);
+    } else if (st[c] == ESTABLISHED || st[c] == CLOSE_WAIT) {
+        shut(c);
+    } else if (st[c] == SYN_SENT || st[c] == SYN_RCVD || st[c] == CLOSED) {
+        if (st[c] == SYN_RCVD) {
+            emit_ctrl(c, snd_nxt[c], F_RST | F_ACK);
+        }
+        free_slot(c);
+    }
+}
+
+// GV-1b: the holder lost the net grant, and the connection is cut from this side at once, not when the program gets
+// round to closing it. A reset goes to the peer where there is a peer to tell; a listener's unaccepted connections
+// are reset and it listens no more; what came in and was not read is dropped. The slot stays the holder's, CLOSED
+// with no error, so its descriptor names nothing else and a read on it ends.
+export void abort(I64 c) {
+    if (st[c] == FREE || st[c] == CLOSED) {
+        return;
+    }
+    if (st[c] == LISTEN) {
+        for k in 0..CONNS {
+            if (st[k] != FREE && parent[k] == c && !taken[k]) {
+                emit_ctrl(k, snd_nxt[k], F_RST | F_ACK);
+                free_slot(k);
+            }
+        }
+    } else if (st[c] != SYN_SENT && st[c] != TIME_WAIT) {
+        emit_ctrl(c, snd_nxt[c], F_RST | F_ACK);
+    }
+    rx_head[c] = 0;                    // NW-1's rings: what came in and was not read is dropped
+    rxn[c] = 0;
+    fin_in[c] = false;
+    err[c] = 0;                        // CLOSED with no error, as before NW-1
+    ended(c, 0);                       // NW-1: owned, CLOSED with the send side and the out-of-order list cleared;
+                                       // not owned, freed
+}
+
+export I64 state(I64 c) {
+    return st[c];
+}
+
+export I64 local_port(I64 c) {
+    return lport[c];
+}
+
+export I64 remote_addr(I64 c) {
+    return raddr[c];
+}
+
+export I64 remote_port(I64 c) {
+    return rport[c];
+}
+
+export I64 seq_of(I64 c) {
+    return snd_nxt[c];
+}
+
+export I64 ack_of(I64 c) {
+    return rcv_nxt[c];
+}
+
+export I64 queued(I64 c) {
+    return rxn[c];
+}
+
+export I64 busy() {
+    I64 n = 0;
+    for c in 0..CONNS {
+        if (st[c] != FREE) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+export Bool active() {
+    for c in 0..CONNS {
+        if (st[c] >= LISTEN && st[c] <= LAST_ACK) {
+            return true;
+        }
+    }
+    return false;
+}
+
+export I64 reset_count() {
+    return resets;
+}
+
+export I64 fast_retransmits() {
+    return fast_rexmits;
+}
+
+export I64 ooo_kept() {
+    return ooo_kept_count;
+}
+
+// --- input ---
+
+void refuse(I64 src, I64 sport, I64 dport, I64 seq_in, I64 ack_in, I64 flags, I64 dlen) {
+    if ((flags & F_RST) != 0) {
+        return;
+    }
+    I64 c = slot();
+    if (c < 0) {
+        return;
+    }
+    lport[c] = dport;
+    raddr[c] = src;
+    rport[c] = sport;
+    if ((flags & F_ACK) != 0) {
+        emit_ctrl(c, ack_in, F_RST);
+    } else {
+        I64 k = dlen;
+        if ((flags & F_SYN) != 0) {
+            k += 1;
+        }
+        if ((flags & F_FIN) != 0) {
+            k += 1;
+        }
+        rcv_nxt[c] = add32(seq_in, k);
+        emit_ctrl(c, 0, F_RST | F_ACK);
+    }
+    resets += 1;
+    free_slot(c);
+}
+
+// Inserts [lo, hi) relative to rcv_nxt[c] into connection c's interval table, merging overlaps.
+// Returns true when new bytes beyond existing intervals were added.
+Bool ooo_insert(I64 c, I64 lo_in, I64 hi_in) {
+    I64 base = c * OOO_SLOTS;
+    for i in 0..OOO_SLOTS {
+        I64 idx = base + i;
+        if (ooo_e[idx] > 0 && ooo_s[idx] <= lo_in && hi_in <= ooo_e[idx]) {
+            return false;
+        }
+    }
+    I64 lo = lo_in;
+    I64 hi = hi_in;
+    for i in 0..OOO_SLOTS {
+        I64 idx = base + i;
+        if (ooo_e[idx] > 0 && ooo_e[idx] >= lo && ooo_s[idx] <= hi) {
+            if (ooo_s[idx] < lo) {
+                lo = ooo_s[idx];
+            }
+            if (ooo_e[idx] > hi) {
+                hi = ooo_e[idx];
+            }
+            ooo_s[idx] = 0;
+            ooo_e[idx] = 0;
+        }
+    }
+    I64 free_idx = -1;
+    I64 far_idx = -1;
+    I64 far_s = -1;
+    for i in 0..OOO_SLOTS {
+        I64 idx = base + i;
+        if (ooo_e[idx] == 0) {
+            if (free_idx < 0) {
+                free_idx = idx;
+            }
+        } else if (ooo_s[idx] > far_s) {
+            far_s = ooo_s[idx];
+            far_idx = idx;
+        }
+    }
+    if (free_idx >= 0) {
+        ooo_s[free_idx] = lo;
+        ooo_e[free_idx] = hi;
+        return true;
+    }
+    if (far_idx >= 0 && lo < far_s) {
+        ooo_s[far_idx] = lo;
+        ooo_e[far_idx] = hi;
+        return true;
+    }
+    return false;
+}
+
+void write_rx_ring(I64 c, I64 rel_off, in U8[1514] f, I64 from, I64 n) {
+    if (n <= 0) {
+        return;
+    }
+    I64 at = (rx_head[c] + rxn[c] + rel_off) % RX;
+    I64 first = n;
+    if (at + first > RX) {
+        first = RX - at;
+    }
+    phys.phys_write8(rx_at(c, at), f[from..from + first]);
+    if (n > first) {
+        phys.phys_write8(rx_at(c, 0), f[from + first..from + n]);
+    }
+}
+
+Bool want_rexmit = false;
+
+// Processes ACK field ak, window wnd, and NewReno congestion state. Returns false if the ACK is
+// unacceptable (beyond snd_max), in which case an immediate ACK has already been sent.
+Bool process_ack(I64 c, I64 ak, I64 wnd, I64 dlen, I64 flags) {
+    want_rexmit = false;
+    I64 flight = flight_bytes(c);
+    I64 diff = sub32(ak, snd_una[c]);
+    if (diff > flight) {
+        if (diff < 0x80000000) {
+            ack_now(c);
+            return false;
+        }
+        return true;                   // old duplicate ACK < snd_una: ignore ACK field, keep segment
+    }
+    if (diff == 0) {
+        if (wnd != peer_wnd[c]) {
+            peer_wnd[c] = wnd;
+            return true;
+        }
+        if (flight > 0 && !syn_out[c] && dlen == 0 && (flags & (F_SYN | F_FIN)) == 0) {
+            I64 m = eff_mss(c);
+            dupacks[c] += 1;
+            if (!in_recovery[c]) {
+                if (dupacks[c] == 3) {
+                    I64 half = flight / 2;
+                    if (half < 2 * m) {
+                        half = 2 * m;
+                    }
+                    ssthresh[c] = half;
+                    recover[c] = snd_max[c];
+                    in_recovery[c] = true;
+                    partial_seen[c] = false;
+                    cwnd[c] = ssthresh[c] + 3 * m;
+                    cwnd_cnt[c] = 0;
+                    want_rexmit = true;
+                }
+            } else {
+                cwnd[c] += m;
+                if (cwnd[c] > MAX_WND + TX) {
+                    cwnd[c] = MAX_WND + TX;
+                }
+            }
+        }
+        return true;
+    }
+
+    // diff in 1..flight: new sequence space acknowledged
+    if (rtt_on[c] && seq_ge(ak, rtt_end[c])) {
+        rtt_on[c] = false;
+        rtt_sample(c, net.timers() - rtt_at[c]);
+    }
+    I64 rem = diff;
+    if (syn_out[c]) {
+        syn_out[c] = false;
+        snd_una[c] = add32(snd_una[c], 1);
+        rem -= 1;
+    }
+    I64 d = rem;
+    if (d > tx_len[c]) {
+        d = tx_len[c];
+    }
+    if (d > 0) {
+        tx_head[c] = (tx_head[c] + d) % TX;
+        tx_len[c] -= d;
+        snd_una[c] = add32(snd_una[c], d);
+        rem -= d;
+    }
+    if (rem > 0 && fin_queued[c]) {
+        fin_queued[c] = false;
+        fin_out[c] = false;
+        snd_una[c] = add32(snd_una[c], 1);
+        rem -= 1;
+    }
+    if (seq_ge(snd_una[c], snd_nxt[c])) {
+        snd_nxt[c] = snd_una[c];
+    }
+    peer_wnd[c] = wnd;
+    tries[c] = 0;
+    rto_cur[c] = rto_base[c];
+
+    I64 m = eff_mss(c);
+    if (in_recovery[c]) {
+        if (seq_ge(ak, recover[c])) {
+            in_recovery[c] = false;
+            dupacks[c] = 0;
+            cwnd[c] = ssthresh[c];
+            cwnd_cnt[c] = 0;
+            sent_at[c] = net.timers();
+        } else {
+            // NewReno partial ACK (RFC 6582 section 3.2): retransmit next lost segment in window
+            cwnd[c] = cwnd[c] - d;
+            if (d >= m) {
+                cwnd[c] += m;
+            }
+            if (cwnd[c] < m) {
+                cwnd[c] = m;
+            }
+            if (!partial_seen[c]) {
+                partial_seen[c] = true;
+                sent_at[c] = net.timers();
+            }
+            want_rexmit = true;
+        }
+    } else {
+        dupacks[c] = 0;
+        sent_at[c] = net.timers();
+        if (d > 0) {
+            if (cwnd[c] < ssthresh[c]) {
+                I64 inc = d;
+                if (inc > m) {
+                    inc = m;
+                }
+                cwnd[c] += inc;
+                if (cwnd[c] > MAX_WND) {
+                    cwnd[c] = MAX_WND;
+                }
+            } else {
+                cwnd_cnt[c] += d;
+                while (cwnd_cnt[c] >= cwnd[c] && cwnd[c] > 0) {
+                    cwnd_cnt[c] -= cwnd[c];
+                    cwnd[c] += m;
+                }
+                if (cwnd[c] > MAX_WND) {
+                    cwnd[c] = MAX_WND;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+export void input(in U8[1514] f) {
+    I64 plen = ip.payload_len();
+    I64 src = ip.src();
+    I64 t = ip.DATA;
+    if (plen < 20) {
+        return;
+    }
+    I64 me = eth.our_ip();
+    I64 ps = ((src >> 16) & 0xFFFF) + (src & 0xFFFF) + ((me >> 16) & 0xFFFF) + (me & 0xFFFF) + PROTO_TCP + plen;
+    if (ip.csum(f, t, plen, ps) != 0xFFFF) {
+        return;
+    }
+    I64 sport = eth.get16(f, t);
+    I64 dport = eth.get16(f, t + 2);
+    I64 sq = eth.get32(f, t + 4);
+    I64 ak = eth.get32(f, t + 8);
+    I64 hl = ((f[t + 12] >> 4) as I64) * 4;
+    I64 flags = (f[t + 13] & 0x3F) as I64;
+    I64 wnd = eth.get16(f, t + 14);
+    if (hl < 20 || hl > plen) {
+        return;
+    }
+    I64 dlen = plen - hl;
+    I64 mss = 536;
+    I64 o = t + 20;
+    while (o < t + hl) {
+        I64 kind = f[o] as I64;
+        if (kind == 0) {
+            o = t + hl;
+        } else if (kind == 1) {
+            o += 1;
+        } else if (o + 1 < t + hl && f[o + 1] >= 2) {
+            if (kind == 2 && f[o + 1] == 4 && o + 4 <= t + hl) {
+                mss = eth.get16(f, o + 2);
+            }
+            o += f[o + 1] as I64;
+        } else {
+            o = t + hl;
+        }
+    }
+    I64 c = -1;
+    for k in 0..CONNS {
+        if (c < 0 && st[k] > LISTEN && lport[k] == dport && raddr[k] == src && rport[k] == sport) {
+            c = k;
+        }
+    }
+    if (c < 0) {
+        I64 l = -1;
+        for k in 0..CONNS {
+            if (l < 0 && st[k] == LISTEN && lport[k] == dport) {
+                l = k;
+            }
+        }
+        if (l >= 0 && (flags & (F_SYN | F_ACK | F_RST)) == F_SYN) {
+            I64 n = slot();
+            if (n < 0) {
+                return;
+            }
+            parent[n] = l;
+            lport[n] = dport;
+            raddr[n] = src;
+            rport[n] = sport;
+            rcv_nxt[n] = add32(sq, 1);
+            peer_wnd[n] = wnd;
+            peer_mss[n] = clamp_mss(mss);
+            snd_una[n] = next_iss;
+            next_iss = add32(next_iss, 0x10000);
+            snd_nxt[n] = add32(snd_una[n], 1);
+            snd_max[n] = snd_nxt[n];
+            recover[n] = snd_una[n];
+            syn_out[n] = true;
+            cwnd[n] = 10 * eff_mss(n);
+            ssthresh[n] = MAX_WND;
+            rto_base[n] = RTO_MIN;
+            rto_cur[n] = RTO_MIN;
+            tries[n] = 0;
+            rtt_on[n] = true;
+            rtt_end[n] = snd_nxt[n];
+            rtt_at[n] = net.timers();
+            st[n] = SYN_RCVD;
+            emit_ctrl(n, snd_una[n], F_SYN | F_ACK);
+            sent_at[n] = net.timers();
+            return;
+        }
+        refuse(src, sport, dport, sq, ak, flags, dlen);
+        return;
+    }
+
+    if (st[c] == SYN_SENT) {
+        if ((flags & F_ACK) != 0 && ak != snd_nxt[c]) {
+            if ((flags & F_RST) == 0) {
+                emit_ctrl(c, ak, F_RST);
+            }
+            return;
+        }
+        if ((flags & F_RST) != 0) {
+            if ((flags & F_ACK) != 0) {
+                ended(c, ECONNREFUSED);
+            }
+            return;
+        }
+        if ((flags & F_SYN) != 0 && (flags & F_ACK) != 0) {
+            rcv_nxt[c] = add32(sq, 1);
+            peer_mss[c] = clamp_mss(mss);
+            peer_wnd[c] = wnd;
+            cwnd[c] = 10 * eff_mss(c);
+            ssthresh[c] = MAX_WND;
+            if (rtt_on[c] && ak == snd_nxt[c]) {
+                rtt_on[c] = false;
+                rtt_sample(c, net.timers() - rtt_at[c]);
+            }
+            syn_out[c] = false;
+            snd_una[c] = ak;
+            recover[c] = ak;
+            tries[c] = 0;
+            st[c] = ESTABLISHED;
+            fresh[c] = true;
+            ack_now(c);
+        }
+        return;
+    }
+
+    // Synchronized states: check sequence acceptability against [rcv_nxt, rcv_nxt + adv)
+    I64 win_lim = adv[c];
+    if (win_lim > RX - rxn[c]) {
+        win_lim = RX - rxn[c];
+    }
+    if (win_lim < 0) {
+        win_lim = 0;
+    }
+    I64 diff_sq = sub32(sq, rcv_nxt[c]);
+
+    if ((flags & F_RST) != 0) {
+        if (diff_sq == 0 || diff_sq < win_lim) {
+            if (st[c] == SYN_RCVD && !owned[c] && !taken[c]) {
+                free_slot(c);
+            } else {
+                ended(c, ECONNRESET);
+            }
+        }
+        return;
+    }
+    if ((flags & F_SYN) != 0) {
+        if (st[c] == SYN_RCVD && add32(sq, 1) == rcv_nxt[c]) {
+            emit_ctrl(c, snd_una[c], F_SYN | F_ACK);
+            sent_at[c] = net.timers();
+        } else {
+            ack_now(c);
+        }
+        return;
+    }
+
+    // Trim or reject segments outside the receive window
+    I64 rel_off = 0;
+    I64 from = t + hl;
+    I64 seg_len = dlen;
+    Bool fin_seg = (flags & F_FIN) != 0;
+    Bool force_ack = false;
+    Bool accept_payload = !fin_in[c] && (st[c] == ESTABLISHED || st[c] == FIN_WAIT_1 || st[c] == FIN_WAIT_2 || st[c] == SYN_RCVD);
+
+    if (diff_sq >= 0x80000000) {
+        I64 past = 0x100000000 - diff_sq;
+        if (past > dlen) {
+            if (past == dlen + 1 && fin_seg) {
+                // pure duplicate of an already-received FIN
+                ack_now(c);
+                return;
+            }
+            if (dlen > 0 || fin_seg) {
+                ack_now(c);
+            }
+            return;
+        }
+        if (past > 0) {
+            from += past;
+            seg_len -= past;
+            force_ack = true;
+        }
+        rel_off = 0;
+    } else {
+        rel_off = diff_sq;
+        if (rel_off > win_lim || (rel_off == win_lim && seg_len > 0 && win_lim > 0)) {
+            if (dlen > 0 || fin_seg) {
+                ack_now(c);
+            }
+            return;
+        }
+        if (win_lim == 0 && seg_len > 0) {
+            ack_now(c);
+            return;
+        }
+    }
+
+    if ((flags & F_ACK) == 0) {
+        return;
+    }
+
+    if (!process_ack(c, ak, wnd, dlen, flags)) {
+        return;
+    }
+
+    if (st[c] == SYN_RCVD && !syn_out[c]) {
+        st[c] = ESTABLISHED;
+        cwnd[c] = 10 * eff_mss(c);
+    }
+    if (st[c] == FIN_WAIT_1 && !fin_queued[c] && tx_len[c] == 0) {
+        st[c] = FIN_WAIT_2;
+    } else if (st[c] == CLOSING && !fin_queued[c] && tx_len[c] == 0) {
+        st[c] = TIME_WAIT;
+        sent_at[c] = net.timers();
+    } else if (st[c] == LAST_ACK && !fin_queued[c] && tx_len[c] == 0) {
+        ended(c, 0);
+        if (st[c] != FREE) {
+            st[c] = CLOSED;
+        }
+        return;
+    }
+
+    // Recompute accept_payload after SYN_RCVD -> ESTABLISHED transition
+    accept_payload = !fin_in[c] && (st[c] == ESTABLISHED || st[c] == FIN_WAIT_1 || st[c] == FIN_WAIT_2);
+    I64 advanced = 0;
+    if (accept_payload && (seg_len > 0 || fin_seg)) {
+        if (ooo_fin[c] && rel_off + seg_len > ooo_fin_off[c]) {
+            if (rel_off >= ooo_fin_off[c]) {
+                seg_len = 0;
+                fin_seg = false;
+            } else {
+                seg_len = ooo_fin_off[c] - rel_off;
+            }
+        }
+        if (seg_len > win_lim - rel_off) {
+            seg_len = win_lim - rel_off;
+            fin_seg = false;
+        }
+        if (seg_len > 0) {
+            write_rx_ring(c, rel_off, f, from, seg_len);
+            Bool added = ooo_insert(c, rel_off, rel_off + seg_len);
+            if (rel_off > 0) {
+                if (added) {
+                    ooo_kept_count += 1;
+                }
+                force_ack = true;
+            }
+        } else if (dlen > 0) {
+            force_ack = true;
+        }
+        if (fin_seg) {
+            ooo_fin[c] = true;
+            ooo_fin_off[c] = rel_off + seg_len;
+            if (rel_off > 0) {
+                force_ack = true;
+            }
+        }
+
+        // Advance rcv_nxt across any contiguous interval starting at 0
+        I64 base = c * OOO_SLOTS;
+        for i in 0..OOO_SLOTS {
+            I64 idx = base + i;
+            if (ooo_e[idx] > 0 && ooo_s[idx] == 0) {
+                advanced = ooo_e[idx];
+                ooo_s[idx] = 0;
+                ooo_e[idx] = 0;
+            }
+        }
+        if (advanced > 0) {
+            if (advanced > seg_len) {
+                force_ack = true;      // filled an out-of-order gap: immediate ACK (RFC 5681)
+            }
+            rxn[c] += advanced;
+            rcv_nxt[c] = add32(rcv_nxt[c], advanced);
+            adv[c] -= advanced;
+            if (adv[c] < 0) {
+                adv[c] = 0;
+            }
+            for i in 0..OOO_SLOTS {
+                I64 idx = base + i;
+                if (ooo_e[idx] > 0) {
+                    ooo_s[idx] -= advanced;
+                    ooo_e[idx] -= advanced;
+                }
+            }
+            if (ooo_fin[c]) {
+                ooo_fin_off[c] -= advanced;
+            }
+        }
+        if (ooo_fin[c] && ooo_fin_off[c] == 0 && !fin_in[c]) {
+            ooo_fin[c] = false;
+            fin_in[c] = true;
+            rcv_nxt[c] = add32(rcv_nxt[c], 1);
+            force_ack = true;
+            if (st[c] == ESTABLISHED) {
+                st[c] = CLOSE_WAIT;
+            } else if (st[c] == FIN_WAIT_1) {
+                st[c] = CLOSING;
+            } else if (st[c] == FIN_WAIT_2) {
+                st[c] = TIME_WAIT;
+                sent_at[c] = net.timers();
+            }
+        }
+    } else if (dlen > 0 || fin_seg) {
+        force_ack = true;
+    }
+
+    if (force_ack) {
+        if (!ack_pend[c]) {
+            ack_pend[c] = true;
+            ack_tick[c] = net.ticks();
+        }
+    } else if (advanced > 0) {
+        if (!ack_pend[c]) {
+            ack_pend[c] = true;
+            ack_tick[c] = net.ticks();
+            ack_segs[c] = 1;
+            ack_bytes[c] = advanced;
+        } else {
+            ack_segs[c] += 1;
+            ack_bytes[c] += advanced;
+        }
+    }
+
+    // Retransmit and/or transmit newly unlocked outgoing segments (piggybacks F_ACK and clears ack_pend)
+    if (want_rexmit) {
+        retransmit_one(c);
+    }
+    output(c);
+
+    // Delayed ACK: every second full segment, immediately when required, or at the next tick
+    if (ack_pend[c] && (force_ack || ack_segs[c] >= 2 || ack_bytes[c] >= 2 * eff_mss(c))) {
+        ack_now(c);
+    }
+}
+
+// At every network tick: flush delayed ACKs from an earlier tick, expire TIME_WAIT, and run RFC 6298 RTO.
+export void timers() {
+    I64 now = net.timers();
+    I64 tick_now = net.ticks();
+    for c in 0..CONNS {
+        if (st[c] >= ESTABLISHED && st[c] <= TIME_WAIT && ack_pend[c] && tick_now > ack_tick[c]) {
+            ack_now(c);
+        }
+        if (st[c] == TIME_WAIT) {
+            if (now - sent_at[c] >= TIME_WAIT_TICKS) {
+                ended(c, 0);
+                if (st[c] != FREE) {
+                    st[c] = CLOSED;
+                }
+            }
+        } else if (st[c] > LISTEN) {
+            if (syn_out[c]) {
+                if (now - sent_at[c] >= rto_cur[c]) {
+                    tries[c] += 1;
+                    if (tries[c] > TRIES) {
+                        ended(c, ETIMEDOUT);
+                    } else {
+                        rtt_on[c] = false;
+                        rto_cur[c] = rto_cur[c] * 2;
+                        if (rto_cur[c] > RTO_MAX) {
+                            rto_cur[c] = RTO_MAX;
+                        }
+                        I64 fl = F_SYN;
+                        if (st[c] == SYN_RCVD) {
+                            fl = F_SYN | F_ACK;
+                        }
+                        emit_ctrl(c, snd_una[c], fl);
+                        sent_at[c] = now;
+                    }
+                }
+            } else if (flight_bytes(c) > 0) {
+                if (now - sent_at[c] >= rto_cur[c]) {
+                    tries[c] += 1;
+                    if (tries[c] > TRIES) {
+                        ended(c, ETIMEDOUT);
+                    } else {
+                        I64 m = eff_mss(c);
+                        I64 half = flight_bytes(c) / 2;
+                        if (half < 2 * m) {
+                            half = 2 * m;
+                        }
+                        ssthresh[c] = half;
+                        cwnd[c] = m;
+                        cwnd_cnt[c] = 0;
+                        in_recovery[c] = false;
+                        dupacks[c] = 0;
+                        rtt_on[c] = false;
+                        rto_cur[c] = rto_cur[c] * 2;
+                        if (rto_cur[c] > RTO_MAX) {
+                            rto_cur[c] = RTO_MAX;
+                        }
+                        snd_nxt[c] = snd_una[c];
+                        sent_at[c] = now;
+                        if (peer_wnd[c] == 0 && tx_len[c] > 0) {
+                            emit_seg(c, snd_una[c], F_ACK, 0, 1);
+                            snd_nxt[c] = add32(snd_una[c], 1);
+                        } else {
+                            output(c);
+                        }
+                    }
+                }
+            } else if (peer_wnd[c] == 0 && tx_len[c] > 0 && now - sent_at[c] >= rto_cur[c]) {
+                // Zero-window probe: 1 byte at snd_una so a lost window update cannot stall the sender
+                rtt_on[c] = false;
+                emit_seg(c, snd_una[c], F_ACK, 0, 1);
+                snd_nxt[c] = add32(snd_una[c], 1);
+                snd_max[c] = snd_nxt[c];
+                sent_at[c] = now;
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

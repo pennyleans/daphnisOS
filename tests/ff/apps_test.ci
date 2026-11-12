@@ -1,0 +1,155 @@
+// tests/ff/apps_test.ci: hosted tests of the app descriptors (FF edition 14 section 3g, user/ci/kit/apps.ci).
+// Run by check.sh: cint test --root . tests/ff/apps_test.ci
+
+import user.ci.kit.apps;
+import user.ci.kit.match;
+import user.ci.kit.icons3;
+
+U8[64] buf;
+
+Bool is(I64 i, I64 f, in U8[_] want) {
+    I64 n = apps.field(i, f, buf);
+    if (n != len(want)) { return false; }
+    for j in 0..n { if (buf[j] != want[j]) { return false; } }
+    return true;
+}
+
+test "every app has a name, and all but Settings a program" {
+    for i in 0..apps.N {
+        assert(apps.field(i, 0, buf) > 0);
+        assert(apps.field(i, 3, buf) > 0);
+        assert(apps.field(i, 4, buf) > 0);
+        if (apps.runs_in(i) != apps.DESK && apps.runs_in(i) != apps.LABEL) { assert(apps.field(i, 1, buf) > 0); }
+    }
+}
+
+test "edit, editor, text and ced all find Edit, and Edit best (DN-28)" {
+    I64 ed = apps.by_program(b"/bin/ced");
+    assert(ed != apps.NONE);
+    assert(is(ed, 0, b"Edit"));
+    assert(is(ed, 3, b"Text editor"));
+    assert(is(ed, 4, b"An untitled file"));
+    assert(apps.runs_in(ed) == apps.TERM);
+    assert(apps.icon(ed) == icons3.EDITOR);
+    match.begin(b"editor");
+    assert(apps.score(ed) != match.NONE);
+    match.begin(b"edit");
+    assert(apps.score(ed) != match.NONE);
+    match.begin(b"text");
+    assert(apps.score(ed) != match.NONE);
+    match.begin(b"ced");
+    assert(apps.score(ed) != match.NONE);
+    I64 best = apps.NONE;
+    I64 bs = match.NONE;
+    for i in 0..apps.N {
+        I64 s = apps.score(i);
+        if (s != match.NONE && (bs == match.NONE || s > bs)) { bs = s; best = i; }
+    }
+    assert(best == ed);
+}
+
+test "the program field is not searched; a stranger finds nothing" {
+    match.begin(b"bin");
+    for i in 0..apps.N { assert(apps.score(i) == match.NONE); }
+    match.begin(b"zzz");
+    for i in 0..apps.N { assert(apps.score(i) == match.NONE); }
+    assert(apps.by_program(b"/bin/nothing") == apps.NONE);
+}
+
+test "the icon table is kit/icons3.ci's (DN-5)" {
+    assert(apps.icon(apps.by_program(b"/bin/finder")) == icons3.FINDER);
+    assert(apps.icon(apps.by_program(b"/bin/cish")) == icons3.TERMINAL);
+    assert(apps.by_program(b"/bin/doom") == apps.NONE);                   // HW-17: no Doom row (l 07:59Z)
+    assert(apps.icon(apps.by_program(b"/bin/cview")) == icons3.IMAGES);
+    assert(apps.icon(apps.by_program(b"/bin/calc")) == icons3.CALCULATOR);
+    assert(apps.icon(apps.by_program(b"/bin/cless")) == icons3.READER);
+    assert(apps.icon(apps.by_program(b"/bin/fetch")) == icons3.FETCH);
+    assert(apps.icon(9) == icons3.SETTINGS);
+}
+
+test "where each app runs" {
+    assert(apps.runs_in(apps.by_program(b"/bin/finder")) == apps.WINDOW);
+    assert(apps.runs_in(apps.by_program(b"/bin/cish")) == apps.TERM);
+    assert(apps.runs_in(apps.by_program(b"/bin/cview")) == apps.WINDOW);
+    assert(apps.runs_in(apps.by_program(b"/bin/calc")) == apps.WINDOW);    // HW-17: Calc's own window (RS-CALC)
+}
+
+// The best-scoring app for query q.
+I64 best_for(in U8[_] q) {
+    match.begin(q);
+    I64 best = apps.NONE;
+    I64 bs = match.NONE;
+    for i in 0..apps.N {
+        I64 s = apps.score(i);
+        if (s != match.NONE && (bs == match.NONE || s > bs)) { bs = s; best = i; }
+    }
+    return best;
+}
+
+test "DN-28: the new names, and every old name and term still finds its app first" {
+    I64 x = apps.by_program(b"/bin/finder");
+    I64 k = apps.by_program(b"/bin/cish");
+    I64 ed = apps.by_program(b"/bin/ced");
+    I64 v = apps.by_program(b"/bin/cview");
+    I64 c = apps.by_program(b"/bin/calc");   // HW-17: Calc opens the Calc window; ccalc still finds it
+    I64 l = apps.by_program(b"/bin/cless");
+    assert(is(x, 0, b"Index") && is(k, 0, b"Console") && is(ed, 0, b"Edit"));
+    assert(is(v, 0, b"View") && is(c, 0, b"Calc") && is(l, 0, b"Read"));
+    assert(best_for(b"index") == x && best_for(b"finder") == x && best_for(b"files") == x);
+    assert(best_for(b"console") == k && best_for(b"terminal") == k && best_for(b"shell") == k && best_for(b"cish") == k);
+    assert(best_for(b"edit") == ed && best_for(b"editor") == ed && best_for(b"ced") == ed);
+    assert(best_for(b"view") == v && best_for(b"images") == v && best_for(b"cview") == v && best_for(b"pictures") == v);
+    assert(best_for(b"calc") == c && best_for(b"calculator") == c && best_for(b"ccalc") == c);
+    assert(best_for(b"read") == l && best_for(b"reader") == l && best_for(b"cless") == l && best_for(b"pager") == l);
+    I64 f = apps.by_program(b"/bin/fetch");     // DN-22, unchanged by DN-28: the label Fetch, the program fetch
+    assert(is(f, 0, b"Fetch") && is(f, 1, b"/bin/fetch"));
+    assert(best_for(b"fetch") == f);
+    assert(is(9, 0, b"Settings") && best_for(b"settings") == 9);
+}
+
+test "DN-30: CVim, in a terminal, with its icon; cvim and vim find it first, vi finds it; editor still finds Edit" {
+    I64 v = apps.by_program(b"/bin/cvim");
+    assert(v != apps.NONE && is(v, 0, b"CVim") && apps.runs_in(v) == apps.TERM && apps.icon(v) == icons3.CVIM);
+    assert(best_for(b"cvim") == v && best_for(b"vim") == v);
+    match.begin(b"vi");                      // `vi` finds CVim too (View is a prefix match as well)
+    assert(apps.score(v) != match.NONE);
+    assert(best_for(b"editor") == apps.by_program(b"/bin/ced"));
+}
+
+test "DN-31: Web Browser is listed with its compass, not built (LABEL); browser and web find it" {
+    I64 w = 10;
+    assert(is(w, 0, b"Web Browser") && apps.runs_in(w) == apps.LABEL && apps.icon(w) == icons3.BROWSER);
+    assert(apps.field(w, 1, buf) == 0);
+    assert(best_for(b"browser") == w && best_for(b"web") == w && best_for(b"internet") == w);
+}
+
+test "the order (l, Design's card 2026-11-12 01:23Z); no Doom row (HW-17, l 07:59Z)" {
+    assert(apps.N == 11);
+    assert(is(0, 0, b"Index") && is(1, 0, b"Console") && is(2, 0, b"Edit") && is(3, 0, b"CVim"));
+    assert(is(4, 0, b"Read") && is(5, 0, b"View") && is(6, 0, b"Calc") && is(7, 0, b"Monitor"));
+    assert(is(8, 0, b"Fetch") && is(9, 0, b"Settings") && is(10, 0, b"Web Browser"));
+    assert(apps.by_program(b"/bin/doom") == apps.NONE && apps.by_program(b"/bin/ccalc") == apps.NONE);
+}
+
+test "LAND-1: Monitor is listed after Calc, in its own window with DN-59's gauge; monitor and activity find it" {
+    I64 m = apps.by_program(b"/bin/monitor");
+    assert(m == 7 && m == apps.by_program(b"/bin/calc") + 1);
+    assert(is(m, 0, b"Monitor") && apps.runs_in(m) == apps.WINDOW && apps.icon(m) == icons3.MONITOR);
+    assert(!apps.is_command(m) && !apps.shows_doc(m));
+    assert(best_for(b"monitor") == m && best_for(b"activity") == m && best_for(b"processes") == m);
+}
+
+test "RS-TTL: Edit, Read and View show a document; no other app does" {
+    I64 e = apps.by_program(b"/bin/ced");
+    I64 r = apps.by_program(b"/bin/cless");
+    I64 v = apps.by_program(b"/bin/cview");    // section 6: frames 39 and 43, the picture's name in the name's place
+    assert(e != apps.NONE && r != apps.NONE && v != apps.NONE);
+    assert(apps.shows_doc(e) && apps.shows_doc(r) && apps.shows_doc(v));
+    I64 n = 0;
+    for i in 0..apps.N {
+        if (apps.shows_doc(i)) { n = n + 1; }
+    }
+    assert(n == 3 && !apps.shows_doc(apps.by_program(b"/bin/cish")) && !apps.shows_doc(apps.by_program(b"/bin/cvim")));
+    assert(!apps.shows_doc(apps.by_program(b"/bin/finder")) && !apps.shows_doc(apps.by_program(b"/bin/calc")));
+}
+// SPDX-License-Identifier: Apache-2.0

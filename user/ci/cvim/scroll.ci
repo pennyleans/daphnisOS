@@ -1,0 +1,313 @@
+// user/ci/cvim/scroll.ci: the window over the text (docs/specs/2026-11-07-cv-cvim.md sections 5 and 6, CV-2b): its
+// top line, H M L and Ctrl+D Ctrl+U Ctrl+F Ctrl+B. The window's height is an input (key.window); lines do not wrap
+// (section 6), so a line is one row. Each function follows its Vim 9.1 function (update_topline, scroll_cursor_top,
+// scroll_cursor_bot, scroll_cursor_halfway, cursor_correct, halfpage, onepage, nv_scroll) for one row per line.
+// Lines are counted from 0; "bot" is the first line below the window, the line count when the window reaches the end.
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+
+// 'scrolloff' (section 6).
+export const I64 SO = 4;
+
+I64 so_value(in I64[_] r) {
+    return SO;
+}
+
+export I64 bot(in I64[_] r, in I64[_] x) {
+    return min(r[state.R_TOP] + r[state.R_HEIGHT], text.nlines(x));
+}
+
+I64 empty_rows(in I64[_] r, in I64[_] x) {
+    return max(r[state.R_TOP] + r[state.R_HEIGHT] - text.nlines(x), 0);
+}
+
+// The cursor's line in the middle of the window (scroll_cursor_halfway, atend false).
+void halfway(inout I64[_] r, in I64[_] x, I64 cur) {
+    I64 nl = text.nlines(x);
+    I64 h = r[state.R_HEIGHT];
+    I64 used = 1;
+    I64 above = 0;
+    I64 below = 0;
+    I64 b = cur;
+    I64 t = cur;
+    I64 top = cur;
+    while (top > 0) {
+        if (below <= above) {
+            if (b < nl - 1) {
+                b += 1;
+                used += 1;
+                if (used > h) { break; }
+                below += 1;
+            } else {
+                below += 1;
+            }
+        }
+        if (below > above) {
+            t -= 1;
+            used += 1;
+            if (used > h) { break; }
+            above += 1;
+            top = t;
+        }
+    }
+    r[state.R_TOP] = top;
+}
+
+// scroll_cursor_top with 'scrolljump' 1 and always false: only ever a lower top line.
+void cursor_top(inout I64[_] r, in I64[_] x, I64 cur) {
+    I64 h = r[state.R_HEIGHT];
+    I64 so = so_value(r);
+    if (2 * so + 1 > h) { halfway(r, x, cur); return; }
+    I64 t = max(cur - so, 0);
+    if (t < r[state.R_TOP]) { r[state.R_TOP] = t; }
+    if (r[state.R_TOP] > cur) { r[state.R_TOP] = cur; }
+}
+
+// scroll_cursor_bot with 'scrolljump' 1, counted as Vim counts it (lines from 1): lines above the cursor down to the
+// window's bottom and as many below it fill "used"; past the window's height, the cursor goes to the middle.
+void cursor_bot(inout I64[_] r, in I64[_] x, I64 cur) {
+    I64 nl = text.nlines(x);
+    I64 h = r[state.R_HEIGHT];
+    I64 so = so_value(r);
+    I64 cln = cur + 1;
+    I64 botline = min(r[state.R_TOP] + h, nl) + 1;
+    I64 used = 1;
+    I64 scrolled = 0;
+    I64 extra = 0;
+    if (cln >= botline) { scrolled = 1; }
+    I64 loff = cln;
+    I64 boff = cln;
+    while (loff > 1) {
+        if ((extra >= so || boff + 1 > nl) && loff <= botline) { break; }
+        loff -= 1;
+        used += 1;
+        if (used > h) { break; }
+        if (loff >= botline) { scrolled += 1; }
+        if (boff < nl) {
+            boff += 1;
+            used += 1;
+            if (used > h) { break; }
+            if (extra < so || scrolled < 1) {
+                extra += 1;
+                if (boff >= botline) { scrolled += 1; }
+            }
+        }
+    }
+    I64 lines = 0;
+    if (scrolled <= 0) { lines = 0; }
+    else if (used > h) { lines = used; }
+    else if (scrolled <= h) { lines = scrolled; }
+    else { lines = 9999; }
+    if (lines >= h && lines > 1) { halfway(r, x, cur); return; }
+    r[state.R_TOP] += lines;
+}
+
+// Vim 9.1.1752 (CV-R7 A): a page scroll (scroll_redraw) marks the top line valid with the cursor where cursor_correct
+// put it; update_topline then leaves the window alone while the cursor stays on that line (w_valid's VALID_TOPLINE,
+// cleared by check_cursor_moved), so the window does not jump back at the end of the text.
+Bool top_valid = false;
+I64 valid_line = -1;
+
+// update_topline: after every key, the window follows the cursor.
+export void follow(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    I64 nl = text.nlines(x);
+    I64 h = r[state.R_HEIGHT];
+    if (h <= 0) { return; }
+    Bool valid = top_valid;
+    top_valid = false;
+    if (valid && text.lineof(x, orig, add, r[state.R_CUR]) == valid_line && r[state.R_TOP] < nl) { return; }
+    if (r[state.R_TOP] >= nl) { r[state.R_TOP] = max(nl - 1, 0); }
+    if (nl == 1) { r[state.R_TOP] = 0; return; }
+    I64 cur = text.lineof(x, orig, add, r[state.R_CUR]);
+    I64 so = so_value(r);
+    Bool check_bot = true;
+    I64 top = r[state.R_TOP];
+    if (top > 0 && (cur < top || cur < top + so)) {
+        I64 halfh = max(h / 2 - 1, 2);
+        I64 n = top + so - cur;
+        if (n >= halfh) {
+            halfway(r, x, cur);
+            check_bot = false;
+        } else {
+            cursor_top(r, x, cur);
+        }
+    }
+    if (check_bot) {
+        I64 b = bot(r, x);
+        if (b < nl) {
+            Bool scroll = true;
+            if (cur < b) {
+                if (cur >= b - so) {
+                    if (b - 1 - cur >= so) { scroll = false; }
+                } else {
+                    scroll = false;
+                }
+            }
+            if (scroll) {
+                I64 cnt = cur - (b - so) + 1;
+                if (cnt <= h + 1) { cursor_bot(r, x, cur); }
+                else { halfway(r, x, cur); }
+            }
+        }
+    }
+}
+
+// cursor_correct: the cursor's line kept 'scrolloff' lines inside the window; the line returned.
+I64 correct(in I64[_] r, in I64[_] x, I64 cln) {
+    I64 nl = text.nlines(x);
+    I64 h = r[state.R_HEIGHT];
+    I64 top = r[state.R_TOP];
+    I64 so = so_value(r);
+    I64 above_wanted = so;
+    I64 below_wanted = so;
+    if (top == 0) {
+        above_wanted = 0;
+        below_wanted = min(below_wanted, h / 2);
+    }
+    I64 b0 = bot(r, x);
+    if (b0 == nl) {
+        below_wanted = 0;
+        above_wanted = min(above_wanted, (h - 1) / 2);
+    }
+    if (cln >= top + above_wanted && cln < b0 - below_wanted) { return cln; }
+    I64 t = top;
+    I64 b = b0 - 1;
+    I64 above = 0;
+    I64 below = 0;
+    while ((above < above_wanted || below < below_wanted) && t < b) {
+        if (below < below_wanted && (below <= above || above >= above_wanted)) {
+            below += 1;
+            b -= 1;
+        } else {
+            above += 1;
+            t += 1;
+        }
+    }
+    if (t == b) { return t; }
+    if (t > b) { return b; }
+    I64 c = cln;
+    if (cln < t && top > 0) { c = t; }
+    if (cln > b && b0 < nl) { c = b; }
+    return c;
+}
+
+// H M L (nv_scroll): the target line; the caller puts the cursor on its first non-blank. op: an operator waits.
+export I64 hml(inout I64[_] r, in I64[_] x, I64 m, I64 count1, Bool op) {
+    I64 nl = text.nlines(x);
+    I64 top = r[state.R_TOP];
+    I64 c = 0;
+    if (m == 'L') {
+        c = bot(r, x) - 1;
+        if (count1 - 1 >= c + 1) { c = 0; }
+        else { c -= count1 - 1; }
+    } else if (m == 'M') {
+        I64 halfrows = (r[state.R_HEIGHT] - empty_rows(r, x) + 1) / 2;
+        I64 used = 0;
+        I64 n = 0;
+        while (top + n < nl - 1) {
+            used += 1;
+            if (used >= halfrows) { break; }
+            n += 1;
+        }
+        c = top + n;
+    } else {
+        c = min(top + count1 - 1, nl - 1);
+    }
+    if (!op) { c = correct(r, x, c); }
+    return c;
+}
+
+// Ctrl+D and Ctrl+U (halfpage); false when the cursor is already on the last or the first line (a bell).
+export Bool half(inout I64[_] r, inout I64[_] x, in U8[_] orig, in U8[_] add, Bool down, I64 count0) {
+    I64 nl = text.nlines(x);
+    I64 h = r[state.R_HEIGHT];
+    I64 cur = text.lineof(x, orig, add, r[state.R_CUR]);
+    if ((!down && cur == 0) || (down && cur == nl - 1)) { return false; }
+    if (count0 > 0) { r[state.R_SCROLL] = min(count0, h); }
+    I64 n = min(r[state.R_SCROLL], h);
+    I64 b = bot(r, x);
+    I64 room = empty_rows(r, x);
+    I64 scrolled = 0;
+    if (down) {
+        while (n > 0 && b < nl) {
+            n -= 1;
+            r[state.R_TOP] += 1;
+            if (cur < nl - 1) { cur += 1; }
+            scrolled += 1;
+            room += 1;
+            while (true) {
+                if (1 > room) { break; }
+                b += 1;
+                room -= 1;
+                if (b >= nl) { break; }
+            }
+        }
+        if (n > 0) { cur = min(cur + n, nl - 1); }
+    } else {
+        while (n > 0 && r[state.R_TOP] > 0) {
+            n -= 1;
+            r[state.R_TOP] -= 1;
+            scrolled += 1;
+            if (cur > 0) { cur -= 1; }
+        }
+        if (n > 0) { cur = max(cur - n, 0); }
+    }
+    cur = correct(r, x, cur);
+    r[state.R_CUR] = text.first_nonblank(x, orig, add, cur, true);
+    r[state.R_WANT] = -1;
+    return true;
+}
+
+// Ctrl+F and Ctrl+B (onepage) count times; false on a bell (the window cannot move).
+export Bool page(inout I64[_] r, inout I64[_] x, in U8[_] orig, in U8[_] add, Bool fwd, I64 cnt) {
+    I64 nl = text.nlines(x);
+    I64 h = r[state.R_HEIGHT];
+    I64 so = so_value(r);
+    I64 old_top = r[state.R_TOP];
+    I64 cur = text.lineof(x, orig, add, r[state.R_CUR]);
+    if (nl == 1) { return false; }
+    Bool ok = true;
+    Bool to_end = false;              // the last step scrolled to the end of the text
+    for i in 0..cnt {
+        I64 b = bot(r, x);
+        to_end = false;
+        if (fwd) {
+            if (r[state.R_TOP] >= nl - 1 - so && b == nl) { ok = false; break; }
+        } else if (r[state.R_TOP] == 0) { ok = false; break; }
+        if (fwd) {
+            if (b == nl) {
+                // Vim 9.1.1752's pagescroll: with the end in view, get_scroll_overlap gives the whole height and the
+                // scroll stops with the last line on top.
+                r[state.R_TOP] = nl - 1;
+                to_end = true;
+            } else {
+                // Two lines of overlap, as get_scroll_overlap gives when every line is one row.
+                I64 t = b;
+                if (h >= 5 && b >= 2) { t = b - 2; } else if (h >= 4 && b >= 1) { t = b - 1; }
+                r[state.R_TOP] = t;
+                cur = t;
+            }
+        } else {
+            I64 l = r[state.R_TOP] - 1;
+            if (h >= 5) { l += 2; } else if (h >= 4) { l += 1; }
+            if (l >= nl - 1) { l = nl - 1; }
+            cur = l;
+            I64 t = 0;
+            if (l > h) { t = l - h + 1; }
+            r[state.R_TOP] = t;
+        }
+    }
+    cur = correct(r, x, cur);
+    if (ok) {
+        r[state.R_CUR] = text.first_nonblank(x, orig, add, cur, true);
+        r[state.R_WANT] = -1;
+    } else if (cur != text.lineof(x, orig, add, r[state.R_CUR])) {
+        I64 c = min(text.col(x, orig, add, r[state.R_CUR]), text.lend(x, orig, add, cur) - text.lstart(x, orig, add, cur));
+        r[state.R_CUR] = text.normal_pos(x, orig, add, text.lstart(x, orig, add, cur) + c);
+    }
+    // Vim 9.1.1752: scroll_redraw marks the window valid where the page left it, a bell's page too (follow).
+    top_valid = true;
+    valid_line = text.lineof(x, orig, add, r[state.R_CUR]);
+    return ok;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,15 @@
+mexepath: FBIO_TILER as uid 0 (want 0) = 0
+mexepath: the desk itself, kind 13 (want source 0, /tiler) = source 0, /tiler
+mexepath: a child that named itself ced by prctl, kind 0's comm (want ced) = ced
+mexepath: the same child, kind 13 (want source 0, /tiler) = source 0, /tiler
+mexepath: a child asks kind 13 itself, not the desk (want -EPERM -1) = -1
+mexepath: a child execs /bin/sleep (want a vpid, 1) = 1
+mexepath: a child that exec'd /bin/sleep, kind 0's comm (want bin/sleep, the member's name) = bin/sleep
+mexepath: the same child, kind 13 (want source 0, /bin/sleep) = source 0, /bin/sleep
+mexepath: this boot has a volume on /home (a copy of /bin/sleep made there) = 0
+mexepath: a pty pair (want 1) = 1
+mexepath: a child on the pty's slave execs /bin/sleep (want 1) = 1
+mexepath: the terminal's foreground process, kind 1's comm (want bin/sleep) = bin/sleep
+mexepath: the same, kind 14 by the master (want source 0, /bin/sleep) = source 0, /bin/sleep
+mexepath: a vpid of no process, kind 13 (want -ESRCH -3) = -3
+mexepath: done = 0

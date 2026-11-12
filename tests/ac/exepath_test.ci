@@ -1,0 +1,105 @@
+// tests/ac/exepath_test.ci: AC-T2 (docs/specs/2026-11-11-ac-t2-image-path.md), hosted: the record of
+// FBIO_TILE_INFO kinds 13 and 14 (src/exepath.ci) as the desk reads it.
+
+import src.exepath;
+
+U8[32] kb;
+
+void keep(in U8[_] s) {
+    for i in 0..32 {
+        kb[i] = 0;
+    }
+    for i in 0..len(s) {
+        kb[i] = s[i];
+    }
+}
+
+I64 u32_at(in U8[64] b, I64 at) {
+    return (b[at] as I64) | ((b[at + 1] as I64) << 8) | ((b[at + 2] as I64) << 16) | ((b[at + 3] as I64) << 24);
+}
+
+Bool path_is(in U8[64] b, in U8[_] s) {
+    if (u32_at(b, 8) != len(s)) {
+        return false;
+    }
+    for i in 0..len(s) {
+        if (b[exepath.PATH_AT + i] != s[i]) {
+            return false;
+        }
+    }
+    for i in (exepath.PATH_AT + len(s))..exepath.RECORD_BYTES {
+        if (b[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test "an image member reads as / and its name, source image" {
+    U8[64] b;
+    keep(b"bin/ced");
+    exepath.record(b, 7, 0, kb, 7);
+    assert(u32_at(b, 0) == 7);
+    assert(u32_at(b, 4) == 0);
+    assert(u32_at(b, 12) == 0);
+    assert(path_is(b, b"/bin/ced"));
+}
+
+test "a volume program reads as its absolute path, source volume, never as /bin" {
+    U8[64] b;
+    keep(b"/home/sam/ced");
+    exepath.record(b, 12, 4021, kb, 13);
+    assert(u32_at(b, 4) == 1);
+    assert(path_is(b, b"/home/sam/ced"));
+    keep(b"/bin/ced");                              // a volume path that looked like /bin would still say volume
+    exepath.record(b, 12, 9, kb, 8);
+    assert(u32_at(b, 4) == 1 && path_is(b, b"/bin/ced"));
+}
+
+test "every byte after the path is NUL, whatever the record held before" {
+    U8[64] b;
+    for i in 0..64 {
+        b[i] = 0xAA;
+    }
+    keep(b"tiler");
+    exepath.record(b, 1, 0, kb, 5);
+    assert(path_is(b, b"/tiler"));
+}
+
+test "bytes the kernel kept past len are never read" {
+    U8[64] b;
+    keep(b"bin/sleepXXXXXXXXXXXXXXXXXXXXXXX");     // 32 bytes kept, the program's name is the first 9
+    exepath.record(b, 3, 0, kb, 9);
+    assert(path_is(b, b"/bin/sleep"));
+}
+
+test "the longest: 32 bytes kept give a 33-byte path; a name that starts with / takes no second /" {
+    U8[64] b;
+    keep(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    exepath.record(b, 2, 0, kb, 32);
+    assert(u32_at(b, 8) == exepath.PATH_MAX);
+    assert(b[exepath.PATH_AT] == 47 && b[exepath.PATH_AT + 32] == 97 && b[exepath.PATH_AT + 33] == 0);
+    keep(b"/home/aaaaaaaaaaaaaaaaaaaaaaaaaa");
+    exepath.record(b, 2, 5, kb, 32);
+    assert(u32_at(b, 8) == 32 && b[exepath.PATH_AT] == 47 && b[exepath.PATH_AT + 1] == 104);
+}
+
+test "a length outside 0..32 is taken as its nearest end; nothing lands past the record" {
+    U8[64] b;
+    keep(b"bin/x");
+    exepath.record(b, 4, 0, kb, 0 - 5);
+    assert(path_is(b, b"/"));
+    exepath.record(b, 4, 0, kb, 0);
+    assert(path_is(b, b"/"));
+    keep(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    exepath.record(b, 4, 0, kb, 1000);
+    assert(u32_at(b, 8) == 33);
+}
+
+test "vpid is written as given, in four bytes" {
+    U8[64] b;
+    keep(b"bin/cish");
+    exepath.record(b, 0x01020304, 0, kb, 8);
+    assert(b[0] == 4 && b[1] == 3 && b[2] == 2 && b[3] == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

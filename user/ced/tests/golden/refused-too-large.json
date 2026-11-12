@@ -1,0 +1,20 @@
+{
+  "id": "refused-too-large",
+  "rules": [
+    "TEXT-1"
+  ],
+  "text": "a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "repeat": 32769,
+  "chunks": [],
+  "expect": {
+    "refused": 3
+  }
+}

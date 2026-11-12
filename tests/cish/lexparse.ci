@@ -1,0 +1,66 @@
+// tests/cish/lexparse.ci: cish's lexer and parser without rows (CS-1, CS-2, CS-3), run by `cint run` in check-cish.sh: for each
+// case the lexer's status and token kinds, then the parser's status and its bad token. The golden is
+// tests/expected/cish-lexparse.out.
+import user.ci.cish.limits;
+import user.ci.cish.lex;
+import user.ci.cish.parse;
+
+void case_(in U8[_] text) {
+    lex.begin();
+    _ = lex.append(text);
+    I64 s = lex.lex();
+    "lex {s}:";
+    for t in 0..lex.tokens() {
+        " {lex.kind(t)}";
+        if (lex.fd(t) >= 0) { "/{lex.fd(t)}"; }
+    }
+    if (s == lex.OK) {
+        I64 p = parse.parse(lex.first_token());
+        " | parse {p}";
+        if (p == parse.P_SYNTAX || p == parse.P_UNSUP || p == parse.P_MORE) { " at {parse.bad_token()}"; }
+    }
+    "\n";
+}
+
+void main() {
+    case_(b"echo hello\n");
+    case_(b"a | b && c || d; e &\n");
+    case_(b"x=1 y=2 cmd arg >out 2>&1 <in 3>>log\n");
+    case_(b"echo 'one two' \"three $x\" four\\ five\n");
+    case_(b"echo 'open\n");
+    case_(b"echo \"open\n");
+    case_(b"echo a \\\n");
+    case_(b"echo a |\n");
+    case_(b"echo a &&\n");
+    case_(b"; echo\n");
+    case_(b"echo a > ;\n");
+    case_(b"if true; then :; fi\n");
+    case_(b"[[ x ]]\n");
+    case_(b"cat <<EOF\n");
+    case_(b"( echo sub )\n");
+    case_(b"! true | false\n");
+    case_(b"# only a comment\n");
+    case_(b"echo $(ls) ${{x}} `pwd`\n");
+    case_(b"echo a#b # c\n");
+    case_(b"while false; do echo x; done\n");
+    case_(b"until true\ndo :\ndone\n");
+    case_(b"for i in a b c; do echo $i; done\n");
+    case_(b"for i\ndo :; done\n");
+    case_(b"case $x in (a|b) echo ab;; *) ;; esac\n");
+    case_(b"if a; then b; elif c; then d; else e; fi >out\n");
+    case_(b"f() {{ echo f; }}\n");
+    case_(b"f() ( exit 2 )\n");
+    case_(b"{{ echo a; echo b; }} | cat\n");
+    case_(b"if true; then\n");
+    case_(b"case x in\n");
+    case_(b"fi\n");
+    case_(b"for 1 in a; do :; done\n");
+    case_(b"function f {{ :; }}\n");
+    case_(b"cat <<EOF\nbody $x\nEOF\necho after\n");
+    case_(b"cat <<-'E' >out\n\tbody\n\tE\n");
+    case_(b"a <<A; b <<B\n1\nA\n2\nB\n");
+    case_(b"cat <<<word\n");
+    case_(b"a=(1 2)\n");
+    case_(b"echo $((1 + (2 * 3))) $(echo a) ${{x:-y}}\n");
+}
+// SPDX-License-Identifier: Apache-2.0

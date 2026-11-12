@@ -1,0 +1,37 @@
+{
+  "id": "find-seed-replaced",
+  "rules": [
+    "FIND-1"
+  ],
+  "text": "abc xyz",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "78797a",
+    "0d",
+    "06",
+    "616263"
+  ],
+  "expect": {
+    "text": "abc xyz",
+    "sel": [
+      0,
+      3
+    ],
+    "screen": [
+      "abc xyz",
+      "",
+      "",
+      "",
+      " x  wrapped                         1:4",
+      "find: abc"
+    ]
+  }
+}

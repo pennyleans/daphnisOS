@@ -1,0 +1,405 @@
+// user/ci/kit/indexband.ci: choosing by area and moving inside one window (frame 32, design note 52; RS section 3):
+// the rubber band, the drop ring and the cut dim, and where each kept entry's box is. Cross-window drag is out of
+// 0.1.0 (DN-58). It reads no file and no device; the kept entries and their picks are kit/finder.ci's, the boxes
+// kit/indexbody.ci's Grid and List, given by set_grid or set_list after its scroll, so tests/ix/indexband_test.ci
+// checks every box against indexbody.hit.
+//
+// Frame 32: the band is ULTRAMARINE at 25 percent with a 1 px ULTRAMARINE edge, radius 2, clipped to the body; a
+// press on the body's space and a move past SLOP starts it, and every entry whose box it touches is chosen as it
+// passes (with Ctrl, added to what was chosen at the press). A drag of chosen entries past SLOP is a move: the folder
+// under the pointer that is not itself moved takes the drop ring (a 2 px ULTRAMARINE ring outside its box, its box
+// SURF1 under the icon). A cut entry is drawn at 40 percent until it is pasted or the cut is dropped. A moved or pasted
+// entry never lands on a taken name: candidate() gives `NAME`, `STEM 2.EXT`, `STEM 3.EXT`, as the Trash store's
+// Restore does.
+//
+// A band held within EDGE_IN of the body's top or foot, or past it, scrolls the body a row at a time (tick()), one
+// row each step_ms(): STEP_SLOW at the zone's inner line, less by 2 ms a pixel deeper, STEP_FAST at 60 px in and past.
+// It chooses as it goes: the anchor keeps its entry and the band's far corner stays under the still pointer.
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.finder;
+import user.ci.kit.indexbody;
+
+export const I64 SLOP = 4;           // px the pointer moves before a press becomes a band or a drag
+export const I64 FILL_A = 64;        // the band's fill, 25 percent in 256ths
+export const I64 CUT_A = 154;        // a cut entry toward PAPER: 60 percent, so 40 percent of it shows
+export const I64 EDGE_IN = 24;       // px inside the body's top and foot where a band scrolls it
+export const I64 STEP_SLOW = 160;    // ms a row at the zone's inner line
+export const I64 STEP_FAST = 40;     // ms a row 60 px or more into the zone
+const I64 RGAP = 2;                  // kit/indexbody.ci's List rows, 2 apart
+const I64 ENTRIES = 1024;            // kit/finder.ci's
+
+// edge()
+export const I64 ABOVE = -1;
+export const I64 INSIDE = 0;
+export const I64 BELOW = 1;
+
+Bool listing = false;
+I64 ox = 0;                          // entry 0's box's top left on the surface, after the scroll
+I64 oy = 0;
+I64 ncols = 1;
+I64 lx1 = 0;                         // a List row's right end
+I64 kn = 0;                          // the kept entries
+I64 cx0 = 0;                         // the body: the band is clipped to it
+I64 cy0 = 0;
+I64 cx1 = 0;
+I64 cy1 = 0;
+
+Bool down = false;                   // a press on the body's space is held
+Bool live = false;                   // it moved past SLOP: the band shows
+Bool adding = false;                 // Ctrl at the press: the band adds to base
+Bool[1024] base;
+I64 ax = 0;                          // the anchor and the pointer, from entry 0's box (a scroll moves the anchor
+I64 ay = 0;                          // with its entry; the pointer stays where it is on the surface)
+I64 px = 0;
+I64 py = 0;
+I64 sx = 0;                          // the pointer on the surface
+I64 sy = 0;
+I64 wait_ms = 0 - 1;                 // when the wait for the next row began, -1 outside the zone
+
+Bool dragging = false;               // a press on a chosen entry is held
+Bool dlive = false;
+I64 dx0 = 0;
+I64 dy0 = 0;
+I64 dk = -1;                         // the folder that takes the drop ring, or -1
+
+Bool[1024] cut;
+
+U32 tok(I64 k) { return tokens.word(k); }
+
+// --- the boxes ---
+
+// The Grid: entry 0's cell's top left (ox, oy) after the scroll, cols columns, n kept entries.
+export void set_grid(I64 x, I64 y, I64 cols, I64 n) {
+    listing = false;
+    ox = x;
+    oy = y;
+    ncols = cols;
+    if (ncols < 1) { ncols = 1; }
+    kn = n;
+    follow();
+}
+
+// After a scroll, while a press is held: the pointer is where it was on the surface.
+void follow() {
+    if (!down) { return; }
+    px = sx - ox;
+    py = sy - oy;
+}
+
+// The List: entry 0's row's top left (ox, oy) after the scroll, the rows' right end x1, n kept entries.
+export void set_list(I64 x, I64 y, I64 x1, I64 n) {
+    listing = true;
+    ox = x;
+    oy = y;
+    lx1 = x1;
+    ncols = 1;
+    kn = n;
+    follow();
+}
+
+// The body's box: the band never draws outside it.
+export void set_clip(I64 x0, I64 y0, I64 x1, I64 y1) {
+    cx0 = x0;
+    cy0 = y0;
+    cx1 = x1;
+    cy1 = y1;
+}
+
+I64 pitch_x() { return indexbody.CELL_W + indexbody.GAP; }
+I64 pitch_y() {
+    if (listing) { return indexbody.ROW_H + RGAP; }
+    return indexbody.CELL_H + indexbody.GAP;
+}
+I64 bw() {
+    if (listing) { return lx1 - ox; }
+    return indexbody.CELL_W;
+}
+I64 bh() {
+    if (listing) { return indexbody.ROW_H; }
+    return indexbody.CELL_H;
+}
+
+// Entry k's box [x0, x1) x [y0, y1) on the surface.
+export I64 box_x0(I64 k) { return ox + (k % ncols) * pitch_x(); }
+export I64 box_y0(I64 k) { return oy + (k / ncols) * pitch_y(); }
+export I64 box_x1(I64 k) { return box_x0(k) + bw(); }
+export I64 box_y1(I64 k) { return box_y0(k) + bh(); }
+
+// The kept entry whose box holds (x, y), or -1: kit/indexbody.ci's hit where it is an entry.
+export I64 at(I64 x, I64 y) {
+    I64 dx = x - ox;
+    I64 dy = y - oy;
+    if (dx < 0 || dy < 0 || dy % pitch_y() >= bh()) { return -1; }
+    I64 c = 0;
+    if (!listing) {
+        if (dx % pitch_x() >= indexbody.CELL_W) { return -1; }
+        c = dx / pitch_x();
+        if (c >= ncols) { return -1; }
+    } else if (dx >= bw()) {
+        return -1;
+    }
+    I64 k = (dy / pitch_y()) * ncols + c;
+    if (k >= kn) { return -1; }
+    return k;
+}
+
+// --- the rubber band ---
+
+// A press at (x, y) on the body's space; keep (Ctrl held): the band adds to what is chosen now.
+export void press(I64 x, I64 y, Bool keep) {
+    down = true;
+    live = false;
+    adding = keep;
+    ax = x - ox;
+    ay = y - oy;
+    px = ax;
+    py = ay;
+    sx = x;
+    sy = y;
+    wait_ms = 0 - 1;
+    I64 n = kn;
+    if (n > ENTRIES) { n = ENTRIES; }
+    for k in 0..n { base[k] = keep && finder.picked(k); }
+}
+
+// The pointer at (x, y) with the press held; true while the band shows (it moved SLOP or more from the press).
+export Bool move(I64 x, I64 y) {
+    if (!down) { return false; }
+    px = x - ox;
+    py = y - oy;
+    sx = x;
+    sy = y;
+    I64 mx = px - ax;
+    I64 my = py - ay;
+    if (mx < 0) { mx = 0 - mx; }
+    if (my < 0) { my = 0 - my; }
+    if (mx >= SLOP || my >= SLOP) { live = true; }
+    return live;
+}
+
+// The press let go: the band goes; true when it showed (a press that never moved is a click on the space).
+export Bool release() {
+    Bool was = live;
+    down = false;
+    live = false;
+    wait_ms = 0 - 1;
+    return was;
+}
+
+export Bool banding() { return live; }
+
+I64 lo(I64 a, I64 b) {
+    if (a < b) { return a; }
+    return b;
+}
+
+I64 hi(I64 a, I64 b) {
+    if (a > b) { return a; }
+    return b;
+}
+
+// Whether the band touches entry k's box.
+export Bool touched(I64 k) {
+    if (!live || k < 0 || k >= kn) { return false; }
+    I64 x0 = box_x0(k) - ox;
+    I64 y0 = box_y0(k) - oy;
+    return lo(ax, px) < x0 + bw() && hi(ax, px) >= x0 && lo(ay, py) < y0 + bh() && hi(ay, py) >= y0;
+}
+
+// Whether entry k is chosen while the band shows: touched, or chosen at a Ctrl press.
+export Bool picks(I64 k) {
+    if (k < 0 || k >= kn) { return false; }
+    return touched(k) || (k < ENTRIES && base[k]);
+}
+
+// The first and past-the-last kept entries the band can touch: the rows it crosses (a loop over them is enough).
+export I64 first() {
+    I64 r = lo(ay, py) / pitch_y();
+    if (lo(ay, py) < 0) { r = 0; }
+    return hi(0, lo(r * ncols, kn));
+}
+
+export I64 last() {
+    I64 r = hi(ay, py) / pitch_y() + 1;
+    if (hi(ay, py) < 0) { r = 0; }
+    return hi(0, lo(r * ncols, kn));
+}
+
+// Where the pointer is against the body while the band shows: ABOVE within EDGE_IN of its top or past it, BELOW the
+// same at its foot (the body scrolls that way), else INSIDE.
+export I64 edge() {
+    if (!live) { return INSIDE; }
+    if (sy < cy0 + EDGE_IN) { return ABOVE; }
+    if (sy >= cy1 - EDGE_IN) { return BELOW; }
+    return INSIDE;
+}
+
+// The wait between rows now: 0 INSIDE, else STEP_SLOW less 2 ms a pixel past the zone's inner line, to STEP_FAST.
+export I64 step_ms() {
+    I64 e = edge();
+    if (e == INSIDE) { return 0; }
+    I64 d = sy - (cy1 - EDGE_IN);
+    if (e == ABOVE) { d = cy0 + EDGE_IN - 1 - sy; }
+    return hi(STEP_FAST, STEP_SLOW - 2 * d);
+}
+
+// The rows to scroll at now_ms (any clock in ms): ABOVE (-1) or BELOW (1) once the pointer has waited step_ms() in
+// the zone since it came in or since the last row, else INSIDE (0). The program scrolls, sets the boxes and chooses.
+export I64 tick(I64 now_ms) {
+    I64 e = edge();
+    if (e == INSIDE) {
+        wait_ms = 0 - 1;
+        return INSIDE;
+    }
+    if (wait_ms < 0) {
+        wait_ms = now_ms;
+        return INSIDE;
+    }
+    if (now_ms - wait_ms < step_ms()) { return INSIDE; }
+    wait_ms = now_ms;
+    return e;
+}
+
+// --- the drop ring ---
+
+// A press at (x, y) on a chosen entry: a drag begins once it moves SLOP.
+export void drag_press(I64 x, I64 y) {
+    dragging = true;
+    dlive = false;
+    dx0 = x;
+    dy0 = y;
+    dk = -1;
+}
+
+// The pointer at (x, y) during the drag; true once it is a move. The folder under it that is not chosen takes the
+// drop ring (drop()).
+export Bool drag_move(I64 x, I64 y) {
+    if (!dragging) { return false; }
+    I64 mx = x - dx0;
+    I64 my = y - dy0;
+    if (mx < 0) { mx = 0 - mx; }
+    if (my < 0) { my = 0 - my; }
+    if (mx >= SLOP || my >= SLOP) { dlive = true; }
+    dk = -1;
+    if (!dlive) { return false; }
+    I64 k = at(x, y);
+    if (k >= 0 && finder.is_dir(finder.kept_at(k)) && !finder.picked(k)) { dk = k; }
+    return true;
+}
+
+// The program refuses the folder under the drag (note 58: a folder the person cannot write and no Parent can grant).
+export void no_drop() { dk = -1; }
+
+// The press let go: the folder to move the chosen entries into, or -1 (no move, or a drop on nothing).
+export I64 drag_release() {
+    I64 k = dk;
+    if (!dlive) { k = -1; }
+    dragging = false;
+    dlive = false;
+    dk = -1;
+    return k;
+}
+
+export Bool dragging_now() { return dlive; }
+export I64 drop() { return dk; }
+
+// --- the cut ---
+
+export void cut_clear() {
+    for k in 0..ENTRIES { cut[k] = false; }
+}
+
+// Kept entry k is cut (its path is in the program's cut): drawn at 40 percent.
+export void cut_mark(I64 k) {
+    if (k >= 0 && k < ENTRIES) { cut[k] = true; }
+}
+
+export Bool is_cut(I64 k) { return k >= 0 && k < ENTRIES && cut[k]; }
+
+// --- a free name ---
+
+I64 put(inout U8[_] t, I64 p, in U8[_] s, I64 n) {
+    if (p < 0 || p + n > len(t)) { return 0 - 1; }
+    for k in 0..n { t[p + k] = s[k]; }
+    return p + n;
+}
+
+// The k-th name to try for nm[0..nn] in the folder it moves to (k from 1): the name itself, then "STEM k.EXT" (a
+// leading dot is no ending); its length, or -1 past dst or past 255 bytes.
+export I64 candidate(in U8[_] nm, I64 nn, I64 k, inout U8[_] dst) {
+    if (k <= 1) { return put(dst, 0, nm, nn); }
+    I64 ext = nn;
+    for i in 1..nn {
+        if (nm[i] == '.') { ext = i; }
+    }
+    U8[20] d;
+    I64 dn = 0;
+    I64 v = k;
+    while (v > 0) {
+        d[dn] = (48 + v % 10) as U8;
+        v = v / 10;
+        dn = dn + 1;
+    }
+    U8[21] num;
+    num[0] = ' ';
+    for i in 0..dn { num[1 + i] = d[dn - 1 - i]; }
+    I64 n = put(dst, 0, nm, ext);
+    n = put(dst, n, num, dn + 1);
+    n = put(dst, n, nm[ext..nn], nn - ext);
+    if (n > 255) { return 0 - 1; }
+    return n;
+}
+
+// --- drawing ---
+
+// Under kept entry k's icon (kit/indexbody.ci calls it where it draws a cell or a row, before the icon): the drop
+// target's box SURF1.
+export void under_row(inout U32[_] row, I64 y, I64 k) {
+    if (k != dk || dk < 0) { return; }
+    I64 r = 12;
+    if (listing) { r = 14; }
+    shape.rounded(row, y, box_x0(k), box_y0(k), box_x1(k), box_y1(k), r, tok(tokens.SURF1));
+}
+
+// Over the body's row y after kit/indexbody.ci drew it: the cut entries at 40 percent, the drop ring, the band.
+export void over_row(inout U32[_] row, I64 y) {
+    if (y < cy0 || y >= cy1) { return; }
+    I64 r = (y - oy) / pitch_y();
+    if (y >= oy && (y - oy) % pitch_y() < bh()) {
+        for c in 0..ncols {
+            I64 k = r * ncols + c;
+            if (k < kn && is_cut(k)) {
+                I64 x0 = hi(box_x0(k), cx0);
+                I64 x1 = lo(box_x1(k), cx1);
+                blend.mix(row, x0, x1, tok(tokens.PAPER), CUT_A);
+            }
+        }
+    }
+    if (dk >= 0) {
+        I64 rr = 12 + 2;
+        if (listing) { rr = 14 + 2; }
+        shape.ring(row, y, box_x0(dk) - 2, box_y0(dk) - 2, box_x1(dk) + 2, box_y1(dk) + 2, rr, 2,
+                   tok(tokens.ULTRAMARINE));
+    }
+    if (!live) { return; }
+    I64 bx0 = lo(ax, px) + ox;
+    I64 bx1 = hi(ax, px) + ox + 1;
+    I64 by0 = lo(ay, py) + oy;
+    I64 by1 = hi(ay, py) + oy + 1;
+    if (y < by0 || y >= by1) { return; }
+    U32 u = tok(tokens.ULTRAMARINE);
+    I64 l = hi(bx0, cx0);
+    I64 e = lo(bx1, cx1);
+    if (l >= e) { return; }
+    if (y == by0 || y == by1 - 1) {
+        draw.paint(row, hi(bx0 + 1, cx0), lo(bx1 - 1, cx1), u);
+        return;
+    }
+    blend.mix(row, hi(bx0 + 1, cx0), lo(bx1 - 1, cx1), u, FILL_A);
+    if (bx0 >= cx0) { row[bx0] = u; }
+    if (bx1 - 1 < cx1) { row[bx1 - 1] = u; }
+}
+// SPDX-License-Identifier: Apache-2.0

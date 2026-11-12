@@ -1,0 +1,35 @@
+// tests/cvim/hl_proof.ci: one frame of cvim on a .ci file (CV-6's proof): the sample read from /case/sample, the
+// screen composed and highlighted as cvim.ci draws it, written out as the terminal's bytes (term.frame, whole).
+import console;
+import fs;
+import user.ci.cvim.key;
+import user.ci.cvim.view;
+import user.ci.cvim.term;
+requires fs.read("/case");
+
+export void main(Grants g) {
+    U8[65536] orig;
+    U8[65536] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[4112] hc;
+    I64[1920] grid;
+    I64[1920] last;
+    I64[1] st;
+    U8[262144] o;
+    I64 n = fs.stat(g, "/case/sample") catch -1;
+    assert(n > 0 && n <= len(orig));
+    I64 got = fs.read(g, "/case/sample", 0, orig[0..n]) catch -1;
+    assert(got == n);
+    key.init(r, x, 64, 4096);
+    assert(key.load(r, x, orig[0..n], add));
+    key.window(r, view.text_rows(24));
+    for k in 0..len(hc) { hc[k] = 0; }
+    for k in 0..len(last) { last[k] = -1; }
+    st[0] = 0;
+    view.compose(r, x, orig[0..n], add, 24, 80, b"sample.ci", grid);
+    view.syntax(r, x, orig[0..n], add, 24, 80, b"sample.ci", grid, hc);
+    I64 w = term.frame(last, grid, 24, 80, true, view.cursor_at(r, x, orig[0..n], add, 24, 80), view.shape(r), st, o);
+    _ = console.write(g, o[0..w]);
+}
+// SPDX-License-Identifier: Apache-2.0

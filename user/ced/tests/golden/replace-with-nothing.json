@@ -1,0 +1,24 @@
+{
+  "id": "replace-with-nothing",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a b",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "0d",
+    "61"
+  ],
+  "expect": {
+    "text": " b"
+  }
+}

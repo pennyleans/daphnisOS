@@ -1,0 +1,1051 @@
+// user/ci/cvim/ex.ci: the command line of cvim's core (CV-4b, docs/specs/2026-11-07-cv-cvim.md section 5): `:` opens
+// it in Normal mode (in Visual mode with '<,'> typed), Enter runs it, Esc leaves it. The commands that change the
+// text run here, on the core's tables, so a golden replays them: ranges, :N, :d, :s, :&, :&&, :g, :g!, :v. The
+// session's commands (files, buffers, options, quitting) are handed back to the program (PROGRAM).
+//
+// Ranges as Vim reads them: N . $ 'a to 'z '< '> % and + and - offsets (bare + and - one line, a number after an
+// address an offset), separated by , or ; (; moves the cursor to the first address first); a missing address is the
+// current line; 0 is line 1; past the last line is E16; a backwards range is swapped (Vim asks).
+// :[range]s/pat/rep/[&][g][i][I][e] [count] on pat.ci; rep's & \0 to \9 ~ \r \t \\ \u \l \U \L \E \e as Vim's
+// sub-replace-special. :& and :s with no pattern repeat the last :s (its flags only with &). :[range]g/pat/cmd and
+// :v run cmd (d, s, &, or a range and those) on each line that matches (does not, for :v), as one undo step.
+// :[range]d [x] [count] deletes lines as dd does (registers "x, "1 to "9). Messages follow Vim's words and its
+// 'report' of 2. A command's changes are one undo step.
+import user.ced.keys;
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.edit;
+import user.ci.cvim.undo;
+import user.ci.cvim.op;
+import user.ci.cvim.pat;
+import user.ci.cvim.key;
+
+export const I64 TABLE = 270336;
+
+// feed's answers
+export const I64 NOT_MINE = 0;     // the key is the core's (key.step)
+export const I64 TAKEN = 1;        // the command line took it
+export const I64 RAN = 2;          // a command ran here (or failed with a message)
+export const I64 PROGRAM = 3;      // a session command: cmd_n and cmd_byte give its text, range none
+
+const I64 E_ON = 0;
+const I64 E_N = 1;
+const I64 E_MSG_N = 3;
+const I64 E_MSG_ERR = 4;
+const I64 E_LP_N = 13;             // the last pattern, -1 none
+const I64 E_LR_N = 14;             // the last replacement, -1 none
+const I64 E_LFLAGS = 15;           // the last :s's flags: 1 g, 2 i, 4 I
+const I64 E_GLOBAL = 16;           // inside :g
+const I64 E_CHG_L = 17;            // a command's change, for :g: from line, lines taken out, lines put in
+const I64 E_CHG_DEL = 18;
+const I64 E_CHG_ADD = 19;
+const I64 E_SUBS = 20;             // :s's substitutions and the lines they were on (summed over a :g)
+const I64 E_SUB_LINES = 21;
+const I64 E_FEWER = 22;            // lines :d took out (summed over a :g)
+const I64 E_LAST_SUB_L = 23;       // the line the last substitution ended on
+const I64 CMD0 = 64;
+export const I64 CMD_MAX = 1024;
+const I64 MSG0 = 1100;
+const I64 MSG_MAX = 512;
+const I64 LP0 = 1700;
+const I64 LR0 = 2800;
+const I64 PAT_MAX = 1024;
+const I64 GM0 = 4096;              // :g's marked lines
+const I64 GMAX = 262144;
+const I64 REPORT = 2;              // Vim's 'report'
+const I64 LINE_MAX = 65536;
+
+export void init(inout I64[_] et) {
+    et[E_ON] = 0;
+    et[E_N] = 0;
+    et[E_MSG_N] = 0;
+    et[E_MSG_ERR] = 0;
+    et[E_LP_N] = -1;
+    et[E_LR_N] = -1;
+    et[E_LFLAGS] = 0;
+    et[E_GLOBAL] = 0;
+    et[E_SUBS] = 0;
+    et[E_SUB_LINES] = 0;
+    et[E_FEWER] = 0;
+}
+
+// --- what the program draws and reads ---
+
+export Bool is_open(in I64[_] et) { return et[E_ON] != 0; }
+export I64 cmd_n(in I64[_] et) { return et[E_N]; }
+export U8 cmd_byte(in I64[_] et, I64 i) { return et[CMD0 + i] as U8; }
+export I64 msg_n(in I64[_] et) { return et[E_MSG_N]; }
+export U8 msg_byte(in I64[_] et, I64 i) { return et[MSG0 + i] as U8; }
+export Bool msg_err(in I64[_] et) { return et[E_MSG_ERR] != 0; }
+export void msg_clear(inout I64[_] et) {
+    et[E_MSG_N] = 0;
+    et[E_MSG_ERR] = 0;
+}
+
+void say(inout I64[_] et, in U8[_] s) {
+    for i in 0..len(s) {
+        if (et[E_MSG_N] < MSG_MAX) {
+            et[MSG0 + et[E_MSG_N]] = s[i] as I64;
+            et[E_MSG_N] += 1;
+        }
+    }
+}
+
+void say_num(inout I64[_] et, I64 v) {
+    U8[24] d;
+    I64 n = 0;
+    I64 w = v;
+    if (w == 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (w > 0) {
+        d[n] = ('0' as I64 + w % 10) as U8;
+        w = w / 10;
+        n += 1;
+    }
+    for i in 0..n {
+        U8[1] c;
+        c[0] = d[n - 1 - i];
+        say(et, c);
+    }
+}
+
+void fail(inout I64[_] et, in U8[_] s) {
+    if (et[E_GLOBAL] != 0 && et[E_MSG_ERR] != 0) { return; }   // the first error inside a :g stays
+    msg_clear(et);
+    say(et, s);
+    et[E_MSG_ERR] = 1;
+}
+
+void fail_at(inout I64[_] et, in U8[_] s, I64 from, I64 to) {
+    fail(et, s);
+    for i in from..to {
+        U8[1] c;
+        c[0] = et[CMD0 + i] as U8;
+        say(et, c);
+    }
+}
+
+// --- the command line's keys ---
+
+Bool idle(in I64[_] r) {
+    return r[state.R_MODE] == state.MODE_NORMAL && r[state.R_OP] == 0 && r[state.R_PREFIX] == 0 &&
+           r[state.R_COUNT] == 0 && r[state.R_REGNAME] == 0;
+}
+
+void put_cmd(inout I64[_] et, in U8[_] s) {
+    for i in 0..len(s) {
+        if (et[E_N] < CMD_MAX) {
+            et[CMD0 + et[E_N]] = s[i] as I64;
+            et[E_N] += 1;
+        }
+    }
+}
+
+// Key k: the command line's when it is open or k opens it; RAN or PROGRAM when Enter ran it.
+export I64 feed(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                inout I64[_] et, inout I64[_] pt, I64 k) {
+    if (et[E_ON] == 0) {
+        if (k != ':') { return NOT_MINE; }
+        if (r[state.R_MODE] == state.MODE_VISUAL && r[state.R_OP] == 0 && r[state.R_COUNT] == 0 &&
+            r[state.R_REGNAME] == 0 && r[state.R_PREFIX] == 0) {
+            key.step(r, x, orig, add, sp, u, keys.K_ESC);   // Visual mode ends, its lines are '< and '>
+            open_visual(et);
+            return TAKEN;
+        }
+        if (!idle(r)) { return NOT_MINE; }
+        et[E_ON] = 1;
+        et[E_N] = 0;
+        msg_clear(et);
+        return TAKEN;
+    }
+    if (k == keys.K_ESC || k == keys.M_CTRL + 'c') {
+        et[E_ON] = 0;
+        return TAKEN;
+    }
+    if (k == keys.K_ENTER || k == keys.M_CTRL + 'm' || k == keys.M_CTRL + 'j') {
+        et[E_ON] = 0;
+        msg_clear(et);
+        return run(r, x, orig, add, sp, u, et, pt);
+    }
+    if (k == keys.K_BACKSPACE || k == keys.M_CTRL + 'h') {
+        if (et[E_N] == 0) {
+            et[E_ON] = 0;
+        } else {
+            et[E_N] -= 1;
+            while (et[E_N] > 0 && (et[CMD0 + et[E_N]] & 192) == 128) { et[E_N] -= 1; }
+        }
+        return TAKEN;
+    }
+    if (k == keys.M_CTRL + 'u') {
+        et[E_N] = 0;
+        return TAKEN;
+    }
+    if (k < 32 || k >= keys.K_UP) { return TAKEN; }
+    U8[4] e;
+    I64 n = keys.encode(k, e);
+    put_cmd(et, e[0..n]);
+    return TAKEN;
+}
+
+// `:` typed in Visual mode, after the program ended it (Esc): the line opens with '<,'> on it, as Vim's does.
+export void open_visual(inout I64[_] et) {
+    et[E_ON] = 1;
+    et[E_N] = 0;
+    msg_clear(et);
+    put_cmd(et, b"'<,'>");
+}
+
+// --- ranges ---
+
+I64 ch_at(in I64[_] et, I64 i) {
+    if (i >= et[E_N]) { return -1; }
+    return et[CMD0 + i];
+}
+
+I64 skip_white(in I64[_] et, I64 i0) {
+    I64 i = i0;
+    while (ch_at(et, i) == ' ' || ch_at(et, i) == 9) { i += 1; }
+    return i;
+}
+
+Bool digit(I64 c) { return c >= '0' && c <= '9'; }
+
+// One address at at[0] (1-based line, or -1 for none; -2 after an error), at[0] moved past it.
+I64 address(in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, inout I64[_] et, inout I64[1] at, I64 cur) {
+    I64 i = skip_white(et, at[0]);
+    I64 c = ch_at(et, i);
+    I64 l = -1;
+    if (c == '.') {
+        l = cur;
+        i += 1;
+    } else if (c == '$') {
+        l = text.nlines(x);
+        i += 1;
+    } else if (digit(c)) {
+        l = 0;
+        while (digit(ch_at(et, i))) {
+            l = min(l * 10 + ch_at(et, i) - '0', 999999999);
+            i += 1;
+        }
+    } else if (c == 39) {                // ' and a mark
+        I64 m = ch_at(et, i + 1);
+        I64 ml = -1;
+        if (m >= 'a' && m <= 'z') {
+            ml = r[state.R_MARK0 + 2 * (m - 'a')];
+        } else if (m == '<' || m == '>') {
+            if (r[state.R_GV_MODE] != 0) {
+                I64 a = r[state.R_GV_START];
+                I64 b = r[state.R_GV_END];
+                if (m == '<') { ml = min(a, b); } else { ml = max(a, b); }
+            }
+        } else {
+            fail(et, b"E20: Mark not set");
+            return -2;
+        }
+        if (ml < 0) {
+            fail(et, b"E20: Mark not set");
+            return -2;
+        }
+        l = min(ml, text.nlines(x) - 1) + 1;
+        i += 2;
+    } else if (c == '/' || c == '?' || c == 92) {
+        fail(et, b"not in cvim: a search address");
+        return -2;
+    } else if (c == '+' || c == '-') {
+        l = cur;                          // an offset alone is from the current line
+    }
+    if (l >= 0) {
+        Bool going = true;
+        while (going) {
+            I64 j = skip_white(et, i);
+            I64 d = ch_at(et, j);
+            if (d == '+' || d == '-') {
+                j += 1;
+                I64 v = 1;
+                if (digit(ch_at(et, j))) {
+                    v = 0;
+                    while (digit(ch_at(et, j))) {
+                        v = min(v * 10 + ch_at(et, j) - '0', 999999999);
+                        j += 1;
+                    }
+                }
+                if (d == '+') { l += v; } else { l -= v; }
+                i = j;
+            } else if (digit(d) && j == i) {
+                I64 v = 0;
+                while (digit(ch_at(et, j))) {
+                    v = min(v * 10 + ch_at(et, j) - '0', 999999999);
+                    j += 1;
+                }
+                l += v;
+                i = j;
+            } else {
+                going = false;
+            }
+        }
+    }
+    at[0] = i;
+    return l;
+}
+
+// --- the commands ---
+
+Bool letter(I64 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+// Whether cmd[a, b) is a prefix of full at least minimum letters long.
+Bool abbrev(in I64[_] et, I64 a, I64 b, in U8[_] full, I64 minimum) {
+    if (b - a < minimum || b - a > len(full)) { return false; }
+    for i in a..b {
+        if (et[CMD0 + i] != full[i - a] as I64) { return false; }
+    }
+    return true;
+}
+
+// The current line's first non-blank, Vim's beginline(BL_WHITE | BL_FIX), on 0-based line l (clamped).
+void to_line(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    I64 n = text.nlines(x);
+    I64 ll = max(min(l, n - 1), 0);
+    r[state.R_CUR] = text.first_nonblank(x, orig, add, ll, true);
+    r[state.R_WANT] = -1;
+}
+
+I64 cur_line(in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    return text.lineof(x, orig, add, r[state.R_CUR]) + 1;
+}
+
+// The command line run (or, inside :g, the command at cmd[from, to)): RAN or PROGRAM.
+export I64 run(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+               inout I64[_] et, inout I64[_] pt) {
+    I64 res = exec_at(r, x, orig, add, sp, u, et, pt, 0, et[E_N]);
+    if (res == RAN && et[E_GLOBAL] == 0) { undo.close_step(r); }
+    return res;
+}
+
+I64 exec_at(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+            inout I64[_] et, inout I64[_] pt, I64 from, I64 to) {
+    I64 save_n = et[E_N];
+    et[E_N] = to;
+    I64 res = exec_cmd(r, x, orig, add, sp, u, et, pt, from);
+    et[E_N] = save_n;
+    return res;
+}
+
+I64 exec_cmd(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+             inout I64[_] et, inout I64[_] pt, I64 from) {
+    I64 i = from;
+    while (ch_at(et, i) == ' ' || ch_at(et, i) == ':') { i += 1; }
+    if (i >= et[E_N]) { return RAN; }
+    I64 cur = cur_line(r, x, orig, add);
+    I64 nl = text.nlines(x);
+    I64 l0 = -1;
+    I64 l1 = -1;
+    I64 naddr = 0;
+    I64[1] at;
+    at[0] = i;
+    if (ch_at(et, skip_white(et, i)) == '%') {
+        l0 = 1;
+        l1 = nl;
+        naddr = 2;
+        at[0] = skip_white(et, i) + 1;
+    } else {
+        Bool going = true;
+        while (going) {
+            I64 a = address(r, x, orig, add, et, at, cur);
+            if (a == -2) { return RAN; }
+            I64 j = skip_white(et, at[0]);
+            I64 sep = ch_at(et, j);
+            if (a < 0 && (sep == ',' || sep == ';')) { a = cur; }
+            if (a >= 0) {
+                l0 = l1;
+                l1 = a;
+                naddr += 1;
+            }
+            if (sep == ',' || sep == ';') {
+                if (sep == ';' && a >= 0) {
+                    to_line(r, x, orig, add, max(a, 1) - 1);
+                    cur = a;
+                }
+                at[0] = j + 1;
+                I64 k = skip_white(et, at[0]);
+                I64 c = ch_at(et, k);
+                if (!(c == '.' || c == '$' || digit(c) || c == 39 || c == '+' || c == '-')) {
+                    l0 = l1;                 // `3,` : the second address is the current line
+                    l1 = cur;
+                    naddr += 1;
+                    going = false;
+                }
+            } else {
+                going = false;
+            }
+        }
+        if (naddr == 1) { l0 = l1; }
+    }
+    if (naddr > 2) { naddr = 2; }
+    I64 v0 = skip_white(et, at[0]);
+    I64 v1 = v0;
+    while (letter(ch_at(et, v1))) { v1 += 1; }
+    if (v1 == v0 && ch_at(et, v0) == '&') { v1 = v0 + 1; }
+    // :N and a range alone: to the range's last line
+    if (v1 == v0) {
+        if (v0 < et[E_N] && ch_at(et, v0) != '|') {
+            fail_at(et, b"E492: Not an editor command: ", from, et[E_N]);
+            return RAN;
+        }
+        if (naddr == 0) { return RAN; }
+        if (l1 > nl) { l1 = nl; }       // Vim: :N past the end goes to the last line
+        to_line(r, x, orig, add, max(l1, 1) - 1);
+        return RAN;
+    }
+    Bool core = false;
+    I64 verb = 0;
+    if (abbrev(et, v0, v1, b"substitute", 1)) { verb = 's'; }
+    else if (v1 - v0 == 1 && ch_at(et, v0) == '&') { verb = '&'; }
+    else if (abbrev(et, v0, v1, b"global", 1)) { verb = 'g'; }
+    else if (abbrev(et, v0, v1, b"vglobal", 1)) { verb = 'v'; }
+    else if (abbrev(et, v0, v1, b"delete", 1)) { verb = 'd'; }
+    core = verb != 0;
+    if (!core) {
+        if (naddr > 0) {
+            fail(et, b"E481: No range allowed");
+            return RAN;
+        }
+        if (et[E_GLOBAL] != 0) {
+            fail_at(et, b"not in cvim: inside :g, ", v0, et[E_N]);
+            return RAN;
+        }
+        return PROGRAM;
+    }
+    if (naddr == 0) {
+        l0 = cur;
+        l1 = cur;
+        if (verb == 'g' || verb == 'v') {
+            l0 = 1;
+            l1 = nl;
+        }
+    }
+    if (l0 == 0) { l0 = 1; }                // Vim's correct_range
+    if (l1 == 0) { l1 = 1; }
+    if (l0 > l1) {
+        I64 t = l0;
+        l0 = l1;
+        l1 = t;
+    }
+    if (l0 < 0 || l1 > nl) {
+        fail(et, b"E16: Invalid range");
+        return RAN;
+    }
+    Bool bang = ch_at(et, v1) == '!';
+    I64 a0 = v1;
+    if (bang) { a0 += 1; }
+    if (verb == 'd') { return cmd_delete(r, x, orig, add, sp, u, et, l0, l1, a0, bang); }
+    if (verb == 'g' || verb == 'v') {
+        Bool inv = verb == 'v' || bang;
+        return cmd_global(r, x, orig, add, sp, u, et, pt, l0, l1, a0, inv);
+    }
+    return cmd_sub(r, x, orig, add, sp, u, et, pt, l0, l1, a0, verb == '&');
+}
+
+// :[range]d [x] [count]
+I64 cmd_delete(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+               inout I64[_] et, I64 l0, I64 l1, I64 a0, Bool bang) {
+    if (bang) {
+        fail(et, b"E477: No ! allowed");
+        return RAN;
+    }
+    I64 i = skip_white(et, a0);
+    I64 reg = 0;
+    I64 c = ch_at(et, i);
+    if (c >= 0 && !digit(c) && c != '|') {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '"' || c == '_' || c == '-') {
+            reg = c;
+            i = skip_white(et, i + 1);
+        } else {
+            fail_at(et, b"E488: Trailing characters: ", i, et[E_N]);
+            return RAN;
+        }
+    }
+    I64 a = l0;
+    I64 b = l1;
+    if (digit(ch_at(et, i))) {
+        I64 v = 0;
+        while (digit(ch_at(et, i))) {
+            v = min(v * 10 + ch_at(et, i) - '0', 999999999);
+            i += 1;
+        }
+        if (v == 0) {
+            fail(et, b"E939: Positive count required");
+            return RAN;
+        }
+        a = l1;
+        b = min(l1 + v - 1, text.nlines(x));
+    }
+    i = skip_white(et, i);
+    if (i < et[E_N]) {
+        fail_at(et, b"E488: Trailing characters: ", i, et[E_N]);
+        return RAN;
+    }
+    I64 z0 = a - 1;
+    I64 z1 = b - 1;
+    I64 lo = text.lstart(x, orig, add, z0);
+    I64 hi = min(text.lend(x, orig, add, z1) + 1, buf.total(x));
+    r[state.R_REGNAME] = reg;
+    r[state.R_CUR] = lo;
+    op.apply(r, x, orig, add, sp, u, 'd', lo, hi, true, z0, z1, lo);
+    r[state.R_REGNAME] = 0;
+    et[E_CHG_L] = a;
+    et[E_CHG_DEL] = b - a + 1;
+    et[E_CHG_ADD] = 0;
+    et[E_FEWER] += b - a + 1;
+    if (et[E_GLOBAL] == 0) {
+        fewer_msg(et);
+        et[E_FEWER] = 0;
+    }
+    return RAN;
+}
+
+void fewer_msg(inout I64[_] et) {
+    if (et[E_FEWER] > REPORT && et[E_MSG_ERR] == 0) {
+        msg_clear(et);
+        say_num(et, et[E_FEWER]);
+        say(et, b" fewer lines");
+    }
+}
+
+// The pattern's error by name.
+void pat_error(inout I64[_] et, inout I64[_] pt, I64 e, in U8[_] p) {
+    if (e == pat.E_PAREN_OPEN) { fail(et, b"E54: Unmatched \\("); }
+    else if (e == pat.E_PAREN_CLOSE) { fail(et, b"E55: Unmatched \\)"); }
+    else if (e == pat.E_NOTHING) { fail(et, b"E64: \\+ follows nothing"); }
+    else if (e == pat.E_NESTED) { fail(et, b"E61: Nested *"); }
+    else if (e == pat.E_BRACE) { fail(et, b"E554: Syntax error in \\\x7b...\x7d"); }
+    else if (e == pat.E_TILDE) { fail(et, b"E33: No previous substitute regular expression"); }
+    else if (e == pat.E_GROUPS) { fail(et, b"E51: Too many \\("); }
+    else if (e == pat.E_TOO_BIG) { fail(et, b"E339: Pattern too long"); }
+    else {
+        fail(et, b"not in cvim: ");
+        I64 q = 0;
+        I64 cp = 0;
+        I64 at0 = pat.err_at(pt);
+        I64 bi = 0;
+        while (bi < len(p) && cp < at0) {     // the code point index back to a byte offset
+            bi += 1;
+            while (bi < len(p) && ((p[bi] as I64) & 192) == 128) { bi += 1; }
+            cp += 1;
+        }
+        q = bi;
+        say(et, p[q..min(q + 2, len(p))]);
+    }
+}
+
+Bool ignorecase(in I64[_] r) { return r[state.R_NOIC] == 0; }
+Bool smartcase(in I64[_] r) { return r[state.R_NOSCS] == 0; }
+
+// The line l (0-based) into lb; its length, or -1 when it is past LINE_MAX.
+I64 line_bytes(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l, inout U8[_] lb) {
+    I64 s = text.lstart(x, orig, add, l);
+    I64 e = text.lend(x, orig, add, l);
+    if (e - s > LINE_MAX) { return -1; }
+    if (e > s) { buf.copy_out(x, orig, add, s, lb[0..e - s]); }
+    return e - s;
+}
+
+// :s / :& . The last pattern and replacement are et's; `amp`: the verb was &.
+I64 cmd_sub(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+            inout I64[_] et, inout I64[_] pt, I64 f0, I64 f1, I64 a0, Bool amp) {
+    I64 l0 = f0;
+    I64 l1 = f1;
+    I64 i = a0;
+    I64 delim = ch_at(et, i);
+    Bool fresh = !amp && delim >= 0 && delim != ' ' && delim != '|' && delim != '"' && !letter(delim) &&
+                 !digit(delim) && delim != '&';
+    if (!amp && delim >= 0 && letter(delim)) {
+        fail(et, b"E146: Regular expressions can't be delimited by letters");
+        return RAN;
+    }
+    U8[1024] p;
+    I64 pn = 0;
+    U8[1024] rp;
+    I64 rn = 0;
+    I64 flags = 0;
+    if (fresh) {
+        i += 1;
+        while (i < et[E_N] && ch_at(et, i) != delim) {
+            if (ch_at(et, i) == 92 && i + 1 < et[E_N]) {
+                if (ch_at(et, i + 1) != delim) {
+                    if (pn < PAT_MAX) { p[pn] = 92; pn += 1; }
+                }
+                i += 1;
+            }
+            if (pn < PAT_MAX) {
+                p[pn] = ch_at(et, i) as U8;
+                pn += 1;
+            }
+            i += 1;
+        }
+        if (pn == 0) {
+            if (et[E_LP_N] < 0) {
+                fail(et, b"E35: No previous regular expression");
+                return RAN;
+            }
+            pn = et[E_LP_N];
+            for k in 0..pn { p[k] = et[LP0 + k] as U8; }
+        }
+        Bool closed = ch_at(et, i) == delim;
+        if (closed) { i += 1; }
+        // the replacement, ~ expanded into the last one, until the delimiter
+        while (i < et[E_N] && closed && ch_at(et, i) != delim) {
+            I64 c = ch_at(et, i);
+            if (c == 92 && i + 1 < et[E_N]) {
+                if (ch_at(et, i + 1) != delim) {
+                    if (rn < PAT_MAX) { rp[rn] = 92; rn += 1; }
+                }
+                i += 1;
+                if (rn < PAT_MAX) { rp[rn] = ch_at(et, i) as U8; rn += 1; }
+                i += 1;
+                continue;
+            }
+            if (c == '~') {
+                if (et[E_LR_N] >= 0) {
+                    for k in 0..et[E_LR_N] {
+                        if (rn < PAT_MAX) { rp[rn] = et[LR0 + k] as U8; rn += 1; }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            if (rn < PAT_MAX) { rp[rn] = c as U8; rn += 1; }
+            i += 1;
+        }
+        if (ch_at(et, i) == delim) { i += 1; }
+        et[E_LR_N] = rn;
+        for k in 0..rn { et[LR0 + k] = rp[k] as I64; }
+        et[E_LP_N] = pn;
+        for k in 0..pn { et[LP0 + k] = p[k] as I64; }
+    } else {
+        if (et[E_LP_N] < 0 || et[E_LR_N] < 0) {
+            fail(et, b"E35: No previous regular expression");
+            return RAN;
+        }
+        pn = et[E_LP_N];
+        for k in 0..pn { p[k] = et[LP0 + k] as U8; }
+        rn = et[E_LR_N];
+        for k in 0..rn { rp[k] = et[LR0 + k] as U8; }
+    }
+    // flags: & first (keep the last :s's), then g i I e; then a count
+    if (ch_at(et, i) == '&') {
+        flags = et[E_LFLAGS];
+        i += 1;
+    }
+    if (amp && ch_at(et, i) == '&') {      // :&& : the last flags too
+        flags = et[E_LFLAGS];
+        i += 1;
+    }
+    Bool quiet = false;
+    Bool going = true;
+    while (going) {
+        I64 c = ch_at(et, i);
+        if (c == 'g') { flags = flags ^ 1; i += 1; }
+        else if (c == 'i') { flags = (flags | 2) & 3; i += 1; }
+        else if (c == 'I') { flags = (flags | 4) & 5; i += 1; }
+        else if (c == 'e') { quiet = true; i += 1; }
+        else if (c == 'c' || c == 'n' || c == 'r' || c == 'p' || c == '#' || c == 'l') {
+            U8[1] f;
+            f[0] = c as U8;
+            fail(et, b"not in cvim: the :s flag ");
+            say(et, f);
+            return RAN;
+        }
+        else { going = false; }
+    }
+    et[E_LFLAGS] = flags;
+    i = skip_white(et, i);
+    if (digit(ch_at(et, i))) {
+        I64 v = 0;
+        while (digit(ch_at(et, i))) {
+            v = min(v * 10 + ch_at(et, i) - '0', 999999999);
+            i += 1;
+        }
+        if (v == 0) {
+            fail(et, b"E939: Positive count required");
+            return RAN;
+        }
+        l0 = l1;
+        l1 = min(l1 + v - 1, text.nlines(x));
+    }
+    i = skip_white(et, i);
+    if (i < et[E_N]) {
+        fail_at(et, b"E488: Trailing characters: ", i, et[E_N]);
+        return RAN;
+    }
+    I64 force = 0;
+    if ((flags & 2) != 0) { force = 1; }
+    if ((flags & 4) != 0) { force = 2; }
+    pat.set_tilde(pt, rp[0..rn], true);
+    I64 e = pat.compile(pt, p[0..pn], ignorecase(r), smartcase(r), force);
+    if (e != pat.OK) {
+        pat_error(et, pt, e, p[0..pn]);
+        return RAN;
+    }
+    I64 subs0 = et[E_SUBS];
+    I64 lines0 = et[E_SUB_LINES];
+    Bool any = substitute(r, x, orig, add, sp, u, et, pt, l0 - 1, l1 - 1, rp[0..rn], (flags & 1) != 0);
+    if (et[E_MSG_ERR] != 0 && et[E_GLOBAL] == 0) { return RAN; }
+    if (!any) {
+        if (!quiet && et[E_GLOBAL] == 0) {
+            fail(et, b"E486: Pattern not found: ");
+            say(et, p[0..pn]);
+        }
+        return RAN;
+    }
+    to_line(r, x, orig, add, et[E_LAST_SUB_L]);
+    if (et[E_GLOBAL] == 0) {
+        sub_msg(et);
+        et[E_SUBS] = 0;
+        et[E_SUB_LINES] = 0;
+    }
+    return RAN;
+}
+
+void sub_msg(inout I64[_] et) {
+    if (et[E_SUBS] > REPORT && et[E_MSG_ERR] == 0) {
+        msg_clear(et);
+        say_num(et, et[E_SUBS]);
+        if (et[E_SUBS] == 1) { say(et, b" substitution on "); } else { say(et, b" substitutions on "); }
+        say_num(et, et[E_SUB_LINES]);
+        if (et[E_SUB_LINES] == 1) { say(et, b" line"); } else { say(et, b" lines"); }
+    }
+}
+
+// One code point's case changed by what (u upper, l lower), as UTF-8 into o at n; the new n.
+I64 put_case(inout U8[_] o, I64 n, in U8[_] s, I64 at0, I64 k, I64 what) {
+    if (k == 1) {
+        I64 c = s[at0] as I64;
+        if (what == 'u' && c >= 'a' && c <= 'z') { c -= 32; }
+        if (what == 'l' && c >= 'A' && c <= 'Z') { c += 32; }
+        o[n] = c as U8;
+        return n + 1;
+    }
+    if (k == 2) {
+        I64 c = ((s[at0] as I64) & 31) * 64 + ((s[at0 + 1] as I64) & 63);
+        if (what == 'u' && c >= 224 && c <= 254 && c != 247) { c -= 32; }
+        if (what == 'l' && c >= 192 && c <= 222 && c != 215) { c += 32; }
+        o[n] = (192 + c / 64) as U8;
+        o[n + 1] = (128 + c % 64) as U8;
+        return n + 2;
+    }
+    for j in 0..k { o[n + j] = s[at0 + j]; }
+    return n + k;
+}
+
+I64 utf8_len(U8 b) {
+    I64 c = b as I64;
+    if (c >= 0xC2 && c <= 0xDF) { return 2; }
+    if (c >= 0xE0 && c <= 0xEF) { return 3; }
+    if (c >= 0xF0 && c <= 0xF4) { return 4; }
+    return 1;
+}
+
+// s[a, b) put into o at n under the case state cs[0] (one-shot u or l, 0 none) and cs[1] (U or L, 0 none).
+I64 put_text(inout U8[_] o, I64 n0, in U8[_] s, I64 a, I64 b, inout I64[2] cs) {
+    I64 n = n0;
+    I64 i = a;
+    while (i < b && n < len(o) - 4) {
+        I64 k = min(utf8_len(s[i]), b - i);
+        I64 what = 0;
+        if (cs[1] == 'U') { what = 'u'; }
+        if (cs[1] == 'L') { what = 'l'; }
+        if (cs[0] != 0) {
+            what = cs[0];
+            cs[0] = 0;
+        }
+        n = put_case(o, n, s, i, k, what);
+        i += k;
+    }
+    return n;
+}
+
+// The replacement rp for the match now in pt (on line lb) into o at n; the new n, or -1 on a refusal.
+I64 expand(inout I64[_] et, in I64[_] pt, in U8[_] lb, in U8[_] rp, inout U8[_] o, I64 n0) {
+    I64 n = n0;
+    I64[2] cs;
+    cs[0] = 0;
+    cs[1] = 0;
+    U8[1] one;
+    I64 i = 0;
+    while (i < len(rp)) {
+        if (n >= len(o) - 8) {
+            fail(et, b"not in cvim: :s past 128 KiB on one line");
+            return -1;
+        }
+        I64 c = rp[i] as I64;
+        if (c == '&') {
+            n = put_group(pt, lb, o, n, 0, cs);
+            i += 1;
+            continue;
+        }
+        if (c == 92 && i + 1 < len(rp)) {
+            I64 d = rp[i + 1] as I64;
+            i += 2;
+            if (d >= '0' && d <= '9') {
+                n = put_group(pt, lb, o, n, d - '0', cs);
+            } else if (d == 'u' || d == 'l') {
+                cs[0] = d;
+            } else if (d == 'U' || d == 'L') {
+                cs[1] = d;
+            } else if (d == 'E' || d == 'e') {
+                cs[0] = 0;
+                cs[1] = 0;
+            } else if (d == 'r') {
+                o[n] = 10;
+                n += 1;
+            } else if (d == 't') {
+                one[0] = 9;
+                n = put_text(o, n, one, 0, 1, cs);
+            } else if (d == 'n') {
+                fail(et, b"not in cvim: \\n in the replacement (a NUL)");
+                return -1;
+            } else {
+                one[0] = d as U8;            // \\ \& \~ and any other: the character itself
+                n = put_text(o, n, one, 0, 1, cs);
+            }
+            continue;
+        }
+        if (c == 13) {
+            o[n] = 10;
+            n += 1;
+            i += 1;
+            continue;
+        }
+        I64 k = min(utf8_len(rp[i]), len(rp) - i);
+        n = put_text(o, n, rp, i, i + k, cs);
+        i += k;
+    }
+    return n;
+}
+
+I64 put_group(in I64[_] pt, in U8[_] lb, inout U8[_] o, I64 n, I64 g, inout I64[2] cs) {
+    I64 s = pt[pat.CAP + 2 * g];
+    I64 e = pt[pat.CAP + 2 * g + 1];
+    if (s < 0 || e < s) { return n; }
+    return put_text(o, n, lb, pat.byte_at(pt, s), pat.byte_at(pt, e), cs);
+}
+
+// The substitution on lines l0 to l1 (0-based); true when it matched somewhere.
+Bool substitute(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                inout I64[_] et, inout I64[_] pt, I64 l0, I64 l1, in U8[_] rp, Bool all) {
+    U8[65536] lb;
+    U8[131072] ob;
+    Bool any = false;
+    I64 l = l0;
+    I64 last = l1;
+    et[E_CHG_L] = l0 + 1;
+    et[E_CHG_DEL] = 0;
+    et[E_CHG_ADD] = 0;
+    while (l <= last) {
+        I64 ln = line_bytes(x, orig, add, l, lb);
+        if (ln < 0) {
+            fail(et, b"not in cvim: :s on a line over 64 KiB");
+            return any;
+        }
+        if (!pat.load_line(pt, lb[0..ln])) {
+            fail(et, b"not in cvim: :s on a line over 65,536 characters");
+            return any;
+        }
+        I64 nc = pat.line_n(pt);
+        I64 pos = 0;
+        I64 copied = 0;                     // bytes of the line put into ob so far
+        I64 on = 0;
+        I64 subs = 0;
+        I64 prev_end = -1;
+        while (pos <= nc && pat.exec(pt, pos)) {
+            I64 ms = pt[pat.CAP];
+            I64 me = pt[pat.CAP + 1];
+            if (ms == me && ms == prev_end) {
+                // an empty match where the last one ended: Vim moves on a character
+                if (ms >= nc) { break; }
+                pos = ms + 1;
+                continue;
+            }
+            I64 bs = pat.byte_at(pt, ms);
+            I64 be = pat.byte_at(pt, me);
+            if (on + (bs - copied) >= len(ob) - 8) {
+                fail(et, b"not in cvim: :s past 128 KiB on one line");
+                return any;
+            }
+            for q in copied..bs {
+                ob[on] = lb[q];
+                on += 1;
+            }
+            on = expand(et, pt, lb[0..ln], rp, ob, on);
+            if (on < 0) { return any; }
+            copied = be;
+            subs += 1;
+            prev_end = me;
+            if (!all) { break; }
+            if (me == ms) {
+                if (ms >= nc) { break; }
+                pos = ms + 1;
+            } else {
+                pos = me;
+            }
+        }
+        if (subs == 0) {
+            l += 1;
+            continue;
+        }
+        for q in copied..ln {
+            if (on < len(ob)) {
+                ob[on] = lb[q];
+                on += 1;
+            }
+        }
+        I64 s = text.lstart(x, orig, add, l);
+        if (!edit.del(r, x, orig, add, sp, u, s, ln)) {
+            fail(et, b"E342: Out of memory (the table is full: :w and :e start a fresh one)");
+            return any;
+        }
+        if (on > 0 && !edit.ins(r, x, orig, add, u, s, ob[0..on])) {
+            fail(et, b"E342: Out of memory (the table is full: :w and :e start a fresh one)");
+            return any;
+        }
+        I64 added = 0;
+        for q in 0..on {
+            if (ob[q] == 10) { added += 1; }
+        }
+        any = true;
+        et[E_SUBS] += subs;
+        et[E_SUB_LINES] += 1;
+        et[E_CHG_ADD] += added;
+        et[E_LAST_SUB_L] = l + added;
+        last += added;
+        l += added + 1;
+    }
+    return any;
+}
+
+// :g and :v on lines l0 to l1 (1-based): the lines that match (or, inv, do not) marked, then cmd on each.
+I64 cmd_global(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+               inout I64[_] et, inout I64[_] pt, I64 l0, I64 l1, I64 a0, Bool inv) {
+    if (et[E_GLOBAL] != 0) {
+        fail(et, b"E147: Cannot do :global recursive");
+        return RAN;
+    }
+    I64 i = a0;
+    I64 delim = ch_at(et, i);
+    if (delim < 0) {
+        fail(et, b"E476: Invalid command");
+        return RAN;
+    }
+    if (letter(delim) || digit(delim) || delim == '"' || delim == '|') {
+        fail(et, b"E146: Regular expressions can't be delimited by letters");
+        return RAN;
+    }
+    i += 1;
+    U8[1024] p;
+    I64 pn = 0;
+    while (i < et[E_N] && ch_at(et, i) != delim) {
+        if (ch_at(et, i) == 92 && i + 1 < et[E_N]) {
+            if (ch_at(et, i + 1) != delim) {
+                if (pn < PAT_MAX) { p[pn] = 92; pn += 1; }
+            }
+            i += 1;
+        }
+        if (pn < PAT_MAX) {
+            p[pn] = ch_at(et, i) as U8;
+            pn += 1;
+        }
+        i += 1;
+    }
+    if (ch_at(et, i) == delim) { i += 1; }
+    if (pn == 0) {
+        if (et[E_LP_N] < 0) {
+            fail(et, b"E35: No previous regular expression");
+            return RAN;
+        }
+        pn = et[E_LP_N];
+        for k in 0..pn { p[k] = et[LP0 + k] as U8; }
+    } else {
+        et[E_LP_N] = pn;
+        for k in 0..pn { et[LP0 + k] = p[k] as I64; }
+    }
+    if (et[E_LR_N] >= 0) {
+        U8[1024] rp;
+        for k in 0..et[E_LR_N] { rp[k] = et[LR0 + k] as U8; }
+        pat.set_tilde(pt, rp[0..et[E_LR_N]], true);
+    } else {
+        pat.set_tilde(pt, b"", false);
+    }
+    I64 e = pat.compile(pt, p[0..pn], ignorecase(r), smartcase(r), 0);
+    if (e != pat.OK) {
+        pat_error(et, pt, e, p[0..pn]);
+        return RAN;
+    }
+    U8[65536] lb;
+    I64 nm = 0;
+    for l in l0 - 1..l1 {
+        I64 ln = line_bytes(x, orig, add, l, lb);
+        Bool hit = false;
+        if (ln >= 0 && pat.load_line(pt, lb[0..ln])) { hit = pat.exec(pt, 0); }
+        if (hit != inv) {
+            if (nm >= GMAX) {
+                fail(et, b"not in cvim: :g on more than 262,144 lines");
+                return RAN;
+            }
+            et[GM0 + nm] = l + 1;
+            nm += 1;
+        }
+    }
+    if (nm == 0) {
+        msg_clear(et);
+        if (inv) { say(et, b"Pattern found in every line: "); } else { say(et, b"Pattern not found: "); }
+        say(et, p[0..pn]);
+        return RAN;
+    }
+    I64 c0 = skip_white(et, i);
+    I64 c1 = et[E_N];
+    et[E_GLOBAL] = 1;
+    et[E_SUBS] = 0;
+    et[E_SUB_LINES] = 0;
+    et[E_FEWER] = 0;
+    I64 delta = 0;
+    I64 k = 0;
+    while (k < nm) {
+        I64 line = et[GM0 + k] + delta;
+        k += 1;
+        to_line(r, x, orig, add, line - 1);
+        et[E_CHG_L] = line;
+        et[E_CHG_DEL] = 0;
+        et[E_CHG_ADD] = 0;
+        I64 before = text.nlines(x);
+        if (c1 > c0) {
+            I64 res = exec_at(r, x, orig, add, sp, u, et, pt, c0, c1);
+            if (res != RAN) { break; }
+            if (et[E_MSG_ERR] != 0) { break; }
+        }
+        I64 cl = et[E_CHG_L];
+        I64 cd = et[E_CHG_DEL];
+        I64 ca = et[E_CHG_ADD];
+        if (cd > 0 || ca > 0) {
+            // later marks inside the lines taken out are gone; the rest move by what changed
+            while (k < nm && et[GM0 + k] + delta >= cl && et[GM0 + k] + delta < cl + cd) { k += 1; }
+            delta += ca - cd;
+        } else {
+            delta += text.nlines(x) - before;
+        }
+    }
+    et[E_GLOBAL] = 0;
+    undo.close_step(r);
+    to_line(r, x, orig, add, text.lineof(x, orig, add, r[state.R_CUR]));
+    if (et[E_MSG_ERR] == 0) {
+        if (et[E_SUBS] > 0) { sub_msg(et); }
+        if (et[E_FEWER] > 0) { fewer_msg(et); }
+    }
+    et[E_SUBS] = 0;
+    et[E_SUB_LINES] = 0;
+    et[E_FEWER] = 0;
+    return RAN;
+}
+// SPDX-License-Identifier: Apache-2.0

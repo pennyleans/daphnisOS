@@ -1,0 +1,28 @@
+$ -o - ftp://host/f
+-- stderr
+fetch: ftp://host/f: not an http URL
+status 1
+$ -o - http://
+-- stderr
+fetch: http://: not an http URL
+status 1
+$ -o - http://127.0.0.1:1/f
+-- stderr
+fetch: 127.0.0.1:1: Connection refused
+status 1
+$ -o - http://127.0.0.1:99999/f
+-- stderr
+fetch: bad port
+status 2
+$ 
+-- stderr
+fetch: one URL
+status 2
+$ a b
+-- stderr
+fetch: one URL
+status 2
+$ -x http://127.0.0.1:1/
+-- stderr
+fetch: not supported: -x
+status 2

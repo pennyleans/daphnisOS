@@ -1,0 +1,142 @@
+// user/ci/mktemp.ci: mktemp [-dqtu] [-p DIR] [TEMPLATE] (docs/specs/2026-11-06-c-core.md, CT-2; no XCU page, so busybox
+// is the specification): makes a new file (mode 0600) or with -d a directory (0700) whose name is TEMPLATE with its
+// last six bytes, which must be XXXXXX, replaced by letters and digits, and prints the name. No TEMPLATE is
+// tmp.XXXXXX and implies -t. -t or -p puts the name under DIR: -p's, else $TMPDIR, else /tmp. -u makes nothing and
+// prints a name that was free. -q says nothing on failure (status 1 still). The letters come from the clock and the
+// process id; a name taken already is tried again, up to 100 times.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 O_RDWR = 0x2;
+const I64 O_CREAT = 0x40;
+const I64 O_EXCL = 0x80;
+const I64 EEXIST = 17;
+const I64 EINVAL = 22;
+const I64 TRIES = 100;
+const I64 LCG_M = 2147483647;
+const I64 PATH_MAX = 4096;
+
+U8[4096] name;
+U8[4096] env;
+I64[16] rt;
+I64 x = 1;
+Bool quiet = false;
+
+// Ends the tool with status 1 after `mktemp: p: reason`, or with none under -q.
+void fail(in U8[_] p, I64 e) {
+    if (!quiet) { msg.file(p, e); }
+    put.flush();
+    dev.exit_now(1);
+}
+
+U8 letter() {
+    x = (x * 48271) % LCG_M;
+    I64 c = x % 62;
+    if (c < 26) { return (c as U8) + 'A'; }
+    if (c < 52) { return ((c - 26) as U8) + 'a'; }
+    return ((c - 52) as U8) + '0';
+}
+
+// dir/rest into name (one '/' between them, none added after a '/'): its length. Not core/path.ci's join: that
+// module's walk tables are 240 KB of the binary, and mktemp walks nothing.
+I64 named(I64 dl, in U8[_] rest) {
+    I64 k = dl;
+    for j in 0..dl { name[j] = env[j]; }
+    if (k > 0 && name[k - 1] != '/') {
+        name[k] = '/';
+        k = k + 1;
+    }
+    if (k + len(rest) >= PATH_MAX) { msg.limit(b"PATH_MAX"); }
+    for j in 0..len(rest) { name[k + j] = rest[j]; }
+    return k + len(rest);
+}
+
+// $TMPDIR into env: its length, 0 when unset or empty.
+I64 tmpdir() {
+    I64 i = 0;
+    Bool going = true;
+    while (going) {
+        I64 k = shctl.sh_environ(i, env);
+        if (k < 0) {
+            going = false;
+        } else if (k > 7 && env[0] == 'T' && env[1] == 'M' && env[2] == 'P' && env[3] == 'D' && env[4] == 'I'
+                   && env[5] == 'R' && env[6] == '=') {
+            for j in 7..k { env[j - 7] = env[j]; }
+            return k - 7;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"mktemp");
+    args.parse(a, b"dqtu", b"p");
+    quiet = args.has('q');
+    I64 n = args.operands();
+    if (n > 1) { msg.usage(b"too many operands"); }
+    Bool under = args.has('t') || args.has('p') || n == 0;
+    I64 k = 0;
+    if (under) {
+        I64 dl = 0;
+        if (args.has('p')) {
+            dl = args.val_stop('p') - args.val_start('p');
+            for j in 0..dl { env[j] = a[args.val_start('p') + j]; }
+        } else {
+            dl = tmpdir();
+        }
+        if (dl == 0) {
+            env[0] = '/';
+            env[1] = 't';
+            env[2] = 'm';
+            env[3] = 'p';
+            dl = 4;
+        }
+        if (n == 0) {
+            k = named(dl, b"tmp.XXXXXX");
+        } else {
+            k = named(dl, a[args.op_start(0)..args.op_stop(a, 0)]);
+        }
+    } else {
+        I64 s = args.op_start(0);
+        k = args.op_stop(a, 0) - s;
+        if (k >= PATH_MAX) { msg.limit(b"PATH_MAX"); }
+        for j in 0..k { name[j] = a[s + j]; }
+    }
+    if (k < 6) { fail(name[0..k], EINVAL); }
+    for j in (k - 6)..k {
+        if (name[j] != 'X') { fail(name[0..k], EINVAL); }
+    }
+    x = (corectl.co_clock(0) % (LCG_M - 1)) + 1;
+    x = ((x + shctl.sh_getpid() * 7919) % (LCG_M - 1)) + 1;
+    I64 tries = 0;
+    Bool going = true;
+    while (going) {
+        for j in (k - 6)..k { name[j] = letter(); }
+        I64 r = 0;
+        if (args.has('u')) {
+            r = corectl.co_stat(name[0..k], 0, rt);
+            if (r == 0) { r = 0 - EEXIST; }
+            else if (r == -2) { r = 0; }
+        } else if (args.has('d')) {
+            r = corectl.co_mkdir(name[0..k], 0x1C0);
+        } else {
+            r = shctl.sh_open(name[0..k], O_RDWR | O_CREAT | O_EXCL, 0x180);
+            if (r >= 0) { r = shctl.fd_close(r); }
+        }
+        tries = tries + 1;
+        if (r == 0) {
+            going = false;
+        } else if (r != 0 - EEXIST || tries == TRIES) {
+            fail(name[0..k], 0 - r);
+        }
+    }
+    put.bytes(name[0..k]);
+    put.byte('\n');
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

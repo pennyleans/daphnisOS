@@ -1,0 +1,26 @@
+# tests/core/touch.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-07-bu2-meta.md section 6, BU-2b). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md, - when busybox must agree, H for host bytes, T for
+# times and links in the tree. The tree is compared after each case.
+-d '2020-01-02 03:04:05' text.txt | - | T
+-d @86400 text.txt nonl.txt | - | T
+-a -d @86400 text.txt | - | T
+-m -d @86400 text.txt | - | T
+-am -d @86400 text.txt | - | T
+-t 202001020304 text.txt | - | T
+-t 2001020304.05 text.txt | - | T
+-t 9901020304 text.txt | - | T
+-t 6812311259.59 text.txt | - | T
+-r look/a.txt text.txt | - | T
+-c -d @5 missing | - | T
+-d @5 new | - | T
+-d @5 look | - | T
+-d @5 missing/x | - | -
+new2 | - | -
+-c new3 | - | -
+-r missing text.txt | - | -
+-d 2020-01-02T03:04:05 text.txt | - | D-60 T
+-d 2020-01-02T03:04:05.5Z text.txt | - | D-60 T
+-d bad text.txt | - | D-3
+-t 2001 text.txt | - | D-3
+-x text.txt | - | D-1
+| - | D-3

@@ -1,0 +1,103 @@
+// tests/hosted/src/blk.ci: src/blk.ci for the hosted ext2 tests (FS-4, tests/fs/times_test.ci). The kernel's module
+// drives virtio-blk; here the device is sparse module state: up to 128 windows of 4 KiB (512 KiB in all), each kept
+// in a slot from its first nonzero word on, any other window reading as zeros, so a device of any size whose written
+// windows fit (HW-15: a 512 MiB volume, tests/fs/ext2_big_test.ci). src/ext2.ci reads and writes it a window at a
+// time through the hosted src/phys.ci. load() is the test's: it writes the volume's words before the mount
+// (tests/fs/ext2_vol.ci); word() and held() let a test read the device's own bytes after a commit.
+
+import src.phys;
+import src.frames;
+
+export const I64 SECTOR_BYTES = 512;
+export const I64 SECTORS_PER_REQUEST = 8;
+export const I64 SLOTS = 128;
+
+U64[65536] disk;                       // slot s holds words 512 * s to 512 * s + 511
+I64[128] win;                          // the window slot s holds
+I64 used = 0;                          // slots taken
+I64 sectors = 0;
+
+// The device becomes n sectors of zeros.
+export void blank(I64 n) {
+    for k in 0..65536 {
+        disk[k] = 0;
+    }
+    used = 0;
+    sectors = n;
+}
+
+// The slot of window w, or -1 when it holds only zeros; a slot is taken for it when take is set (-1 when none is
+// left).
+I64 slot_of(I64 w, Bool take) {
+    for s in 0..used {
+        if (win[s] == w) {
+            return s;
+        }
+    }
+    if (!take || used == SLOTS) {
+        return -1;
+    }
+    win[used] = w;
+    used += 1;
+    return used - 1;
+}
+
+// n words of value v from word start on.
+export void load(I64 start, I64 n, U64 v) {
+    for k in 0..n {
+        I64 s = slot_of((start + k) / 512, true);
+        assert(s >= 0);
+        disk[512 * s + (start + k) % 512] = v;
+    }
+}
+
+// Word i of the device.
+export U64 word(I64 i) {
+    I64 s = slot_of(i / 512, false);
+    if (s < 0) {
+        return 0;
+    }
+    return disk[512 * s + i % 512];
+}
+
+// The windows holding a nonzero word or written.
+export I64 held() {
+    return used;
+}
+
+export I64 sector_count() {
+    return sectors;
+}
+
+export Bool read(I64 sector, I64 frame) {
+    if (sector < 0 || sector % SECTORS_PER_REQUEST != 0 || sector + SECTORS_PER_REQUEST > sectors) {
+        return false;
+    }
+    U64[512] b;
+    I64 s = slot_of(sector / SECTORS_PER_REQUEST, false);
+    for k in 0..512 {
+        b[k] = 0;
+        if (s >= 0) {
+            b[k] = disk[512 * s + k];
+        }
+    }
+    phys.phys_write64(frames.frame_addr(frame) as U64, b);
+    return true;
+}
+
+export Bool write(I64 sector, I64 frame) {
+    if (sector < 0 || sector % SECTORS_PER_REQUEST != 0 || sector + SECTORS_PER_REQUEST > sectors) {
+        return false;
+    }
+    U64[512] b;
+    phys.phys_read64(frames.frame_addr(frame) as U64, b);
+    I64 s = slot_of(sector / SECTORS_PER_REQUEST, true);
+    if (s < 0) {
+        return false;
+    }
+    for k in 0..512 {
+        disk[512 * s + k] = b[k];
+    }
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

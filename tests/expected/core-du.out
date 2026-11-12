@@ -1,0 +1,58 @@
+$ look
+-- host: 3 lines
+status 0
+$ 
+-- host: 12 lines
+status 0
+$ -a look/sub/inner
+-- host: 2 lines
+status 0
+$ -s look
+-- host: 1 lines
+status 0
+$ -k look
+-- host: 3 lines
+status 0
+$ -sk look .
+-- host: 2 lines
+status 0
+$ -s look/a.txt look/sub/c.txt look
+-- host: 3 lines
+status 0
+$ -a look/a.txt
+-- host: 1 lines
+status 0
+$ -x look
+-- host: 3 lines
+status 0
+$ -H look
+-- host: 3 lines
+status 0
+$ -L look
+-- host: 3 lines
+status 0
+$ missing look
+-- host: 3 lines
+status 1
+$ deep
+-- stderr
+du: limit: DEPTH_MAX
+status 2
+$ -as look
+-- stderr
+du: -a and -s together
+status 2
+$ -h look
+-- stderr
+du: not supported: -h
+status 2
+$ -d 1 look
+-- stderr
+du: not supported: -d
+status 2
+$ -a look
+-- host: 10 lines
+status 0
+$ -a
+-- host: 43 lines
+status 0

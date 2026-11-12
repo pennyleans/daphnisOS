@@ -1,0 +1,162 @@
+// tests/rs/stkeys_test.ci: hosted tests of RS-SET5, Settings' Keyboard page (user/ci/kit/stkeys.ci, frame 37).
+// Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+import user.ci.kit.stkeys;
+
+U32[1600] row;
+U32[1600] ref;
+
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+// Row y of the page on PAPER, at scale 1.
+void draw(inout U32[_] r, I64 y) {
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { r[x] = tokens.word(tokens.PAPER); }
+    stkeys.row_at(r, CX, Y0, CR, YB, y);
+}
+
+// How many pixels of row and ref differ over the page.
+I64 differ() {
+    I64 n = 0;
+    for x in 0..800 {
+        if (row[x] != ref[x]) { n = n + 1; }
+    }
+    return n;
+}
+
+I64 track(I64 k) {
+    if (k == 0) { return stpage.slider_x(CR, b"Long", 4); }
+    return stpage.slider_x(CR, b"Fast", 4);
+}
+
+test "RS-KR: the sliders' steps and defaults, where frame 37 draws the knobs" {
+    stkeys.open();
+    stkeys.set_delay(stkeys.DELAY_DEFAULT);
+    stkeys.set_rate(stkeys.RATE_DEFAULT);
+    assert(stkeys.step_of(stkeys.F_DELAY) == 5 && stkeys.step_of(stkeys.F_RATE) == 5);
+    assert(track(0) == CR - 276);                                                           // frame 37: 210 of 486
+    I64 fd = stpage.fill_w(stpage.SL_W, 5, 15);
+    I64 fr = stpage.fill_w(stpage.SL_W, 5, 7);
+    assert(fd > 84 - 12 && fd < 84 + 12 && fr > 168 - 12 && fr < 168 + 12);                 // the frame's 35 and 70 percent
+    stkeys.set_delay(5000);
+    stkeys.set_rate(1);
+    assert(stkeys.step_of(stkeys.F_DELAY) == 15 && stkeys.step_of(stkeys.F_RATE) == 0);
+}
+
+test "frame 37: a press on a track asks for that step; a drag follows the pointer" {
+    stkeys.open();
+    stkeys.set_delay(500);
+    stkeys.set_rate(30);
+    I64 ry = Y0 + stpage.BODY + stpage.PITCH;
+    assert(stkeys.click(CX, Y0, CR, YB, track(0) + stpage.SL_W, ry + 20) == stkeys.DELAY && stkeys.arg() == 1000);
+    stkeys.set_delay(1000);
+    assert(stkeys.move(CX, Y0, CR, YB, track(0) - 50, ry + 20) == stkeys.DELAY && stkeys.arg() == 250);
+    stkeys.set_delay(250);
+    assert(stkeys.move(CX, Y0, CR, YB, track(0) - 60, ry + 20) == stpage.NONE);            // already there
+    stkeys.release();
+    assert(stkeys.move(CX, Y0, CR, YB, track(0) + 100, ry + 20) == stpage.NONE);           // nothing held
+    ry = ry + stpage.PITCH;
+    assert(stkeys.click(CX, Y0, CR, YB, track(1) + 8, ry + 20) == stkeys.RATE && stkeys.arg() == 5);
+    stkeys.release();
+    ry = ry + stpage.PITCH;
+    assert(stkeys.click(CX, Y0, CR, YB, CR - 20, ry + 20) == stkeys.SHORTCUTS);
+}
+
+test "US only: the Layout menu opens with its one row and closes" {
+    stkeys.open();
+    I64 ry = Y0 + stpage.BODY;
+    assert(stkeys.click(CX, Y0, CR, YB, CR - 40, ry + 20) == stpage.DRAW && stkeys.menu_shown());
+    tokens.set_theme(0);
+    I64 y = ry + 40 + 6 + 14;                                                              // the menu's row
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stkeys.row_at(row, CX, Y0, CR, YB, y);
+    assert(row[CR - 30] == tokens.word(tokens.FILL));
+    assert(stkeys.click(CX, Y0, CR, YB, CR - 40, y) == stpage.DRAW && !stkeys.menu_shown());
+    assert(stkeys.enter());
+    assert(stkeys.key(stpage.K_SPACE) == stpage.DRAW && stkeys.menu_shown());
+    assert(stkeys.key(stpage.K_DOWN) == stpage.NONE);
+    assert(stkeys.key(stpage.K_ESC) == stpage.DRAW && !stkeys.menu_shown());
+    assert(stkeys.key(stpage.K_ENTER) == stpage.DRAW && stkeys.menu_shown());
+    assert(stkeys.key(stpage.K_TAB) == stpage.DRAW && !stkeys.menu_shown());            // Tab closes it and goes on
+    assert(stkeys.focused() == stkeys.F_DELAY);
+}
+
+test "the desk's Tab order: Layout, Repeat Delay, Repeat Rate and Show All, each once, then the sidebar" {
+    stkeys.open();
+    stkeys.set_delay(500);
+    stkeys.set_rate(30);
+    assert(stkeys.enter() && stkeys.focused() == stkeys.F_LAYOUT);
+    assert(stkeys.key(stpage.K_LEFT) == stpage.DRAW && stkeys.focused() == stkeys.F_LAYOUT);  // no arrow leaves a stop
+    assert(stkeys.key(stpage.K_TAB) == stpage.DRAW && stkeys.focused() == stkeys.F_DELAY);
+    assert(stkeys.key(stpage.K_RIGHT) == stkeys.DELAY && stkeys.arg() == 550);
+    assert(stkeys.key(stpage.K_LEFT) == stkeys.DELAY && stkeys.arg() == 450);
+    assert(stkeys.key(stpage.K_END) == stkeys.DELAY && stkeys.arg() == 1000);
+    assert(stkeys.key(stpage.K_DOWN) == stpage.DRAW && stkeys.focused() == stkeys.F_DELAY);
+    assert(stkeys.key(stpage.K_TAB) == stpage.DRAW && stkeys.key(stpage.K_HOME) == stkeys.RATE && stkeys.arg() == 5);
+    stkeys.set_rate(40);
+    assert(stkeys.key(stpage.K_RIGHT) == stpage.NONE);                                    // the fast end
+    assert(stkeys.key(stpage.K_TAB) == stpage.DRAW && stkeys.focused() == stkeys.F_SHOW);
+    assert(stkeys.key(stpage.K_ENTER) == stkeys.SHORTCUTS);
+    assert(stkeys.key(stpage.K_TAB) == stpage.BACK && stkeys.focused() == stkeys.F_NONE);
+    assert(stkeys.enter_last() && stkeys.focused() == stkeys.F_SHOW);
+    for k in 0..3 { assert(stkeys.key(stpage.K_BACKTAB) == stpage.DRAW && stkeys.focused() == stkeys.F_SHOW - 1 - k); }
+    assert(stkeys.key(stpage.K_BACKTAB) == stpage.BACK);
+}
+
+test "PR 372 not yet: set_live(false) fades the Repeat Delay and Repeat Rate rows at 40 percent; the rest stay" {
+    tokens.set_theme(0);
+    stkeys.open();
+    stkeys.set_delay(500);
+    stkeys.set_rate(30);
+    for k in 0..4 {
+        I64 y = Y0 + stpage.BODY + k * stpage.PITCH + 20;
+        draw(ref, y);
+        stkeys.set_live(false);
+        draw(row, y);
+        stkeys.set_live(true);
+        if (k == 0 || k == 3) {
+            assert(differ() == 0);
+        } else {
+            assert(differ() > 0);                                                      // the label and the slider
+            stpage.fade(ref, CX, CR);
+            assert(differ() == 0);
+        }
+    }
+}
+
+test "PR 372 not yet: Tab passes the dead rows; a press or drag on them does nothing; going dead drops focus" {
+    stkeys.open();
+    stkeys.set_delay(500);
+    stkeys.set_rate(30);
+    stkeys.set_live(false);
+    assert(stkeys.enter() && stkeys.focused() == stkeys.F_LAYOUT);
+    assert(stkeys.key(stpage.K_TAB) == stpage.DRAW && stkeys.focused() == stkeys.F_SHOW);
+    assert(stkeys.key(stpage.K_TAB) == stpage.BACK && stkeys.focused() == stkeys.F_NONE);
+    assert(stkeys.enter_last() && stkeys.focused() == stkeys.F_SHOW);
+    assert(stkeys.key(stpage.K_BACKTAB) == stpage.DRAW && stkeys.focused() == stkeys.F_LAYOUT);
+    assert(stkeys.key(stpage.K_BACKTAB) == stpage.BACK);
+    I64 ry = Y0 + stpage.BODY + stpage.PITCH;
+    stkeys.open();
+    for k in 0..2 {
+        I64 y = ry + k * stpage.PITCH + 20;
+        assert(stkeys.click(CX, Y0, CR, YB, track(k) + 8, y) == stpage.NONE && stkeys.focused() == stkeys.F_NONE);
+        assert(stkeys.move(CX, Y0, CR, YB, track(k) + 100, y) == stpage.NONE);
+    }
+    stkeys.set_live(true);
+    assert(stkeys.click(CX, Y0, CR, YB, track(0) + stpage.SL_W, ry + 20) == stkeys.DELAY);
+    stkeys.set_live(false);
+    assert(stkeys.focused() == stkeys.F_NONE);
+    assert(stkeys.move(CX, Y0, CR, YB, track(0) - 50, ry + 20) == stpage.NONE);       // the drag let go
+    stkeys.set_live(true);
+    assert(stkeys.enter() && stkeys.key(stpage.K_TAB) == stpage.DRAW && stkeys.focused() == stkeys.F_DELAY);
+    stkeys.set_live(false);
+    assert(stkeys.focused() == stkeys.F_NONE);
+    stkeys.set_live(true);
+}
+// SPDX-License-Identifier: Apache-2.0

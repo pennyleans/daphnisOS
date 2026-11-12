@@ -1,0 +1,1006 @@
+// user/ci/terms.ci: the desks' terminals (W-4, H-3a HX-8, E-2 in docs/specs/2026-11-06-e-editor.md section 5): 8
+// slots, each a grid of up to 480 x 135 cells holding what a pty's master reads, drawn in JetBrains Mono's coverage
+// cells (kit/mtext.ci, FONT-1), 8 x 16 a cell. The tiler's desk uses slot 0; the hybrid desk one slot a terminal window. The bytes act as an xterm does for
+// this subset:
+//   32 to 126      the glyph in the cursor's cell, which moves on; one past the last column wraps first
+//   0x80 to 0xFF   UTF-8 (RFC 3629, K-2b): a code point in one cell, as 32 to 126 is; a byte that cannot start or
+//                  continue a sequence, an overlong, a surrogate (U+D800 to U+DFFF) or a value above U+10FFFF is
+//                  U+FFFD, one a maximal ill-formed subpart (Unicode section 3.9, as Python's "replace" does); a
+//                  sequence cut by a byte that does not continue it is U+FFFD and that byte is read afresh; a
+//                  sequence split between two reads decodes whole. A code point the face lacks draws as U+FFFD
+//   CR, NL, BS, HT to column 0; down a row, scrolling at the bottom; back a column; to the next multiple of 8
+//   ESC [ r ; c H  and f: the cursor to row r, column c, 1-based, a missing or 0 parameter 1, clamped to the grid
+//   ESC [ n A to D the cursor up, down, right, left n cells (a missing or 0 n 1), up and down held inside the
+//                  scroll region when it starts there, else the grid, right and left inside the row (K-9)
+//   ESC [ n J      erase below the cursor (0), above it (1), all (2); ESC [ n K: to the line's end, its start, all
+//   ESC [ ... m    0 or none plain; 1 bold, 22 not; 7 reverse, 27 not; 30 to 37 and 90 to 97 a color, 39 the
+//                  default; 40 to 47 and 100 to 107 a background, 49 the default; 38 and 48 take 5 ; n for n below 16
+//                  as that color and skip n above it and 2 ; r ; g ; b (E-2b-2, D-1 B); 90, 100 and 5 ; 8 are bright
+//                  black, its own (DN-45 B)
+//   ESC [ ? 25 h/l the cursor shown or hidden; any other ? n is read and ignored
+//   ESC [ n SP q   DECSCUSR, the cursor's form: 0 to 2 a block, 3 and 4 an underline, 5 and 6 a bar, drawn steady
+//                  (no blink); a missing n is 0, an n above 6 is read and ignored
+//   ESC [ t ; b r  the scroll region rows t to b, 1-based, a missing or 0 b the last row, and the cursor home; refused
+//                  unless t < b. NL, ESC D and the wrap scroll it at its bottom row; ESC M scrolls it down at its top
+//   ESC D, M, E    down a row, up a row, CR and down a row; ESC [ n S and T scroll the region up and down n rows
+//   ESC [ n L, M   n blank rows in at the cursor's row, or n rows out, inside the region, and the cursor to column 0
+//   ESC ] n ; text BEL or ESC \: an OSC; an OSC 0 or 2 is the window's variable (HX-6, at most 32 bytes)
+// Any other CSI is read to its final byte (0x40 to 0x7E) and dropped, and so is one longer than 64 bytes or with an
+// intermediate byte other than DECSCUSR's one SP before its q; ESC, intermediates (0x20 to 0x2F) and a final byte is dropped; any other byte is dropped. A
+// parameter is at most 9,999, and a CSI keeps its first 16. A cell is one byte: the glyph in bits 0 to 6, reverse in
+// bit 7, and 16 bits of a code plane (K-2b): a code point 32 to 126 is its glyph, and any other is bits 16 to 20 of it
+// in bits 0 to 6 (0 to 16) and bits 0 to 15 in the code plane, which is read only
+// then; its style is a byte of a second plane, the color in bits 0 to 3 and the background in bits 4 to 7, each 0
+// for the default (tokens.term_ink, term_paper), ANSI color k plus 1, drawn as tokens.term_ansi(k), dark in
+// both themes (KD-5 B, K-8; l 2026-11-08), or 9 for bright black, tokens.term_bright_black (DN-45 B), and
+// its bold a bit of a third plane, bit s of a byte a cell. 31 to 37 and 91 to 97 are the same seven; so are 41 to 47
+// and 101 to 107, and 38 or 48 ; 5 ; n for n below 16 is ANSI n mod 8; 90, 100 and n = 8 are bright black, and 30,
+// 40 and n = 0 black. Reverse swaps a cell's two colors, and so does the cursor, when shown, on its cell. Bold draws the cell in
+// JetBrains Mono 600 (FONT-1). An erase writes plain blanks. The
+// cells of all eight live in one U64[64800], slot s in byte s of each word, since a cint array holds at most 65,536
+// elements, and so do their styles; the bold plane is a U8[64800], and the code plane two U64[64800], slots 0 to 3
+// in codes_a and 4 to 7 in codes_b, slot s at bit 16 * (s % 4). A reflow keeps every stored cell; when the cursor's
+// row falls off the bottom the rows move up so it stays on the last.
+import user.ci.kit.tokens;
+import user.ci.kit.mtext;
+import user.ci.kit.bartitle;
+import user.ci.kit.appitems;   // AM-4: an app's own rows of its app menu (OSC 7770 item, drop)
+
+export const I64 SLOTS = 8;
+export const I64 MAX_COLS = 480;
+export const I64 MAX_ROWS = 135;
+const I64 PARAMS = 16;
+const I64 CSI_MAX = 64;
+const I64 PARAM_MAX = 9999;
+const U8 REV = 0x80;
+const I64 BOLD = 0x100;   // a style's bold, above its color and background bytes
+
+U64[64800] cells;   // MAX_COLS a row; slot s in byte s
+U64[64800] styles;  // the same, a cell's color and background byte
+U8[64800] bolds;    // MAX_COLS a row; slot s in bit s: the cell is bold
+U64[64800] codes_a; // MAX_COLS a row; slots 0 to 3, 16 bits each: a code point's bits 0 to 15 (K-2b)
+U64[64800] codes_b; // slots 4 to 7
+Bool[1080] dirty;   // MAX_ROWS a slot
+I64[1080] row_used; // MAX_ROWS a slot: high-water non-blank column on row r
+Bool[8] slot_ready; // whether slot s has been initialized once
+I64[8] tcols;
+I64[8] trows;
+I64[8] cx;          // tcols: a wrap is pending
+I64[8] cy;
+I64[8] top;         // the scroll region: rows top to bot - 1
+I64[8] bot;
+Bool[8] rev;        // SGR 7
+I64[8] pen;         // SGR's color, background and bold, as a style
+Bool[8] shown;      // DECTCEM
+I64[8] esc;         // 0 text, 1 after ESC, 2 a CSI, 3 an OSC's number, 4 its text, 5 ESC in an OSC, 6 ESC's intermediates
+I64[128] par;       // PARAMS a slot: the CSI's parameters
+I64[8] npar;        // the CSI's parameters so far, kept or not
+I64[8] csi_len;     // the CSI's bytes after ESC [
+U8[8] csi_mark;     // a leading < = > or ?, else 0
+Bool[8] csi_bad;    // an intermediate or a marker past the first byte
+Bool[8] csi_sp;     // the CSI's one SP intermediate (DECSCUSR), after its parameters
+I64[8] form;        // DECSCUSR's cursor form, 0 to 6
+I64[8] osc_n;       // the OSC's number, -1 once it is not one
+U8[2048] osc_t;     // OSC_T a slot: the OSC's text so far (AM-2's OSC 7770 carries About's text; DN-51 a fault's record; RS-TTL a 255-byte title and the byte past it)
+I64[8] osc_len;
+const I64 OSC_T = 256;
+// AM-2 (docs/specs/2026-11-10-am-app-menu.md section 4, DN-43): a terminal program's app menu, declared by
+// OSC 7770: `ESC ] 7770 ; about ; NAME ; VERSION ; TEXT BEL` (About's three strings; the icon is the system's) and
+// `ESC ] 7770 ; settings ; ID BEL` (a Settings item, its id); a chosen Settings comes back to the program as
+// `ESC ] 7770 ; chose ; ID BEL` on its input (the desk writes it). AM-4: `item` and `drop` declare the app's own rows,
+// kept by kit/appitems.ci a slot (an OSC 7770's bytes 0x80 to 0xFF kept, so a label's UTF-8 arrives whole).
+export const I64 OSC_MENU = 7770;
+U8[192] m_name;     // 24 a slot
+U8[128] m_ver;      // 16 a slot
+U8[1024] m_text;    // 128 a slot
+I64[8] m_nn;
+I64[8] m_vn;
+I64[8] m_tn;
+I64[8] m_set;       // the Settings item's id, -1 none
+Bool[8] m_set_off;  // declared dimmed: `settings ; ID ; d`
+Bool[8] m_unsaved;  // AM section 7: `ESC ] 7770 ; dirty ; 1|0 BEL`, the program reports unsaved work
+// DN-51 frame 23: `ESC ] 7770 ; fault ; E_CODE ; operation ; operands ; exact ; limit ; path:line:column BEL`, the
+// record user/ci/main.c sends before its fault line in a desk terminal; its six fields kept as sent (f_len 0: none).
+U8[2048] f_text;
+I64[8] f_len;
+// AM section 7.2: the terminal's answers to a program's queries, for the desk to write back on its input: DA1 (CSI c,
+// CSI 0 c) and XTVERSION (CSI > q, `DCS > | Daphnis ST`). REPLY bytes a slot; a full queue drops the answer.
+export const I64 REPLY = 64;
+U8[512] reply;
+I64[8] reply_n;
+U8[2048] title_v;   // 256 a slot: the last OSC 0 or 2 title, kept by bartitle.take (RS-TTL)
+I64[8] var_len;
+I64[8] u_need;      // UTF-8: the continuation bytes still to come, 0 for none
+I64[8] u_cp;        // the code point's bits so far
+I64[8] u_lo;        // the next continuation byte's range (RFC 3629 section 4)
+I64[8] u_hi;
+
+U8 at(I64 s, I64 i) {
+    return ((cells[i] >> ((8 * s) as U64)) & 0xFF) as U8;
+}
+
+void put(I64 s, I64 i, U8 b) {
+    U64 sh = (8 * s) as U64;
+    cells[i] = (cells[i] & ~((0xFF as U64) << sh)) | ((b as U64) << sh);
+}
+
+// Cell i's code plane: bits 0 to 15 of its code point, read only when its glyph bits are below 32.
+I64 low16(I64 s, I64 i) {
+    U64 sh = (16 * (s % 4)) as U64;
+    if (s < 4) { return ((codes_a[i] >> sh) & 0xFFFF) as I64; }
+    return ((codes_b[i] >> sh) & 0xFFFF) as I64;
+}
+
+void set_low16(I64 s, I64 i, I64 v) {
+    U64 sh = (16 * (s % 4)) as U64;
+    U64 keep = ~((0xFFFF as U64) << sh);
+    U64 w = ((v & 0xFFFF) as U64) << sh;
+    if (s < 4) { codes_a[i] = (codes_a[i] & keep) | w; } else { codes_b[i] = (codes_b[i] & keep) | w; }
+}
+
+// Cell i's code point.
+I64 code_at(I64 s, I64 i) {
+    I64 g = (at(s, i) & ~REV) as I64;
+    if (g >= 32) { return g; }
+    return (g << 16) | low16(s, i);
+}
+
+// Cell i holds code point p, reversed when r.
+void put_code(I64 s, I64 i, I64 p, Bool r) {
+    I64 g = p;
+    if (p > 126) {
+        g = p >> 16;
+        set_low16(s, i, p);
+    }
+    if (r) { g = g | (REV as I64); }
+    put(s, i, g as U8);
+}
+
+// Cell i's style: its color and background byte, and BOLD.
+I64 style(I64 s, I64 i) {
+    I64 v = ((styles[i] >> ((8 * s) as U64)) & 0xFF) as I64;
+    if (((bolds[i] >> (s as U8)) & 1) == 1) { v = v | BOLD; }
+    return v;
+}
+
+void set_style(I64 s, I64 i, I64 v) {
+    U64 sh = (8 * s) as U64;
+    styles[i] = (styles[i] & ~((0xFF as U64) << sh)) | (((v & 0xFF) as U64) << sh);
+    U8 m = (1 << s) as U8;
+    if ((v & BOLD) != 0) { bolds[i] = bolds[i] | m; } else { bolds[i] = bolds[i] & ~m; }
+}
+
+// Cell j's glyph and style into cell i.
+void move_cell(I64 s, I64 i, I64 j) {
+    U64 sh = (8 * s) as U64;
+    U64 mask = ~((0xFF as U64) << sh);
+    U64 cg = (cells[j] >> sh) & 0xFF;
+    cells[i] = (cells[i] & mask) | (cg << sh);
+    if ((cg & 0x7F) < 32) { set_low16(s, i, low16(s, j)); }
+    U64 sg = (styles[j] >> sh) & 0xFF;
+    styles[i] = (styles[i] & mask) | (sg << sh);
+    U8 m = (1 << s) as U8;
+    if ((bolds[j] & m) != 0) { bolds[i] = bolds[i] | m; } else { bolds[i] = bolds[i] & ~m; }
+}
+
+// Cell i a plain blank.
+void clear(I64 s, I64 i) {
+    put(s, i, ' ');
+    set_style(s, i, 0);
+}
+
+export void init(I64 s, I64 c, I64 r) {
+    tcols[s] = c;
+    trows[s] = r;
+    cx[s] = 0;
+    cy[s] = 0;
+    top[s] = 0;
+    bot[s] = r;
+    esc[s] = 0;
+    rev[s] = false;
+    pen[s] = 0;
+    shown[s] = true;
+    form[s] = 0;
+    var_len[s] = 0;
+    u_need[s] = 0;
+    m_nn[s] = 0;                       // AM-2: no app menu declared yet
+    m_unsaved[s] = false;
+    reply_n[s] = 0;
+    m_vn[s] = 0;
+    m_tn[s] = 0;
+    m_set[s] = -1;
+    f_len[s] = 0;
+    m_set_off[s] = false;
+    appitems.clear(s);                 // AM-4: a new terminal declares no rows
+    if (!slot_ready[s]) {
+        U64 sh = (8 * s) as U64;
+        U64 mask = ~((0xFF as U64) << sh);
+        U64 sp = (0x20 as U64) << sh;
+        U8 keep_b = ~((1 << s) as U8);
+        for i in 0..MAX_COLS * MAX_ROWS {
+            cells[i] = (cells[i] & mask) | sp;
+            styles[i] = styles[i] & mask;
+            bolds[i] = bolds[i] & keep_b;
+        }
+        for i in 0..MAX_ROWS { row_used[MAX_ROWS * s + i] = 0; }
+        slot_ready[s] = true;
+    } else {
+        for r0 in 0..MAX_ROWS {
+            I64 ui = MAX_ROWS * s + r0;
+            for c0 in 0..row_used[ui] { clear(s, MAX_COLS * r0 + c0); }
+            row_used[ui] = 0;
+        }
+    }
+    for i in 0..MAX_ROWS { dirty[MAX_ROWS * s + i] = true; }
+}
+
+export I64 width(I64 s) { return tcols[s]; }
+export I64 height(I64 s) { return trows[s]; }
+export I64 cursor_x(I64 s) { return cx[s]; }
+export I64 cursor_y(I64 s) { return cy[s]; }
+export Bool cursor_shown(I64 s) { return shown[s]; }
+export I64 cursor_form(I64 s) { return form[s]; }
+
+// The code point in column c of row r (K-2b; 32 for a blank).
+export I64 code(I64 s, I64 r, I64 c) { return code_at(s, MAX_COLS * r + c); }
+
+// Rows k + d to k, for k from 0; the d rows at the bottom of the store become blank.
+void lift(I64 s, I64 d) {
+    for r in 0..MAX_ROWS - d {
+        I64 ui = MAX_ROWS * s + r;
+        I64 uj = MAX_ROWS * s + r + d;
+        I64 u = row_used[ui];
+        if (row_used[uj] > u) { u = row_used[uj]; }
+        for c in 0..u { move_cell(s, MAX_COLS * r + c, MAX_COLS * (r + d) + c); }
+        row_used[ui] = row_used[uj];
+    }
+    for r in MAX_ROWS - d..MAX_ROWS {
+        I64 ui = MAX_ROWS * s + r;
+        for c in 0..row_used[ui] { clear(s, MAX_COLS * r + c); }
+        row_used[ui] = 0;
+    }
+}
+
+// The slot's window became c x r cells (HX-4): the cells stay; the cursor stays on the grid; the region is the grid.
+export void resize(I64 s, I64 c, I64 r) {
+    if (cy[s] >= r) {
+        lift(s, cy[s] - r + 1);
+        cy[s] = r - 1;
+    }
+    if (cx[s] > c) { cx[s] = c; }
+    tcols[s] = c;
+    trows[s] = r;
+    top[s] = 0;
+    bot[s] = r;
+    for i in 0..MAX_ROWS { dirty[MAX_ROWS * s + i] = true; }
+}
+
+// Cells [c0, c1) of row r blank.
+void blank(I64 s, I64 r, I64 c0, I64 c1) {
+    I64 ui = MAX_ROWS * s + r;
+    I64 hi = c1;
+    if (hi > row_used[ui]) { hi = row_used[ui]; }
+    for c in c0..hi { clear(s, MAX_COLS * r + c); }
+    if (c1 >= row_used[ui] && c0 < row_used[ui]) {
+        I64 u = c0;
+        if (u < 0) { u = 0; }
+        row_used[ui] = u;
+    }
+    dirty[ui] = true;
+}
+
+// Rows [t, b) move up n rows (n > 0) or down -n rows, at most b - t; the rows they leave are blank.
+void shift(I64 s, I64 t, I64 b, I64 n) {
+    I64 k = n;
+    if (k > b - t) { k = b - t; }
+    if (k < t - b) { k = t - b; }
+    I64 cols = tcols[s];
+    if (k > 0) {
+        for r in t..b - k {
+            I64 ui = MAX_ROWS * s + r;
+            I64 uj = MAX_ROWS * s + r + k;
+            I64 u = row_used[ui];
+            if (row_used[uj] > u) { u = row_used[uj]; }
+            if (u > cols) { u = cols; }
+            for c in 0..u { move_cell(s, MAX_COLS * r + c, MAX_COLS * (r + k) + c); }
+            if (row_used[ui] <= cols) {
+                I64 nu = row_used[uj];
+                if (nu > cols) { nu = cols; }
+                row_used[ui] = nu;
+            }
+        }
+        for r in b - k..b { blank(s, r, 0, cols); }
+    } else if (k < 0) {
+        I64 r = b - 1;
+        while (r >= t - k) {
+            I64 ui = MAX_ROWS * s + r;
+            I64 uj = MAX_ROWS * s + r + k;
+            I64 u = row_used[ui];
+            if (row_used[uj] > u) { u = row_used[uj]; }
+            if (u > cols) { u = cols; }
+            for c in 0..u { move_cell(s, MAX_COLS * r + c, MAX_COLS * (r + k) + c); }
+            if (row_used[ui] <= cols) {
+                I64 nu = row_used[uj];
+                if (nu > cols) { nu = cols; }
+                row_used[ui] = nu;
+            }
+            r = r - 1;
+        }
+        for q in t..t - k { blank(s, q, 0, cols); }
+    }
+    for r in t..b { dirty[MAX_ROWS * s + r] = true; }
+}
+
+// NL and ESC D: down a row; on the region's bottom row the region scrolls up; on the grid's last row below the
+// region the cursor stays.
+void down(I64 s) {
+    if (cy[s] == bot[s] - 1) {
+        shift(s, top[s], bot[s], 1);
+    } else if (cy[s] + 1 < trows[s]) {
+        cy[s] = cy[s] + 1;
+    }
+}
+
+// ESC M: up a row; on the region's top row the region scrolls down.
+void up(I64 s) {
+    if (cy[s] == top[s]) {
+        shift(s, top[s], bot[s], -1);
+    } else if (cy[s] > 0) {
+        cy[s] = cy[s] - 1;
+    }
+}
+
+// The OSC ends: an OSC 0 or 2 sets the variable; an OSC 7770 the app menu (AM-2).
+void osc_end(I64 s) {
+    esc[s] = 0;
+    if (osc_n[s] == 0 || osc_n[s] == 2) {
+        var_len[s] = bartitle.take(osc_t[OSC_T * s..OSC_T * s + osc_len[s]], osc_len[s],
+                                   title_v[256 * s..256 * s + 256]);
+        menu_clear(s);                 // AM-3: a new title forgets the declaration; cish declares again after its own
+    }
+    if (osc_n[s] == OSC_MENU) { menu_osc(s); }
+}
+
+// AM-2: field f (split at ';') of slot s's OSC text: its start and its end into fe; the last field runs to the end.
+I64 field_at(I64 s, I64 f, Bool rest, inout I64[1] fe) {
+    I64 pos = 0;
+    I64 k = 0;
+    while (k < f && pos < osc_len[s]) {
+        if (osc_t[OSC_T * s + pos] == ';') { k = k + 1; }
+        pos = pos + 1;
+    }
+    I64 e = pos;
+    while (e < osc_len[s] && (rest || osc_t[OSC_T * s + e] != ';')) { e = e + 1; }
+    fe[0] = e;
+    return pos;
+}
+
+void menu_osc(I64 s) {
+    I64 n0 = osc_len[s];               // AM-4: an item or a drop is the app's own row (kit/appitems.ci)
+    if (appitems.take(s, osc_t[OSC_T * s..OSC_T * s + n0], n0) != appitems.NOT_MINE) { return; }
+    I64[1] e;
+    I64 a = field_at(s, 0, false, e);
+    I64 n = e[0] - a;
+    if (n == 5 && osc_t[OSC_T * s + a] == 'a') {      // about ; NAME ; VERSION ; TEXT
+        I64 b = field_at(s, 1, false, e);
+        m_nn[s] = min(e[0] - b, 24);
+        for k in 0..m_nn[s] { m_name[24 * s + k] = osc_t[OSC_T * s + b + k]; }
+        b = field_at(s, 2, false, e);
+        m_vn[s] = min(e[0] - b, 16);
+        for k in 0..m_vn[s] { m_ver[16 * s + k] = osc_t[OSC_T * s + b + k]; }
+        b = field_at(s, 3, true, e);
+        m_tn[s] = min(e[0] - b, 128);
+        if (m_tn[s] < 0) { m_tn[s] = 0; }
+        for k in 0..m_tn[s] { m_text[128 * s + k] = osc_t[OSC_T * s + b + k]; }
+    } else if (n == 8 && osc_t[OSC_T * s + a] == 's') {   // settings ; ID, or settings ; ID ; d (dimmed)
+        I64 b = field_at(s, 1, false, e);
+        I64 v = 0;
+        for k in b..e[0] {
+            U8 c = osc_t[OSC_T * s + k];
+            if (c >= '0' && c <= '9') { v = v * 10 + (c - '0') as I64; }
+        }
+        m_set[s] = v;
+        I64 d = field_at(s, 2, false, e);
+        m_set_off[s] = e[0] - d == 1 && osc_t[OSC_T * s + d] == 'd';
+    } else if (n == 5 && osc_t[OSC_T * s + a] == 'd') {   // dirty ; 1 or 0 (AM section 7)
+        I64 b = field_at(s, 1, false, e);
+        m_unsaved[s] = e[0] - b == 1 && osc_t[OSC_T * s + b] == '1';
+    } else if (n == 5 && osc_t[OSC_T * s + a] == 'f') {   // fault ; the record (DN-51 frame 23)
+        I64 b = field_at(s, 1, true, e);
+        f_len[s] = max(e[0] - b, 0);
+        for k in 0..f_len[s] { f_text[OSC_T * s + k] = osc_t[OSC_T * s + b + k]; }
+    }
+}
+
+// DN-51 frame 23: whether slot s's program sent its fault record.
+export Bool faulted(I64 s) { return f_len[s] > 0; }
+
+// Field f of slot s's fault record (0 the code, 1 the operation, 2 the operands, 3 exact, 4 limit, 5 path:line:column)
+// into dst, cut to fit; its length, 0 for an empty field or none.
+export I64 fault_field(I64 s, I64 f, inout U8[_] dst) {
+    I64 pos = 0;
+    I64 k = 0;
+    while (k < f && pos < f_len[s]) {
+        if (f_text[OSC_T * s + pos] == ';') { k = k + 1; }
+        pos = pos + 1;
+    }
+    if (k < f) { return 0; }
+    I64 n = 0;
+    while (pos + n < f_len[s] && (f == 5 || f_text[OSC_T * s + pos + n] != ';') && n < len(dst)) {
+        dst[n] = f_text[OSC_T * s + pos + n];
+        n = n + 1;
+    }
+    return n;
+}
+
+// AM-3: slot s declares nothing: About falls back to the window's name, no Settings item.
+export void menu_clear(I64 s) {
+    m_unsaved[s] = false;              // AM section 7: a new title clears it with the rest
+    appitems.clear(s);                 // AM-4: and the app's own rows
+    m_nn[s] = 0;
+    m_vn[s] = 0;
+    m_tn[s] = 0;
+    m_set[s] = -1;
+    m_set_off[s] = false;
+}
+
+// AM-2: slot s's declared app menu: About's name, version and text into dst (their lengths), the Settings id (-1).
+export I64 menu_name(I64 s, inout U8[_] dst) {
+    for k in 0..m_nn[s] { dst[k] = m_name[24 * s + k]; }
+    return m_nn[s];
+}
+
+export I64 menu_version(I64 s, inout U8[_] dst) {
+    for k in 0..m_vn[s] { dst[k] = m_ver[16 * s + k]; }
+    return m_vn[s];
+}
+
+export I64 menu_text(I64 s, inout U8[_] dst) {
+    for k in 0..m_tn[s] { dst[k] = m_text[128 * s + k]; }
+    return m_tn[s];
+}
+
+export I64 menu_settings(I64 s) { return m_set[s]; }
+
+// Whether slot s declared its Settings dimmed (`settings ; ID ; d`).
+export Bool menu_settings_off(I64 s) { return m_set_off[s]; }
+
+// AM section 7: whether slot s's program reports unsaved work.
+export Bool menu_unsaved(I64 s) { return m_unsaved[s]; }
+
+// Slot s's variable into dst; its length.
+export I64 var_of(I64 s, inout U8[_] dst) {
+    for k in 0..var_len[s] { dst[k] = title_v[256 * s + k]; }
+    return var_len[s];
+}
+
+I64 arg(I64 s, I64 k) {
+    if (k >= npar[s] || k >= PARAMS) { return 0; }
+    return par[PARAMS * s + k];
+}
+
+// A 1-based parameter as an index below hi; 0 is 1.
+I64 cell_of(I64 v, I64 hi) {
+    if (v < 1) { return 0; }
+    if (v > hi) { return hi - 1; }
+    return v - 1;
+}
+
+// The pen's color (at bit 0) or background (at bit 4) becomes ANSI color a, or the default for -1.
+void tint(I64 s, I64 at_bit, I64 a) {
+    I64 v = a + 1;
+    pen[s] = (pen[s] & ~(15 << at_bit)) | (v << at_bit);
+}
+
+// AM section 7.2: answer t queued for slot s's program (whole, or not at all).
+void answer(I64 s, in U8[_] t) {
+    if (reply_n[s] + len(t) > REPLY) { return; }
+    for k in 0..len(t) { reply[REPLY * s + reply_n[s] + k] = t[k]; }
+    reply_n[s] = reply_n[s] + len(t);
+}
+
+// The answers queued for slot s into dst, and the queue emptied; their length.
+export I64 replies(I64 s, inout U8[_] dst) {
+    I64 n = min(reply_n[s], len(dst));
+    for k in 0..n { dst[k] = reply[REPLY * s + k]; }
+    reply_n[s] = 0;
+    return n;
+}
+
+// The CSI's final byte f: act on it.
+void csi(I64 s, I64 f) {
+    I64 n = arg(s, 0);
+    I64 x = cx[s];
+    if (x > tcols[s] - 1) { x = tcols[s] - 1; }
+    if (csi_mark[s] == '?') {
+        if (f == 'h' as I64 || f == 'l' as I64) {
+            for k in 0..PARAMS {
+                if (arg(s, k) == 25) { shown[s] = f == 'h' as I64; }
+            }
+        }
+        return;
+    }
+    if (csi_mark[s] == '>') {
+        if (f == 'q' as I64 && n == 0) { answer(s, b"\x1bP>|Daphnis\x1b\\"); }   // XTVERSION
+        return;
+    }
+    if (csi_mark[s] != 0) { return; }
+    if (csi_sp[s]) {
+        if (f == 'q' as I64 && npar[s] == 1 && n <= 6) { form[s] = n; }
+        return;
+    }
+    if (f == 'c' as I64 && n == 0) {
+        answer(s, b"\x1b[?62;22c");       // DA1: a VT220 with ANSI color
+        return;
+    }
+    if (f == 'H' as I64 || f == 'f' as I64) {
+        cy[s] = cell_of(n, trows[s]);
+        cx[s] = cell_of(arg(s, 1), tcols[s]);
+    } else if (f == 'J' as I64) {
+        if (n == 0) {
+            blank(s, cy[s], x, tcols[s]);
+            for r in cy[s] + 1..trows[s] { blank(s, r, 0, tcols[s]); }
+        } else if (n == 1) {
+            for r in 0..cy[s] { blank(s, r, 0, tcols[s]); }
+            blank(s, cy[s], 0, x + 1);
+        } else if (n == 2) {
+            for r in 0..trows[s] { blank(s, r, 0, tcols[s]); }
+        }
+    } else if (f == 'K' as I64) {
+        if (n == 0) {
+            blank(s, cy[s], x, tcols[s]);
+        } else if (n == 1) {
+            blank(s, cy[s], 0, x + 1);
+        } else if (n == 2) {
+            blank(s, cy[s], 0, tcols[s]);
+        }
+    } else if (f >= 'A' as I64 && f <= 'D' as I64) {
+        I64 k = n;
+        if (k < 1) { k = 1; }
+        I64 y = cy[s];
+        if (f == 'A' as I64) {
+            I64 lo = 0;
+            if (y >= top[s]) { lo = top[s]; }
+            y = y - k;
+            if (y < lo) { y = lo; }
+        } else if (f == 'B' as I64) {
+            I64 hi = trows[s] - 1;
+            if (y < bot[s]) { hi = bot[s] - 1; }
+            if (y + k > hi) { y = hi; } else { y = y + k; }
+        } else if (f == 'C' as I64) {
+            if (x + k > tcols[s] - 1) { x = tcols[s] - 1; } else { x = x + k; }
+        } else {
+            x = x - k;
+            if (x < 0) { x = 0; }
+        }
+        cy[s] = y;
+        cx[s] = x;
+    } else if (f == 'r' as I64) {
+        I64 t = cell_of(n, trows[s]);
+        I64 b = trows[s];
+        if (arg(s, 1) >= 1 && arg(s, 1) < trows[s]) { b = arg(s, 1); }
+        if (t + 1 < b) {
+            top[s] = t;
+            bot[s] = b;
+            cx[s] = 0;
+            cy[s] = 0;
+        }
+    } else if (f == 'S' as I64 || (f == 'T' as I64 && npar[s] == 1)) {
+        I64 k = n;
+        if (k < 1) { k = 1; }
+        if (f == 'T' as I64) { k = -k; }
+        shift(s, top[s], bot[s], k);
+    } else if (f == 'L' as I64 || f == 'M' as I64) {
+        if (cy[s] >= top[s] && cy[s] < bot[s]) {
+            I64 k = n;
+            if (k < 1) { k = 1; }
+            if (f == 'L' as I64) { k = -k; }
+            shift(s, cy[s], bot[s], k);
+            cx[s] = 0;
+        }
+    } else if (f == 'm' as I64) {
+        I64 k = 0;
+        while (k < npar[s] && k < PARAMS) {
+            I64 p = arg(s, k);
+            if (p == 0) {
+                rev[s] = false;
+                pen[s] = 0;
+            }
+            if (p == 1) { pen[s] = pen[s] | BOLD; }
+            if (p == 22) { pen[s] = pen[s] & ~BOLD; }
+            if (p == 7) { rev[s] = true; }
+            if (p == 27) { rev[s] = false; }
+            if ((p >= 30 && p <= 37) || (p >= 91 && p <= 97)) { tint(s, 0, p % 10); }
+            if (p == 90) { tint(s, 0, 8); }    // DN-45 B: bright black, style 9
+            if (p == 39) { tint(s, 0, -1); }
+            if ((p >= 40 && p <= 47) || (p >= 101 && p <= 107)) { tint(s, 4, p % 10); }
+            if (p == 100) { tint(s, 4, 8); }
+            if (p == 49) { tint(s, 4, -1); }
+            if ((p == 38 || p == 48) && arg(s, k + 1) == 5) {
+                I64 c256 = arg(s, k + 2);
+                if (c256 == 8) { tint(s, (p - 38) * 4 / 10, 8); }
+                else if (c256 < 16) { tint(s, (p - 38) * 4 / 10, c256 % 8); }
+                k = k + 2;
+            } else if ((p == 38 || p == 48) && arg(s, k + 1) == 2) {
+                k = k + 4;
+            }
+            k = k + 1;
+        }
+    }
+}
+
+// One byte of a CSI.
+void csi_byte(I64 s, I64 v) {
+    csi_len[s] = csi_len[s] + 1;
+    if (v >= 0x40 && v <= 0x7E) {
+        esc[s] = 0;
+        if (!csi_bad[s] && csi_len[s] <= CSI_MAX) { csi(s, v); }
+    } else if (csi_sp[s] && v != 27) {
+        csi_bad[s] = true;
+    } else if (v == ' ' as I64) {
+        csi_sp[s] = true;
+    } else if (v >= '0' as I64 && v <= '9' as I64) {
+        if (npar[s] <= PARAMS) {
+            I64 i = PARAMS * s + npar[s] - 1;
+            par[i] = 10 * par[i] + v - ('0' as I64);
+            if (par[i] > PARAM_MAX) { par[i] = PARAM_MAX; }
+        }
+    } else if (v == ';' as I64 || v == ':' as I64) {
+        if (npar[s] < PARAMS) { par[PARAMS * s + npar[s]] = 0; }
+        if (npar[s] <= PARAMS) { npar[s] = npar[s] + 1; }
+    } else if (v >= 0x3C && v <= 0x3F && csi_len[s] == 1) {
+        csi_mark[s] = v as U8;
+    } else if (v == 27) {
+        esc[s] = 1;
+    } else {
+        csi_bad[s] = true;
+    }
+}
+
+// Code point p in the cursor's cell, which moves on; one past the last column wraps first.
+void emit(I64 s, I64 p) {
+    if (cx[s] >= tcols[s]) {
+        cx[s] = 0;
+        down(s);
+    }
+    I64 idx = MAX_COLS * cy[s] + cx[s];
+    put_code(s, idx, p, rev[s]);
+    set_style(s, idx, pen[s]);
+    cx[s] = cx[s] + 1;
+    I64 ui = MAX_ROWS * s + cy[s];
+    if (cx[s] > row_used[ui]) { row_used[ui] = cx[s]; }
+    dirty[ui] = true;
+}
+
+// UTF-8 (RFC 3629): byte v of text; true when it was used. A sequence it cuts is U+FFFD first, and then a byte
+// below 0x80 is not used and is read as text.
+Bool decode(I64 s, I64 v) {
+    if (u_need[s] > 0) {
+        if (v >= u_lo[s] && v <= u_hi[s]) {
+            u_cp[s] = (u_cp[s] << 6) | (v & 0x3F);
+            u_need[s] = u_need[s] - 1;
+            u_lo[s] = 0x80;
+            u_hi[s] = 0xBF;
+            if (u_need[s] == 0) { emit(s, u_cp[s]); }
+            return true;
+        }
+        u_need[s] = 0;
+        emit(s, 0xFFFD);
+    }
+    if (v < 0x80) { return false; }
+    u_lo[s] = 0x80;
+    u_hi[s] = 0xBF;
+    if (v >= 0xC2 && v <= 0xDF) {
+        u_need[s] = 1;
+        u_cp[s] = v & 0x1F;
+    } else if (v >= 0xE0 && v <= 0xEF) {
+        u_need[s] = 2;
+        u_cp[s] = v & 0x0F;
+        if (v == 0xE0) { u_lo[s] = 0xA0; }   // else an overlong
+        if (v == 0xED) { u_hi[s] = 0x9F; }   // else a surrogate
+    } else if (v >= 0xF0 && v <= 0xF4) {
+        u_need[s] = 3;
+        u_cp[s] = v & 0x07;
+        if (v == 0xF0) { u_lo[s] = 0x90; }   // else an overlong
+        if (v == 0xF4) { u_hi[s] = 0x8F; }   // else above U+10FFFF
+    } else {
+        emit(s, 0xFFFD);                     // a continuation byte, the bytes C0 and C1 (overlongs), F5 to FF
+    }
+    return true;
+}
+
+// One byte slot s's master read.
+export void feed(I64 s, U8 b) {
+    I64 v = b as I64;
+    dirty[MAX_ROWS * s + cy[s]] = true;
+    if (esc[s] == 1) {
+        esc[s] = 0;
+        if (v == '[' as I64) {
+            esc[s] = 2;
+            npar[s] = 1;
+            par[PARAMS * s] = 0;
+            csi_len[s] = 0;
+            csi_mark[s] = 0;
+            csi_bad[s] = false;
+            csi_sp[s] = false;
+        } else if (v == ']' as I64) {
+            esc[s] = 3;
+            osc_n[s] = 0;
+            osc_len[s] = 0;
+        } else if (v == 'D' as I64) {
+            down(s);
+        } else if (v == 'M' as I64) {
+            up(s);
+        } else if (v == 'E' as I64) {
+            cx[s] = 0;
+            down(s);
+        } else if (v >= 0x20 && v <= 0x2F) {
+            esc[s] = 6;
+        } else if (v == 27) {
+            esc[s] = 1;
+        }
+        dirty[MAX_ROWS * s + cy[s]] = true;
+        return;
+    }
+    if (esc[s] == 6) {
+        if (v < 0x20 || v > 0x2F) { esc[s] = 0; }
+        return;
+    }
+    if (esc[s] == 3) {
+        if (v >= '0' as I64 && v <= '9' as I64 && osc_n[s] >= 0 && osc_n[s] < 1000) {
+            osc_n[s] = 10 * osc_n[s] + v - ('0' as I64);
+        } else if (v == ';' as I64) {
+            esc[s] = 4;
+        } else if (v == 7) {
+            esc[s] = 0;
+        } else if (v == 27) {
+            esc[s] = 5;
+        } else {
+            osc_n[s] = -1;
+        }
+        return;
+    }
+    if (esc[s] == 4) {
+        if (v == 7) {
+            osc_end(s);
+        } else if (v == 27) {
+            esc[s] = 5;
+        } else if (osc_len[s] < OSC_T && v >= 32 && v != 127) {
+            osc_t[OSC_T * s + osc_len[s]] = b;   // AM-4 and RS-TTL: UTF-8's bytes kept (appitems checks an OSC 7770's)
+            osc_len[s] = osc_len[s] + 1;
+        }
+        return;
+    }
+    if (esc[s] == 5) {
+        osc_end(s);             // ESC \ (ST), or any byte after the ESC: the OSC ends
+        return;
+    }
+    if (esc[s] == 0 && (u_need[s] > 0 || v >= 0x80) && decode(s, v)) {
+        dirty[MAX_ROWS * s + cy[s]] = true;
+        return;
+    }
+    if (esc[s] == 2) {
+        csi_byte(s, v);
+    } else if (v == 27) {
+        esc[s] = 1;
+    } else if (v == 13) {
+        cx[s] = 0;
+    } else if (v == 10) {
+        down(s);
+    } else if (v == 8) {
+        if (cx[s] >= tcols[s]) { cx[s] = tcols[s] - 1; }
+        if (cx[s] > 0) { cx[s] = cx[s] - 1; }
+    } else if (v == 9) {
+        cx[s] = (cx[s] / 8 + 1) * 8;
+        if (cx[s] > tcols[s] - 1) { cx[s] = tcols[s] - 1; }
+    } else if (v >= 32 && v <= 126) {
+        emit(s, v);
+    }
+    dirty[MAX_ROWS * s + cy[s]] = true;
+}
+
+// A slice of n bytes slot s's master read: batches horizontal runs of printable ASCII when in plain text state and
+// delegates escapes, UTF-8 and control bytes to feed.
+export void feed_bytes(I64 s, in U8[_] buf, I64 n) {
+    I64 lim_n = n;
+    if (lim_n > len(buf)) { lim_n = len(buf); }
+    if (lim_n <= 0) { return; }
+    if (tcols[s] <= 0) {
+        for k in 0..lim_n { feed(s, buf[k]); }
+        return;
+    }
+    U64 sh = (8 * s) as U64;
+    U64 cmask = ~((0xFF as U64) << sh);
+    U8 bbit = (1 << s) as U8;
+    U8 nbbit = ~bbit;
+    I64 k = 0;
+    while (k < lim_n) {
+        if (esc[s] == 0 && u_need[s] == 0) {
+            U8 b = buf[k];
+            if (b >= 32 && b <= 126) {
+                I64 cols = tcols[s];
+                dirty[MAX_ROWS * s + cy[s]] = true;
+                if (cx[s] >= cols) {
+                    cx[s] = 0;
+                    down(s);
+                }
+                I64 r = cy[s];
+                I64 x = cx[s];
+                I64 row_base = MAX_COLS * r;
+                I64 rem = cols - x;
+                I64 run_end = k + rem;
+                if (run_end > lim_n) { run_end = lim_n; }
+                U64 rbit = 0;
+                if (rev[s]) { rbit = REV as U64; }
+                U64 pbyte = ((pen[s] & 0xFF) as U64) << sh;
+                Bool pbold = (pen[s] & BOLD) != 0;
+                while (k < run_end && buf[k] >= 32 && buf[k] <= 126) {
+                    I64 idx = row_base + x;
+                    U64 cg = ((buf[k] as U64) | rbit) << sh;
+                    cells[idx] = (cells[idx] & cmask) | cg;
+                    styles[idx] = (styles[idx] & cmask) | pbyte;
+                    if (pbold) { bolds[idx] = bolds[idx] | bbit; } else { bolds[idx] = bolds[idx] & nbbit; }
+                    x = x + 1;
+                    k = k + 1;
+                }
+                cx[s] = x;
+                I64 ui = MAX_ROWS * s + r;
+                if (x > row_used[ui]) { row_used[ui] = x; }
+                dirty[ui] = true;
+            } else if (b == 13) {
+                dirty[MAX_ROWS * s + cy[s]] = true;
+                cx[s] = 0;
+                k = k + 1;
+            } else if (b == 10) {
+                dirty[MAX_ROWS * s + cy[s]] = true;
+                down(s);
+                dirty[MAX_ROWS * s + cy[s]] = true;
+                k = k + 1;
+            } else {
+                feed(s, b);
+                k = k + 1;
+            }
+        } else {
+            feed(s, buf[k]);
+            k = k + 1;
+        }
+    }
+}
+
+export Bool is_dirty(I64 s, I64 r) { return dirty[MAX_ROWS * s + r]; }
+
+export void clean(I64 s, I64 r) { dirty[MAX_ROWS * s + r] = false; }
+
+// The word of a style's ANSI color at bit b, the dark theme's in both, or the default d.
+U32 word_of(I64 st, I64 b, U32 d) {
+    I64 t = (st >> b) & 15;
+    if (t == 0) { return d; }
+    if (t == 9) { return tokens.term_bright_black(); }   // DN-45 B
+    return tokens.term_ansi(t - 1);
+}
+
+// Cell i's ink, paper and bold: its colors, swapped by reverse and by the shown cursor's cell, but not both.
+U32 ink_of(I64 s, I64 i, Bool cursor) {
+    I64 st = style(s, i);
+    if (((at(s, i) & REV) != 0) != cursor) { return word_of(st, 4, tokens.term_paper()); }
+    return word_of(st, 0, tokens.term_ink());
+}
+
+U32 paper_of(I64 s, I64 i, Bool cursor) {
+    I64 st = style(s, i);
+    if (((at(s, i) & REV) != 0) != cursor) { return word_of(st, 0, tokens.term_ink()); }
+    return word_of(st, 4, tokens.term_paper());
+}
+
+// Cell (row, col) of slot s: its ink and paper as drawn (reverse and the shown cursor applied), for the tests.
+export U32 ink_at(I64 s, I64 row, I64 col) {
+    return ink_of(s, MAX_COLS * row + col, row == cy[s] && col == cx[s] && shown[s]);
+}
+
+export U32 paper_at(I64 s, I64 row, I64 col) {
+    return paper_of(s, MAX_COLS * row + col, row == cy[s] && col == cx[s] && shown[s]);
+}
+U32[1024] bg_strip;
+U32 bg_strip_c = 0;
+Bool bg_strip_on = false;
+
+void fill_bg(inout U32[_] px, I64 x0, I64 x1, U32 c) {
+    if (x1 - x0 < 64) {
+        for x in x0..x1 { px[x] = c; }
+        return;
+    }
+    if (!bg_strip_on || bg_strip_c != c) {
+        for k in 0..1024 { bg_strip[k] = c; }
+        bg_strip_c = c;
+        bg_strip_on = true;
+    }
+    I64 a = x0;
+    while (a < x1) {
+        I64 n = x1 - a;
+        if (n > 1024) { n = 1024; }
+        copy(px[a..a + n], bg_strip[0..n]);
+        a = a + n;
+    }
+}
+// Columns [c0, c1) of pixel row y (0 to 16 * z * rows) of slot s into px from px[0], 8 * z * (c1 - c0) words (D-ROW:
+// a word a pixel): each cell is kit/mtext.ci's cell of its code point (FONT-1, F4 and the swap), JetBrains Mono 400,
+// or 600 when bold, in the 8 x 16 cell at 1x and 16 x 32 at 2x, its ground the cell's paper and its ink the cell's
+// ink. MS-R5: only those columns, so a damaged span draws no more of the row than it shows.
+export void draw_row_cols(I64 s, inout U32[_] px, I64 y, I64 z, I64 c0, I64 c1) {
+    I64 cw = mtext.cell_w(z);
+    I64 ch = mtext.cell_h(z);
+    I64 r = y / ch;
+    I64 lo = c0;
+    I64 hi = c1;
+    if (lo < 0) { lo = 0; }
+    if (hi > tcols[s]) { hi = tcols[s]; }
+    if (cw * (hi - lo) > len(px)) { hi = lo + len(px) / cw; }
+    if (lo >= hi) { return; }
+    I64 at0 = MAX_COLS * r;
+    I64 cur = -1;
+    if (r == cy[s] && shown[s]) { cur = cx[s]; }
+    // A block swaps the cursor's cell; a bar is its left 2 px a scale step and an underline its bottom ones, in ink.
+    Bool block = form[s] <= 2;
+    I64 line = 2 * z;
+    I64 cy_off = y - ch * r;
+    U64 sh = (8 * s) as U64;
+    U8 bm = (1 << s) as U8;
+    U32 def_ink = tokens.term_ink();
+    U32 def_paper = tokens.term_paper();
+    U32 bg0 = def_paper & 0xFFFFFF;
+    fill_bg(px, 0, cw * (hi - lo), bg0);
+    I64 scan_hi = row_used[MAX_ROWS * s + r];
+    if (cur >= 0 && cur + 1 > scan_hi) { scan_hi = cur + 1; }
+    if (scan_hi < hi) { hi = scan_hi; }
+    for c in lo..hi {
+        I64 i = at0 + c;
+        U8 cb = ((cells[i] >> sh) & 0xFF) as U8;
+        I64 sb = ((styles[i] >> sh) & 0xFF) as I64;
+        if (cb != ' ' || sb != 0 || c == cur) {
+            I64 x = cw * (c - lo);
+            Bool bold = (bolds[i] & bm) != 0;
+            Bool swapped = c == cur && block;
+            Bool rev_on = ((cb & REV) != 0) != swapped;
+            U32 fg = word_of(sb, 0, def_ink);
+            U32 bg = word_of(sb, 4, def_paper);
+            if (rev_on) {
+                U32 tmp = fg;
+                fg = bg;
+                bg = tmp;
+            }
+            I64 cp = (cb & ~REV) as I64;
+            if (cp < 32) { cp = (cp << 16) | low16(s, i); }
+            if ((bg & 0xFFFFFF) == bg0) {
+                mtext.cell_row_over(px, x, cy_off, mtext.index(cp), bold, fg, bg0, z);
+            } else {
+                mtext.cell_row(px, x, cy_off, mtext.index(cp), bold, fg, bg, z);
+            }
+            if (c == cur && !block) {
+                U32 ink = ink_of(s, i, false);
+                if (form[s] >= 5) { for k in 0..line { px[x + k] = ink; } }
+                else if (cy_off >= ch - line) { for k in 0..cw { px[x + k] = ink; } }
+            }
+        }
+    }
+}
+
+// Pixel row y (0 to 16 * z * rows) of slot s into px from px[0], 8 * z * cols words (D-ROW: a word a pixel): each
+// cell is kit/mtext.ci's cell of its code point (FONT-1, F4 and the swap), JetBrains Mono 400, or 600 when bold, in
+// the 8 x 16 cell at 1x and 16 x 32 at 2x, its ground the cell's paper and its ink the cell's ink.
+export void draw_row(I64 s, inout U32[_] px, I64 y, I64 z) {
+    draw_row_cols(s, px, y, z, 0, tcols[s]);
+}
+
+// Row r's text without its trailing spaces into dst, a byte a cell, reverse dropped and `?` for a code point above
+// 126; its length.
+export I64 text_of(I64 s, I64 r, inout U8[_] dst) {
+    I64 n = tcols[s];
+    if (row_used[MAX_ROWS * s + r] < n) { n = row_used[MAX_ROWS * s + r]; }
+    while (n > 0 && (at(s, MAX_COLS * r + n - 1) & ~REV) == ' ') { n = n - 1; }
+    for c in 0..n {
+        dst[c] = at(s, MAX_COLS * r + c) & ~REV;
+        if (dst[c] < 32) { dst[c] = '?'; }
+    }
+    return n;
+}
+// SPDX-License-Identifier: Apache-2.0

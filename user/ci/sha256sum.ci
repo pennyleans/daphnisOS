@@ -1,0 +1,160 @@
+// user/ci/sha256sum.ci: sha256sum [-c [-s] [-w]] [FILE...] (docs/specs/2026-11-06-c-core.md, CT-3): each FILE's SHA-256
+// (src/sha256.ci, the kernel's own) as `HEX  NAME`, `-` or no FILE meaning descriptor 0. With -c each FILE is a list
+// of such lines; each named file is digested and said `NAME: OK` or `NAME: FAILED`, and a mismatch ends with
+// `sha256sum: WARNING: N of M computed checksums did NOT match` and status 1. Output as busybox and GNU. -s writes
+// no OK or FAILED line (the status says it); a line that is not `HEX  NAME` is always said on descriptor 2 and makes
+// the status 1, so -w (warn of such lines) changes nothing (D-37).
+import user.ci.dev;
+import user.ci.shctl;
+import src.sha256;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+import user.ci.core.line;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+U8[4096] chunk;
+U8[32] digest;
+U8[65536] lbuf;
+I64 bad = 0;
+I64 checked = 0;
+Bool quiet = false;
+
+// The digest of fd into digest; false after a read error (said).
+Bool digest_of(I64 fd, in U8[_] name) {
+    sha256.Sha256[1] st;
+    sha256.sha_init(st);
+    Bool going = true;
+    while (going) {
+        I64 r = get.read(fd, chunk);
+        if (r < 0) {
+            msg.file(name, 0 - r);
+            return false;
+        }
+        if (r == 0) {
+            going = false;
+        } else {
+            sha256.sha_update(st, chunk, 0, r);
+        }
+    }
+    sha256.sha_final(st, digest);
+    return true;
+}
+
+U8 hex(I64 v) {
+    if (v < 10) { return (v + 48) as U8; }
+    return (v + 87) as U8;
+}
+
+void digest_file(in U8[_] name) {
+    I64 fd = get.open(name);
+    if (fd < 0) { return; }
+    if (digest_of(fd, name)) {
+        for i in 0..32 {
+            put.byte(hex((digest[i] >> 4) as I64));
+            put.byte(hex((digest[i] & 15) as I64));
+        }
+        put.bytes(b"  ");
+        put.bytes(name);
+        put.byte('\n');
+    }
+    get.close(fd);
+}
+
+I64 nibble(U8 c) {
+    if (c >= '0' && c <= '9') { return (c - 48) as I64; }
+    if (c >= 'a' && c <= 'f') { return (c - 87) as I64; }
+    if (c >= 'A' && c <= 'F') { return (c - 55) as I64; }
+    return -1;
+}
+
+// One line of a list: the hex digest, a space, a space or '*', the name. A digest of the wrong length or with a
+// byte that is not hex is a mismatch, as busybox; a line without the separator is said and skipped.
+void check_line(I64 n) {
+    I64 k = 0;
+    while (k + 1 < n && !(lbuf[k] == ' ' && (lbuf[k + 1] == ' ' || lbuf[k + 1] == '*'))) { k = k + 1; }
+    if (k + 2 >= n) {
+        msg.begin();
+        msg.text(b"invalid format");
+        msg.send();
+        msg.status_one();
+        return;
+    }
+    I64 s = k + 2;
+    checked = checked + 1;
+    Bool same = k == 64;
+    for i in 0..k {
+        if (nibble(lbuf[i]) < 0) { same = false; }
+    }
+    I64 fd = shctl.sh_open(lbuf[s..n], 0, 0);
+    if (fd < 0) {
+        msg.file(lbuf[s..n], 0 - fd);
+        same = false;
+    } else {
+        if (digest_of(fd, lbuf[s..n])) {
+            for i in 0..32 {
+                if (same) {
+                    I64 v = nibble(lbuf[2 * i]) * 16 + nibble(lbuf[2 * i + 1]);
+                    if (v != (digest[i] as I64)) { same = false; }
+                }
+            }
+        } else {
+            same = false;
+        }
+        get.close(fd);
+    }
+    if (!same) { bad = bad + 1; }
+    if (quiet) { return; }
+    put.bytes(lbuf[s..n]);
+    if (same) {
+        put.bytes(b": OK\n");
+    } else {
+        put.bytes(b": FAILED\n");
+    }
+}
+
+void check(in U8[_] name) {
+    I64 fd = get.open(name);
+    if (fd < 0) { return; }
+    line.begin(fd);
+    I64 n = line.next(lbuf);
+    while (n >= 0) {
+        check_line(n);
+        n = line.next(lbuf);
+    }
+    if (line.failed() != 0) { msg.file(name, line.failed()); }
+    get.close(fd);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"sha256sum");
+    args.parse(a, b"csw", b"");
+    Bool c = args.has('c');
+    quiet = args.has('s');
+    if (!c && (quiet || args.has('w'))) { msg.usage(b"-s and -w need -c"); }
+    I64 n = args.operands();
+    if (n == 0) {
+        if (c) { check(b"-"); } else { digest_file(b"-"); }
+    }
+    for i in 0..n {
+        if (c) {
+            check(a[args.op_start(i)..args.op_stop(a, i)]);
+        } else {
+            digest_file(a[args.op_start(i)..args.op_stop(a, i)]);
+        }
+    }
+    if (bad > 0 && quiet) { msg.status_one(); }
+    if (bad > 0 && !quiet) {
+        put.flush();
+        msg.begin();
+        msg.text(b"WARNING: ");
+        msg.num(bad);
+        msg.text(b" of ");
+        msg.num(checked);
+        msg.text(b" computed checksums did NOT match");
+        msg.send();
+        msg.status_one();
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

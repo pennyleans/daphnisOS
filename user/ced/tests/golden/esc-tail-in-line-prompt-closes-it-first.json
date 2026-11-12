@@ -1,0 +1,31 @@
+{
+  "id": "esc-tail-in-line-prompt-closes-it-first",
+  "rules": [
+    "KEY-2",
+    "KEY-8"
+  ],
+  "text": "ab\ncd\nef",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "07",
+    "32",
+    "1b",
+    "",
+    "5b46",
+    "58"
+  ],
+  "expect": {
+    "text": "abX\ncd\nef",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

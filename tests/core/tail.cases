@@ -1,0 +1,39 @@
+# tests/core/tail.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6).
+long.txt | - | -
+text.txt | - | -
+ | long.txt | -
+- | text.txt | -
+-n 3 text.txt | - | -
+-n3 text.txt | - | -
+-n 0 text.txt | - | -
+-n 400 long.txt | - | -
+-n 2 nonl.txt | - | -
+-n 1 nonl.txt | - | -
+-n 3 | long.txt | -
+-n 3 | nonl.txt | -
+-n 400 | long.txt | -
+-n +2 text.txt | - | -
+-n +0 text.txt | - | -
+-n +300 long.txt | - | -
+-n +2 | text.txt | -
+-1 text.txt | - | -
+-3 | long.txt | -
++4 text.txt | - | -
+-c 5 text.txt | - | -
+-c 0 text.txt | - | -
+-c 9000 long.txt | - | -
+-c 9000 | long.txt | -
+-c +20000 long.txt | - | -
+-c 600 bin.dat | - | -
+-c +500 bin.dat | - | -
+-n 2 text.txt nonl.txt empty | - | -
+-n 1 text.txt - nonl.txt | ws.txt | -
+-n 2 empty | - | -
+missing text.txt | - | -
+-n 1 look/sp ace.txt | - | -
+-- text.txt | - | -
+-n | - | D-3
+-n x text.txt | - | D-3
+-f | text.txt | D-14
+-q text.txt nonl.txt | - | D-1
+-s 1 text.txt | - | D-1

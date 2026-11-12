@@ -1,0 +1,10 @@
+Daphnis P: the block device
+daphnis: input 397 bytes
+daphnis: no disk
+daphnis: run hello pid 1
+hello from ring 3
+daphnis: state 5c6d6d6e0a037abbcfa5d73c0498412515e00277227de3571ad7b498c263099d
+daphnis: exit 0
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16366 of 16383
+daphnis: done

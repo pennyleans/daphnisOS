@@ -1,0 +1,28 @@
+// user/ci/kit/ucode.ci: UTF-8 for the chrome's text (FONT-1, F4): the next code point of a byte string, by RFC
+// 3629. An overlong form, a surrogate, a value past U+10FFFF, a stray continuation byte or a cut sequence gives
+// U+FFFD for one byte, and decoding goes on at the next byte.
+
+export const I64 BAD = 0xFFFD;
+
+// The code point that starts with byte b0, followed by b1, b2 and b3 when avail (1 to 4) says they are there, and
+// its length in bytes, as cp * 8 + length. The bytes come by value, so a caller can decode from any source.
+export I64 decode(I64 b0, I64 b1, I64 b2, I64 b3, I64 avail) {
+    if (b0 < 0x80) { return b0 * 8 + 1; }
+    I64 need = 0;
+    I64 cp = 0;
+    I64 least = 0;
+    if (b0 >= 0xC2 && b0 <= 0xDF) { need = 1; cp = b0 & 0x1F; least = 0x80; }
+    if (b0 >= 0xE0 && b0 <= 0xEF) { need = 2; cp = b0 & 0x0F; least = 0x800; }
+    if (b0 >= 0xF0 && b0 <= 0xF4) { need = 3; cp = b0 & 0x07; least = 0x10000; }
+    if (need == 0 || need >= avail) { return BAD * 8 + 1; }
+    for k in 1..need + 1 {
+        I64 b = b1;
+        if (k == 2) { b = b2; }
+        if (k == 3) { b = b3; }
+        if ((b & 0xC0) != 0x80) { return BAD * 8 + 1; }
+        cp = cp * 64 + (b & 0x3F);
+    }
+    if (cp < least || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) { return BAD * 8 + 1; }
+    return cp * 8 + need + 1;
+}
+// SPDX-License-Identifier: Apache-2.0

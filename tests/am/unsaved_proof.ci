@@ -1,0 +1,60 @@
+// tests/am/unsaved_proof.ci: AM section 7's proof, the unsaved ask drawn by the kit (kit/unsaved.ci) on its PAPER
+// ground (radius 12, the desk's OV window) at 2x on theme th (the argument's first byte: 0 dark, 1 light), with Tab
+// pressed so Cancel shows its ring; a second byte `o` draws it as it opens, with no ring (note 68). Prints
+// `frame W H` and each row as runs `r rgb count`.
+// Run: cint run --root . tests/am/unsaved_proof.ci -- TH, or TH followed by o
+import user.ci.kit.unsaved;
+import user.ci.kit.tokens;
+import user.ci.kit.shape;
+
+U32[1000] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    tokens.set_theme(th);
+    U8[96] nm;
+    I64[4] nl;
+    U8[24] p = b"cvim notes.txt          ";
+    U8[24] q = b"Edit plan.md            ";
+    for k in 0..24 {
+        nm[k] = p[k];
+        nm[24 + k] = q[k];
+    }
+    nl[0] = 14;
+    nl[1] = 12;
+    unsaved.open(unsaved.ACT_RESTART, nm, nl, 2);
+    if (!(len(a) > 1 && a[1] == 'o')) {
+        I64 kt = unsaved.key(15);                 // Tab: Cancel shows its ring
+    }
+    I64 z = 2;
+    I64 m = 40;                                   // the mantle round the plate
+    I64 pw = unsaved.W * z;
+    I64 ph = unsaved.height() * z;
+    I64 fw = pw + 2 * m;
+    I64 fh = ph + 2 * m;
+    "frame {fw} {fh}\n";
+    for y in 0..fh {
+        for x in 0..fw { row[x] = tokens.word(tokens.MANTLE); }
+        if (y >= m && y < m + ph) {
+            shape.rounded(row, y, m, m, m + pw, m + ph, unsaved.RAD * z, tokens.word(tokens.PAPER));
+            unsaved.row_at(row, y, m, m, z);
+        }
+        emit(fw);
+    }
+    unsaved.close();
+}
+// SPDX-License-Identifier: Apache-2.0

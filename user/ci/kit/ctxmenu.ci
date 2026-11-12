@@ -1,0 +1,1011 @@
+// user/ci/kit/ctxmenu.ci: the right-click menu (design notes 32 and 33, l 2026-11-10 14:45Z and 14:51Z), the desk's
+// menu kit. One menu: a symbol strip on top, word rows below, no symbols in rows. Its lists (DN-33) are FILE,
+// FOLDER, EMPTY (Index's background or the desk) and TEXT (selected text, any app), and PICTURE (View's picture,
+// frame 39: 200 wide, no strip); their sections come in a fixed order, the strip, open, developer, app rows,
+// Properties, and a divider stands between two sections that have rows. An app declares at most 3 rows, words
+// only, and one submenu level: a fourth row and a submenu of a submenu are refused. The app menu (AM-4, frame 41)
+// takes up to ITEM_ROWS of the app's own rows instead (item_row, item_sub), each with its shortcut text, a divider
+// above it where a group starts, the 8 px dot, or dimmed.
+//
+// Look (DN-32): a plate 224 wide, radius 8, SURF2, padding 6, shadow Mid (MS-3 level 2), at the pointer and flipped
+// to stay inside the bounds it is given. The strip: slots 36 x 32, radius 6, a 16 px symbol centered, 2 px side
+// inset; five slots spread across the plate, fewer stand left aligned at the same pitch (43); the hovered or
+// keyed slot BAR_RULE (DN-42: the keyed slot FILL, its symbol mono in ON_FILL; no focus ring anywhere in a menu,
+// the FILL is the focus); an inapplicable slot stays in place at 35 percent and takes no input. Rows 28 high, a pill of
+// radius 14, padding 0 10, Inter 13 (faces.BODY), the shortcut right aligned in JetBrains Mono 11 (faces.SHORTCUT)
+// INK_DIM, a 10 px chevron INK_DIM on a row with a submenu, the selected row FILL; the divider 1 px RULE, margin 5 8.
+// A submenu (DN-35) is a plate 160 wide of rows beside its row, 4 px over the menu, flipped left at the bounds; the
+// current choice of View and Sort By carries an 8 px INK dot at the row's right (no check marks). Open 160 ms, close 100 ms (MS section 4: opacity 0 to 100 percent and
+// scale 96 to 100 percent, curve out; back, curve in): the host passes the openness v (0 to 1000) to row_at.
+//
+// The strip's symbols come through one hook, slot_symbol (an action to its symbol in kit/symbols.ci), so a symbol
+// is swapped there and nowhere else. Coordinates are logical pixels; row_at draws at scale z (1 or 2). One menu is
+// open at a time; the state is this module's. tools/check-hdesk.py's ctxmenu twin draws the same pixels.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.draw;
+import user.ci.kit.shape;
+import user.ci.kit.blend;
+import user.ci.kit.shade;
+import user.ci.kit.symbols;
+
+// lists (DN-33)
+export const I64 FILE = 0;
+export const I64 FOLDER = 1;
+export const I64 EMPTY = 2;
+export const I64 TEXT = 3;
+export const I64 APP_MENU = 4;     // AM-1: the app menu on the bar (docs/specs/2026-11-10-am-app-menu.md section 3)
+export const I64 PICTURE = 5;      // RS-VIEW (frame 39): View's picture
+export const I64 TRASHED = 6;      // frame 32: an item in the Trash: no strip; the app's rows (app_row), Properties
+
+// sections, in their fixed order (the strip is section 0)
+export const I64 SEC_OPEN = 1;
+export const I64 SEC_DEV = 2;
+export const I64 SEC_APP = 3;
+export const I64 SEC_PROPS = 4;
+
+// actions; an app row's own action is APP or more, a submenu row's is SUB or more
+export const I64 NONE = 0;
+export const I64 CUT = 1;
+export const I64 COPY = 2;
+export const I64 RENAME = 3;
+export const I64 SHARE = 4;
+export const I64 TRASH = 5;
+export const I64 PASTE = 6;
+export const I64 NEW_FOLDER = 7;
+export const I64 NEW_FILE = 8;
+export const I64 OPEN = 9;
+export const I64 OPEN_WITH = 10;
+export const I64 OPEN_IN_CONSOLE = 11;
+export const I64 COPY_PATH = 12;
+export const I64 PROPERTIES = 13;
+export const I64 OPEN_NEW_WINDOW = 14;
+export const I64 CONSOLE_HERE = 15;
+export const I64 VIEW = 16;
+export const I64 SORT_BY = 17;
+export const I64 SELECT_ALL = 18;
+export const I64 DISPLAY_SETTINGS = 19;
+export const I64 VIEW_GRID = 20;    // DN-35: View's rows
+export const I64 VIEW_TABLE = 21;
+export const I64 SORT_NAME = 22;    // DN-35: Sort By's rows
+export const I64 SORT_TYPE = 23;
+export const I64 SORT_SIZE = 24;
+export const I64 ABOUT = 25;       // AM-1: About APP (its words the host's: about)
+export const I64 WIN_VIEW = 26;    // AM-1, DN-58 (frame 41): Window: Tiled, Floating, Full Screen / Minimize
+export const I64 TILED = 27;
+export const I64 FLOATING = 28;
+export const I64 FULL_SCREEN = 29;
+export const I64 MINIMIZE = 30;
+export const I64 EXIT = 31;        // AM-1: forced, last
+export const I64 APP_SETTINGS = 32;   // AM-2: the Settings item an app declared
+export const I64 PIN_TASKBAR = 33;   // DN-46 (c): a file or folder on the Taskbar, and off it
+export const I64 UNPIN_TASKBAR = 34;
+export const I64 ZOOM_IN = 35;       // RS-VIEW (frame 39): View's picture menu
+export const I64 ZOOM_OUT = 36;
+export const I64 ACTUAL_SIZE = 37;
+export const I64 SET_BACKGROUND = 38;
+export const I64 SHOW_IN_INDEX = 39;
+const I64 ACTS = 40;
+export const I64 APP = 64;
+export const I64 SUB = 128;
+
+// what click and key answer besides an action
+export const I64 STAY = 0;
+export const I64 CLOSE = -1;
+
+export const I64 W = 224;          // the plate
+export const I64 SUB_W = 160;      // DN-35: a submenu's plate
+export const I64 OVERLAP = 4;      // DN-35: a submenu overlaps its menu by 4 px
+export const I64 PAD = 6;
+export const I64 RAD = 8;
+export const I64 SLOT_W = 36;
+export const I64 SLOT_H = 32;
+export const I64 PITCH = 43;       // five slots across 212 - 2 * 2: (208 - 5 * 36) / 4 = 7 between
+export const I64 ROW_H = 28;
+export const I64 DIV_H = 11;       // 5, the 1 px rule, 5
+export const I64 APP_ROWS = 3;     // DN-33: an app declares at most 3
+export const I64 ITEM_ROWS = 16;   // AM-4: the app menu's own rows, children included (kit/appitems.ci ROWS)
+export const I64 DIM = 90;         // 35 percent in 256ths
+export const I64 SHADOW = 2;       // MS-3 level 2, Mid
+I64 m_w = 224;                     // AM-1: the menu's width (the app menu's 216) and its shadow level (High, 3)
+I64 m_sh = 2;
+
+const I64 ROWS = 40;               // rows of the menu and its submenus
+const I64 SLOTS = 5;
+const I64 POOL = 2048;
+
+// the menu
+I64 m_list = 0;
+Bool m_desk = false;
+Bool m_open = false;
+I64 m_x = 0;
+I64 m_y = 0;
+I64 b_x0 = 0;                      // the bounds the menu stays in
+I64 b_y0 = 0;
+I64 b_x1 = 0;
+I64 b_y1 = 0;
+I64 s_n = 0;                       // the strip
+I64[5] s_act;
+Bool[5] s_on;
+// The menu's words, one table (DN-35: the words may change after review): action a's words are
+// WORDS[w_at[a]..w_at[a] + w_n[a]], its shortcut WORDS[k_at[a]..k_at[a] + k_n[a]].
+// "CutCopyRenameShareTrashPasteNew FolderNew FileOpenEnterOpen WithOpen in ConsoleCopy as PathCtrl+Shift+CPropertiesAlt+EnterOpen in New WindowOpen Console HereViewSort BySelect AllDisplay SettingsGridTableNameTypeSizeAboutWindowTiledFloatingFull ScreenMinimizeExitSettingsPin to TaskbarUnpin from TaskbarZoom In+Zoom Out-Actual Size0Set as BackgroundShow in Index"
+U8[361] WORDS = [
+    67, 117, 116, 67, 111, 112, 121, 82, 101, 110, 97, 109, 101, 83, 104, 97, 114, 101, 84, 114, 97, 115, 104, 80,
+    97, 115, 116, 101, 78, 101, 119, 32, 70, 111, 108, 100, 101, 114, 78, 101, 119, 32, 70, 105, 108, 101, 79, 112,
+    101, 110, 69, 110, 116, 101, 114, 79, 112, 101, 110, 32, 87, 105, 116, 104, 79, 112, 101, 110, 32, 105, 110, 32,
+    67, 111, 110, 115, 111, 108, 101, 67, 111, 112, 121, 32, 97, 115, 32, 80, 97, 116, 104, 67, 116, 114, 108, 43,
+    83, 104, 105, 102, 116, 43, 67, 80, 114, 111, 112, 101, 114, 116, 105, 101, 115, 65, 108, 116, 43, 69, 110, 116,
+    101, 114, 79, 112, 101, 110, 32, 105, 110, 32, 78, 101, 119, 32, 87, 105, 110, 100, 111, 119, 79, 112, 101, 110,
+    32, 67, 111, 110, 115, 111, 108, 101, 32, 72, 101, 114, 101, 86, 105, 101, 119, 83, 111, 114, 116, 32, 66, 121,
+    83, 101, 108, 101, 99, 116, 32, 65, 108, 108, 68, 105, 115, 112, 108, 97, 121, 32, 83, 101, 116, 116, 105, 110,
+    103, 115, 71, 114, 105, 100, 84, 97, 98, 108, 101, 78, 97, 109, 101, 84, 121, 112, 101, 83, 105, 122, 101, 65,
+    98, 111, 117, 116, 87, 105, 110, 100, 111, 119, 84, 105, 108, 101, 100, 70, 108, 111, 97, 116, 105, 110, 103, 70,
+    117, 108, 108, 32, 83, 99, 114, 101, 101, 110, 77, 105, 110, 105, 109, 105, 122, 101, 69, 120, 105, 116, 83, 101,
+    116, 116, 105, 110, 103, 115, 80, 105, 110, 32, 116, 111, 32, 84, 97, 115, 107, 98, 97, 114, 85, 110, 112, 105,
+    110, 32, 102, 114, 111, 109, 32, 84, 97, 115, 107, 98, 97, 114, 90, 111, 111, 109, 32, 73, 110, 43, 90, 111,
+    111, 109, 32, 79, 117, 116, 45, 65, 99, 116, 117, 97, 108, 32, 83, 105, 122, 101, 48, 83, 101, 116, 32, 97,
+    115, 32, 66, 97, 99, 107, 103, 114, 111, 117, 110, 100, 83, 104, 111, 119, 32, 105, 110, 32, 73, 110, 100, 101,
+    120];
+I64[40] w_at = [0, 0, 3, 7, 13, 18, 23, 28, 38, 46, 55, 64, 79, 103, 122, 140, 157, 161, 168, 178, 194, 198, 203, 207,
+                211, 215, 220, 226, 231, 239, 250, 258, 262, 270, 284, 302, 310, 319, 331, 348];
+I64[40] w_n = [0, 3, 4, 6, 5, 5, 5, 10, 8, 4, 9, 15, 12, 10, 18, 17, 4, 7, 10, 16, 4, 5, 4, 4, 4, 5, 6, 5, 8, 11, 8,
+               4, 8, 14, 18, 7, 8, 11, 17, 13];
+I64[40] k_at = [0, 0, 0, 0, 0, 0, 0, 0, 0, 50, 0, 0, 91, 113, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 309, 318, 330, 0, 0];
+I64[40] k_n = [0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 12, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+               0, 1, 1, 1, 0, 0];
+
+I64 n_rows = 0;                    // every row, the submenus' too
+I64[40] r_sec;
+I64[40] r_act;
+I64[40] r_parent;                  // -1 on the menu, else the row it hangs from
+Bool[40] r_has;                    // the row opens a submenu
+Bool[40] r_cur;                    // DN-35: the current choice of its submenu (the 8 px dot)
+Bool[40] r_off;                    // DN-49: a row that takes no input and draws at 35 percent (Pin to Taskbar, full)
+Bool[40] r_grp;                    // AM-4: a divider above the row, inside its section: a group starts
+I64[40] r_at;                      // its words in the pool
+I64[40] r_n;
+I64[40] r_key_at;                  // its shortcut
+I64[40] r_key_n;
+U8[2048] pool;
+I64 pool_n = 0;
+I64 n_app = 0;
+I64 n_show = 0;                    // the menu's rows in their order
+I64[40] show;
+I64 sel = -1;                      // the selected row (an index of show), or -1
+I64 hot = -1;                      // the hovered or keyed slot, or -1
+Bool hot_key = false;              // DN-42: the slot is the keyboard's (drawn FILL), not the pointer's (BAR_RULE)
+I64 sub = -1;                      // the row whose submenu is open (an index of rows), or -1
+I64 sub_x = 0;
+I64 sub_y = 0;
+I64 n_sub = 0;
+I64[40] sub_show;
+I64 ssel = -1;                     // the selected row of the submenu (an index of sub_show)
+
+U32[3840] scr;                     // a row drawn before it is mixed in: 1920 device pixels at 2x
+U32[3840] keep;
+
+// --- the lists ---
+
+I64 put(in U8[_] s, I64 n) {
+    I64 at = pool_n;
+    for k in 0..n {
+        if (pool_n < POOL) {
+            pool[pool_n] = s[k];
+            pool_n = pool_n + 1;
+        }
+    }
+    return at;
+}
+
+I64 add(I64 sec, I64 act, I64 parent, Bool has, in U8[_] s, I64 n, in U8[_] kb, I64 kn) {
+    if (n_rows >= ROWS) { return -1; }
+    I64 i = n_rows;
+    r_sec[i] = sec;
+    r_act[i] = act;
+    r_parent[i] = parent;
+    r_has[i] = has;
+    r_cur[i] = false;
+    r_off[i] = act == PIN_TASKBAR && m_full;
+    r_grp[i] = false;
+    r_at[i] = put(s, n);
+    r_n[i] = n;
+    r_key_at[i] = put(kb, kn);
+    r_key_n[i] = kn;
+    n_rows = n_rows + 1;
+    return i;
+}
+
+// A row of the list's own, its words and shortcut from the table; parent: -1 on the menu, else its row.
+I64 fixed_in(I64 sec, I64 act, I64 parent) {
+    I64 wa = w_at[act];
+    I64 ka = k_at[act];
+    return add(sec, act, parent, parent < 0 && (act == OPEN_WITH || act == VIEW || act == SORT_BY || act == WIN_VIEW),
+               WORDS[wa..wa + w_n[act]], w_n[act],
+               WORDS[ka..ka + k_n[act]], k_n[act]);
+}
+
+void fixed(I64 sec, I64 act) {
+    I64 i = fixed_in(sec, act, -1);
+}
+
+// Action a's words into buf (the table's; a row the host added has its own, see label); their length.
+export I64 words(I64 a, inout U8[_] buf) {
+    if (a <= 0 || a >= ACTS) { return 0; }
+    I64 n = w_n[a];
+    if (n > len(buf)) { n = len(buf); }
+    for k in 0..n { buf[k] = WORDS[w_at[a] + k]; }
+    return n;
+}
+
+void slot(I64 act) {
+    s_act[s_n] = act;
+    s_on[s_n] = act != SHARE;          // DN-32: Share is dimmed in 0.1.0
+    s_n = s_n + 1;
+}
+
+Bool m_tb = false;                 // DN-46 (c): the next menu's entry is on the Taskbar
+
+// DN-46 (c): whether the entry of the next begin is on the Taskbar (its row reads Unpin from Taskbar); begin clears it.
+export void taskbar(Bool on) { m_tb = on; }
+
+Bool m_full = false;               // DN-49: the Taskbar holds its 28 pins
+
+// DN-49: whether the Taskbar is full for the next begin (its Pin to Taskbar row dims); begin clears it.
+export void taskbar_full(Bool on) { m_full = on; }
+
+// Whether shown row i is dimmed (DN-49).
+export Bool row_off(I64 i) { return r_off[show[i]]; }
+
+// The row of action act stays in place at 35 percent and takes no input (DN-49's dim): a command that does not apply
+// to what the menu is for (View: Set as Background on a picture that is not a PNG; note 58: dimmed, never hidden).
+export void row_dim(I64 act) {
+    for i in 0..n_rows {
+        if (r_act[i] == act) { r_off[i] = true; }
+    }
+}
+
+I64 tb_act() {
+    if (m_tb) { return UNPIN_TASKBAR; }
+    return PIN_TASKBAR;
+}
+
+// A new menu of list l (FILE, FOLDER, EMPTY, TEXT, PICTURE); desk: opened on the desk (EMPTY adds Display
+// Settings). Closed until open_at.
+export void begin(I64 l, Bool desk) {
+    m_list = l;
+    m_desk = desk;
+    m_open = false;
+    s_n = 0;
+    n_rows = 0;
+    pool_n = 0;
+    n_app = 0;
+    sel = -1;
+    hot = -1;
+    sub = -1;
+    ssel = -1;
+    m_w = W;
+    m_sh = SHADOW;
+    if (l == APP_MENU) {               // AM-1 (section 3): 216 wide, shadow High, no strip; About APP comes by about()
+        m_w = 216;
+        m_sh = 3;
+        // About and Settings (section 1), the app's own rows (3, AM-4: item_row), Window (4, DN-58) holding Tiled,
+        // Floating, Full Screen / Minimize (its own section, so a divider stands before it), Exit (5), forced, last
+        I64 v = fixed_in(SEC_PROPS, WIN_VIEW, -1);
+        I64 t = fixed_in(SEC_PROPS, TILED, v);
+        I64 f = fixed_in(SEC_PROPS, FLOATING, v);
+        I64 u = fixed_in(SEC_PROPS, FULL_SCREEN, v);
+        I64 m = fixed_in(SEC_PROPS + 2, MINIMIZE, v);
+        I64 e = fixed_in(SEC_PROPS + 1, EXIT, -1);
+        return;
+    }
+    if (l == PICTURE) {                // RS-VIEW (frame 39): 200 wide, no strip; zoom, the picture's rows, Properties
+        m_w = 200;
+        fixed(SEC_OPEN, ZOOM_IN);
+        fixed(SEC_OPEN, ZOOM_OUT);
+        fixed(SEC_OPEN, ACTUAL_SIZE);
+        fixed(SEC_APP, SET_BACKGROUND);
+        fixed(SEC_APP, SHOW_IN_INDEX);
+        fixed(SEC_PROPS, PROPERTIES);
+        m_tb = false;
+        m_full = false;
+        return;
+    }
+    if (l == FILE || l == FOLDER) {
+        slot(CUT);
+        slot(COPY);
+        slot(RENAME);
+        slot(SHARE);
+        slot(TRASH);
+    } else if (l == EMPTY) {
+        slot(PASTE);
+        slot(NEW_FOLDER);
+        slot(NEW_FILE);
+    } else if (l != TRASHED) {
+        slot(CUT);
+        slot(COPY);
+        slot(PASTE);
+    }
+    if (l == FILE) {
+        fixed(SEC_OPEN, OPEN);
+        fixed(SEC_OPEN, OPEN_WITH);
+        fixed(SEC_OPEN, tb_act());
+        fixed(SEC_DEV, OPEN_IN_CONSOLE);
+        fixed(SEC_DEV, COPY_PATH);
+    } else if (l == FOLDER) {
+        fixed(SEC_OPEN, OPEN);
+        fixed(SEC_OPEN, OPEN_NEW_WINDOW);
+        fixed(SEC_OPEN, tb_act());
+        fixed(SEC_DEV, CONSOLE_HERE);
+        fixed(SEC_DEV, COPY_PATH);
+    } else if (l == EMPTY) {
+        fixed(SEC_OPEN, VIEW);
+        fixed(SEC_OPEN, SORT_BY);
+        fixed(SEC_DEV, CONSOLE_HERE);
+        fixed(SEC_DEV, COPY_PATH);
+        if (desk) {
+            fixed(SEC_APP, DISPLAY_SETTINGS);
+            n_app = 1;
+        }
+        I64 v = 0;                     // DN-35: View's and Sort By's rows (under rows 0 and 1), Index's words and order
+        I64 o = 1;
+        for k in VIEW_GRID..VIEW_TABLE + 1 { I64 a = fixed_in(SEC_OPEN, k, v); }
+        for k in SORT_NAME..SORT_SIZE + 1 { I64 b = fixed_in(SEC_OPEN, k, o); }
+    } else if (l == TEXT) {
+        fixed(SEC_OPEN, SELECT_ALL);   // DN-33: no developer section in 0.1.0
+    }
+    if (l != TEXT) { fixed(SEC_PROPS, PROPERTIES); }
+    m_tb = false;
+    m_full = false;
+}
+
+// AM-1: the app menu's first row, About and the app's name s[0..n] (a program that declares nothing still gets it).
+export void about(in U8[_] s, I64 n) {
+    U8[64] t;
+    I64 k = 0;
+    for q in 0..w_n[ABOUT] {
+        t[k] = WORDS[w_at[ABOUT] + q];
+        k = k + 1;
+    }
+    t[k] = ' ';
+    k = k + 1;
+    for q in 0..n {
+        if (k < 64) {
+            t[k] = s[q];
+            k = k + 1;
+        }
+    }
+    I64 i = add(SEC_OPEN, ABOUT, -1, false, t[0..k], k, b"", 0);
+}
+
+// AM-2: the Settings item the app declared, after About; off: declared dimmed (plan ruling A, 2026-11-12: an app with
+// no settings of its own yet shows Settings at 35 percent, taking no input, as frame 41 draws the row).
+export void settings(Bool off) {
+    I64 i = fixed_in(SEC_OPEN, APP_SETTINGS, -1);
+    if (i >= 0) { r_off[i] = off; }
+}
+
+// An app's row s[0..n] with action act (APP or more); has: it opens a submenu. False, and nothing added, past the
+// 3 rows an app declares (DN-33), or with an action under APP.
+export Bool app_row(in U8[_] s, I64 n, I64 act, Bool has) {
+    if (n_app >= APP_ROWS || act < APP || act >= SUB) { return false; }
+    if (add(SEC_APP, act, -1, has, s, n, b"", 0) < 0) { return false; }
+    n_app = n_app + 1;
+    return true;
+}
+
+// A submenu row s[0..n] with action act (SUB or more) under the menu's row of action parent. False, and nothing
+// added, when no row of the menu has that action and a submenu: one level only, a submenu row opens none.
+export Bool sub_row(I64 parent, in U8[_] s, I64 n, I64 act) {
+    if (act < SUB) { return false; }
+    for i in 0..n_rows {
+        if (r_act[i] == parent && r_parent[i] < 0 && r_has[i]) {
+            I64 sc = r_sec[i];
+            return add(sc, act, i, false, s, n, b"", 0) >= 0;
+        }
+    }
+    return false;
+}
+
+// AM-4 (docs/specs/2026-11-11-am4-appitems.md section 4.2): in the app menu only, the app's own row s[0..n] with its
+// shortcut text kb[0..kn] and action act (APP or more). has: it opens a submenu; group: a divider above it (none
+// more where its section starts); spot: the 8 px dot; off: drawn at 35 percent, never chosen (DN-63). False, and
+// nothing added, in another list, past ITEM_ROWS, or with an action under APP or of SUB or more.
+export Bool item_row(in U8[_] s, I64 n, in U8[_] kb, I64 kn, I64 act, Bool has, Bool group, Bool spot, Bool off) {
+    if (m_list != APP_MENU || n_app >= ITEM_ROWS || act < APP || act >= SUB) { return false; }
+    I64 i = add(SEC_APP, act, -1, has, s, n, kb, kn);
+    if (i < 0) { return false; }
+    r_grp[i] = group;
+    r_cur[i] = spot;
+    r_off[i] = off;
+    n_app = n_app + 1;
+    return true;
+}
+
+// AM-4: a child row of the app's own, as item_row, with action act (SUB or more) in the submenu of the menu's row of
+// action parent. False, and nothing added, when no row of the menu has that action and a submenu (one level only).
+export Bool item_sub(I64 parent, in U8[_] s, I64 n, in U8[_] kb, I64 kn, I64 act, Bool group, Bool spot, Bool off) {
+    if (m_list != APP_MENU || n_app >= ITEM_ROWS || act < SUB) { return false; }
+    for i in 0..n_rows {
+        if (r_act[i] == parent && r_parent[i] < 0 && r_has[i]) {
+            I64 sc = r_sec[i];
+            I64 j = add(sc, act, i, false, s, n, kb, kn);
+            if (j < 0) { return false; }
+            r_grp[j] = group;
+            r_cur[j] = spot;
+            r_off[j] = off;
+            n_app = n_app + 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+// DN-35: the row of action act is its submenu's current choice (the 8 px dot); the other rows of that submenu are
+// not.
+export void current(I64 act) {
+    for i in 0..n_rows {
+        if (r_act[i] == act && r_parent[i] >= 0) {
+            for j in 0..n_rows {
+                if (r_parent[j] == r_parent[i]) { r_cur[j] = false; }
+            }
+            r_cur[i] = true;
+        }
+    }
+}
+
+export Bool is_current(I64 act) {
+    for i in 0..n_rows {
+        if (r_act[i] == act && r_cur[i]) { return true; }
+    }
+    return false;
+}
+
+// Slot of action act takes no input and draws at 35 percent (an action that does not apply here).
+export void slot_off(I64 act) {
+    for k in 0..s_n {
+        if (s_act[k] == act) { s_on[k] = false; }
+    }
+}
+
+export I64 list() { return m_list; }
+export Bool is_open() { return m_open; }
+export I64 slots() { return s_n; }
+export I64 slot_act(I64 k) { return s_act[k]; }
+export Bool slot_live(I64 k) { return s_on[k]; }
+export I64 rows() { return n_show; }
+export I64 row_act(I64 i) { return r_act[show[i]]; }
+export I64 row_sec(I64 i) { return r_sec[show[i]]; }
+export Bool row_has(I64 i) { return r_has[show[i]]; }
+export I64 sub_rows() { return n_sub; }
+export I64 sub_act(I64 j) { return r_act[sub_show[j]]; }
+export I64 selected() { return sel; }
+export I64 sub_selected() { return ssel; }
+export I64 sub_open() { return sub; }
+export I64 hot_slot() { return hot; }
+export I64 left() { return m_x; }
+export I64 top() { return m_y; }
+export I64 sub_left() { return sub_x; }
+export I64 sub_top() { return sub_y; }
+
+// The words of action act's row (the first row with it) into buf; their length, or 0.
+export I64 label(I64 act, inout U8[_] buf) {
+    for i in 0..n_rows {
+        if (r_act[i] == act) {
+            I64 n = r_n[i];
+            if (n > len(buf)) { n = len(buf); }
+            for k in 0..n { buf[k] = pool[r_at[i] + k]; }
+            return n;
+        }
+    }
+    return 0;
+}
+
+// --- layout ---
+
+void order() {
+    n_show = 0;
+    for sec in 1..7 {
+        for i in 0..n_rows {
+            if (r_parent[i] < 0 && r_sec[i] == sec) {
+                show[n_show] = i;
+                n_show = n_show + 1;
+            }
+        }
+    }
+}
+
+// The height of a plate of rows rs[0..n] (and the strip when strip): padding, the strip, the rows, a divider between
+// two sections and above a row that starts a group (AM-4).
+I64 height_of(in I64[_] rs, I64 n, Bool strip) {
+    I64 h = 2 * PAD;
+    I64 last = -1;
+    if (strip && s_n > 0) {
+        h = h + SLOT_H;
+        last = 0;
+    }
+    for k in 0..n {
+        I64 sc = r_sec[rs[k]];
+        if (last >= 0 && (sc != last || r_grp[rs[k]])) { h = h + DIV_H; }
+        last = sc;
+        h = h + ROW_H;
+    }
+    return h;
+}
+
+export I64 width() { return m_w; }
+export I64 height() { return height_of(show, n_show, true); }
+export I64 sub_height() { return height_of(sub_show, n_sub, false); }
+
+// The top of row k of rs[0..n] in a plate whose top is y0.
+I64 top_of(in I64[_] rs, I64 n, Bool strip, I64 k, I64 y0) {
+    I64 y = y0 + PAD;
+    I64 last = -1;
+    if (strip && s_n > 0) {
+        y = y + SLOT_H;
+        last = 0;
+    }
+    for j in 0..k + 1 {
+        I64 sc = r_sec[rs[j]];
+        if (last >= 0 && (sc != last || r_grp[rs[j]])) { y = y + DIV_H; }
+        last = sc;
+        if (j < k) { y = y + ROW_H; }
+    }
+    return y;
+}
+
+export I64 row_top(I64 i) { return top_of(show, n_show, true, i, m_y); }
+export I64 sub_row_top(I64 j) { return top_of(sub_show, n_sub, false, j, sub_y); }
+export I64 slot_left(I64 k) { return m_x + PAD + 2 + PITCH * k; }
+export I64 slot_top() { return m_y + PAD; }
+
+// Where a plate of extent e opening at p goes in [lo, hi): at p, flipped to end at p when it would pass hi, and
+// kept inside.
+export I64 flip(I64 p, I64 e, I64 lo, I64 hi) {
+    I64 v = p;
+    if (v + e > hi) { v = p - e; }
+    if (v + e > hi) { v = hi - e; }
+    if (v < lo) { v = lo; }
+    return v;
+}
+
+// The menu opened at the pointer (px, py), kept inside [x0, x1) x [y0, y1); keyed (the Menu key, Shift+F10): the
+// first row selected.
+export void open_at(I64 px, I64 py, I64 x0, I64 y0, I64 x1, I64 y1, Bool keyed) {
+    order();
+    b_x0 = x0;
+    b_y0 = y0;
+    b_x1 = x1;
+    b_y1 = y1;
+    m_x = flip(px, m_w, x0, x1);
+    m_y = flip(py, height(), y0, y1);
+    m_open = true;
+    sel = -1;
+    hot = -1;
+    sub = -1;
+    n_sub = 0;
+    ssel = -1;
+    if (keyed) { sel = live_row(show, n_show, -1, 1, true); }   // AM-SET: the first row that is not dimmed
+}
+
+export void close() {
+    m_open = false;
+    sub = -1;
+    n_sub = 0;
+}
+
+// The submenu of row i of the menu (an index of show) opened beside it: right of the plate, or left when it would
+// pass the bounds; its first row level with row i.
+void sub_open_at(I64 i) {
+    I64 r = show[i];
+    if (!r_has[r]) {
+        sub = -1;
+        n_sub = 0;
+        ssel = -1;
+        return;
+    }
+    if (sub == r) { return; }
+    sub = r;
+    n_sub = 0;
+    for j in 0..n_rows {
+        if (r_parent[j] == r) {
+            sub_show[n_sub] = j;
+            n_sub = n_sub + 1;
+        }
+    }
+    ssel = -1;
+    sub_x = m_x + m_w - OVERLAP;                       // DN-35: right of its row, 4 px over the menu
+    if (sub_x + SUB_W > b_x1) { sub_x = m_x - SUB_W + OVERLAP; }
+    if (sub_x < b_x0) { sub_x = b_x0; }
+    sub_y = flip(row_top(i) - PAD, sub_height(), b_y0, b_y1);
+    if (sub_y + sub_height() > b_y1) { sub_y = b_y1 - sub_height(); }
+}
+
+// --- input ---
+
+// What lies at (px, py): slot k is 100 + k, row i of the menu is i, row j of the submenu 200 + j, the plates' other
+// pixels -2, outside them -1.
+export I64 hit(I64 px, I64 py) {
+    if (!m_open) { return -1; }
+    if (sub >= 0 && px >= sub_x && px < sub_x + SUB_W && py >= sub_y && py < sub_y + sub_height()) {
+        for j in 0..n_sub {
+            I64 t = sub_row_top(j);
+            if (py >= t && py < t + ROW_H && px >= sub_x + PAD && px < sub_x + SUB_W - PAD) { return 200 + j; }
+        }
+        return -2;
+    }
+    if (px < m_x || px >= m_x + m_w || py < m_y || py >= m_y + height()) { return -1; }
+    for k in 0..s_n {
+        I64 sx = slot_left(k);
+        if (px >= sx && px < sx + SLOT_W && py >= slot_top() && py < slot_top() + SLOT_H) { return 100 + k; }
+    }
+    for i in 0..n_show {
+        I64 t = row_top(i);
+        if (py >= t && py < t + ROW_H && px >= m_x + PAD && px < m_x + m_w - PAD) { return i; }
+    }
+    return -2;
+}
+
+// The pointer at (px, py): the hovered slot and row follow it, and a row with a submenu opens it. True when
+// anything drawn changed.
+export Bool hover(I64 px, I64 py) {
+    if (!m_open) { return false; }
+    I64 h0 = hot;
+    I64 s0 = sel;
+    I64 u0 = sub;
+    I64 q0 = ssel;
+    I64 at = hit(px, py);
+    hot = -1;
+    hot_key = false;
+    if (at >= 100 && at < 200 && s_on[at - 100]) { hot = at - 100; }
+    if (at >= 200) {
+        ssel = at - 200;
+    } else if (at >= 0 && at < 100) {
+        sel = at;
+        ssel = -1;
+        sub_open_at(at);
+    } else if (at >= 100) {
+        sel = -1;
+        sub = -1;
+        n_sub = 0;
+        ssel = -1;
+    }
+    return h0 != hot || s0 != sel || u0 != sub || q0 != ssel;
+}
+
+// A press at (px, py): the action chosen (the menu closes), STAY, or CLOSE (outside the plates). A dimmed slot, a
+// divider or the padding is STAY; a row with a submenu opens it.
+export I64 click(I64 px, I64 py) {
+    I64 at = hit(px, py);
+    if (at == -1) {
+        close();
+        return CLOSE;
+    }
+    if (at >= 200) {
+        ssel = at - 200;
+        if (r_off[sub_show[ssel]]) { return STAY; }   // DN-49, AM-4: a dimmed row takes no press
+        I64 a = r_act[sub_show[ssel]];
+        close();
+        return a;
+    }
+    if (at >= 100) {
+        I64 k = at - 100;
+        if (!s_on[k]) { return STAY; }
+        I64 b = s_act[k];
+        close();
+        return b;
+    }
+    if (at >= 0) {
+        sel = at;
+        if (r_has[show[at]]) {
+            sub_open_at(at);
+            return STAY;
+        }
+        if (r_off[show[at]]) { return STAY; }   // DN-49: a dimmed row takes no press
+        I64 c = r_act[show[at]];
+        close();
+        return c;
+    }
+    return STAY;
+}
+
+const I64 K_ESC = 1;
+const I64 K_ENTER = 28;
+const I64 K_UP = 103;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+const I64 K_DOWN = 108;
+
+I64 live_slot(I64 from, I64 d) {
+    I64 k = from + d;
+    while (k >= 0 && k < s_n) {
+        if (s_on[k]) { return k; }
+        k = k + d;
+    }
+    return -1;
+}
+
+// The row of rs[0..n] after row from (-1: before the first) in direction d that is not dimmed (AM-SET), wrapping
+// past either end when wrap; -1 when there is none, as when every row is dimmed.
+I64 live_row(in I64[_] rs, I64 n, I64 from, I64 d, Bool wrap) {
+    I64 k = from;
+    if (from < 0 && d < 0) { k = n; }
+    for q in 0..n {
+        k = k + d;
+        if (k < 0 || k >= n) {
+            if (!wrap) { return -1; }
+            k = (k + n) % n;
+        }
+        if (!r_off[rs[k]]) { return k; }
+    }
+    return -1;
+}
+
+// Key code c (Linux input codes) while the menu is open: Up and Down move through the rows (Up from the first row
+// to the strip's first live slot, Down from the strip to the first row), Left and Right through the live slots,
+// Right opens a submenu and Left closes it, Enter chooses, Esc closes a submenu, then the menu. The action chosen,
+// STAY or CLOSE. Dimmed slots and dimmed rows are never keyed: Up and Down step over them and wrap, and a menu whose
+// rows are all dimmed keeps no selection (AM-SET).
+export I64 key(I64 c) {
+    if (!m_open) { return CLOSE; }
+    hot_key = true;                    // DN-42: a slot the keys reach is drawn as the focus, FILL
+    if (sub >= 0 && ssel >= 0) {
+        if (c == K_DOWN || c == K_UP) {
+            I64 d = 1;
+            if (c == K_UP) { d = -1; }
+            ssel = live_row(sub_show, n_sub, ssel, d, true);
+            if (ssel < 0) {
+                sub = -1;
+                n_sub = 0;
+            }
+        }
+        if (c == K_LEFT || c == K_ESC) {
+            ssel = -1;
+            sub = -1;
+            n_sub = 0;
+        }
+        if (c == K_ENTER && !r_off[sub_show[ssel]]) {   // AM-4: a dimmed row is never chosen
+            I64 a = r_act[sub_show[ssel]];
+            close();
+            return a;
+        }
+        return STAY;
+    }
+    if (c == K_ESC) {
+        close();
+        return CLOSE;
+    }
+    if (hot >= 0) {
+        if (c == K_LEFT && live_slot(hot, -1) >= 0) { hot = live_slot(hot, -1); }
+        if (c == K_RIGHT && live_slot(hot, 1) >= 0) { hot = live_slot(hot, 1); }
+        if (c == K_DOWN && live_row(show, n_show, -1, 1, true) >= 0) {
+            hot = -1;
+            sel = live_row(show, n_show, -1, 1, true);
+        }
+        if (c == K_ENTER) {
+            I64 b = s_act[hot];
+            close();
+            return b;
+        }
+        return STAY;
+    }
+    if (c == K_DOWN) {
+        sel = live_row(show, n_show, sel, 1, true);
+        sub = -1;
+        n_sub = 0;
+    } else if (c == K_UP) {
+        I64 up = -1;                   // a live row above the selection, none past the top
+        if (sel >= 0) { up = live_row(show, n_show, sel, -1, false); }
+        if (up < 0 && live_slot(-1, 1) >= 0) {
+            sel = -1;
+            hot = live_slot(-1, 1);
+        } else if (up >= 0) {
+            sel = up;
+        } else {
+            sel = live_row(show, n_show, sel, -1, true);
+        }
+        sub = -1;
+        n_sub = 0;
+    } else if ((c == K_RIGHT || c == K_ENTER) && sel >= 0 && r_has[show[sel]]) {
+        sub_open_at(sel);
+        ssel = live_row(sub_show, n_sub, -1, 1, true);
+    } else if (c == K_ENTER && sel >= 0 && !r_off[show[sel]]) {
+        I64 a = r_act[show[sel]];
+        close();
+        return a;
+    }
+    return STAY;
+}
+
+// --- drawing ---
+
+// The one hook from a slot's action to its symbol (kit/symbols.ci; DN-33: edit is Rename, folder and file stand in
+// for New Folder and New File). A symbol is swapped here and nowhere else.
+export I64 slot_symbol(I64 act) {
+    if (act == CUT) { return symbols.CUT; }
+    if (act == COPY) { return symbols.COPY; }
+    if (act == RENAME) { return symbols.EDIT; }
+    if (act == SHARE) { return symbols.SHARE; }
+    if (act == TRASH) { return symbols.TRASH; }
+    if (act == PASTE) { return symbols.PASTE; }
+    if (act == NEW_FOLDER) { return symbols.NEW_FOLDER; }   // DN-46 (e)
+    if (act == NEW_FILE) { return symbols.NEW_FILE; }
+    return -1;
+}
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// The 10 px chevron (a stroke of 1.5, round, from (3.5, 2) to (6.5, 5) to (3.5, 8)) on row y with its box's top
+// left at (x0, y0), at scale z: 4 x 4 samples a pixel, a sample covered within 3/4 of the stroke. Units of 1/40 px
+// at 1x: the points (140, 80), (260, 200), (140, 320), the half width 30.
+Bool near(I64 px, I64 py, I64 ax, I64 ay, I64 qx, I64 qy, I64 h) {
+    I64 dx = qx - ax;
+    I64 dy = qy - ay;
+    I64 wx = px - ax;
+    I64 wy = py - ay;
+    I64 l2 = dx * dx + dy * dy;
+    I64 t = wx * dx + wy * dy;
+    if (t <= 0) { return wx * wx + wy * wy <= h * h; }
+    if (t >= l2) {
+        I64 ex = px - qx;
+        I64 ey = py - qy;
+        return ex * ex + ey * ey <= h * h;
+    }
+    I64 c = wx * dy - wy * dx;
+    return c * c <= h * h * l2;
+}
+
+export void chevron_row(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 z, U32 c) {
+    I64 r = y - y0;
+    if (r < 0 || r >= 10 * z) { return; }
+    for x in 0..10 * z {
+        I64 n = 0;
+        for sy in 0..4 {
+            for sx in 0..4 {
+                I64 u = (40 * x + 5 + 10 * sx) / z;          // the sample in 1/40 px at 1x, times z then over z
+                I64 v = (40 * r + 5 + 10 * sy) / z;
+                if (near(u, v, 140, 80, 260, 200, 30) || near(u, v, 260, 200, 140, 320, 30)) { n = n + 1; }
+            }
+        }
+        if (n > 0 && x0 + x >= 0 && x0 + x < len(row)) { row[x0 + x] = blend.mix_px(row[x0 + x], c, n * 16); }
+    }
+}
+
+// Row y (device) of the rows rs[0..n] of a plate whose left is px0 and top py0 (logical), at scale z, into scr;
+// strip: the menu's strip first; pick: the selected row (an index of rs) or -1.
+void content_row(I64 y, I64 px0, I64 py0, I64 pw, in I64[_] rs, I64 n, Bool strip, I64 pick, I64 z, I64 th) {
+    I64 last = -1;
+    I64 ty = py0 + PAD;
+    if (strip && s_n > 0) {
+        for k in 0..s_n {
+            I64 sx = (px0 + PAD + 2 + PITCH * k) * z;
+            I64 sy = ty * z;
+            I64 sym = slot_symbol(s_act[k]);
+            U32 ink = tok(tokens.INK);
+            if (k == hot && s_on[k]) {
+                if (hot_key) {         // DN-42: the keyboard's slot is the focus: FILL, its symbol mono in ON_FILL
+                    shape.rounded(scr, y, sx, sy, sx + SLOT_W * z, sy + SLOT_H * z, 6 * z, tok(tokens.FILL));
+                    sym = sym + symbols.N / 2;
+                    ink = tok(tokens.ON_FILL);
+                } else {
+                    shape.rounded(scr, y, sx, sy, sx + SLOT_W * z, sy + SLOT_H * z, 6 * z, tok(tokens.BAR_RULE));
+                }
+            }
+            I64 a = 256;
+            if (!s_on[k]) { a = DIM; }
+            symbols.row_at(scr, y, sx + 10 * z, sy + 8 * z, sym, z, ink, th, a);
+        }
+        ty = ty + SLOT_H;
+        last = 0;
+    }
+    for j in 0..n {
+        I64 i = rs[j];
+        if (last >= 0 && (r_sec[i] != last || r_grp[i])) {
+            draw.rect(scr, y, (px0 + PAD + 8) * z, (ty + 5) * z, (px0 + pw - PAD - 8) * z, (ty + 6) * z,
+                      tok(tokens.RULE));
+            ty = ty + DIV_H;
+        }
+        last = r_sec[i];
+        I64 y0 = ty * z;
+        if (y >= y0 && y < y0 + ROW_H * z) {
+            U32 ink = tok(tokens.INK);
+            U32 dim = tok(tokens.INK_DIM);
+            if (r_off[i]) {                // DN-49: 35 percent of the ink over the plate, never picked
+                ink = blend.mix_px(tok(tokens.SURF2), ink, DIM);
+                dim = ink;
+            }
+            if (j == pick && !r_off[i]) {
+                shape.rounded(scr, y, (px0 + PAD) * z, y0, (px0 + pw - PAD) * z, y0 + ROW_H * z, 14 * z,
+                              tok(tokens.FILL));
+                ink = tok(tokens.ON_FILL);
+                dim = tok(tokens.ON_FILL);
+            }
+            I64 right = (px0 + pw - PAD - 10) * z;
+            I64 base = y0 + 18 * z;
+            if (r_cur[i]) {                // DN-35: the current choice's 8 px dot at the row's right
+                shape.rounded(scr, y, right - 8 * z, y0 + 10 * z, right, y0 + 18 * z, 4 * z, ink);
+                right = right - 16 * z;
+            }
+            if (r_has[i]) {
+                chevron_row(scr, y, right - 10 * z, y0 + 9 * z, z, dim);
+                right = right - 18 * z;
+            }
+            I64 kn = r_key_n[i];
+            if (kn > 0) {
+                I64 kw = ctext.width(pool[r_key_at[i]..r_key_at[i] + kn], kn, faces.SHORTCUT, z);
+                I64 e = ctext.text(scr, y, right - kw, base, right, pool[r_key_at[i]..r_key_at[i] + kn], kn, dim,
+                                   faces.SHORTCUT, z);
+                right = right - kw - 12 * z;
+            }
+            I64 f = ctext.text(scr, y, (px0 + PAD + 10) * z, base, right, pool[r_at[i]..r_at[i] + r_n[i]], r_n[i],
+                               ink, faces.BODY, z);
+        }
+        ty = ty + ROW_H;
+    }
+}
+
+// Row y (device) of a plate of h logical px at (px0, py0), openness v (0 to 1000), over row: its shadow, its ground
+// and its content drawn into scr, then mixed over row by the opacity. The frame (and its shadow) scale from 96 to
+// 100 percent about the center; the content draws at full size, clipped to the frame.
+void plate_row(inout U32[_] row, I64 y, I64 px0, I64 py0, I64 pw, I64 h, in I64[_] rs, I64 n, Bool strip,
+               I64 pick, I64 z, I64 th, I64 v) {
+    I64 ww = pw * z;
+    I64 hh = h * z;
+    I64 s = 960 + 40 * v / 1000;                // thousandths
+    I64 fw = ww * s / 1000;
+    I64 fh = hh * s / 1000;
+    I64 fx0 = px0 * z + (ww - fw) / 2;
+    I64 fy0 = py0 * z + (hh - fh) / 2;
+    I64 fx1 = fx0 + fw;
+    I64 fy1 = fy0 + fh;
+    I64 up = shade.reach_up(m_sh, th, z);
+    I64 dn = shade.reach_down(m_sh, th, z);
+    I64 sd = shade.reach_side(m_sh, th, z);
+    if (y < fy0 - up || y >= fy1 + dn) { return; }
+    I64 lo = fx0 - sd;
+    I64 hi = fx1 + sd;
+    if (lo < 0) { lo = 0; }
+    if (hi > len(row)) { hi = len(row); }
+    if (hi > len(scr)) { hi = len(scr); }
+    if (lo >= hi) { return; }
+    for x in lo..hi { scr[x] = row[x]; }
+    shade.shade_row(scr, lo, hi, y, fx0, fy0, fx1, fy1, RAD, m_sh, th, z);
+    shape.rounded(scr, y, fx0, fy0, fx1, fy1, RAD * z, tok(tokens.SURF2));
+    if (y >= fy0 && y < fy1) {
+        I64 cx0 = px0 * z;
+        I64 cx1 = cx0 + ww;
+        if (cx0 < 0) { cx0 = 0; }
+        if (cx1 > hi) { cx1 = hi; }
+        for x in cx0..cx1 { keep[x] = scr[x]; }
+        content_row(y, px0, py0, pw, rs, n, strip, pick, z, th);
+        for x in cx0..cx1 {
+            if (x < fx0 || x >= fx1) { scr[x] = keep[x]; }
+        }
+    }
+    I64 a = v * 256 / 1000;
+    for x in lo..hi { row[x] = blend.mix_px(row[x], scr[x], a); }
+}
+
+// Row y (device) of the open menu and its submenu at scale z on theme th, openness v (0 to 1000; 1000 at rest).
+export void row_at(inout U32[_] row, I64 y, I64 z, I64 th, I64 v) {
+    if (!m_open && v <= 0) { return; }
+    plate_row(row, y, m_x, m_y, m_w, height(), show, n_show, true, sel, z, th, v);
+    if (sub >= 0) { plate_row(row, y, sub_x, sub_y, SUB_W, sub_height(), sub_show, n_sub, false, ssel, z, th, v); }
+}
+
+// The device rows the menu and its submenu touch at scale z on theme th, shadow included: [area_top, area_bottom).
+export I64 area_top(I64 z, I64 th) {
+    I64 t = m_y;
+    if (sub >= 0 && sub_y < t) { t = sub_y; }
+    return t * z - shade.reach_up(m_sh, th, z);
+}
+
+export I64 area_bottom(I64 z, I64 th) {
+    I64 b = m_y + height();
+    if (sub >= 0 && sub_y + sub_height() > b) { b = sub_y + sub_height(); }
+    return b * z + shade.reach_down(m_sh, th, z);
+}
+
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,61 @@
+// tests/rs/stroke_test.ci: the stroked lines and areas of stage RS (user/ci/kit/stroke.ci): a pixel inside a stroke
+// takes the color whole, one outside is untouched, a round cap reaches w / 2 past an end, two segments over one pixel
+// count its samples once, and an area covers a pixel by its share. Run: cint test --root . tests/rs/stroke_test.ci
+import user.ci.kit.stroke;
+
+U32[64] row;
+I64[8] seg;
+
+void clear() {
+    for x in 0..64 { row[x] = 0x000000; }
+}
+
+// a horizontal segment from (2, 4) to (40, 4) units; at 1 px a unit and 4 units wide it covers rows 2 to 5
+void level() {
+    seg[0] = 2 * 16;
+    seg[1] = 4 * 16;
+    seg[2] = 40 * 16;
+    seg[3] = 4 * 16;
+}
+
+test "a pixel within the stroke is the color whole; one past it is untouched" {
+    level();
+    clear();
+    stroke.path_row(row, 3, 0, 0, 1, 1, seg, 1, 4 * 16, 0xffffff);
+    assert(row[20] == 0xffffff);
+    assert(row[50] == 0);
+    clear();
+    stroke.path_row(row, 7, 0, 0, 1, 1, seg, 1, 4 * 16, 0xffffff);
+    assert(row[20] == 0);
+}
+
+test "a round cap reaches half the width past the end" {
+    level();
+    clear();
+    stroke.path_row(row, 4, 0, 0, 1, 1, seg, 1, 4 * 16, 0xffffff);
+    assert(row[40] == 0xffffff);      // every sample within 2 units of the end (40, 4)
+    assert(row[41] != 0 && row[41] != 0xffffff);   // the cap's edge: some samples
+    assert(row[42] == 0);
+}
+
+test "two segments over one pixel count its samples once" {
+    level();
+    for i in 0..4 { seg[4 + i] = seg[i]; }
+    clear();
+    stroke.path_row(row, 3, 0, 0, 1, 1, seg, 2, 4 * 16, 0x808080);
+    assert(row[20] == 0x808080);
+}
+
+test "an area covers a whole pixel at its alpha and part of one by its share" {
+    I64[4] pts = [0, 4 * 16 + 8, 32 * 16, 4 * 16 + 8];   // a level line at 4.5 units
+    clear();
+    stroke.area_row(row, 6, 0, 0, 1, 1, pts, 2, 10 * 16, 0xffffff, 256);
+    assert(row[10] == 0xffffff);
+    clear();
+    stroke.area_row(row, 4, 0, 0, 1, 1, pts, 2, 10 * 16, 0xffffff, 256);
+    assert(row[10] != 0 && row[10] != 0xffffff);
+    clear();
+    stroke.area_row(row, 2, 0, 0, 1, 1, pts, 2, 10 * 16, 0xffffff, 256);
+    assert(row[10] == 0);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,589 @@
+// user/ci/cvim/obj.ci: text objects (docs/specs/2026-11-07-cv-cvim.md section 5, CV-2b): iw aw iW aW, is as, ip ap,
+// i( a( i[ a[ i{ a{ i< a< (ib aB as Vim's aliases), i" a" i' a' i` a`. Each follows its Vim 9.1 function in
+// textobject.c (current_word, current_sent with findsent, current_par, current_block, current_quote) step for step
+// over byte positions, where a line's line feed is Vim's NUL.
+//
+// find() leaves the object in R_OBJ_S (start), R_OBJ_E (end), R_OBJ_INCL (the end is inclusive) and R_OBJ_LINE
+// (linewise). In Visual mode (vis) the selection is R_VSTART to R_CUR; only an empty selection (one character) takes an
+// object: extending a larger selection rings the bell.
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.motion;
+
+// Vim's incl and decl: inc and dec that skip the NUL at the end of a non-empty line. pos * 4 + code, or -1.
+I64 incl(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 v = motion.inc(x, orig, add, p);
+    if (v >= 0 && v % 4 >= 1 && text.off_start(x, orig, add, v / 4)) {
+        v = motion.inc(x, orig, add, v / 4);
+    }
+    return v;
+}
+
+I64 decl(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 v = motion.dec(x, orig, add, p);
+    if (v >= 0 && v % 4 == 1 && text.off_start(x, orig, add, v / 4)) {
+        v = motion.dec(x, orig, add, v / 4);
+    }
+    return v;
+}
+
+I64 at(I64 v, I64 p) {
+    if (v < 0) { return p; }
+    return v / 4;
+}
+
+Bool white(U8 c) {
+    return c == ' ' || c == '\t';
+}
+
+void result(inout I64[_] r, I64 s, I64 e, Bool incl_end, Bool line) {
+    r[state.R_OBJ_S] = s;
+    r[state.R_OBJ_E] = e;
+    r[state.R_OBJ_INCL] = 0;
+    if (incl_end) { r[state.R_OBJ_INCL] = 1; }
+    r[state.R_OBJ_LINE] = 0;
+    if (line) { r[state.R_OBJ_LINE] = 1; }
+}
+
+// back_in_line: to the start of the word or white space under p, not past the line's start.
+I64 back_in_line(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, Bool big) {
+    I64 sclass = motion.cls(x, orig, add, p, big);
+    I64 q = p;
+    while (text.off_start(x, orig, add, q)) {
+        I64 d = text.prevc(x, orig, add, q);
+        if (motion.cls(x, orig, add, d, big) != sclass) { break; }
+        q = d;
+    }
+    return q;
+}
+
+// current_word.
+Bool word(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 cnt, Bool incl_white, Bool big, Bool vis) {
+    I64 cur = r[state.R_CUR];
+    I64 start = cur;
+    Bool inclusive = true;
+    Bool include_white = false;
+    I64 left = cnt;
+    if (vis && r[state.R_VSTART] != cur) {
+        if (cur < r[state.R_VSTART]) { return false; }
+        start = r[state.R_VSTART];
+    } else {
+        cur = back_in_line(x, orig, add, cur, big);
+        start = cur;
+        if ((motion.cls(x, orig, add, cur, big) == 0) == incl_white) {
+            r[state.R_MFAIL] = 0;
+            I64 q = motion.end_word(r, x, orig, add, cur, 1, big, true, true);
+            if (r[state.R_MFAIL] != 0) { return false; }
+            cur = q;
+        } else {
+            r[state.R_MFAIL] = 0;
+            cur = motion.fwd_word(r, x, orig, add, cur, 1, big, true);
+            r[state.R_MFAIL] = 0;
+            if (!text.off_start(x, orig, add, cur)) { cur = at(decl(x, orig, add, cur), cur); }
+            else { cur = text.prevc(x, orig, add, cur); }
+            if (incl_white) { include_white = true; }
+        }
+        left -= 1;
+    }
+    while (left > 0) {
+        inclusive = true;
+        I64 v = incl(x, orig, add, cur);
+        if (v < 0) { return false; }
+        cur = v / 4;
+        if (incl_white != (motion.cls(x, orig, add, cur, big) == 0)) {
+            r[state.R_MFAIL] = 0;
+            cur = motion.fwd_word(r, x, orig, add, cur, 1, big, true);
+            if (r[state.R_MFAIL] != 0 && left > 1) { return false; }
+            r[state.R_MFAIL] = 0;
+            if (text.off_start(x, orig, add, cur)) { cur = text.prevc(x, orig, add, cur); }
+            else { inclusive = false; }
+        } else {
+            r[state.R_MFAIL] = 0;
+            cur = motion.end_word(r, x, orig, add, cur, 1, big, true, true);
+            if (r[state.R_MFAIL] != 0) { return false; }
+        }
+        left -= 1;
+    }
+    if (include_white && (motion.cls(x, orig, add, cur, big) != 0 || (!text.off_start(x, orig, add, cur) && !inclusive))) {
+        if (text.off_start(x, orig, add, start)) {
+            I64 q = back_in_line(x, orig, add, text.prevc(x, orig, add, start), big);
+            if (motion.cls(x, orig, add, q, big) == 0 && text.off_start(x, orig, add, q)) { start = q; }
+        }
+    }
+    result(r, start, cur, inclusive, false);
+    return true;
+}
+
+// Vim's startPS for a paragraph: an empty line (nroff macros and form feeds are not cvim's).
+Bool para_start(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    return text.lstart(x, orig, add, l) == text.lend(x, orig, add, l);
+}
+
+// findsent: the start of the next (fwd) or this sentence from p.
+I64 findsent(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p0, Bool fwd) {
+    I64 pos = p0;
+    Bool noskip = false;
+    Bool skip_to_found = false;
+    if (text.ch(x, orig, add, pos) == '\n') {
+        while (true) {
+            I64 v = decl(x, orig, add, pos);
+            if (fwd) { v = incl(x, orig, add, pos); }
+            if (v < 0) { break; }
+            pos = v / 4;
+            if (text.ch(x, orig, add, pos) != '\n') { break; }
+        }
+        if (fwd) { skip_to_found = true; }
+    } else if (fwd && !text.off_start(x, orig, add, pos) && para_start(x, orig, add, text.lineof(x, orig, add, pos))) {
+        I64 l = text.lineof(x, orig, add, pos);
+        if (l == text.nlines(x) - 1) { return -1; }
+        pos = text.lstart(x, orig, add, l + 1);
+        skip_to_found = true;
+    } else if (!fwd) {
+        pos = at(decl(x, orig, add, pos), pos);
+    }
+    if (!skip_to_found) {
+        Bool found_dot = false;
+        while (true) {
+            U8 c = text.ch(x, orig, add, pos);
+            if (!(white(c) || c == '.' || c == '!' || c == '?' || c == ')' || c == ']' || c == '"' || c == '\'')) { break; }
+            I64 tv = decl(x, orig, add, pos);
+            if (tv < 0) { break; }
+            I64 tpos = tv / 4;
+            I64 tl = text.lineof(x, orig, add, tpos);
+            if (fwd && text.lstart(x, orig, add, tl) == text.lend(x, orig, add, tl)) { break; }
+            if (found_dot) { break; }
+            if (c == '.' || c == '!' || c == '?') { found_dot = true; }
+            U8 tc = text.ch(x, orig, add, tpos);
+            if ((c == ')' || c == ']' || c == '"' || c == '\'')
+                && !(tc == '.' || tc == '!' || tc == '?' || tc == ')' || tc == ']' || tc == '"' || tc == '\'')) { break; }
+            pos = at(decl(x, orig, add, pos), pos);
+        }
+        I64 startl = text.lineof(x, orig, add, pos);
+        while (true) {
+            U8 c = text.ch(x, orig, add, pos);
+            if (c == '\n' || (!text.off_start(x, orig, add, pos) && para_start(x, orig, add, text.lineof(x, orig, add, pos)))) {
+                I64 l = text.lineof(x, orig, add, pos);
+                if (!fwd && l != startl) { pos = text.lstart(x, orig, add, l + 1); }
+                break;
+            }
+            if (c == '.' || c == '!' || c == '?') {
+                I64 tpos = pos;
+                Bool end = false;
+                U8 tc = '\n';
+                while (true) {
+                    I64 v = motion.inc(x, orig, add, tpos);
+                    if (v < 0) { end = true; break; }
+                    tpos = v / 4;
+                    tc = text.ch(x, orig, add, tpos);
+                    if (!(tc == ')' || tc == ']' || tc == '"' || tc == '\'')) { break; }
+                }
+                if (end || tc == ' ' || tc == '\t' || tc == '\n') {
+                    pos = tpos;
+                    if (text.ch(x, orig, add, pos) == '\n') {
+                        I64 v = motion.inc(x, orig, add, pos);
+                        if (v >= 0) { pos = v / 4; }
+                    }
+                    break;
+                }
+            }
+            I64 v = decl(x, orig, add, pos);
+            if (fwd) { v = incl(x, orig, add, pos); }
+            if (v < 0) { noskip = true; break; }
+            pos = v / 4;
+        }
+    }
+    while (!noskip && white(text.ch(x, orig, add, pos))) {
+        I64 v = incl(x, orig, add, pos);
+        if (v < 0) { break; }
+        pos = v / 4;
+    }
+    return pos;
+}
+
+// find_first_blank: back over the blanks before p, to just after the word before them.
+I64 first_blank(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 q = p;
+    while (true) {
+        I64 v = decl(x, orig, add, q);
+        if (v < 0) { break; }
+        q = v / 4;
+        if (!white(text.ch(x, orig, add, q))) {
+            q = at(incl(x, orig, add, q), q);
+            break;
+        }
+    }
+    return q;
+}
+
+I64 sent_forward(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 cnt, Bool at_start0) {
+    I64 cur = p;
+    Bool at_start = at_start0;
+    I64 left = cnt;
+    while (left > 0) {
+        left -= 1;
+        I64 q = findsent(x, orig, add, cur, true);
+        if (q >= 0) { cur = q; }
+        if (at_start) { cur = first_blank(x, orig, add, cur); }
+        if (left == 0 || at_start) { cur = at(decl(x, orig, add, cur), cur); }
+        at_start = !at_start;
+    }
+    return cur;
+}
+
+// current_sent, without extending a selection.
+Bool sentence(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 cnt, Bool include, Bool vis) {
+    if (vis && r[state.R_VSTART] != r[state.R_CUR]) { return false; }
+    I64 start = r[state.R_CUR];
+    I64 pos = start;
+    I64 cur = findsent(x, orig, add, start, true);
+    if (cur < 0) { cur = start; }
+    while (white(text.ch(x, orig, add, pos))) {
+        I64 v = incl(x, orig, add, pos);
+        if (v < 0) { break; }
+        pos = v / 4;
+    }
+    Bool start_blank = false;
+    if (pos == cur) {
+        start_blank = true;
+        start = first_blank(x, orig, add, start);
+    } else {
+        cur = findsent(x, orig, add, cur, false);
+        start = cur;
+    }
+    I64 n = cnt;
+    if (include) { n = cnt * 2; }
+    else if (start_blank) { n -= 1; }
+    if (n > 0) { cur = sent_forward(x, orig, add, cur, n, true); }
+    else { cur = at(decl(x, orig, add, cur), cur); }
+    if (include) {
+        if (start_blank) {
+            cur = first_blank(x, orig, add, cur);
+            if (white(text.ch(x, orig, add, cur))) { cur = at(decl(x, orig, add, cur), cur); }
+        } else if (!white(text.ch(x, orig, add, cur))) {
+            start = first_blank(x, orig, add, start);
+        }
+    }
+    if (vis) {
+        if (start == cur) { return false; }
+        result(r, start, cur, true, false);
+        return true;
+    }
+    I64 v = incl(x, orig, add, cur);
+    if (v < 0) { result(r, start, cur, true, false); }
+    else { result(r, start, v / 4, false, false); }
+    return true;
+}
+
+Bool linewhite(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    return text.first_nonblank(x, orig, add, l, false) == text.lend(x, orig, add, l);
+}
+
+// current_par's extend: a selection of more lines grows by cnt paragraphs (and their white lines with a) away from its
+// start. The cursor's line goes to R_OBJ_E; the selection keeps its start.
+Bool extend_par(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 cnt, Bool include, I64 sl0, I64 vl) {
+    I64 nl = text.nlines(x);
+    I64 sl = sl0;
+    I64 dir = 1;
+    if (sl < vl) { dir = -1; }
+    Bool ok = true;
+    for i in 0..cnt {
+        if ((dir < 0 && sl == 0) || (dir > 0 && sl == nl - 1)) { ok = false; break; }
+        I64 prev = -1;
+        for t in 0..2 {
+            sl += dir;
+            I64 w = 0;
+            if (linewhite(x, orig, add, sl)) { w = 1; }
+            if (prev == w) { sl -= dir; break; }
+            while (true) {
+                if ((dir < 0 && sl == 0) || (dir > 0 && sl == nl - 1)) { break; }
+                I64 nw = 0;
+                if (linewhite(x, orig, add, sl + dir)) { nw = 1; }
+                I64 ps = sl;
+                if (dir > 0) { ps = sl + 1; }
+                if (w != nw || (w == 0 && para_start(x, orig, add, ps))) { break; }
+                sl += dir;
+            }
+            if (!include) { break; }
+            if ((dir < 0 && sl == 0) || (dir > 0 && sl == nl - 1)) { break; }
+            prev = w;
+        }
+    }
+    if (!ok) { return false; }
+    result(r, r[state.R_VSTART], text.lstart(x, orig, add, sl), false, true);
+    return true;
+}
+
+// current_par, without extending a selection of more than one line.
+Bool paragraph(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 cnt, Bool include, Bool vis) {
+    I64 nl = text.nlines(x);
+    I64 sl = text.lineof(x, orig, add, r[state.R_CUR]);
+    I64 vl = text.lineof(x, orig, add, r[state.R_VSTART]);
+    // A linewise selection, or one of more lines, grows (Vim extends from the cursor's line in both cases).
+    if (vis && (vl != sl || r[state.R_VMODE] == 'V')) { return extend_par(r, x, orig, add, cnt, include, sl, vl); }
+    Bool wif = linewhite(x, orig, add, sl);
+    while (sl > 0) {
+        if (wif) {
+            if (!linewhite(x, orig, add, sl - 1)) { break; }
+        } else if (linewhite(x, orig, add, sl - 1) || para_start(x, orig, add, sl)) { break; }
+        sl -= 1;
+    }
+    I64 el = sl;
+    while (el < nl && linewhite(x, orig, add, el)) { el += 1; }
+    el -= 1;
+    I64 i = cnt;
+    if (!include && wif) { i -= 1; }
+    while (i > 0) {
+        i -= 1;
+        if (el == nl - 1) { return false; }
+        Bool do_white = false;
+        if (!include) { do_white = linewhite(x, orig, add, el + 1); }
+        if (include || !do_white) {
+            el += 1;
+            while (el < nl - 1 && !linewhite(x, orig, add, el + 1) && !para_start(x, orig, add, el + 1)) { el += 1; }
+        }
+        if (i == 0 && wif && include) { break; }
+        if (include || do_white) {
+            while (el < nl - 1 && linewhite(x, orig, add, el + 1)) { el += 1; }
+        }
+    }
+    if (!wif && !linewhite(x, orig, add, el) && include) {
+        while (sl > 0 && linewhite(x, orig, add, sl - 1)) { sl -= 1; }
+    }
+    result(r, text.lstart(x, orig, add, sl), text.lstart(x, orig, add, el), false, true);
+    return true;
+}
+
+// An unclosed open before p (findmatch(NULL, open)) with the parity of backslashes Vim's "%" in 'cpo' keeps; -1.
+I64 open_back(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, U8 open) {
+    I64 close = motion.pair_of(open);
+    if (open == '<') { close = '>'; }
+    I64 depth = 0;
+    I64 q = p;
+    while (q > 0) {
+        q -= 1;
+        U8 d = text.ch(x, orig, add, q);
+        if (d as I64 != close && d != open) { continue; }
+        if (motion.escaped(x, orig, add, q)) { continue; }
+        if (d as I64 == close) { depth += 1; }
+        else if (depth == 0) { return q; }
+        else { depth -= 1; }
+    }
+    return -1;
+}
+
+I64 close_fwd(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, U8 open) {
+    I64 close = motion.pair_of(open);
+    if (open == '<') { close = '>'; }
+    I64 depth = 0;
+    I64 q = p;
+    I64 t = buf.total(x);
+    while (q + 1 < t) {
+        q += 1;
+        U8 d = text.ch(x, orig, add, q);
+        if (d as I64 != close && d != open) { continue; }
+        if (motion.escaped(x, orig, add, q)) { continue; }
+        if (d == open) { depth += 1; }
+        else if (depth == 0) { return q; }
+        else { depth -= 1; }
+    }
+    return -1;
+}
+
+// No unclosed open before the cursor: the next open after it (findmatchlimit with FM_FORWARD), a close before it
+// counting as nesting.
+I64 open_fwd(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, U8 open) {
+    I64 close = motion.pair_of(open);
+    if (open == '<') { close = '>'; }
+    I64 depth = 0;
+    I64 q = p;
+    I64 t = buf.total(x);
+    while (q + 1 < t) {
+        q += 1;
+        U8 d = text.ch(x, orig, add, q);
+        if (d as I64 != close && d != open) { continue; }
+        if (motion.escaped(x, orig, add, q)) { continue; }
+        if (d as I64 == close) { depth += 1; }
+        else if (depth == 0) { return q; }
+        else { depth -= 1; }
+    }
+    return -1;
+}
+
+// Vim's inindent(1): only blanks before p, and p a blank too.
+Bool in_indent1(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    return text.in_indent(x, orig, add, p) && white(text.ch(x, orig, add, p));
+}
+
+// current_block; in Visual mode a selection already there grows to the block around it.
+Bool block(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 cnt, Bool include, U8 open, Bool vis) {
+    I64 cur = r[state.R_CUR];
+    I64 old_start = cur;
+    I64 old_end = cur;
+    if (!vis || r[state.R_VSTART] == cur) {
+        if (open == '{') {
+            while (in_indent1(x, orig, add, cur)) {
+                I64 v = motion.inc(x, orig, add, cur);
+                if (v < 0) { break; }
+                cur = v / 4;
+                if (v % 4 != 0) { break; }
+            }
+        }
+        if (text.ch(x, orig, add, cur) == open) { cur += 1; }
+    } else if (r[state.R_VSTART] < cur) {
+        old_start = r[state.R_VSTART];
+        cur = r[state.R_VSTART];
+    } else {
+        old_end = r[state.R_VSTART];
+    }
+    I64 start = -1;
+    Bool back = open_back(x, orig, add, cur, open) >= 0;
+    for i in 0..cnt {
+        I64 q = -1;
+        if (back) { q = open_back(x, orig, add, cur, open); }
+        else { q = open_fwd(x, orig, add, cur, open); }
+        if (q < 0) { break; }
+        cur = q;
+        start = q;
+    }
+    if (start < 0) { return false; }
+    I64 e = close_fwd(x, orig, add, start, open);
+    if (e < 0) { return false; }
+    cur = e;
+    Bool sol = false;
+    while (!include) {
+        start = at(incl(x, orig, add, start), start);
+        sol = !text.off_start(x, orig, add, cur);
+        cur = at(decl(x, orig, add, cur), cur);
+        while (in_indent1(x, orig, add, cur)) {
+            sol = true;
+            I64 v = decl(x, orig, add, cur);
+            if (v < 0) { break; }
+            cur = v / 4;
+            if (v % 4 != 0) { break; }
+        }
+        if (vis && !(start < old_start) && !(old_end < cur) && start != cur) {
+            // Not bigger than the selection: the block around it, then exclude again.
+            I64 q = open_back(x, orig, add, at(decl(x, orig, add, old_start), old_start), open);
+            if (q < 0) { return false; }
+            start = q;
+            e = close_fwd(x, orig, add, start, open);
+            if (e < 0) { return false; }
+            cur = e;
+        } else { break; }
+    }
+    if (vis) {
+        if (sol && text.ch(x, orig, add, cur) != '\n') { cur = at(motion.inc(x, orig, add, cur), cur); }
+        result(r, start, cur, true, false);
+        return true;
+    }
+    if (sol) {
+        result(r, start, at(incl(x, orig, add, cur), cur), false, false);
+    } else if (start <= cur) {
+        result(r, start, cur, true, false);
+    } else {
+        result(r, start, start, false, false);
+    }
+    return true;
+}
+
+// find_next_quote over line bytes from p, the backslash escaping when esc; -1 at the line's end.
+I64 next_quote(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, U8 q, Bool esc) {
+    I64 c = p;
+    while (true) {
+        U8 b = text.ch(x, orig, add, c);
+        if (b == '\n') { return -1; }
+        if (esc && b == '\\') {
+            c += 1;
+            if (text.ch(x, orig, add, c) == '\n') { return -1; }
+        } else if (b == q) {
+            return c;
+        }
+        c = text.nextc(x, orig, add, c);
+    }
+    return -1;
+}
+
+I64 prev_quote(in I64[_] x, in U8[_] orig, in U8[_] add, I64 ls, I64 p, U8 q) {
+    I64 c = p;
+    while (c > ls) {
+        c = text.prevc(x, orig, add, c);
+        I64 n = 0;
+        while (c - n > ls && text.ch(x, orig, add, c - n - 1) == '\\') { n += 1; }
+        if (n % 2 == 1) { c -= n; }
+        else if (text.ch(x, orig, add, c) == q) { break; }
+    }
+    return c;
+}
+
+// current_quote, without extending a selection.
+Bool quote(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 cnt, Bool include, U8 q, Bool vis) {
+    if (vis && r[state.R_VSTART] != r[state.R_CUR]) { return false; }
+    I64 p = r[state.R_CUR];
+    I64 ls = text.lstart(x, orig, add, text.lineof(x, orig, add, p));
+    I64 cs = p;
+    I64 ce = -1;
+    if (text.ch(x, orig, add, p) == q) {
+        cs = ls;
+        while (true) {
+            cs = next_quote(x, orig, add, cs, q, false);
+            if (cs < 0 || cs > p) { return false; }
+            ce = next_quote(x, orig, add, cs + 1, q, true);
+            if (ce < 0) { return false; }
+            if (cs <= p && p <= ce) { break; }
+            cs = ce + 1;
+        }
+    } else {
+        cs = prev_quote(x, orig, add, ls, p, q);
+        if (text.ch(x, orig, add, cs) != q) {
+            cs = next_quote(x, orig, add, cs, q, false);
+            if (cs < 0) { return false; }
+        }
+        ce = next_quote(x, orig, add, cs + 1, q, true);
+        if (ce < 0) { return false; }
+    }
+    if (include) {
+        if (white(text.ch(x, orig, add, ce + 1))) {
+            while (white(text.ch(x, orig, add, ce + 1))) { ce += 1; }
+        } else {
+            while (cs > ls && white(text.ch(x, orig, add, cs - 1))) { cs -= 1; }
+        }
+    }
+    if (!include && cnt < 2) { cs += 1; }
+    I64 e = ce;
+    Bool inclusive = false;
+    if (include || cnt > 1) {
+        I64 v = motion.inc(x, orig, add, ce);
+        if (v >= 0) {
+            e = v / 4;
+            if (v % 4 == 2) { inclusive = true; }
+        }
+    }
+    if (vis) {
+        e = ce;
+        if (!(include || cnt > 1)) { e = at(motion.dec(x, orig, add, ce), ce); }
+        result(r, cs, e, true, false);
+        return true;
+    }
+    result(r, cs, e, inclusive, false);
+    return true;
+}
+
+// The object of key k after i (include false) or a (true); false when there is none (the operator is dropped).
+export Bool find(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 k, Bool include, I64 cnt, Bool vis) {
+    if (k == 'w' || k == 'W') { return word(r, x, orig, add, cnt, include, k == 'W', vis); }
+    if (k == 's') { return sentence(r, x, orig, add, cnt, include, vis); }
+    if (k == 'p') { return paragraph(r, x, orig, add, cnt, include, vis); }
+    if (k == '(' || k == ')' || k == 'b') { return block(r, x, orig, add, cnt, include, '(', vis); }
+    if (k == '[' || k == ']') { return block(r, x, orig, add, cnt, include, '[', vis); }
+    if (k == '{' || k == '}' || k == 'B') { return block(r, x, orig, add, cnt, include, '{', vis); }
+    if (k == '<' || k == '>') { return block(r, x, orig, add, cnt, include, '<', vis); }
+    if (k == '"' || k == '\'' || k == '`') { return quote(r, x, orig, add, cnt, include, k as U8, vis); }
+    return false;
+}
+
+export Bool is_object(I64 k) {
+    return k == 'w' || k == 'W' || k == 's' || k == 'p' || k == '(' || k == ')' || k == 'b' || k == '[' || k == ']'
+        || k == '{' || k == '}' || k == 'B' || k == '<' || k == '>' || k == '"' || k == '\'' || k == '`';
+}
+// SPDX-License-Identifier: Apache-2.0

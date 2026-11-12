@@ -1,0 +1,75 @@
+// tests/ac/acctform_proof.ci: frame 49's proof, the Add Account and Change Password forms drawn by the kit
+// (kit/acctform.ci) on the mantle at 2x. Arguments: theme (0 dark, 1 light), then the state: a, Add Account at
+// open; b, Add Account with a taken name left and a password typed; c, Change Password ready. Prints `frame W H` and
+// each row as runs `r rgb count`. Run: cint run --root . tests/ac/acctform_proof.ci -- 0a
+import user.ci.acct;
+import user.ci.acctask;
+import user.ci.kit.acctform;
+import user.ci.kit.tokens;
+
+U32[1000] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+void keys(in U8[_] s) {
+    for k in 0..len(s) { assert(acctform.key(30, s[k] as I64, false) == acctform.STAY); }
+}
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    U8 st = 'a';
+    if (len(a) > 1) { st = a[1]; }
+    tokens.set_theme(th);
+    acct.clear();
+    I64 p = acct.add("ci", 2, acct.PARENT, 1000, 1000, 65536, 3, "000102030405060708090a0b0c0d0e0f",
+                     "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386", 7,
+                     "000102030405060708090a0b0c0d0e0f");
+    I64 c = acct.add("sam", 3, acct.CHILD, 1001, 1001, 65536, 3, "f0e0d0c0b0a090807060504030201000",
+                     "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 5,
+                     "f0e0d0c0b0a090807060504030201000");
+    assert(p == 0 && c == 1);
+    if (st == 'c') {
+        assert(acctask.begin(18, 1, 0, 1) == acctask.FORM);
+        acctform.open();
+        keys("wxyz");
+        assert(acctform.key(15, -1, false) == acctform.STAY);
+        keys("wxyz");
+    } else {
+        assert(acctask.begin(16, -1, 0, 0) == acctask.FORM);
+        acctform.open();
+        if (st == 'b') {
+            keys("Sam");
+            assert(acctform.key(15, -1, false) == acctform.STAY);
+            assert(acctform.key(105, -1, false) == acctform.STAY);
+            assert(acctform.key(15, -1, false) == acctform.STAY);
+            keys("abcdefgh");
+        }
+    }
+    I64 z = 2;
+    I64 m = 40;
+    I64 pw = acctform.W * z;
+    I64 ph = acctform.height() * z;
+    I64 fw = pw + 2 * m;
+    I64 fh = ph + 2 * m;
+    "frame {fw} {fh}\n";
+    for y in 0..fh {
+        for x in 0..fw { row[x] = tokens.word(tokens.MANTLE); }
+        acctform.row_at(row, y, m, m, z);
+        emit(fw);
+    }
+    acctform.close();
+    acctask.cancel();
+}
+// SPDX-License-Identifier: Apache-2.0

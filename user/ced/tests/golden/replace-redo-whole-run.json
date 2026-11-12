@@ -1,0 +1,26 @@
+{
+  "id": "replace-redo-whole-run",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a a a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "620d",
+    "61",
+    "1a",
+    "19"
+  ],
+  "expect": {
+    "text": "b b b"
+  }
+}

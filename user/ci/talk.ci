@@ -1,0 +1,187 @@
+// user/ci/talk.ci: a line client for the host bridge (docs/specs/2026-11-06-a-agent.md, A-0). `talk A.B.C.D PORT`
+// connects to A.B.C.D:PORT, then, until its input ends: prints "> ", reads one line, sends it with its newline,
+// and prints the reply up to a line holding only "." (a reply line that starts with "." comes doubled, and the
+// first is dropped). Half duplex, so it needs no poll. The output names neither address, so the same program
+// against the same bridge on Linux prints the same (DU-1). Status 0 at the end of input, 1 when the connection
+// fails or the bridge closes first, 2 for a usage error.
+import user.ci.tcp;
+import user.ci.dev;
+
+U8[64] word;
+U8[4096] inbuf;     // what was read from descriptor 0 and not yet sent
+U8[4096] netbuf;    // what was read from the bridge and not yet printed
+U8[4096] chunk;
+I64 in_n = 0;
+I64 net_n = 0;
+
+void usage() {
+    "talk: usage: talk A.B.C.D PORT\n";
+    dev.exit_now(2);
+}
+
+// Argument k (from 0) into `word`: its length, or -1 past the last.
+I64 arg(in U8[_] args, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(args)) { return -1; }
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return -1; }
+    I64 n = 0;
+    while (args[at + n] != 0) {
+        if (n == len(word)) { usage(); }
+        word[n] = args[at + n];
+        n = n + 1;
+    }
+    return n;
+}
+
+// The decimal in word[from..to], at most `most`; -1 if not one.
+I64 decimal(I64 from, I64 to, I64 most) {
+    if (to <= from || to - from > 5) { return -1; }
+    I64 v = 0;
+    for i in from..to {
+        if (word[i] < '0' || word[i] > '9') { return -1; }
+        v = 10 * v + (word[i] - '0') as I64;
+    }
+    if (v > most) { return -1; }
+    return v;
+}
+
+// word[0..n] as a dotted quad: the address as a word, or -1.
+I64 quad(I64 n) {
+    I64 v = 0;
+    I64 from = 0;
+    I64 parts = 0;
+    for i in 0..n + 1 {
+        if (i == n || word[i] == '.') {
+            I64 b = decimal(from, i, 255);
+            if (b < 0) { return -1; }
+            v = 256 * v + b;
+            parts = parts + 1;
+            from = i + 1;
+        }
+    }
+    if (parts != 4) { return -1; }
+    return v;
+}
+
+// The index of the first newline in buf[0..n], or -1.
+I64 newline(in U8[_] buf, I64 n) {
+    for i in 0..n {
+        if (buf[i] == 10) { return i; }
+    }
+    return -1;
+}
+
+// Drops the first k bytes of inbuf, and of netbuf, moving the rest to the front.
+void shift_in(I64 k) {
+    for i in k..in_n {
+        inbuf[i - k] = inbuf[i];
+    }
+    in_n = in_n - k;
+}
+
+void shift_net(I64 k) {
+    for i in k..net_n {
+        netbuf[i - k] = netbuf[i];
+    }
+    net_n = net_n - k;
+}
+
+void put(in U8[_] bytes) {
+    I64 w = tcp.fd_write(1, bytes);
+    if (w < 0) { dev.exit_now(1); }
+}
+
+// Reads descriptor 0 until inbuf holds a whole line: the index of its newline, or -1 at the end of input (a last
+// line without a newline is completed with one).
+I64 read_line() {
+    I64 at = newline(inbuf, in_n);
+    while (at < 0) {
+        if (in_n == len(inbuf)) {
+            "talk: a line of 4096 bytes or more\n";
+            dev.exit_now(1);
+        }
+        I64 r = tcp.fd_read(0, chunk[0..len(inbuf) - in_n]);
+        if (r <= 0) {
+            if (in_n == 0) { return -1; }
+            inbuf[in_n] = 10;
+            in_n = in_n + 1;
+        } else {
+            for i in 0..r {
+                inbuf[in_n + i] = chunk[i];
+            }
+            in_n = in_n + r;
+        }
+        at = newline(inbuf, in_n);
+    }
+    return at;
+}
+
+// Prints the bridge's reply up to its "." line.
+void reply(I64 c) {
+    while (true) {
+        I64 at = newline(netbuf, net_n);
+        while (at < 0) {
+            if (net_n == len(netbuf)) {
+                "talk: a reply line of 4096 bytes or more\n";
+                dev.exit_now(1);
+            }
+            I64 r = tcp.fd_read(c, chunk[0..len(netbuf) - net_n]);
+            if (r <= 0) {
+                "talk: the bridge closed the connection\n";
+                dev.exit_now(1);
+            }
+            for i in 0..r {
+                netbuf[net_n + i] = chunk[i];
+            }
+            net_n = net_n + r;
+            at = newline(netbuf, net_n);
+        }
+        if (at == 1 && netbuf[0] == '.') {
+            shift_net(2);
+            return;
+        }
+        I64 from = 0;
+        if (at > 0 && netbuf[0] == '.') { from = 1; }
+        put(netbuf[from..at + 1]);
+        shift_net(at + 1);
+    }
+}
+
+void main(in U8[_] args) {
+    I64 ip = quad(arg(args, 0));
+    I64 n = arg(args, 1);
+    if (ip < 0 || n < 0 || arg(args, 2) >= 0) { usage(); }
+    n = arg(args, 1);
+    I64 port = decimal(0, n, 65535);
+    if (port < 1) { usage(); }
+    I64 c = tcp.tcp_connect(ip as U64, port);
+    if (c < 0) {
+        "talk: connect: error {0 - c}\n";
+        dev.exit_now(1);
+    }
+    "talk: connected\n";
+    I64 lines = 0;
+    while (true) {
+        "> ";
+        I64 at = read_line();
+        if (at < 0) {
+            "\ntalk: {lines} lines sent, the input ended\n";
+            I64 k = tcp.fd_close(c);
+            return;
+        }
+        I64 w = tcp.fd_write(c, inbuf[0..at + 1]);
+        if (w != at + 1) {
+            "talk: write: error {0 - w}\n";
+            dev.exit_now(1);
+        }
+        shift_in(at + 1);
+        lines = lines + 1;
+        reply(c);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,27 @@
+{
+  "id": "esc-alone-after-timeout",
+  "rules": [
+    "KEY-2"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    2
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "58"
+  ],
+  "expect": {
+    "text": "abXc",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

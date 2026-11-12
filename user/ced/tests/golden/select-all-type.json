@@ -1,0 +1,27 @@
+{
+  "id": "select-all-type",
+  "rules": [
+    "KEY-5",
+    "KEY-4"
+  ],
+  "text": "old text",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "01",
+    "6e"
+  ],
+  "expect": {
+    "text": "n",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

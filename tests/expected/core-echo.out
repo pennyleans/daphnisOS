@@ -1,0 +1,33 @@
+$ 
+
+status 0
+$ a
+a
+status 0
+$ a b  c
+a b c
+status 0
+$ 'a  b' c
+a  b c
+status 0
+$ -n x
+-n x
+status 0
+$ -e 'a\tb'
+-e a\tb
+status 0
+$ 'a\nb' '\c'
+a\nb \c
+status 0
+$ -- x
+-- x
+status 0
+$ -
+-
+status 0
+$ '' ''
+ 
+status 0
+$ é ∑
+é ∑
+status 0

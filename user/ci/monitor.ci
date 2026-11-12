@@ -1,0 +1,314 @@
+// user/ci/monitor.ci: monitor, the Monitor window (stage RS, RS-MON; frames 42 and 45 approved by DN-58, design note
+// 59, DN-63). It asks a surface of frame 42's body (user/ci/kit/monpad.ci, 758 x 587 at 1x), lays the body out in
+// what the desk gives, takes a surface of each box the desk tells after (RS-SURF, user/ci/kit/surfask.ci; a box under
+// 480 x 360 clips at the right and bottom), and once a second reads the machine and tells monpad, which makes every
+// share and rate:
+//   facts kind 1, the processor: its name, base speed, and busy and idle ticks at 64 and 72 once kind 1 is 80 bytes
+//     (KF-R1); a shorter record leaves Processor without a share and says so once on stderr;
+//   facts kind 2, the processes: slots 0 to 63, a slot that is empty or ended skipped; every row the call gives is
+//     drawn, since the kernel shows a Child its own processes and a Parent all of them (DN-69 item 5), and the
+//     totals stay the machine's; the CPU time at P_RUN once the record holds it (KF-R1, the offset Arch's spec names);
+//   sysinfo (KF-2): total and free memory, the process count; the time since boot is wall.wall_ns;
+//   facts kind 3, the network (KF-3c, PR 349's record): link, the address at 16, bytes received and sent at 48 and 56;
+//     -ENOENT (no network device) or a kernel without kind 3 draws Network at 40 percent;
+//   facts kind 4, the display; facts kind 5, the disk's name and bytes read and written (-ENOENT: no disk, Disk
+//     drawn at 40 percent), with statfs of /home for the volume's size and free space, as Settings > Storage reads it.
+// Keys: Up and Down move the pick, Tab and Shift+Tab the part, Delete ends the chosen process (SIGTERM, as End
+// Process), Esc closes the narrow form's sidebar, else Esc or q ends Monitor. A click chooses a part, folds the list,
+// picks a row or presses End Process. Ctrl chords are left to the desk; Alt is not held, as in calc.ci (Alt+Tab's
+// release goes to the window the switcher chose). The desk tells a window nothing when the focus moves, and a key
+// let go in another window never reaches this one, so Shift and Ctrl are forgotten at each sign the focus may have
+// moved (forget).
+import user.ci.dev;
+import user.ci.corectl;
+import user.ci.tilectl;
+import user.ci.tilewin;
+import user.ci.tilesurf;
+import user.ci.tilepoint;
+import user.ci.keymap;
+import user.ci.wall;
+import user.ci.factsctl;
+import user.ci.sysinfoctl;
+import user.ci.kit.appmenu;
+import user.ci.kit.tokens;
+import user.ci.kit.monpad;
+import user.ci.kit.surfask;
+
+const I64 EV_KEY = 1;
+const I64 EV_ABS = 3;
+const I64 EV_WIN_RESIZE = 5;          // the desk's content box, code w and value h at 1x (RS-SURF)
+const I64 KEY_ESC = 1;
+const I64 KEY_TAB = 15;
+const I64 KEY_Q = 16;
+const I64 KEY_UP = 103;
+const I64 KEY_DOWN = 108;
+const I64 KEY_DELETE = 111;
+const I64 KEY_LEFTALT = 56;
+const I64 KEY_RIGHTALT = 100;
+const I64 BTN_LEFT = 272;
+const I64 SIGTERM = 15;
+const I64 SECOND = 1000000000;
+const I64 FRAME = 4096;               // a frame of kind 2's count
+const I64 ENOENT = 2;
+const I64 I64_MAX = 9223372036854775807;
+const I64 CAP_W = 3840;               // the widest surface the rows hold
+const I64 CAP_H = 2160;
+
+const I64 K_CPU = 1;                  // facts kinds
+const I64 K_NETWORK = 3;
+const I64 K_DISPLAY = 4;
+const I64 K_DISK = 5;
+const I64 CPU_TIMES = 80;             // kind 1 with busy (64) and idle (72), PIT ticks (KF-R1)
+const I64 P_RUN = 88;                 // kind 2's CPU time, appended at the record's end (KF-R1), in PIT ticks
+
+U8[24] ev;
+U32[3840] row;                        // one row of the widest surface at 1x
+U8[15360] obuf;
+U8[128] rec;
+U8[16] addr;
+I64[5] si;
+I64[8] sf;
+I64 sw = 0;
+I64 sh = 0;
+I64 px_x = 0;
+I64 px_y = 0;
+Bool shift = false;
+Bool ctrl = false;
+Bool inside = false;                  // the pointer last told over the surface
+Bool said_cpu = false;
+Bool said_run = false;
+Bool said_mem = false;
+
+// The u64 at byte at of rec as a count; -1 past I64.
+I64 word(I64 at) {
+    if (rec[at + 7] >= 128) { return -1; }
+    I64 v = 0;
+    for i in 0..8 { v = v | ((rec[at + i] as I64) << (8 * i)); }
+    return v;
+}
+
+void read_cpu() {
+    I64 r = factsctl.co_facts(K_CPU, 0, rec);
+    if (r < 64) {
+        if (!said_cpu) { "monitor: facts kind 1: {r}: Processor has no name, speed or share\n"; }
+        said_cpu = true;
+        return;
+    }
+    I64 busy = -1;
+    I64 idle = -1;
+    if (r >= CPU_TIMES) {
+        busy = word(64);
+        idle = word(72);
+    } else if (!said_cpu) {
+        "monitor: facts kind 1 is {r} bytes, no busy and idle time: Processor has no share\n";
+        said_cpu = true;
+    }
+    monpad.cpu(rec[0..48], word(56), busy, idle);
+}
+
+void read_memory(I64 now) {
+    I64 n = -1;
+    I64 r = sysinfoctl.co_sysinfo(si);
+    if (r == 0) {
+        I64 u = si[sysinfoctl.SI_MEM_UNIT];
+        monpad.memory(si[sysinfoctl.SI_TOTALRAM] * u, si[sysinfoctl.SI_FREERAM] * u);
+        n = si[sysinfoctl.SI_PROCS];
+    } else if (!said_mem) {
+        "monitor: sysinfo: {r}: Memory has no figure\n";
+        said_mem = true;
+    }
+    monpad.counts(n, now / SECOND);
+}
+
+void read_procs() {
+    monpad.procs_begin();
+    for id in 0..monpad.PROCS {
+        I64 r = factsctl.co_facts(factsctl.PROCESS, id, rec);
+        if (r < factsctl.P_BYTES) { return; }
+        I64 st = word(factsctl.P_STATE);
+        if (st != factsctl.S_EMPTY && st != factsctl.S_ENDED) {
+            I64 run = -1;
+            if (r >= P_RUN + 8) {
+                run = word(P_RUN);
+            } else if (!said_run) {
+                "monitor: facts kind 2 is {r} bytes, no CPU time: the processes have no share\n";
+                said_run = true;
+            }
+            I64 grants = word(factsctl.P_GRANTS);
+            monpad.proc(word(factsctl.P_PID), rec[factsctl.P_COMM..factsctl.P_COMM + 16],
+                        word(factsctl.P_FRAMES) * FRAME, run, grants);
+        }
+    }
+}
+
+// The display, and the disk: its name and counts from kind 5, the volume's size and free space from one statfs pair
+// of /home, as Settings > Storage reads them (blocks and bavail); whether there is a disk.
+Bool read_parts() {
+    I64 r = factsctl.co_facts(K_DISPLAY, 0, rec);
+    if (r >= 104) { monpad.display(word(72), word(80), word(88), word(0), word(8), word(96), rec[24..72]); }
+    r = factsctl.co_facts(K_DISK, 0, rec);
+    if (r < 64) { return false; }
+    I64 cap = -1;
+    I64 free = -1;
+    if (factsctl.co_statfs(b"/home", sf) == 0) {
+        I64 bs = sf[factsctl.SF_BSIZE];
+        I64 nb = sf[factsctl.SF_BLOCKS];
+        if (bs > 0 && nb > 0 && nb <= I64_MAX / bs) {
+            cap = nb * bs;
+            free = clamp(sf[factsctl.SF_BAVAIL], 0, nb) * bs;
+        }
+    }
+    monpad.disk(rec[0..40], cap, free, word(48), word(56));
+    return true;
+}
+
+// Kind 3: the link, the address, bytes received and sent since boot; whether there is a network device. Every
+// network Daphnis drives is Ethernet, so the kind of link is Wired.
+Bool read_net() {
+    I64 r = factsctl.co_facts(K_NETWORK, 0, rec);
+    if (r < 64) { return false; }
+    I64 n = monpad.addr_text(addr, rec[16..20]);
+    monpad.net(word(0) == 1, addr[0..n], b"Wired", word(48), word(56));
+    return true;
+}
+
+void read_all(I64 now) {
+    read_cpu();
+    read_memory(now);
+    read_procs();
+    Bool disk = read_parts();
+    Bool net = read_net();
+    monpad.parts_usable(disk, net);
+    monpad.sample(now);
+}
+
+void paint() {
+    for y in 0..sh {
+        monpad.row_at(row, y, 1);
+        for x in 0..sw {
+            U32 v = row[x];
+            for k in 0..4 { obuf[4 * x + k] = ((v >> ((8 * k) as U32)) & 255) as U8; }
+        }
+        dev.fb_row(y, obuf[0..4 * sw]);
+    }
+}
+
+// RS-SURF: the surface taken to the box the desk told, laid out for the size it got and drawn whole.
+void resize(I64 now) {
+    I64 r = tilesurf.fb_resize(surfask.want_w(), surfask.want_h());
+    sw = dev.fb_word(0) as I64;
+    sh = dev.fb_word(1) as I64;
+    if (sw > CAP_W) { sw = CAP_W; }
+    surfask.answered(r, sw, sh, now);
+    "monitor: resize {sw}x{sh} ({r})\n";
+    if (sw > 0) {
+        monpad.box(sw, sh);
+        paint();
+    }
+}
+
+// End Process: SIGTERM to the chosen process; whether a signal went.
+Bool end_chosen() {
+    I64 pid = monpad.end_pid();          // -1 unless the list is shown and open
+    if (pid < 0) { return false; }
+    I64 r = tilectl.stop(pid, SIGTERM);
+    if (r < 0) {
+        "monitor: kill {pid}: {r}\n";
+        return false;
+    }
+    return true;
+}
+
+// Shift and Ctrl let go: at Alt (Alt+Tab starts and ends there), a press, and the pointer entering or leaving the
+// surface (hdesk sends -1 when the focus moves), since a release in another window never reaches this one.
+void forget() {
+    shift = false;
+    ctrl = false;
+}
+
+// A key down (or repeating): 1 the body changed, 2 a process was ended (read again now), 3 Monitor ends.
+I64 key(I64 c) {
+    if (ctrl) { return 0; }
+    if (c == KEY_ESC) {
+        if (monpad.close_side()) { return 1; }
+        return 3;
+    }
+    if (c == KEY_Q) { return 3; }
+    if (c == KEY_UP && monpad.step(-1)) { return 1; }
+    if (c == KEY_DOWN && monpad.step(1)) { return 1; }
+    if (c == KEY_TAB) {
+        I64 d = 1;
+        if (shift) { d = -1; }
+        if (monpad.next_part(d)) { return 1; }
+    }
+    if (c == KEY_DELETE && end_chosen()) { return 2; }
+    return 0;
+}
+
+void main(in U8[_] a) {
+    _ = tilewin.win_want(monpad.W, monpad.H);
+    _ = tilewin.win_resize(1);         // RS-SURF: asked before the open, so the desk's first box is told
+    I64 s = dev.fb_open();
+    U8[516] am_rec;
+    I64 am_n = appmenu.record(am_rec, b"Monitor", b"0.1.0", b"The machine's parts and its processes, live.", -1);
+    _ = tilewin.win_menu(am_rec[0..am_n]);
+    if (s < 0) {
+        "monitor: no surface ({0 - s})\n";
+        dev.exit_now(3);
+    }
+    _ = tilepoint.win_point(1);
+    sw = dev.fb_word(0) as I64;
+    sh = dev.fb_word(1) as I64;
+    if (sw > CAP_W) { sw = CAP_W; }
+    monpad.box(sw, sh);
+    I64[2] ids;
+    if (sysinfoctl.co_ids(ids) == 0) { monpad.me(ids[0]); }
+    I64 next = wall.wall_ns();
+    Bool going = true;
+    while (going) {
+        I64 now = wall.wall_ns();
+        if (now >= next) {
+            read_all(now);
+            paint();
+            next = next + SECOND;
+            if (next <= now) { next = now + SECOND; }
+        }
+        I64 got = dev.ev_read(ev);
+        if (got < 0) {
+            going = false;
+        } else if (got == 0) {
+            if (surfask.due(now)) { resize(now); } else { _ = corectl.co_sleep(20000000); }
+        } else {
+            I64 t = (ev[16] as I64) | ((ev[17] as I64) << 8);
+            I64 c = (ev[18] as I64) | ((ev[19] as I64) << 8);
+            I64 v = (ev[20] as I64) | ((ev[21] as I64) << 8) | ((ev[22] as I64) << 16) | ((ev[23] as I64) << 24);
+            if (v >= 0x80000000) { v = v - 0x100000000; }
+            if (t == EV_KEY && (c == keymap.KEY_LEFTSHIFT || c == keymap.KEY_RIGHTSHIFT)) { shift = v != 0; }
+            if (t == EV_KEY && (c == keymap.KEY_LEFTCTRL || c == keymap.KEY_RIGHTCTRL)) { ctrl = v != 0; }
+            if (t == EV_KEY && (c == KEY_LEFTALT || c == KEY_RIGHTALT)) { forget(); }
+            if (t == EV_WIN_RESIZE) {
+                surfask.told(c, v, CAP_W, CAP_H, sw, sh);
+            } else if (t == EV_KEY && v == 1 && c == BTN_LEFT) {
+                forget();
+                I64 h = monpad.click(px_x, px_y);
+                if (h == monpad.END) {
+                    if (end_chosen()) { next = now; }
+                } else if (h != monpad.NONE) {
+                    paint();
+                }
+            } else if (t == EV_KEY && v != 0 && c < BTN_LEFT) {
+                I64 k = key(c);
+                if (k == 1) { paint(); }
+                if (k == 2) { next = now; }
+                if (k == 3) { going = false; }
+            } else if (t == EV_ABS) {
+                if ((v >= 0) != inside) { forget(); }
+                inside = v >= 0;
+                if (c == 0) { px_x = v; }
+                if (c == 1) { px_y = v; }
+            }
+        }
+    }
+    "monitor: ended\n";
+}
+// SPDX-License-Identifier: Apache-2.0

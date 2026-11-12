@@ -1,0 +1,32 @@
+{
+ "id": "desk-message-on-the-quiet-line",
+ "rules": [
+  "RUN-7",
+  "KEY-10"
+ ],
+ "desk": true,
+ "text": "abc",
+ "size": [
+  3,
+  16
+ ],
+ "sel": [
+  0,
+  0
+ ],
+ "chunks": [
+  "17"
+ ],
+ "expect": {
+  "text": "abc",
+  "sel": [
+   0,
+   0
+  ],
+  "screen": [
+   "abc",
+   "",
+   "wrap on     1:1"
+  ]
+ }
+}

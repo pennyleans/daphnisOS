@@ -1,0 +1,31 @@
+# tests/core/tr.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Run in tests/core/search.
+a-z A-Z | words.txt | -
+'[:lower:]' '[:upper:]' | words.txt | -
+'[:upper:]' '[:lower:]' | words.txt | -
+-d '[:digit:]' | words.txt | -
+-d a-c | words.txt | -
+-s ' ' | text.txt | -
+-s a-z | words.txt | -
+-cd '[:alnum:]\n' | words.txt | -
+-c a-z _ | words.txt | -
+abc x | words.txt | -
+abc xy | words.txt | -
+-ds a p | words.txt | -
+-s a-z A-Z | words.txt | -
+'\n\t' 'NT' | text.txt | -
+'\101\142' qr | words.txt | -
+'[=a=]' Q | words.txt | -
+'\\' / | words.txt | -
+a- xy | words.txt | -
+-- -a xy | words.txt | -
+'\200-\377' '?' | utf8.txt | -
+-d '\000-\037' | long.txt | -
+-c a-z '[_*]' | words.txt | D-31
+a-z '[x*]' | words.txt | D-31
+a-z 'A[-*3]B' | words.txt | D-31
+-C '[:print:]\n' '?' | utf8.txt | D-32
+a '' | words.txt | D-3
+z-a x | words.txt | D-3
+a | words.txt | D-3
+ | words.txt | D-3
+'[:nope:]' x | words.txt | D-3

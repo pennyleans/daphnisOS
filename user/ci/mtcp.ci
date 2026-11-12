@@ -1,0 +1,233 @@
+// user/ci/mtcp.ci: one TCP connection (docs/specs/2026-11-05-n-net.md N-3; docs/specs/2026-11-07-nw-window.md NW-0).
+//   mtcp PORT: listens on PORT, says so, accepts one connection, writes back every byte it reads until the peer's
+//     end of the stream, closes, and prints the count and the SHA-256 of what passed through.
+//   mtcp -r A.B.C.D PORT: connects to A.B.C.D:PORT, reads to the end of the stream and closes (the host's
+//     `tools/nethost.py source`).
+//   mtcp -s N A.B.C.D PORT: connects, sends N bytes, byte i being (7 * i + 3) % 251, and closes (the host's
+//     `tools/nethost.py sink`).
+// -r and -s print `mtcp: N bytes in T ticks` and `mtcp: sha256 HEX`: T is the wall clock (user/ci/wall.ci) from
+// before the connect to after the close, in ticks of 10 ms, the period of the net kernels' PIT. The wall clock
+// is no function of the process's history, so a transcript that a replay must match holds no -r or -s run.
+import src.sha256;
+import user.ci.tcp;
+import user.ci.dev;
+import user.ci.wall;
+
+const I64 TICK_NS = 10000000;
+
+U8[64] word;
+U8[4096] buf;
+U8[32] digest;
+
+void usage() {
+    "mtcp: usage: mtcp PORT | mtcp -r A.B.C.D PORT | mtcp -s N A.B.C.D PORT\n";
+    dev.exit_now(2);
+}
+
+// The number of arguments in args (each ends with a NUL).
+I64 arg_count(in U8[_] args) {
+    I64 k = 0;
+    for i in 0..len(args) {
+        if (args[i] == 0) {
+            k = k + 1;
+        }
+    }
+    return k;
+}
+
+// Argument k (from 0) into `word`: its length.
+I64 arg(in U8[_] args, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (args[at] == 0) {
+            i = i + 1;
+        }
+        at = at + 1;
+    }
+    I64 n = 0;
+    while (args[at + n] != 0) {
+        if (n == len(word)) {
+            usage();
+        }
+        word[n] = args[at + n];
+        n = n + 1;
+    }
+    return n;
+}
+
+// The decimal in word[from..to], at most `most`; -1 if not one.
+I64 decimal(I64 from, I64 to, I64 most) {
+    if (to <= from || to - from > 12) {
+        return -1;
+    }
+    I64 v = 0;
+    for i in from..to {
+        if (word[i] < '0' || word[i] > '9') {
+            return -1;
+        }
+        v = 10 * v + (word[i] - '0') as I64;
+    }
+    if (v > most) {
+        return -1;
+    }
+    return v;
+}
+
+// Argument k as a decimal of at most `most`; usage() if it is not one.
+I64 number(in U8[_] args, I64 k, I64 most) {
+    I64 v = decimal(0, arg(args, k), most);
+    if (v < 0) {
+        usage();
+    }
+    return v;
+}
+
+// Argument k as a dotted quad: the address as a word; usage() if it is not one.
+U64 quad(in U8[_] args, I64 k) {
+    I64 n = arg(args, k);
+    I64 v = 0;
+    I64 from = 0;
+    I64 parts = 0;
+    for i in 0..n + 1 {
+        if (i == n || word[i] == '.') {
+            I64 b = decimal(from, i, 255);
+            if (b < 0) {
+                usage();
+            }
+            v = 256 * v + b;
+            parts = parts + 1;
+            from = i + 1;
+        }
+    }
+    if (parts != 4) {
+        usage();
+    }
+    return v as U64;
+}
+
+void put_digest() {
+    for i in 0..32 {
+        "{digest[i]:02x}";
+    }
+    "\n";
+}
+
+void echo(I64 port) {
+    I64 l = tcp.tcp_listen(port);
+    if (l < 0) {
+        "mtcp: listen {l}\n";
+        dev.exit_now(1);
+    }
+    "mtcp: listening on {port}\n";
+    I64 c = tcp.tcp_accept(l);
+    if (c < 0) {
+        "mtcp: accept {c}\n";
+        dev.exit_now(1);
+    }
+    sha256.Sha256[1] state;
+    sha256.sha_init(state);
+    I64 total = 0;
+    I64 r = tcp.fd_read(c, buf);
+    while (r > 0) {
+        sha256.sha_update(state, buf, 0, r);
+        I64 w = tcp.fd_write(c, buf[0..r]);
+        if (w != r) {
+            "mtcp: write {w}\n";
+            dev.exit_now(1);
+        }
+        total = total + r;
+        r = tcp.fd_read(c, buf);
+    }
+    if (r < 0) {
+        "mtcp: read {r}\n";
+    }
+    I64 k = tcp.fd_close(c);
+    k = tcp.fd_close(l);
+    sha256.sha_final(state, digest);
+    "mtcp: echoed {total} bytes, sha256 ";
+    put_digest();
+}
+
+// -r when send < 0, else -s send.
+void timed(I64 send, U64 ip, I64 port) {
+    if (port < 1) {
+        usage();
+    }
+    sha256.Sha256[1] state;
+    sha256.sha_init(state);
+    I64 t0 = wall.wall_ns();
+    I64 c = tcp.tcp_connect(ip, port);
+    if (c < 0) {
+        "mtcp: connect {c}\n";
+        dev.exit_now(1);
+    }
+    I64 total = 0;
+    if (send < 0) {
+        I64 r = tcp.fd_read(c, buf);
+        while (r > 0) {
+            sha256.sha_update(state, buf, 0, r);
+            total = total + r;
+            r = tcp.fd_read(c, buf);
+        }
+        if (r < 0) {
+            "mtcp: read {r}\n";
+            dev.exit_now(1);
+        }
+    } else {
+        I64 m = 0;       // (7 * total + 3) % 251 is the next byte; total % 251 walks with it
+        while (total < send) {
+            I64 k = len(buf);
+            if (send - total < k) {
+                k = send - total;
+            }
+            for j in 0..k {
+                buf[j] = ((7 * m + 3) % 251) as U8;
+                m = m + 1;
+                if (m == 251) {
+                    m = 0;
+                }
+            }
+            sha256.sha_update(state, buf, 0, k);
+            I64 w = tcp.fd_write(c, buf[0..k]);
+            if (w != k) {
+                "mtcp: write {w}\n";
+                dev.exit_now(1);
+            }
+            total = total + k;
+        }
+    }
+    I64 e = tcp.fd_close(c);
+    if (e < 0) {
+        "mtcp: close {e}\n";
+        dev.exit_now(1);
+    }
+    I64 t1 = wall.wall_ns();
+    I64 ticks = (t1 - t0 + TICK_NS / 2) / TICK_NS;
+    sha256.sha_final(state, digest);
+    "mtcp: {total} bytes in {ticks} ticks\n";
+    "mtcp: sha256 ";
+    put_digest();
+}
+
+void main(in U8[_] args) {
+    I64 n = arg_count(args);
+    if (n < 1 || args[len(args) - 1] != 0) {
+        usage();
+    }
+    I64 a = arg(args, 0);
+    if (n == 1) {
+        I64 port = decimal(0, a, 65535);
+        if (port < 1) {
+            usage();
+        }
+        echo(port);
+    } else if (n == 3 && a == 2 && word[0] == '-' && word[1] == 'r') {
+        timed(-1, quad(args, 1), number(args, 2, 65535));
+    } else if (n == 4 && a == 2 && word[0] == '-' && word[1] == 's') {
+        timed(number(args, 1, 1099511627776), quad(args, 2), number(args, 3, 65535));
+    } else {
+        usage();
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

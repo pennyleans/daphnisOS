@@ -1,0 +1,157 @@
+// user/ci/cvim/test_comp.ci: CV-7's completion (comp.ci): a module's exports and imports found by hl.ci's tokens,
+// the sources' order and the ranking, the menu opening by itself after two identifier characters in Insert mode,
+// Ctrl+N at once, Down and Up, Tab and Enter taking a name (as typed keys: undo takes it back with the insert), Esc
+// closing it in Insert mode, a plain text file offering no cint words, and the menu's cells.
+import user.ced.keys;
+import user.ci.cvim.key;
+import user.ci.cvim.buf;
+import user.ci.cvim.state;
+import user.ci.cvim.text;
+import user.ci.cvim.view;
+import user.ci.cvim.hl;
+import user.ci.cvim.comp;
+
+// A key as cvim.ci gives it: the menu first, then the editor, then the menu follows.
+void one(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+         inout I64[_] ct, I64 k) {
+    if (comp.feed(r, x, orig, add, sp, u, ct, k) == comp.TAKEN) { return; }
+    key.step(r, x, orig, add, sp, u, k);
+    comp.after(r, x, orig, add, ct, k);
+}
+
+void typed(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+           inout I64[_] ct, in U8[_] s) {
+    for i in 0..len(s) {
+        I64 k = s[i] as I64;
+        if (k == 27) { k = keys.K_ESC; }
+        if (k == 9) { k = keys.K_TAB; }
+        if (k == 13) { k = keys.K_ENTER; }
+        if (k == 14) { k = keys.M_CTRL + 'n'; }
+        if (k == 2) { k = keys.K_DOWN; }
+        one(r, x, orig, add, sp, u, ct, k);
+    }
+}
+
+Bool text_is(in I64[_] x, in U8[_] orig, in U8[_] add, in U8[_] want) {
+    if (buf.total(x) != len(want)) { return false; }
+    U8[4096] got;
+    if (len(want) > 0) { buf.copy_out(x, orig, add, 0, got[0..len(want)]); }
+    for i in 0..len(want) {
+        if (got[i] != want[i]) { return false; }
+    }
+    return true;
+}
+
+Bool item_is(in I64[_] ct, I64 i, in U8[_] want) {
+    U8[256] nm;
+    I64 n = comp.item(ct, i, nm);
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (nm[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "a module's exports by hl.ci's tokens: struct, const, a function, a generic one, extern; not the rest" {
+    I64[217088] ct;
+    comp.init(ct, hl.LANG_CINT);
+    I64 src = comp.add_label(ct, b"text");
+    comp.export_names(ct, b"// lines\nexport struct Span \x7b\n    I64 a;\n\x7d\nexport const I64 TS = 4;\nexport I64 nlines(in I64[_] x) \x7b\n\x7d\nexport I64 at_col[n](in U8[n] s) \x7b\n\x7d\nexport extern unrestricted I64 fd_write(I64 fd);\nI64 hidden() \x7b\n\x7d\nconst I64 PRIVATE = 1;\n", src);
+    assert(comp.n_items(ct) == 0);
+    // offer them through a buffer that types their first letters
+    U8[16] orig;
+    U8[65536] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[196608] sp;
+    I64[278528] u;
+    U8[1] f = b"\n";
+    for i in 0..1 { orig[i] = f[i]; }
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig[0..1], add));
+    typed(r, x, orig[0..1], add, sp, u, ct, b"inli");
+    assert(comp.is_open(ct) && item_is(ct, 0, b"nlines") && comp.item_kind(ct, 0) == comp.KIND_FN);
+    typed(r, x, orig[0..1], add, sp, u, ct, b"\x1b");
+    assert(r[state.R_MODE] == state.MODE_INSERT && !comp.is_open(ct));   // Esc closes the menu, stays in Insert
+    typed(r, x, orig[0..1], add, sp, u, ct, b" at_");
+    assert(comp.is_open(ct) && item_is(ct, 0, b"at_col"));
+    typed(r, x, orig[0..1], add, sp, u, ct, b" fd");
+    assert(item_is(ct, 0, b"fd_write"));
+    typed(r, x, orig[0..1], add, sp, u, ct, b" Sp");
+    assert(item_is(ct, 0, b"Span") && comp.item_kind(ct, 0) == comp.KIND_TYPE);
+    typed(r, x, orig[0..1], add, sp, u, ct, b" hid");
+    assert(!comp.is_open(ct));                                               // not exported
+}
+
+test "imports as module paths" {
+    U8[256] d;
+    I64[1] used;
+    I64 n = comp.imports(b"// x\nimport user.ci.cvim.text;\nimport console;\nI64 v = 1;\n", d, used);
+    assert(n == 2);
+    U8[22] want = b"user/ci/cvim/text.ci\x00c";
+    for i in 0..22 { assert(d[i] == want[i]); }
+    assert(d[21] == 'c' && d[30] == 'i' && d[31] == 0 && used[0] == 32);
+}
+
+test "in a .ci file: two characters open the menu, cint first, then the file, then the buffer; Tab and Enter take" {
+    I64[217088] ct;
+    comp.init(ct, hl.LANG_CINT);
+    U8[55] f = b"const I64 LENGTH = 3;\nI64 lens(I64 a) \x7b\n\x7d\nlengthy line\n";
+    I64 fn = 55;
+    U8[64] orig;
+    for i in 0..fn { orig[i] = f[i]; }
+    U8[65536] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[196608] sp;
+    I64[278528] u;
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig[0..fn], add));
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"Gol");
+    assert(!comp.is_open(ct));                                     // one character: not yet
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"e");
+    assert(comp.is_open(ct) && comp.n_items(ct) == 7);
+    assert(item_is(ct, 0, b"len") && item_is(ct, 1, b"lens") && item_is(ct, 2, b"lengthy"));   // prefixes by source
+    assert(item_is(ct, 3, b"while") && item_is(ct, 4, b"Handle") && item_is(ct, 5, b"profile"));  // then substrings
+    assert(item_is(ct, 6, b"schedule"));
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"\t");               // Tab takes the first
+    assert(!comp.is_open(ct) && r[state.R_MODE] == state.MODE_INSERT);
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"\x1b");
+    assert(text_is(x, orig[0..fn], add, b"const I64 LENGTH = 3;\nI64 lens(I64 a) \x7b\n\x7d\nlengthy line\nlen\n"));
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"u");               // the insert and the name, one undo step
+    assert(text_is(x, orig[0..fn], add, b"const I64 LENGTH = 3;\nI64 lens(I64 a) \x7b\n\x7d\nlengthy line\n"));
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"Gole\x02\r\x1b");   // Down, Enter: the second
+    assert(text_is(x, orig[0..fn], add, b"const I64 LENGTH = 3;\nI64 lens(I64 a) \x7b\n\x7d\nlengthy line\nlens\n"));
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"oNG");               // a substring after the prefixes
+    assert(comp.is_open(ct) && item_is(ct, 0, b"LENGTH"));
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"\x1b\x1b");
+}
+
+test "Ctrl+N opens at once on one character; a text file offers no cint words; the menu's cells" {
+    I64[217088] ct;
+    comp.init(ct, hl.LANG_TEXT);
+    U8[11] f = b"lever list\n";
+    I64 fn = 11;
+    U8[16] orig;
+    for i in 0..fn { orig[i] = f[i]; }
+    U8[65536] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[196608] sp;
+    I64[278528] u;
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig[0..fn], add));
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"ole");
+    assert(comp.is_open(ct) && comp.n_items(ct) == 1 && item_is(ct, 0, b"lever"));   // no `len`: not cint
+    typed(r, x, orig[0..fn], add, sp, u, ct, b"\x1b\x1bol\x0e");
+    assert(comp.is_open(ct) && comp.n_items(ct) == 3 && item_is(ct, 0, b"le") && item_is(ct, 1, b"list"));
+    assert(item_is(ct, 2, b"lever"));                                // the line typed before is a word too
+    I64[1920] g;
+    for i in 0..1920 { g[i] = ' '; }
+    comp.draw(ct, g, 24, 80, 2 * 65536 + 5);
+    assert(g[3 * 80 + 4] / view.ROLE == view.R_MENU_SEL && g[3 * 80 + 5] % view.ROLE == 'l');
+    assert(g[4 * 80 + 5] / view.ROLE == view.R_MENU && g[4 * 80 + 5] % view.ROLE == 'l');
+    assert(g[4 * 80 + 4 + 38 - 14] % view.ROLE == 'W' && g[4 * 80 + 4 + 38 - 14] / view.ROLE == view.R_MENU_DIM);
+    assert(g[6 * 80 + 5] % view.ROLE == ' ');
+}
+// SPDX-License-Identifier: Apache-2.0

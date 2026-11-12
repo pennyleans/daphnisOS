@@ -1,0 +1,36 @@
+{
+  "id": "replace-all",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a a a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "62620d",
+    "61"
+  ],
+  "expect": {
+    "text": "bb bb bb",
+    "sel": [
+      8,
+      8
+    ],
+    "screen": [
+      "bb bb bb",
+      "",
+      "",
+      "",
+      " x [+]  3 replaced                  1:9",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

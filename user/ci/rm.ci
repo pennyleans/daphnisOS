@@ -1,0 +1,38 @@
+// user/ci/rm.ci: rm [-fiRr] FILE... (docs/specs/2026-11-06-c-core.md, CT-2): each FILE unlinked; with -R or -r a
+// directory and all it holds, deepest first (core/files.ci). A FILE whose last component is `.` or `..` is refused.
+// -i asks before each removal and before entering each directory; -f says nothing of a missing FILE and allows no
+// FILE at all. Of -f and -i, the last given wins. A link is removed, never followed.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.path;
+import user.ci.core.files;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+Bool dots(in U8[_] p) {
+    I64 s = path.base_start(p);
+    I64 e = path.base_stop(p);
+    return (e - s == 1 && p[s] == '.') || (e - s == 2 && p[s] == '.' && p[s + 1] == '.');
+}
+
+void main(in U8[_] a) {
+    msg.name(b"rm");
+    args.parse(a, b"fiRr", b"");
+    U8 how = args.last(b"fi");
+    I64 n = args.operands();
+    if (n == 0 && how != 'f') { msg.usage(b"missing operand"); }
+    files.set(args.has('R') || args.has('r'), how == 'f', how == 'i', false, false);
+    for i in 0..n {
+        I64 s = args.op_start(i);
+        I64 e = args.op_stop(a, i);
+        if (dots(a[s..e])) {
+            msg.said(a[s..e], b"refusing . or ..");
+        } else {
+            files.remove(a[s..e]);
+        }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

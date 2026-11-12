@@ -1,0 +1,21 @@
+// src/gate.ci: x86-64 interrupt gate words, pure so the hosted tests run them. (A module that
+// imports an extern cannot run hosted: its host imports do not resolve, docs/cint-gaps.md.)
+
+// The low 8 bytes of a 64-bit interrupt gate (interrupt type 0xE, present, DPL 0, IST 0):
+// offset[15:0], selector, attributes at bit 40, offset[31:16] at bit 48.
+export U64 gate_lo(U64 offset, U64 selector) {
+    U64 attr = 0x8E;
+    return (offset & 0xFFFF) | (selector <<% 16) | (attr <<% 40) | (((offset >> 16) & 0xFFFF) <<% 48);
+}
+
+// The high 8 bytes: offset[63:32] (the rest is reserved, zero).
+export U64 gate_hi(U64 offset) {
+    return offset >> 32;
+}
+
+// The same with the interrupt stack table index (bits 32 to 34) and the attribute byte as
+// parameters: 0x8E is a present interrupt gate, 0x0E the same with the present bit clear.
+export U64 gate_lo_attr(U64 offset, U64 selector, U64 ist, U64 attr) {
+    return (offset & 0xFFFF) | (selector <<% 16) | ((ist & 7) <<% 32) | (attr <<% 40) | (((offset >> 16) & 0xFFFF) <<% 48);
+}
+// SPDX-License-Identifier: Apache-2.0

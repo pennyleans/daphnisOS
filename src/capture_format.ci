@@ -1,0 +1,60 @@
+// Bounded, canonical framing for encrypted recordings. No keys enter this module.
+export Bool same(in U8[_] a, in U8[_] b) {
+    if (len(a) != len(b)) { return false; }
+    for i in 0..len(a) { if (a[i] != b[i]) { return false; } }
+    return true;
+}
+
+export void put64(U64 v, inout U8[8] b) {
+    for i in 0..8 { b[i] = ((v >> (8 * i)) & 255) as U8; }
+}
+
+export U64 get64(in U8[8] b) {
+    U64 v = 0;
+    for i in 0..8 { v = v | ((b[i] as U64) << (8 * i)); }
+    return v;
+}
+
+export I64 header(in U8[_] stream, in U8[_] revision, inout U8[_] bytes) {
+    if (len(stream) != 16 || len(revision) != 32 || len(bytes) < 64) { return -1; }
+    for i in 0..64 { bytes[i] = 0; }
+    for i in 0..8 { bytes[i] = b"DAPHREC1"[i]; }
+    bytes[8] = 1;
+    bytes[10] = 1;
+    bytes[13] = 16;
+    for i in 0..16 { bytes[16 + i] = stream[i]; }
+    for i in 0..32 { bytes[32 + i] = revision[i]; }
+    return 64;
+}
+
+export Bool valid_header(in U8[_] bytes, in U8[_] revision) {
+    if (len(bytes) != 64 || len(revision) != 32) { return false; }
+    if (!same(bytes[0..8], b"DAPHREC1")) { return false; }
+    if (bytes[8] != 1 || bytes[9] != 0 || bytes[10] != 1 || bytes[11] != 0) { return false; }
+    if (bytes[12] != 0 || bytes[13] != 16 || bytes[14] != 0 || bytes[15] != 0) { return false; }
+    return same(bytes[32..64], revision);
+}
+
+export I64 prefix(U64 sequence, I64 n, Bool final, in U8[_] previous, inout U8[_] bytes) {
+    if (len(previous) != 16 || len(bytes) != 32 || n < 0 || n > 4096 || (final && n != 0) || (!final && n == 0)) { return -1; }
+    put64(sequence, bytes[0..8]);
+    bytes[8] = (n & 255) as U8;
+    bytes[9] = ((n >> 8) & 255) as U8;
+    for i in 10..16 { bytes[i] = 0; }
+    if (final) { bytes[12] = 1; }
+    for i in 0..16 { bytes[16 + i] = previous[i]; }
+    return 32;
+}
+
+// -2 needs more input; -1 is malformed. A frame's exact size is 48 + payload.
+export I64 payload(in U8[_] bytes) {
+    if (len(bytes) < 32) { return -2; }
+    if (bytes[10] != 0 || bytes[11] != 0 || bytes[12] > 1) { return -1; }
+    for i in 13..16 { if (bytes[i] != 0) { return -1; } }
+    I64 n = (bytes[8] as I64) + 256 * (bytes[9] as I64);
+    if (n > 4096 || (bytes[12] == 1 && n != 0) || (bytes[12] == 0 && n == 0)) { return -1; }
+    if (len(bytes) < 48 + n) { return -2; }
+    if (len(bytes) != 48 + n) { return -1; }
+    return n;
+}
+// SPDX-License-Identifier: Apache-2.0

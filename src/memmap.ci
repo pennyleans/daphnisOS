@@ -1,0 +1,211 @@
+// src/memmap.ci: the Multiboot 1 memory map (Multiboot spec 3.3), parsed from bytes. Pure, so
+// the hosted tests run it on a fixed array. The kernel reads the info structure and the map
+// through the view shim (phys_read8) and passes them in.
+//
+// Info structure: flags U32 at 0 (bit 6: the map is valid), map length U32 at 44, map
+// address U32 at 48. A map entry: size U32 (of the rest of the entry, normally 20), base U64,
+// length U64, type U32 (1 usable RAM); the next entry starts size + 4 bytes on.
+
+export const I64 MMAP_VALID_BIT = 6;
+export const I64 MIB = 1048576;
+
+export U64 le[n](in U8[n] b, I64 at, I64 width) {
+    U64 v = 0;
+    for k in 0..width {
+        v |= (b[at + k] as U64) << (8 * k);
+    }
+    return v;
+}
+
+export Bool mmap_valid[n](in U8[n] info) {
+    return (le(info, 0, 4) >> MMAP_VALID_BIT) & 1 != 0;
+}
+
+export I64 mmap_length[n](in U8[n] info) {
+    return le(info, 44, 4) as I64;
+}
+
+export I64 mmap_address[n](in U8[n] info) {
+    return le(info, 48, 4) as I64;
+}
+
+// True when [lo, hi) lies inside one entry of type 1 (usable RAM).
+export Bool usable_covers[n](in U8[n] mm, I64 length, U64 lo, U64 hi) {
+    I64 at = 0;
+    Bool covered = false;
+    while (at + 24 <= length) {
+        U64 base = le(mm, at + 4, 8);
+        U64 span = le(mm, at + 12, 8);
+        U64 kind = le(mm, at + 20, 4);
+        if (kind == 1 && base <= lo && hi <= base + span) {
+            covered = true;
+        }
+        at += (le(mm, at, 4) as I64) + 4;
+    }
+    return covered;
+}
+
+// The end of the highest usable (type 1) entry, in bytes. Reserved entries are left out: QEMU
+// reserves a region near 1 TiB for the PCI hole, which says nothing about RAM.
+export U64 ram_end[n](in U8[n] mm, I64 length) {
+    I64 at = 0;
+    U64 top = 0;
+    while (at + 24 <= length) {
+        U64 end = le(mm, at + 4, 8) + le(mm, at + 12, 8);
+        if (le(mm, at + 20, 4) == 1 && end > top) {
+            top = end;
+        }
+        at += (le(mm, at, 4) as I64) + 4;
+    }
+    return top;
+}
+
+// M-3: entry i of the Multiboot 1 map as its byte offset, or -1 past the end; its base, span and kind.
+export I64 entry[n](in U8[n] mm, I64 length, I64 i) {
+    I64 at = 0;
+    I64 k = 0;
+    while (at + 24 <= length) {
+        if (k == i) {
+            return at;
+        }
+        k += 1;
+        at += (le(mm, at, 4) as I64) + 4;
+    }
+    return -1;
+}
+
+export U64 entry_base[n](in U8[n] mm, I64 at) {
+    return le(mm, at + 4, 8);
+}
+
+export U64 entry_span[n](in U8[n] mm, I64 at) {
+    return le(mm, at + 12, 8);
+}
+
+export I64 entry_kind[n](in U8[n] mm, I64 at) {
+    return le(mm, at + 20, 4) as I64;
+}
+
+// The top of usable RAM in whole MiB, rounded up: the one number the summary prints, fixed by
+// the -m option however the loader splits or reserves the top of memory.
+export I64 ram_mib[n](in U8[n] mm, I64 length) {
+    I64 end = ram_end(mm, length) as I64;
+    return (end + MIB - 1) / MIB;
+}
+
+// Multiboot 2 (Multiboot 2 spec 3.6), parsed from the copy rt/boot.c made of the loader's block
+// (src/bootinfo.ci boot_info). The block: total_size U32 at 0, a reserved U32, then tags. A tag is
+// type U32, size U32 (of the tag without its padding), then its body; the next tag starts at the
+// next multiple of 8; type 0 ends the list. Type 6 is the memory map: entry_size U32 at 8,
+// entry_version U32 at 12, then entries entry_size bytes apart: base U64, length U64, type U32
+// (1 usable RAM), reserved U32. The answers are the Multiboot 1 reader's for the same machine.
+
+export const I64 MB2_TAG_END = 0;
+export const I64 MB2_TAG_MMAP = 6;
+export const I64 MB2_ENTRY_MIN = 24;
+
+// The bytes of the block, total_size, when the view holds all of it; else -1.
+export I64 mb2_length[n](in U8[n] info) {
+    if (n < 8) {
+        return -1;
+    }
+    I64 total = le(info, 0, 4) as I64;
+    if (total < 8 || total > n) {
+        return -1;
+    }
+    return total;
+}
+
+// The offset of the first tag of type kind, or -1. The walk stops at the end tag, at a tag
+// shorter than its own head, and at a tag that runs past length.
+export I64 mb2_tag[n](in U8[n] info, I64 length, I64 kind) {
+    I64 at = 8;
+    I64 found = -1;
+    Bool more = true;
+    while (more && at + 8 <= length) {
+        I64 t = le(info, at, 4) as I64;
+        I64 bytes = le(info, at + 4, 4) as I64;
+        if (t == MB2_TAG_END || bytes < 8 || bytes > length - at) {
+            more = false;
+        } else if (t == kind) {
+            found = at;
+            more = false;
+        } else {
+            at += (bytes + 7) / 8 * 8;
+        }
+    }
+    return found;
+}
+
+// The offset of the memory-map tag, or -1 when there is none or its entries are shorter than
+// the four fields read.
+export I64 mb2_mmap[n](in U8[n] info, I64 length) {
+    I64 at = mb2_tag(info, length, MB2_TAG_MMAP);
+    if (at < 0 || le(info, at + 4, 4) < 16 || (le(info, at + 8, 4) as I64) < MB2_ENTRY_MIN) {
+        return -1;
+    }
+    return at;
+}
+
+// True when [lo, hi) lies inside one entry of type 1 of the map tag at `at`.
+export Bool mb2_usable_covers[n](in U8[n] info, I64 at, U64 lo, U64 hi) {
+    I64 stride = le(info, at + 8, 4) as I64;
+    I64 end = at + (le(info, at + 4, 4) as I64);
+    I64 e = at + 16;
+    Bool covered = false;
+    while (e + MB2_ENTRY_MIN <= end) {
+        U64 base = le(info, e, 8);
+        U64 span = le(info, e + 8, 8);
+        if (le(info, e + 16, 4) == 1 && base <= lo && hi <= base + span) {
+            covered = true;
+        }
+        e += stride;
+    }
+    return covered;
+}
+
+// The end of the highest entry of type 1 of the map tag at `at`, in bytes.
+export U64 mb2_ram_end[n](in U8[n] info, I64 at) {
+    I64 stride = le(info, at + 8, 4) as I64;
+    I64 end = at + (le(info, at + 4, 4) as I64);
+    I64 e = at + 16;
+    U64 top = 0;
+    while (e + MB2_ENTRY_MIN <= end) {
+        U64 last = le(info, e, 8) + le(info, e + 8, 8);
+        if (le(info, e + 16, 4) == 1 && last > top) {
+            top = last;
+        }
+        e += stride;
+    }
+    return top;
+}
+
+// M-3: entry i of the map tag at `at` as its byte offset, or -1 past the end; its base, span and kind.
+export I64 mb2_entry[n](in U8[n] info, I64 at, I64 i) {
+    I64 stride = le(info, at + 8, 4) as I64;
+    I64 end = at + (le(info, at + 4, 4) as I64);
+    I64 e = at + 16 + i * stride;
+    if (i < 0 || e + MB2_ENTRY_MIN > end) {
+        return -1;
+    }
+    return e;
+}
+
+export U64 mb2_entry_base[n](in U8[n] info, I64 e) {
+    return le(info, e, 8);
+}
+
+export U64 mb2_entry_span[n](in U8[n] info, I64 e) {
+    return le(info, e + 8, 8);
+}
+
+export I64 mb2_entry_kind[n](in U8[n] info, I64 e) {
+    return le(info, e + 16, 4) as I64;
+}
+
+// The top of usable RAM in whole MiB, rounded up, as ram_mib.
+export I64 mb2_ram_mib[n](in U8[n] info, I64 at) {
+    I64 end = mb2_ram_end(info, at) as I64;
+    return (end + MIB - 1) / MIB;
+}
+// SPDX-License-Identifier: Apache-2.0

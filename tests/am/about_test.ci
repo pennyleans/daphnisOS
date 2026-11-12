@@ -1,0 +1,94 @@
+// tests/am/about_test.ci: hosted tests of the About sheet (user/ci/kit/about.ci; design note 43): the text's three
+// lines and the cut with "...", Enter and Esc each closing it, and that it blocks only the app's own window. Run by
+// check.sh.
+import user.ci.kit.about;
+import user.ci.kit.ctext;
+import user.ci.kit.faces;
+import user.ci.kit.tokens;
+
+U32[1920] row;
+
+test "DN-43: the text wraps at spaces into three lines at most; more is cut with ... inside the width" {
+    I64[3] a;
+    I64[3] e;
+    Bool[3] c;
+    U8[19] short = b"A small text editor";
+    assert(about.wrap(short, len(short), 320, a, e, c) == 1 && a[0] == 0 && e[0] == 19 && !c[0]);
+    U8[217] long = b"Edit is the desk's text editor for plain files: it opens what Index hands it, keeps an undo for every change, finds and replaces across the file, and writes nothing until you save, which it does atomically every time.";
+    I64 n = about.wrap(long, len(long), 320, a, e, c);
+    assert(n == 3);
+    assert(!c[0] && !c[1] && c[2]);
+    for k in 0..3 { assert(ctext.width(long[a[k]..e[k]], e[k] - a[k], faces.BODY, 1) <= 320); }
+    assert(ctext.width(long[a[2]..e[2]], e[2] - a[2], faces.BODY, 1) + ctext.width(b"...", 3, faces.BODY, 1) <= 320);
+    assert(long[e[0] - 1] != ' ' && long[a[1]] != ' ');   // broken at a space, the space dropped
+    U8[39] two = b"A modal editor with Vim's keys and undo";
+    n = about.wrap(two, len(two), 120, a, e, c);
+    assert(n <= 3 && !c[n - 1]);                          // it fits in three: no cut
+}
+
+test "DN-43: Enter or Esc closes the sheet; another key keeps it and shows the keyboard's focus" {
+    about.open(4, 100, 100, 800, 600, 0, b"Edit", 4, b"0.1.0", 5, b"A text editor", 13, false);
+    assert(about.is_up() && about.window() == 4);
+    assert(about.key(108) == about.STAY && about.is_up());     // Down: the sheet's, no change
+    assert(about.key(28) == about.CLOSE && !about.is_up());    // Enter
+    about.open(4, 100, 100, 800, 600, 0, b"Edit", 4, b"0.1.0", 5, b"A text editor", 13, true);
+    assert(about.key(1) == about.CLOSE && !about.is_up());     // Esc
+}
+
+test "DN-43: only the app's own window is blocked; the sheet is centered over it" {
+    about.open(4, 100, 100, 800, 600, 0, b"Edit", 4, b"0.1.0", 5, b"A text editor", 13, false);
+    assert(about.blocks(4));
+    for i in 0..16 {
+        if (i != 4) { assert(!about.blocks(i)); }
+    }
+    assert(about.left() == 100 + (800 - 360) / 2);
+    assert(about.top() == 100 + (600 - about.height()) / 2);
+    about.close();
+    assert(!about.blocks(4));
+}
+
+test "a window that goes takes its sheet with it; another window's going leaves the sheet up" {
+    about.open(4, 100, 100, 800, 600, 0, b"Edit", 4, b"0.1.0", 5, b"A text editor", 13, false);
+    about.forget(3);
+    assert(about.blocks(4) && about.is_up());
+    about.forget(4);
+    assert(!about.blocks(4) && !about.is_up() && about.window() == -1);
+}
+
+test "a blocked window's client and output go only around the sheet and its shadow, never over it" {
+    about.open(4, 100, 100, 800, 600, 0, b"Edit", 4, b"0.1.0", 5, b"A text editor", 13, false);
+    I64[4] b;
+    about.box(2, tokens.DARK, b);
+    assert(b[0] < 2 * about.left() && b[2] > 2 * (about.left() + about.W) && b[1] < 2 * about.top());
+    I64[16] o;
+    I64 n = about.around(200, 200, 1800, 1400, 2, tokens.DARK, o);
+    assert(n == 4);
+    I64 area = 0;
+    for k in 0..n {
+        I64 x0 = o[4 * k];
+        I64 y0 = o[4 * k + 1];
+        I64 x1 = o[4 * k + 2];
+        I64 y1 = o[4 * k + 3];
+        assert(x1 <= b[0] || x0 >= b[2] || y1 <= b[1] || y0 >= b[3]);   // none meets the sheet
+        area = area + (x1 - x0) * (y1 - y0);
+    }
+    assert(area == 1600 * 1200 - (b[2] - b[0]) * (b[3] - b[1]));       // and together they are all the rest
+    assert(about.around(0, 0, 100, 100, 2, tokens.DARK, o) == 1 && o[2] == 100);   // away from the sheet: whole
+    about.close();
+    assert(about.around(200, 200, 1800, 1400, 2, tokens.DARK, o) == 1);   // no sheet: the box whole
+}
+
+test "DN-43: the sheet draws its FILL bar, its PAPER body inset 1, and OK at the left" {
+    tokens.set_theme(0);
+    about.open(4, 0, 0, 400, 500, 0, b"Edit", 4, b"0.1.0", 5, b"A text editor", 13, false);
+    I64 x0 = about.left();
+    I64 y0 = about.top();
+    for x in 0..400 { row[x] = tokens.word(tokens.MANTLE); }
+    about.row_at(row, y0 + 30, 1, 0);
+    assert(row[x0] == tokens.word(tokens.FILL) && row[x0 + 359] == tokens.word(tokens.FILL));   // the bar to the edge
+    for x in 0..400 { row[x] = tokens.word(tokens.MANTLE); }
+    about.row_at(row, y0 + 100, 1, 0);
+    assert(row[x0] == tokens.word(tokens.FILL) && row[x0 + 1] == tokens.word(tokens.PAPER));     // the ring, then the body
+    about.close();
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,5 @@
+# tests/core/sync.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6, CT-5). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree.
+ | - | -
+x | - | D-54
+-d | - | D-1

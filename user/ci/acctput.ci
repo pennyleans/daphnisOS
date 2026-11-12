@@ -1,0 +1,71 @@
+// user/ci/acctput.ci: the account store written whole (docs/specs/2026-11-08-ac-accounts.md section 4; RS-ROLE,
+// docs/specs/2026-11-11-rs-role.md section 4), for authd and /bin/accounts. The text goes to accounts.new.PID, this
+// process's own, made new (O_CREAT | O_EXCL, 0600), so two writers never share a file; the file in place becomes
+// accounts.prev; the new one takes its name; then sync. A failure leaves the store reading as it did: the new file
+// is removed, and the file moved to accounts.prev is moved back. Only a file in place that the caller read whole
+// becomes accounts.prev. When the store was read from accounts.prev (acctio.load fell back), the file in place is
+// absent or does not read and the copy is the one whole store: the new file takes the name and the copy stays.
+// user/ci/build.sh picks the call rows from a program's whole import closure, so a program that imports this module
+// gets shctl's and corectl's rows without importing them itself.
+import user.ci.shctl;
+import user.ci.corectl;
+
+const I64 ENOENT = 2;
+const I64 EIO = 5;
+const I64 EEXIST = 17;
+const I64 EINVAL = 22;
+
+U8[64] newp;
+
+// `/home/.daphnis/accounts.new.PID` into newp; its length.
+I64 new_path() {
+    I64 at = len(b"/home/.daphnis/accounts.new.");
+    for k in 0..at { newp[k] = b"/home/.daphnis/accounts.new."[k]; }
+    U8[20] d;
+    I64 n = 0;
+    I64 q = shctl.sh_getpid();
+    if (q <= 0) { d[0] = 48; n = 1; }
+    while (q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { newp[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// text[0..n) as the store; 0, or -errno with the store as it was. whole: the caller read the store from the file in
+// place and it parsed, so that file becomes accounts.prev; false leaves accounts.prev alone.
+export I64 save(in U8[_] text, I64 n, Bool whole) {
+    if (n < 1 || n > len(text) || n > 4096) { return 0 - EINVAL; }
+    I64 pn = new_path();
+    I64 fd = shctl.sh_open(newp[0..pn], 0xC1, 384);            // O_WRONLY | O_CREAT | O_EXCL, 0600
+    if (fd == 0 - EEXIST) {                                    // an ended process of this pid left it
+        I64 u0 = corectl.co_unlink(newp[0..pn]);
+        fd = shctl.sh_open(newp[0..pn], 0xC1, 384);
+    }
+    if (fd < 0) { return fd; }
+    I64 put = shctl.fd_write(fd, text[0..n]);
+    I64 c = shctl.fd_close(fd);
+    if (put != n || c < 0) {
+        I64 u1 = corectl.co_unlink(newp[0..pn]);
+        if (put < 0) { return put; }
+        if (c < 0) { return c; }
+        return 0 - EIO;
+    }
+    I64 r0 = 0 - ENOENT;
+    if (whole) { r0 = corectl.co_rename(b"/home/.daphnis/accounts", b"/home/.daphnis/accounts.prev"); }
+    if (r0 < 0 && r0 != 0 - ENOENT) {
+        I64 u2 = corectl.co_unlink(newp[0..pn]);
+        return r0;
+    }
+    I64 r1 = corectl.co_rename(newp[0..pn], b"/home/.daphnis/accounts");
+    if (r1 < 0) {
+        if (r0 == 0) { I64 back = corectl.co_rename(b"/home/.daphnis/accounts.prev", b"/home/.daphnis/accounts"); }
+        I64 u3 = corectl.co_unlink(newp[0..pn]);
+        return r1;
+    }
+    I64 s = corectl.co_sync();
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

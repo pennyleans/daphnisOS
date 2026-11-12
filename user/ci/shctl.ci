@@ -1,0 +1,42 @@
+// user/ci/shctl.ci: the rows of cish (user/ci/host.c, CI_ROWS_SH), one per call; each returns the call's value or
+// -errno (docs/specs/2026-11-06-cish-shell.md section 7).
+//   sh_fork(): fork; 0 in the child, the child's pid in the parent
+//   sh_exec(path, argv, envp): execve of path (not NUL-ended); argv and envp each a block of NUL-ended strings;
+//     only a failure returns
+//   sh_wait(pid, nohang): wait4; the raw status, -EAGAIN with nohang while the child runs
+//   sh_pipe(): pipe; (read << 32) | write
+//   sh_dup2(from, to), sh_dupfd(fd, least): dup2; fcntl F_DUPFD_CLOEXEC
+//   sh_open(path, flags, mode): openat(AT_FDCWD, path) with path not NUL-ended
+//   fd_read(fd, buf), fd_write(fd, bytes), fd_close(fd): read; write until all are written; close (the N-3 rows)
+//   sh_chdir(path), sh_getcwd(buf): chdir; getcwd, the path's length without its NUL
+//   sh_environ(i, buf): the i-th string of the start environment; its length, -ENOENT past the last
+//   sh_getpid(): getpid
+//   sh_stat(path, follow, buf): newfstatat (lstat without follow); buf takes the mode (4 bytes) and the size (8),
+//     little-endian; 0, or -errno (CS-2, for test)
+//   sh_access(path, mode): faccessat with mode R_OK 4, W_OK 2, X_OK 1; 0, or -errno (CS-2)
+//   sh_dirents(path, buf): the names of directory path (with . and ..), each NUL-ended, into buf; the bytes used,
+//     or -errno (-E2BIG past len(buf)) (CS-3, for globbing)
+//   sh_geteuid(): geteuid, for the prompt's default (`# ` for 0, else `$ `, as ash) (CS-4)
+//   sh_tcget(fd, buf), sh_tcset(fd, buf): tcgetattr, tcsetattr TCSANOW; the termios as bytes (60 under musl): its
+//     size, or 0; -errno (-ENOTTY when fd is no terminal) (CS-4, the prompt and the restore)
+export extern unrestricted I64 sh_fork();
+export extern unrestricted I64 sh_exec(in U8[_] path, in U8[_] argv, in U8[_] envp);
+export extern unrestricted I64 sh_wait(I64 pid, I64 nohang);
+export extern unrestricted I64 sh_pipe();
+export extern unrestricted I64 sh_dup2(I64 from, I64 to);
+export extern unrestricted I64 sh_dupfd(I64 fd, I64 least);
+export extern unrestricted I64 sh_open(in U8[_] path, I64 flags, I64 mode);
+export extern unrestricted I64 fd_read(I64 fd, out U8[_] buf);
+export extern unrestricted I64 fd_write(I64 fd, in U8[_] bytes);
+export extern unrestricted I64 fd_close(I64 fd);
+export extern unrestricted I64 sh_chdir(in U8[_] path);
+export extern unrestricted I64 sh_getcwd(out U8[_] buf);
+export extern unrestricted I64 sh_environ(I64 i, out U8[_] buf);
+export extern unrestricted I64 sh_getpid();
+export extern unrestricted I64 sh_stat(in U8[_] path, I64 follow, out U8[_] buf);
+export extern unrestricted I64 sh_access(in U8[_] path, I64 mode);
+export extern unrestricted I64 sh_dirents(in U8[_] path, out U8[_] buf);
+export extern unrestricted I64 sh_geteuid();
+export extern unrestricted I64 sh_tcget(I64 fd, out U8[_] buf);
+export extern unrestricted I64 sh_tcset(I64 fd, in U8[_] buf);
+// SPDX-License-Identifier: Apache-2.0

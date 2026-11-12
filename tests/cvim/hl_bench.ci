@@ -1,0 +1,16 @@
+// tests/cvim/hl_bench.ci: hl.ci's speed (CV-6): N lines of cint, each 64 bytes with a comment, a string and numbers,
+// lexed line by line as view.syntax does; tests/cvim/hl_bench.py times it and divides.
+import user.ci.cvim.hl;
+
+export void main() {
+    U8[63] l = b"    I64 total = buf.lines(x) + 0x2A; // count \"it\" for 'q' now.";
+    I64[16385] sp;
+    I64 st = 0;
+    I64 spans = 0;
+    for k in 0..1048576 {
+        st = hl.line(l[0..63], hl.LANG_CINT, st, sp);
+        spans += hl.n_spans(sp);
+    }
+    "lines 1048576 spans {spans} state {st}\n";
+}
+// SPDX-License-Identifier: Apache-2.0

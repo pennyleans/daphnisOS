@@ -1,0 +1,85 @@
+// user/ci/ln.ci: ln [-fs] [-L | -P] SOURCE [TARGET], ln [-fs] [-L | -P] SOURCE... DIR (docs/specs/
+// 2026-11-07-bu2-meta.md section 6, BU-2b; XCU ln): a hard link (a symbolic one with -s) named TARGET, or DIR/the
+// last component of each SOURCE when the last operand is a directory or there are more than two; with one operand,
+// in the working directory. -f removes a TARGET that is there first. -L links what a link SOURCE names, -P (the
+// default, as Linux's link(2)) the link itself; the later of the two wins.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.metactl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.path;
+
+const I64 ENOTDIR = 20;
+const I64 EEXIST = 17;
+
+I64[16] rec;
+U8[4096] dest;
+
+Bool is_dir(in U8[_] p) {
+    return corectl.co_stat(p, 1, rec) == 0 && (rec[corectl.ST_MODE] & corectl.S_IFMT) == corectl.S_IFDIR;
+}
+
+void one(in U8[_] src, in U8[_] to, Bool follow) {
+    if (args.has('f')) {
+        I64 r = corectl.co_stat(to, 0, rec);
+        if (r == 0 && (rec[corectl.ST_MODE] & corectl.S_IFMT) != corectl.S_IFDIR) {
+            I64 u = corectl.co_unlink(to);
+            if (u < 0) {
+                msg.file(to, 0 - u);
+                return;
+            }
+        }
+    }
+    I64 r = 0;
+    if (args.has('s')) {
+        r = corectl.co_symlink(src, to);
+    } else {
+        I64 f = 0;
+        if (follow) { f = 1; }
+        r = metactl.co_link(src, to, f);
+    }
+    if (r < 0) { msg.file(to, 0 - r); }
+}
+
+// SOURCE a[s..e] into directory a[ts..te] under its last component.
+void into_dir(in U8[_] a, I64 s, I64 e, I64 ts, I64 te, Bool follow) {
+    I64 bs = s + path.base_start(a[s..e]);
+    I64 be = s + path.base_stop(a[s..e]);
+    I64 k = path.join(a[ts..te], a[bs..be], dest);
+    one(a[s..e], dest[0..k], follow);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"ln");
+    args.parse(a, b"fsLP", b"");
+    Bool follow = args.last(b"LP") == 'L';
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    if (n == 1) {
+        I64 s = args.op_start(0);
+        I64 e = args.op_stop(a, 0);
+        one(a[s..e], a[s + path.base_start(a[s..e])..s + path.base_stop(a[s..e])], follow);
+        msg.finish();
+    }
+    I64 ts = args.op_start(n - 1);
+    I64 te = args.op_stop(a, n - 1);
+    Bool into = is_dir(a[ts..te]);
+    if (n > 2 && !into) {
+        msg.file(a[ts..te], ENOTDIR);
+        msg.finish();
+    }
+    for i in 0..n - 1 {
+        I64 s = args.op_start(i);
+        I64 e = args.op_stop(a, i);
+        if (into) {
+            into_dir(a, s, e, ts, te, follow);
+        } else {
+            one(a[s..e], a[ts..te], follow);
+        }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

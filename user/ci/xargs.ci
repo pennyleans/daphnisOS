@@ -1,0 +1,461 @@
+// user/ci/xargs.ci: xargs [-0prtx] [-E EOF] [-I REPL | -L N | -n N] [-s SIZE] [UTILITY [ARGUMENT...]]
+// (docs/specs/2026-11-06-c-core.md, CT-4): runs UTILITY (echo by default) with the ARGUMENTs and as many words of
+// descriptor 0 as fit, again until the words end.
+//   words      blanks and newlines part them; '...' and "..." hold them in, a backslash takes the next byte as it is;
+//              a word equal to EOF ends the input (-E; none by default). -0: each NUL ends a word, nothing is special.
+//   batches    a command holds at most SIZE bytes of arguments, each with its NUL, the UTILITY's own among them
+//              (-s; 30,720 by default, at most ARGS_BYTES), at most N words (-n), or the words of N lines (-L: a line
+//              that ends in a blank goes on into the next), and at most ARGS_MAX arguments. A word longer than a
+//              command can hold ends xargs with status 1; -x ends it when SIZE cuts a batch short of -n or -L.
+//   -I REPL    one command per line (leading blanks dropped, empty lines skipped), REPL replaced by the line in each
+//              ARGUMENT; it implies -r.
+//   -r         no command when there are no words; without it one runs.
+//   -t, -p     the command on descriptor 2 first; -p then asks `?...` and runs it when a line of /dev/tty starts y.
+// Status: 0; 123 when a command ended 1 to 125 (the rest still run); 124 when one ended 255, 125 when a signal ended
+// one, 126 when one could not run and 127 when it was not found (each stops xargs); 1 for a bad input.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.runctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+import user.ci.core.run;
+
+const I64 ARGS_MAX = 4096;
+const I64 ARGS_BYTES = 65536;
+const I64 EOF = -1;
+
+U8[4096] ib;       // descriptor 0, read ahead
+I64 ipos = 0;
+I64 iend = 0;
+Bool ieof = false;
+
+U8[65536] buf;     // the words of a batch, each NUL-ended, then a word cut short at the end
+I64 cap = 0;       // the bytes a batch's words may take
+I64 bs = 0;        // the start of the word being read
+I64 bp = 0;        // its end
+I64 nwords = 0;    // the words of the batch
+I64 lines = 0;     // the lines of the batch (-L)
+Bool short_cut = false;   // the batch ended on SIZE before -n or -L
+
+const I64 NORM = 0;
+const I64 QUOTE = 1;
+const I64 BACKSLASH = 2;
+I64 state = 0;
+U8 q = 0;
+Bool blank_last = false;  // -L: the byte before the newline was a blank
+Bool line_words = false;  // -L: the line has a word
+
+U8[65536] argb;    // the command
+I64 status = 0;
+I64 eofw = -1;     // -E's word in args, or -1
+I64 eofe = -1;
+U8[65536] av;
+I64 avn = 0;
+
+I64 getc() {
+    if (ipos == iend) {
+        if (ieof) { return EOF; }
+        I64 r = get.read(0, ib);
+        if (r <= 0) {
+            ieof = true;
+            return EOF;
+        }
+        ipos = 0;
+        iend = r;
+    }
+    U8 c = ib[ipos];
+    ipos = ipos + 1;
+    return c as I64;
+}
+
+Bool space(I64 c) {
+    return c == 32 || (c >= 9 && c <= 13);
+}
+
+void die(in U8[_] what) {
+    msg.begin();
+    msg.text(what);
+    msg.send();
+    put.flush();
+    dev.exit_now(1);
+}
+
+Bool is_eof_word() {
+    if (eofw < 0 || bp - bs != eofe - eofw) { return false; }
+    for i in 0..bp - bs {
+        if (buf[bs + i] != av[eofw + i]) { return false; }
+    }
+    return true;
+}
+
+void drain() {
+    while (getc() != EOF) { }
+}
+
+// Ends the word at bs..bp: stores it, or ends the input at EOF's word. True when the batch is full by count.
+I64 maxn = 0;      // words a batch may take
+I64 maxl = 0;      // lines, under -L; 0 for none
+Bool ended = false;
+
+Bool close_word() {
+    if (q != 0) {
+        if (q == 39) { die(b"unmatched single quote"); }
+        die(b"unmatched double quote");
+    }
+    if (is_eof_word()) {
+        drain();
+        bp = bs;
+        ended = true;
+        return true;
+    }
+    buf[bp] = 0;
+    bp = bp + 1;
+    bs = bp;
+    nwords = nwords + 1;
+    line_words = true;
+    return nwords == maxn;
+}
+
+// Reads one batch's words (XCU quoting; busybox's process_stdin). Returns when the input ends, a count is
+// reached, or the buffer is full, with any word cut short left at bs..bp.
+void read_words() {
+    Bool going = true;
+    while (going && !ended) {
+        I64 c = getc();
+        Bool done = false;
+        if (c == EOF) {
+            if (bp != bs) { done = close_word(); }
+            going = false;
+        } else if (state == BACKSLASH) {
+            state = NORM;
+            blank_last = false;
+            buf[bp] = c as U8;
+            bp = bp + 1;
+        } else if (state == QUOTE) {
+            blank_last = false;
+            if (c != (q as I64)) {
+                buf[bp] = c as U8;
+                bp = bp + 1;
+            } else {
+                q = 0;
+                state = NORM;
+            }
+        } else if (space(c)) {
+            if (bp != bs) { done = close_word(); }
+            if (c == 10 && maxl > 0) {
+                if (!blank_last && line_words) {
+                    lines = lines + 1;
+                    line_words = false;
+                    if (lines == maxl) { done = true; }
+                }
+            }
+            blank_last = c == 32 || c == 9;
+        } else {
+            blank_last = false;
+            if (c == 92) {
+                state = BACKSLASH;
+            } else if (c == 39 || c == 34) {
+                q = c as U8;
+                state = QUOTE;
+            } else {
+                buf[bp] = c as U8;
+                bp = bp + 1;
+            }
+        }
+        if (done) { going = false; }
+        if (going && bp == cap) {
+            going = false;
+            short_cut = true;
+        }
+    }
+}
+
+// -0: each NUL (or the end) ends a word, empty words too.
+void read_words0() {
+    Bool going = true;
+    while (going) {
+        I64 c = getc();
+        if (c == EOF) {
+            if (bp != bs) {
+                buf[bp] = 0;
+                bp = bp + 1;
+                bs = bp;
+                nwords = nwords + 1;
+            }
+            going = false;
+        } else {
+            buf[bp] = c as U8;
+            bp = bp + 1;
+            if (c == 0) {
+                bs = bp;
+                nwords = nwords + 1;
+                if (nwords == maxn) { going = false; }
+            }
+        }
+        if (going && bp == cap) {
+            going = false;
+            short_cut = true;
+        }
+    }
+}
+
+// -I: the next non-empty line, leading blanks dropped, into buf[0..bp]; false at the end of the input.
+Bool read_line(U8 eol) {
+    bp = 0;
+    Bool going = true;
+    while (going) {
+        I64 c = getc();
+        if (bp == 0 && c == EOF) { return false; }
+        if (bp == 0 && (c == (eol as I64) || space(c))) {
+            // a leading blank or an empty line
+        } else if (c == EOF || c == (eol as I64)) {
+            going = false;
+        } else {
+            if (bp == cap) { die(b"argument line too long"); }
+            buf[bp] = c as U8;
+            bp = bp + 1;
+        }
+    }
+    return true;
+}
+
+// Appends s to the command at k: the new end.
+I64 add(in U8[_] s, I64 k) {
+    if (k + len(s) + 1 > ARGS_BYTES) { msg.limit(b"ARGS_BYTES"); }
+    for i in 0..len(s) { argb[k + i] = s[i]; }
+    argb[k + len(s)] = 0;
+    return k + len(s) + 1;
+}
+
+// Appends s with each REPL (r) made line, at k.
+I64 add_replaced(in U8[_] s, in U8[_] r, in U8[_] line, I64 k) {
+    I64 at = k;
+    I64 i = 0;
+    while (i < len(s)) {
+        Bool hit = len(r) > 0 && i + len(r) <= len(s);
+        if (hit) {
+            for j in 0..len(r) {
+                if (s[i + j] != r[j]) { hit = false; }
+            }
+        }
+        if (hit) {
+            if (at + len(line) >= ARGS_BYTES) { msg.limit(b"ARGS_BYTES"); }
+            for j in 0..len(line) { argb[at + j] = line[j]; }
+            at = at + len(line);
+            i = i + len(r);
+        } else {
+            if (at + 1 >= ARGS_BYTES) { msg.limit(b"ARGS_BYTES"); }
+            argb[at] = s[i];
+            at = at + 1;
+            i = i + 1;
+        }
+    }
+    argb[at] = 0;
+    return at + 1;
+}
+
+// -t and -p: the command on descriptor 2, blanks between; -p asks and reads /dev/tty. True to run it.
+Bool show(I64 k, Bool ask) {
+    put.flush();
+    I64 s = 0;
+    for i in 0..k {
+        if (argb[i] == 0) {
+            if (s > 0) { _ = shctl.fd_write(2, b" "); }
+            _ = shctl.fd_write(2, argb[s..i]);
+            s = i + 1;
+        }
+    }
+    if (!ask) {
+        _ = shctl.fd_write(2, b"\n");
+        return true;
+    }
+    I64 fd = shctl.sh_open(b"/dev/tty", 0, 0);
+    if (fd < 0) {
+        msg.file(b"/dev/tty", 0 - fd);
+        msg.finish();
+    }
+    _ = shctl.fd_write(2, b" ?...");
+    U8[1] c;
+    U8 first = 0;
+    Bool seen = false;
+    Bool going = true;
+    while (going) {
+        I64 r = shctl.fd_read(fd, c);
+        if (r != 1 || c[0] == '\n') {
+            going = false;
+        } else if (!seen) {
+            first = c[0];
+            seen = true;
+        }
+    }
+    _ = shctl.fd_close(fd);
+    return first == 'y' || first == 'Y';
+}
+
+// Runs the command argb[0..k]; false when xargs stops.
+Bool launch(I64 k, Bool trace, Bool ask) {
+    if (trace || ask) {
+        if (!show(k, ask)) { return true; }
+    }
+    I64 st = run.spawn(argb[0..k]);
+    if (st < 0) {
+        run.say(argb[0..k], 0 - st);
+        status = run.status_of(0 - st);
+        return false;
+    }
+    I64 sig = st & 127;
+    if (sig != 0) {
+        msg.begin();
+        msg.text(b"'");
+        I64 e = 0;
+        while (argb[e] != 0) { e = e + 1; }
+        msg.text(argb[0..e]);
+        msg.text(b"' terminated by signal ");
+        U8[4] d;
+        I64 n = 0;
+        I64 x = sig;
+        while (x > 0) {
+            d[n] = ((x % 10) as U8) + 48;
+            x = x / 10;
+            n = n + 1;
+        }
+        while (n > 0) {
+            n = n - 1;
+            msg.byte(d[n]);
+        }
+        msg.send();
+        status = 125;
+        return false;
+    }
+    I64 code = (st >> 8) & 255;
+    if (code == 255) {
+        I64 e = 0;
+        while (argb[e] != 0) { e = e + 1; }
+        msg.begin();
+        msg.text(argb[0..e]);
+        msg.text(b": exited with status 255; aborting");
+        msg.send();
+        status = 124;
+        return false;
+    }
+    if (code != 0) { status = 123; }
+    return true;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"xargs");
+    args.parse(a, b"0prtx", b"EILns");
+    if (len(a) > 65536) { msg.limit(b"ARGS_BYTES"); }
+    for i in 0..len(a) { av[i] = a[i]; }
+    avn = len(a);
+    Bool zero = args.has('0');
+    Bool trace = args.has('t');
+    Bool ask = args.has('p');
+    Bool term = args.has('x');
+    Bool norun = args.has('r');
+    if (args.has('E') && args.val_stop('E') > args.val_start('E')) {
+        eofw = args.val_start('E');
+        eofe = args.val_stop('E');
+    }
+    I64 smax = 30720;
+    if (args.has('s')) {
+        smax = args.count_of(a, args.val_start('s'), args.val_stop('s'), b"invalid number for -s");
+        if (smax < 1) { msg.usage(b"invalid number for -s"); }
+        if (smax > ARGS_BYTES) { msg.limit(b"ARGS_BYTES"); }
+    }
+    // -I, -L and -n each override the others; the last given wins
+    I64 mode = 0;   // 0 words, 1 -n, 2 -L, 3 -I
+    I64 last = -1;
+    if (args.has('n') && args.val_start('n') > last) {
+        last = args.val_start('n');
+        mode = 1;
+    }
+    if (args.has('L') && args.val_start('L') > last) {
+        last = args.val_start('L');
+        mode = 2;
+    }
+    if (args.has('I') && args.val_start('I') > last) { mode = 3; }
+    maxn = ARGS_MAX;
+    if (mode == 1) {
+        maxn = args.count_of(a, args.val_start('n'), args.val_stop('n'), b"invalid number for -n");
+        if (maxn < 1) { msg.usage(b"invalid number for -n"); }
+    }
+    if (mode == 2) {
+        maxl = args.count_of(a, args.val_start('L'), args.val_stop('L'), b"invalid number for -L");
+        if (maxl < 1) { msg.usage(b"invalid number for -L"); }
+    }
+    // the fixed words: the operands, or echo
+    I64 k0 = 0;
+    I64 nfix = args.operands();
+    if (nfix == 0) {
+        k0 = add(b"echo", 0);
+        nfix = 1;
+    } else {
+        k0 = len(a) - args.op_start(0);
+        for i in 0..k0 { argb[i] = a[args.op_start(0) + i]; }
+    }
+    cap = smax - k0;
+    if (cap <= 0) { die(b"can't fit single argument within argument list size limit"); }
+    if (nfix >= ARGS_MAX) { msg.limit(b"ARGS_MAX"); }
+    if (maxn > ARGS_MAX - nfix) { maxn = ARGS_MAX - nfix; }
+    if (mode == 3) {
+        I64 rs = args.val_start('I');
+        I64 re = args.val_stop('I');
+        U8 eol = '\n';
+        if (zero) { eol = 0; }
+        while (read_line(eol)) {
+            I64 k = 0;
+            for i in 0..nfix {
+                I64 s = args.op_start(i);
+                I64 e = args.op_stop(a, i);
+                if (args.operands() == 0) {
+                    k = add(b"echo", k);
+                } else {
+                    k = add_replaced(av[s..e], av[rs..re], buf[0..bp], k);
+                }
+            }
+            if (!launch(k, trace, ask)) { msg_end(); }
+        }
+        msg_end();
+    }
+    Bool first = true;
+    Bool more = true;
+    while (more) {
+        nwords = 0;
+        lines = 0;
+        short_cut = false;
+        if (zero) { read_words0(); } else { read_words(); }
+        if (nwords == 0) {
+            if (bp != bs) { die(b"argument line too long"); }
+            if (norun || !first) { msg_end(); }
+        }
+        if (term && short_cut && (mode == 1 || mode == 2)) { die(b"argument list too long"); }
+        first = false;
+        I64 k = k0;
+        for i in 0..bs {
+            argb[k + i] = buf[i];
+        }
+        k = k + bs;
+        if (!launch(k, trace, ask)) { msg_end(); }
+        // the word cut short starts the next batch
+        I64 n = bp - bs;
+        for i in 0..n { buf[i] = buf[bs + i]; }
+        bs = 0;
+        bp = n;
+        if (ended || (ieof && ipos == iend && bp == 0)) { msg_end(); }
+    }
+}
+
+// Ends xargs with its status, descriptor 1 flushed.
+void msg_end() {
+    put.flush();
+    if (status == 0 && msg_failed()) { status = 1; }
+    dev.exit_now(status);
+}
+
+Bool msg_failed() {
+    return put.failed();
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,245 @@
+// src/usbscsi.ci: HW-4m (docs/specs/2026-11-06-hw-hardware.md section 5, row HW-4m), the bytes of USB mass storage:
+// the bulk-only transport's two wrappers and the SCSI commands a disk needs. Pure, so the hosted tests run it on fixed
+// bytes (tests/hw/usbscsi_test.ci); src/usbms.ci moves what it builds through src/xhci.ci's bulk endpoints.
+//
+// A command is three stages. The command block wrapper (CBW, 31 bytes, bulk OUT): the signature `USBC`, a tag, the
+// data stage's length, its direction (bit 7: to the host), the unit, the command's length and up to 16 command bytes.
+// The data stage, when the length is not 0. The command status wrapper (CSW, 13 bytes, bulk IN): the signature `USBS`,
+// the tag again, the bytes not moved, and a status: 0 passed, 1 failed (REQUEST SENSE says why), 2 phase error (the
+// transport is reset). The wrappers are little-endian; the SCSI fields inside are big-endian.
+
+export const I64 CBW_BYTES = 31;
+export const I64 CSW_BYTES = 13;
+export const I64 INQUIRY_BYTES = 36;
+export const I64 SENSE_BYTES = 18;
+export const I64 CAPACITY_BYTES = 8;
+export const I64 PASSED = 0;
+export const I64 FAILED = 1;
+export const I64 PHASE = 2;
+
+void le32(inout U8[31] b, I64 at, U64 v) {
+    for k in 0..4 {
+        b[at + k] = ((v >> (8 * k) as U64) & 0xFF) as U8;
+    }
+}
+
+// The CBW of a command of cdb_len bytes (1 to 16) with a data stage of nbytes, to the host when data_in.
+export void cbw(inout U8[31] b, U64 tag, I64 nbytes, Bool data_in, in U8[16] cdb, I64 cdb_len) {
+    for k in 0..31 { b[k] = 0; }
+    le32(b, 0, 0x43425355);
+    le32(b, 4, tag);
+    le32(b, 8, nbytes as U64);
+    if (data_in) { b[12] = 0x80; }
+    b[14] = (cdb_len & 31) as U8;
+    for k in 0..16 {
+        if (k < cdb_len) { b[15 + k] = cdb[k]; }
+    }
+}
+
+U64 get_le32(in U8[13] b, I64 at) {
+    U64 v = 0;
+    for k in 0..4 {
+        v |= (b[at + k] as U64) << (8 * k) as U64;
+    }
+    return v;
+}
+
+// A CSW's status (PASSED, FAILED, PHASE), -1 when it is not the CSW of tag: another signature, tag or status.
+export I64 csw_status(in U8[13] b, U64 tag) {
+    if (get_le32(b, 0) != 0x53425355 || get_le32(b, 4) != (tag & 0xFFFFFFFF) || b[12] > 2) {
+        return -1;
+    }
+    return b[12] as I64;
+}
+
+// The bytes of the data stage a CSW says were not moved.
+export I64 csw_residue(in U8[13] b) {
+    return get_le32(b, 8) as I64;
+}
+
+void clear(inout U8[16] c) {
+    for k in 0..16 { c[k] = 0; }
+}
+
+// True when a command the device PASSED moved what its CSW says: the data stage's bytes (moved, from the transfer
+// events) are the CBW's length less the residue. A short packet with a residue of 0 is not a full block (the bytes past
+// moved are whatever the buffer held), and a residue past the length is no answer.
+export Bool agrees(I64 nbytes, I64 moved, I64 residue) {
+    return moved >= 0 && residue >= 0 && residue <= nbytes && moved == nbytes - residue;
+}
+
+// The commands: each fills c and returns its length.
+export I64 cdb_test_unit_ready(inout U8[16] c) {
+    clear(c);
+    return 6;
+}
+
+export I64 cdb_request_sense(inout U8[16] c) {
+    clear(c);
+    c[0] = 0x03;
+    c[4] = SENSE_BYTES as U8;
+    return 6;
+}
+
+export I64 cdb_inquiry(inout U8[16] c) {
+    clear(c);
+    c[0] = 0x12;
+    c[4] = INQUIRY_BYTES as U8;
+    return 6;
+}
+
+export I64 cdb_read_capacity(inout U8[16] c) {
+    clear(c);
+    c[0] = 0x25;
+    return 10;
+}
+
+// READ (10) or WRITE (10) of blocks blocks from lba.
+export I64 cdb_rw(inout U8[16] c, Bool write, I64 lba, I64 blocks) {
+    clear(c);
+    c[0] = 0x28;
+    if (write) { c[0] = 0x2A; }
+    for k in 0..4 {
+        c[2 + k] = ((lba >> (8 * (3 - k))) & 0xFF) as U8;
+    }
+    c[7] = ((blocks >> 8) & 0xFF) as U8;
+    c[8] = (blocks & 0xFF) as U8;
+    return 10;
+}
+
+// SYNCHRONIZE CACHE (10) of the whole medium: LBA 0 and 0 blocks name every block, and IMMED (byte 1, bit 1) is clear,
+// so the device sends its CSW only once its cache is on the medium.
+export I64 cdb_sync_cache(inout U8[16] c) {
+    clear(c);
+    c[0] = 0x35;
+    return 10;
+}
+
+// READ CAPACITY (10)'s answer (the last block's address, the block length, big-endian) as a count of 512-byte
+// sectors; -1 when the blocks are not 512 bytes or the disk is past READ (10)'s reach (the address reads all ones).
+export I64 capacity_sectors(in U8[8] b) {
+    I64 last = 0;
+    I64 blen = 0;
+    for k in 0..4 {
+        last = last * 256 + b[k] as I64;
+        blen = blen * 256 + b[4 + k] as I64;
+    }
+    if (blen != 512 || last == 0xFFFFFFFF) {
+        return -1;
+    }
+    return last + 1;
+}
+
+// True when INQUIRY's answer is a connected direct-access device (a disk).
+export Bool is_disk(in U8[36] inq) {
+    return inq[0] == 0;
+}
+
+// INQUIRY's product identification (bytes 16 to 31) as the boot line can name it: trailing spaces dropped, every
+// other byte that is not a letter, a digit, `.` or `-` written `_` (so `USB DISK 2.0` is `USB_DISK_2.0`). Its length,
+// 0 for a blank one.
+export I64 model(in U8[36] inq, inout U8[16] m) {
+    I64 n = 16;
+    while (n > 0 && (inq[15 + n] == 32 || inq[15 + n] == 0)) { n -= 1; }
+    for k in 0..16 {
+        U8 ch = inq[16 + k];
+        Bool plain = (ch >= 48 && ch <= 57) || (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) ||
+            ch == 45 || ch == 46;
+        if (k >= n) {
+            m[k] = 0;
+        } else if (plain) {
+            m[k] = ch;
+        } else {
+            m[k] = 95;
+        }
+    }
+    return n;
+}
+
+// True when the boot line (nbytes of it) holds the word key followed by exactly the model's n bytes, whole: between
+// spaces or at an end. A blank model is never named.
+export Bool names[k](in U8[_] line, I64 nbytes, in U8[k] key, in U8[16] m, I64 n) {
+    if (n <= 0 || n > 16) {
+        return false;
+    }
+    I64 w = k + n;
+    I64 i = 0;
+    while (i + w <= nbytes) {
+        if ((i == 0 || line[i - 1] == 32) && (i + w == nbytes || line[i + w] == 32)) {
+            Bool same = true;
+            for j in 0..k {
+                same = same && line[i + j] == key[j];
+            }
+            for j in 0..n {
+                same = same && line[i + k + j] == m[j];
+            }
+            if (same) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    return false;
+}
+
+// Fixed-format sense data: the key (low 4 bits of byte 2), the additional code and its qualifier as
+// key * 65536 + code * 256 + qualifier; -1 when the bytes are not fixed-format sense (response code 0x70 or 0x71).
+export I64 sense(in U8[18] b) {
+    I64 code = (b[0] & 0x7F) as I64;
+    if (code != 0x70 && code != 0x71) {
+        return -1;
+    }
+    return ((b[2] & 15) as I64) * 65536 + (b[12] as I64) * 256 + b[13] as I64;
+}
+
+// The first mass-storage interface (08:06:50, SCSI transparent over bulk-only transport) of a configuration
+// descriptor (n bytes of cfg) and its bulk endpoints: got is the interface number, the OUT endpoint's address, max
+// packet and max burst, then the IN endpoint's three. True when both endpoints were found. A descriptor shorter than
+// 2 bytes, or one that runs past n, ends the walk: the bytes come from the device.
+export Bool find_bulk(in U8[_] cfg, I64 n, inout I64[7] got) {
+    I64 at = 0;
+    Bool inside = false;
+    Bool has_out = false;
+    Bool has_in = false;
+    I64 last = -1;                        // got's slot of the endpoint a SuperSpeed companion descriptor belongs to
+    while (at + 2 <= n) {
+        I64 l = cfg[at] as I64;
+        I64 t = cfg[at + 1] as I64;
+        I64 owner = last;
+        last = -1;
+        if (l < 2 || at + l > n) {
+            return false;
+        }
+        if (t == 4) {
+            if (inside) {
+                return has_out && has_in;     // the next interface: this one had its pair or it did not
+            }
+            inside = l >= 9 && cfg[at + 5] == 8 && cfg[at + 6] == 6 && cfg[at + 7] == 0x50;
+            if (inside) { got[0] = cfg[at + 2] as I64; }
+        } else if (t == 5 && inside && l >= 7 && (cfg[at + 3] & 3) == 2) {
+            I64 ea = cfg[at + 2] as I64;
+            I64 mps = (cfg[at + 4] as I64 | ((cfg[at + 5] as I64) << 8)) & 0x7FF;
+            if ((ea & 0x80) == 0 && !has_out && (ea & 15) != 0) {
+                got[1] = ea;
+                got[2] = mps;
+                got[3] = 0;
+                has_out = true;
+                last = 3;
+            } else if ((ea & 0x80) != 0 && !has_in && (ea & 15) != 0) {
+                got[4] = ea;
+                got[5] = mps;
+                got[6] = 0;
+                has_in = true;
+                last = 6;
+            }
+        } else if (t == 0x30 && owner >= 0 && l >= 3) {
+            got[owner] = (cfg[at + 2] & 15) as I64;      // bMaxBurst, 0 to 15
+        }
+        if (has_out && has_in && last < 0) {
+            return true;
+        }
+        at += l;
+    }
+    return has_out && has_in;
+}
+// SPDX-License-Identifier: Apache-2.0

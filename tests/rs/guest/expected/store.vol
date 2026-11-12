@@ -1,0 +1,9 @@
+# the volume after the store leg: sam promoted once a parent set a parent-length passphrase (RS-R1 A); ivy added and
+# removed, so 1002 is never given again; ivy never logged in, so no home moved
+store ada role=parent ceil=7
+store sam role=parent uid=1001
+nostore ivy
+header next=1003
+gone /ivy
+gone /.removed.ivy.1002
+fsck

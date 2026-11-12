@@ -1,0 +1,25 @@
+{
+  "id": "undo-type-then-backspace",
+  "rules": [
+    "UNDO-2"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "78",
+    "79",
+    "7f",
+    "7a",
+    "1a"
+  ],
+  "expect": {
+    "text": "x"
+  }
+}

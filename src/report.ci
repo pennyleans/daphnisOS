@@ -1,0 +1,57 @@
+// src/report.ci: printing from cint. A trap record is printed as the line "<name>", the
+// header "fault: cint-core-1/fault/v2 <n> bytes" and the record's bytes as lowercase hex, the
+// form rt/ctx.c uses for a cint fault.
+
+import src.serial;
+import src.text;
+import src.trap;
+
+export void print_dec(I64 v) {
+    U8[20] digits;
+    I64 mag = v;
+    if (v < 0) {
+        serial.serial_putc(45);
+        mag = 0 - v;
+    }
+    I64 k = text.dec_digits(mag, digits);
+    for i in 0..k {
+        serial.serial_putc(digits[i]);
+    }
+}
+
+export void print_hex64(U64 v) {
+    for i in 0..16 {
+        U64 shift = (60 - 4 * i) as U64;
+        serial.serial_putc(text.hex_digit((v >> shift) as U8));
+    }
+}
+
+export void print_record(in U8[_] name) {
+    I64 nbytes = trap.trap_record_len();
+    serial.serial_write(name);
+    serial.serial_write("\nfault: cint-core-1/fault/v2 ");
+    print_dec(nbytes);
+    serial.serial_write(" bytes\n");
+    for i in 0..nbytes {
+        U8 b = trap.trap_record_byte(i);
+        serial.serial_putc(text.hex_digit(b >> 4));
+        serial.serial_putc(text.hex_digit(b));
+    }
+    serial.serial_write("\n");
+}
+
+// Prints the 32 bytes at h[32 * slot ..] as 64 lowercase hex digits.
+export void print_hash[n](in U8[n] h, I64 slot) {
+    for i in 0..32 {
+        U8 b = h[32 * slot + i];
+        serial.serial_putc(text.hex_digit(b >> 4));
+        serial.serial_putc(text.hex_digit(b));
+    }
+}
+
+export void line_dec(in U8[_] label, I64 v) {
+    serial.serial_write(label);
+    print_dec(v);
+    serial.serial_write("\n");
+}
+// SPDX-License-Identifier: Apache-2.0

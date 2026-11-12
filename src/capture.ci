@@ -1,0 +1,118 @@
+import src.capture_api;
+import src.capture_format;
+
+// Stream metadata is recordable. Keys remain in private native slots.
+export struct Stream {
+    U8[64] header;
+    U8[16] previous;
+    U64 sequence;
+    I64 slot;
+    Bool writer;
+    Bool active;
+    Bool done;
+    Bool failed;
+}
+
+export Stream empty() {
+    Stream s;
+    for i in 0..64 { s.header[i] = 0; }
+    for i in 0..16 { s.previous[i] = 0; }
+    s.sequence = 0;
+    s.slot = 0;
+    s.writer = false;
+    s.active = false;
+    s.done = false;
+    s.failed = false;
+    return s;
+}
+
+export void abort(inout Stream[1] s) {
+    if (s[0].active) { capture_api.capture_release(s[0].slot); }
+    s[0].slot = 0;
+    s[0].active = false;
+    s[0].failed = true;
+}
+
+// On success the stream owns the slot. On refusal the caller retains it.
+export Bool begin(inout Stream[1] s, I64 slot, in U8[_] header,
+    in U8[_] revision, Bool writer) {
+    if (s[0].active || s[0].done || s[0].failed || slot <= 0) { return false; }
+    if (!capture_format.valid_header(header, revision)) { return false; }
+    I64 mode = 0;
+    if (writer) { mode = 1; }
+    if (capture_api.capture_match(slot, header[16..32], mode) != 1) { return false; }
+    for i in 0..64 { s[0].header[i] = header[i]; }
+    for i in 0..16 { s[0].previous[i] = 0; }
+    s[0].sequence = 0;
+    s[0].slot = slot;
+    s[0].writer = writer;
+    s[0].active = true;
+    return true;
+}
+
+void advance(inout Stream[1] s, in U8[_] tag, Bool final) {
+    for i in 0..16 { s[0].previous[i] = tag[i]; }
+    s[0].sequence = s[0].sequence + 1;
+    if (final) {
+        capture_api.capture_release(s[0].slot);
+        s[0].slot = 0;
+        s[0].active = false;
+        s[0].done = true;
+    }
+}
+
+// Returns bytes written, or -1 without output writes. Input mistakes are retryable.
+export I64 seal(inout Stream[1] s, in U8[_] plain, Bool final, inout U8[_] frame) {
+    if (!s[0].active || !s[0].writer || s[0].failed) { return -1; }
+    I64 n = len(plain);
+    if (n > 4096 || (final && n != 0) || (!final && n == 0)) { return -1; }
+    if (len(frame) < 48 + n) { return -1; }
+    if (s[0].sequence == 0xFFFFFFFFFFFFFFFF) { abort(s); return -1; }
+    U8[96] aad;
+    U8[4096] cipher;
+    U8[16] tag;
+    for i in 0..64 { aad[i] = s[0].header[i]; }
+    I64 made = capture_format.prefix(s[0].sequence, n, final, s[0].previous, aad[64..96]);
+    if (made != 32) { abort(s); return -1; }
+    if (capture_api.capture_seal(s[0].slot, s[0].sequence, aad, plain, cipher[0..n], tag) != 0) {
+        abort(s); return -1;
+    }
+    for i in 0..32 { frame[i] = aad[64 + i]; }
+    for i in 0..n { frame[32 + i] = cipher[i]; }
+    for i in 0..16 { frame[32 + n + i] = tag[i]; }
+    advance(s, tag, final);
+    return 48 + n;
+}
+
+// -2 needs more input; -1 closes a malformed stream. Neither return writes plaintext.
+export I64 open_frame(inout Stream[1] s, in U8[_] frame, inout U8[_] plain) {
+    if (!s[0].active || s[0].writer || s[0].failed) {
+        abort(s); return -1;
+    }
+    I64 n = capture_format.payload(frame);
+    if (n == -2) { return -2; }
+    if (n < 0) { abort(s); return -1; }
+    if (len(plain) < n) { return -1; }
+    if (s[0].sequence == 0xFFFFFFFFFFFFFFFF || capture_format.get64(frame[0..8]) != s[0].sequence) {
+        abort(s); return -1;
+    }
+    if (!capture_format.same(frame[16..32], s[0].previous)) { abort(s); return -1; }
+    U8[96] aad;
+    U8[4096] scratch;
+    for i in 0..64 { aad[i] = s[0].header[i]; }
+    for i in 0..32 { aad[64 + i] = frame[i]; }
+    if (capture_api.capture_open(s[0].slot, s[0].sequence, aad,
+        frame[32..32 + n], frame[32 + n..48 + n], scratch[0..n]) != 0) {
+        abort(s); return -1;
+    }
+    for i in 0..n { plain[i] = scratch[i]; }
+    advance(s, frame[32 + n..48 + n], n == 0);
+    return n;
+}
+
+export Bool finish(inout Stream[1] s) {
+    if (s[0].done && !s[0].failed) { return true; }
+    abort(s);
+    return false;
+}
+// SPDX-License-Identifier: Apache-2.0

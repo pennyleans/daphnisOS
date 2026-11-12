@@ -1,0 +1,113 @@
+// tests/dn51/fault_test.ci: DN-51 frames 23 and 25 (design answers 2026-11-12 08:23Z), hosted: the fault record a
+// desk terminal keeps (user/ci/terms.ci), the Fault window's record and keys (user/ci/kit/faultwin.ci) and the
+// "not answering" sheet's keys and presses (user/ci/kit/noanswer.ci).
+import user.ci.kit.tokens;
+import user.ci.kit.faultwin;
+import user.ci.kit.noanswer;
+import user.ci.terms;
+
+U8[64] got;
+
+Bool same(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+void feed(I64 s, in U8[_] t) {
+    for k in 0..len(t) { terms.feed(s, t[k]); }
+}
+
+test "the terminal keeps the record the runtime sends, field by field" {
+    terms.init(0, 80, 24);
+    assert(!terms.faulted(0));
+    feed(0, b"\x1b]7770;fault;E_OVERFLOW;add.checked.i32;2147483647, 1;2147483648;2147483647;hello.ci:7:14\x07");
+    feed(0, b"fault: E_OVERFLOW\r\n");
+    assert(terms.faulted(0));
+    assert(same(terms.fault_field(0, 0, got), b"E_OVERFLOW"));
+    assert(same(terms.fault_field(0, 1, got), b"add.checked.i32"));
+    assert(same(terms.fault_field(0, 2, got), b"2147483647, 1"));
+    assert(same(terms.fault_field(0, 3, got), b"2147483648"));
+    assert(same(terms.fault_field(0, 4, got), b"2147483647"));
+    assert(same(terms.fault_field(0, 5, got), b"hello.ci:7:14"));
+    terms.init(0, 80, 24);
+    assert(!terms.faulted(0));
+}
+
+U8[384] vals;
+I64[6] lens;
+
+void record(in U8[_] at) {
+    for f in 0..6 { lens[f] = 0; }
+    U8[10] c = b"E_OVERFLOW";
+    for k in 0..10 { vals[k] = c[k]; }
+    lens[0] = 10;
+    for k in 0..len(at) { vals[64 * 5 + k] = at[k]; }
+    lens[5] = len(at);
+    faultwin.open(b"hello", vals, lens);
+}
+
+test "the position splits at its last two colons; none without both numbers" {
+    record(b"dir:a/hello.ci:7:14");
+    I64[2] lc;
+    U8[64] p;
+    I64 n = faultwin.position(p, lc);
+    for k in 0..n { got[k] = p[k]; }
+    assert(same(n, b"dir:a/hello.ci"));
+    assert(lc[0] == 7 && lc[1] == 14);
+    record(b"hello.ci");
+    assert(faultwin.position(p, lc) == 0);
+    record(b"hello.ci:x:3");
+    n = faultwin.position(p, lc);
+    assert(lc[0] == 0);
+}
+
+test "Open in CVim takes Enter only when it can open; Esc closes; Close is blue otherwise" {
+    record(b"hello.ci:7:14");
+    assert(!faultwin.live());
+    assert(faultwin.key(28) == faultwin.CLOSE);
+    faultwin.source(7, 14, b"total = total + step", true);
+    assert(faultwin.live());
+    assert(faultwin.key(28) == faultwin.OPEN);
+    assert(faultwin.key(1) == faultwin.CLOSE);
+    assert(faultwin.key(15) == faultwin.STAY);      // the ring shows; the focus stays on Open in CVim
+    assert(faultwin.key(57) == faultwin.OPEN);
+    assert(faultwin.key(15) == faultwin.STAY);      // to Close
+    assert(faultwin.key(57) == faultwin.CLOSE);
+    faultwin.source(7, 14, b"total = total + step", false);
+    assert(faultwin.key(57) == faultwin.CLOSE);
+}
+
+test "not answering: Enter and Esc wait, Space takes the focus, the sheet blocks its window alone" {
+    noanswer.open(3, 100, 100, 600, 400, b"Edit");
+    assert(noanswer.blocks(3) && !noanswer.blocks(2));
+    assert(noanswer.key(28) == noanswer.WAIT);
+    assert(!noanswer.is_up());
+    noanswer.open(3, 100, 100, 600, 400, b"Edit");
+    assert(noanswer.key(1) == noanswer.WAIT);
+    noanswer.open(3, 100, 100, 600, 400, b"Edit");
+    assert(noanswer.key(57) == noanswer.WAIT);      // the focus starts on Wait
+    noanswer.open(3, 100, 100, 600, 400, b"Edit");
+    assert(noanswer.key(106) == noanswer.STAY);     // the first press shows the ring only
+    assert(noanswer.key(106) == noanswer.STAY);     // to Close Edit
+    assert(noanswer.key(28) == noanswer.WAIT);      // Enter still waits
+    noanswer.open(3, 100, 100, 600, 400, b"Edit");
+    assert(noanswer.key(15) == noanswer.STAY);
+    assert(noanswer.key(15) == noanswer.STAY);
+    assert(noanswer.key(57) == noanswer.END);
+}
+
+test "not answering: a press on Close NAME ends, on Wait waits, elsewhere stays" {
+    noanswer.open(1, 0, 0, 600, 400, b"Edit");
+    I64 ax = (600 - noanswer.W) / 2;
+    I64 ay = (400 - noanswer.H) / 2;
+    I64 bm = ay + noanswer.H - 14 - 18;              // the buttons' middle row
+    assert(noanswer.click(ax + 2, ay + 2) == noanswer.STAY);
+    assert(noanswer.click(ax + 20, bm) == noanswer.WAIT);
+    noanswer.open(1, 0, 0, 600, 400, b"Edit");
+    assert(noanswer.click(ax + noanswer.W - 20, bm) == noanswer.END);
+    assert(!noanswer.blocks(1));
+}
+// SPDX-License-Identifier: Apache-2.0

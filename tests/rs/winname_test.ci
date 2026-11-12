@@ -1,0 +1,111 @@
+// tests/rs/winname_test.ci: RG-1 (NAMES-28; note 28), every window by its app's approved name (user/ci/kit/winname.ci,
+// which hdesk.ci's win_name and win_text call): each app of the release list by each title its window can carry
+// (the comm `ced`, the member path `bin/ced`, either with an argument), in the bar and in the window lists. Run by
+// check.sh on its own line (`bar names:`) and with every tests/rs/*_test.ci.
+import user.ci.kit.winname;
+import user.ci.kit.apps;
+import user.ci.kit.icons3;
+
+Bool is(in U8[_] t, I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (t[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+// Whether a window titled t is named want in the bar and `want - /` in the window lists.
+Bool named(in U8[_] t, in U8[_] want) {
+    U8[96] d;
+    U8[96] w;
+    I64 n = winname.name(t, false, d);
+    if (!is(d, n, want)) { return false; }
+    for k in 0..len(want) { w[k] = want[k]; }
+    w[len(want)] = ' ';
+    w[len(want) + 1] = '-';
+    w[len(want) + 2] = ' ';
+    w[len(want) + 3] = '/';
+    I64 m = winname.text(t, false, b"/", d);
+    return is(d, m, w[0..len(want) + 4]);
+}
+
+test "every app of the release list by every title its window carries" {
+    assert(named(b"sh", b"Console") && named(b"bin/sh", b"Console") && named(b"cish", b"Console"));
+    assert(named(b"bin/cish", b"Console") && named(b"sh -c ls", b"Console"));
+    assert(named(b"ced", b"Edit") && named(b"bin/ced", b"Edit") && named(b"bin/ced /", b"Edit"));
+    assert(named(b"cview", b"View") && named(b"bin/cview", b"View") && named(b"bin/cview /a.png", b"View"));
+    assert(named(b"cless", b"Read") && named(b"bin/cless", b"Read") && named(b"bin/cless /etc", b"Read"));
+    assert(named(b"calc", b"Calc") && named(b"bin/calc", b"Calc"));
+    assert(named(b"cvim", b"CVim") && named(b"bin/cvim", b"CVim") && named(b"bin/cvim /", b"CVim"));
+    assert(named(b"finder", b"Index") && named(b"bin/finder", b"Index") && named(b"bin/finder /", b"Index"));
+    assert(named(b"fetch", b"Fetch") && named(b"bin/fetch", b"Fetch"));
+    assert(named(b"monitor", b"Monitor") && named(b"bin/monitor", b"Monitor"));
+    U8[96] d;
+    I64 n = winname.name(b"", true, d);
+    assert(is(d, n, b"Settings"));
+    n = winname.text(b"", true, b"/", d);
+    assert(is(d, n, b"Settings"));                     // the desk's own window: no variable
+}
+
+test "the app list's approved names, and Web Browser has no program for a window to carry" {
+    U8[32] f;
+    U8[32] p;
+    assert(apps.N == 11);
+    U8[74] want = b"Index|Console|Edit|CVim|Read|View|Calc|Monitor|Fetch|Settings|Web Browser|";
+    I64 at = 0;
+    for a in 0..apps.N {
+        I64 fn = apps.field(a, 0, f);
+        for k in 0..fn { assert(want[at + k] == f[k]); }
+        assert(want[at + fn] == '|');
+        at = at + fn + 1;
+    }
+    I64 wb = apps.N - 1;
+    assert(apps.field(wb, 1, p) == 0 && apps.field(9, 1, p) == 0);   // Web Browser and Settings: no program
+}
+
+test "Grants (frame 21) lists a Console running sh as Console, in gr_lines' 16-byte name" {
+    U8[16] nm;
+    I64 n = winname.name(b"sh", false, nm);              // the session shell's comm
+    assert(is(nm, n, b"Console"));
+    n = winname.name(b"bin/sh", false, nm);
+    assert(is(nm, n, b"Console"));
+    n = winname.name(b"sh /rs/t1", false, nm);           // a script the shell runs
+    assert(is(nm, n, b"Console"));
+    n = winname.name(b"cish", false, nm);
+    assert(is(nm, n, b"Console"));
+    U8[40] p;
+    assert(is(p, winname.prog(b"sh", p), b"/bin/cish"));  // one mapping: the program prog_path and shows_doc read
+    n = winname.name(b"bin/finder /", false, nm);
+    assert(is(nm, n, b"Index"));
+    n = winname.name(b"Settings", true, nm);
+    assert(is(nm, n, b"Settings"));
+}
+
+test "a program that is not an app keeps the kernel's name; ccalc is not Calc" {
+    assert(named(b"bin/cat", b"bin/cat") && named(b"cat", b"cat") && named(b"ccalc", b"ccalc"));
+    assert(named(b"shot", b"shot") && named(b"bin/sha256sum", b"bin/sha256sum"));
+    U8[40] p;
+    I64 n = winname.prog(b"bin/ced notes.txt", p);
+    assert(is(p, n, b"/bin/ced"));
+    n = winname.prog(b"sh", p);
+    assert(is(p, n, b"/bin/cish"));
+}
+
+test "every window's icon follows its program, as its name does (P2-b: CVim in a terminal is CVim's)" {
+    assert(winname.icon(b"cvim", false, true) == icons3.CVIM);
+    assert(winname.icon(b"bin/cvim /", false, true) == icons3.CVIM);
+    assert(winname.icon(b"ced", false, true) == icons3.EDITOR);
+    assert(winname.icon(b"bin/cless /etc", false, true) == icons3.READER);
+    assert(winname.icon(b"bin/monitor", false, false) == icons3.MONITOR);
+    assert(winname.icon(b"bin/cview /a.png", false, false) == icons3.IMAGES);
+    assert(winname.icon(b"sh", false, true) == icons3.TERMINAL);       // the session shell: Console's
+    assert(winname.icon(b"bin/cat", false, true) == icons3.TERMINAL);  // no app's program, in a terminal
+    assert(winname.icon(b"bin/cat", false, false) == icons3.PROGRAM);  // no app's program, a window of its own
+    assert(winname.icon(b"", true, false) == icons3.SETTINGS);
+    for a in 0..apps.N {                                                // every app with a program, by its program
+        U8[40] p;
+        I64 pn = apps.field(a, 1, p);
+        if (pn > 0) { assert(winname.icon(p[1..pn], false, apps.runs_in(a) == apps.TERM) == apps.icon(a)); }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

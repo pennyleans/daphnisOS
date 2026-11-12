@@ -1,0 +1,373 @@
+// tests/kr/inq_test.ci: RS-KR wired (docs/specs/2026-11-11-rs-rel-s1-units.md section 2), hosted: the input path of
+// src/inq.ci, from the PS/2 keyboard's set-1 bytes and the USB keyboard's events at timer ticks (10 ms each) to the
+// events a reader of /dev/input/event0 gets, repeats included. src/input.ci feeds it (the rings, xhci, the tick at each
+// pull) and is glue around it. tests/kr/mutants.py breaks each rule here once; a test of this file catches each.
+
+import src.inq;
+import src.keyrep;
+
+const I64 A = 30;          // KEY_A, set-1 make 0x1E, break 0x9E
+const I64 UP = 103;        // KEY_UP, set-1 E0 48
+const I64 SHIFT = 42;      // KEY_LEFTSHIFT, set-1 make 0x2A, break 0xAA
+const I64 CAPS = 58;       // KEY_CAPSLOCK, set-1 make 0x3A, break 0xBA
+const I64 CTRL = 29;       // KEY_LEFTCTRL
+
+// Event i of the queue is type t, code c, value v.
+Bool ev(I64 i, I64 t, I64 c, I64 v) {
+    U64 e = inq.at(i);
+    return (e & 0xFFFF) == t as U64 && ((e >> 16) & 0xFFFF) == c as U64 && (e >> 32) == v as U64;
+}
+
+// Exactly one key event, code c and value v, and its EV_SYN are queued; then the queue is read out.
+Bool one(I64 c, I64 v) {
+    Bool ok = inq.queued() == 2 && ev(0, inq.EV_KEY, c, v) && ev(1, inq.EV_SYN, 0, 0);
+    inq.take(inq.queued());
+    return ok;
+}
+
+test "a USB key held repeats at the delay, then one each period, as presses; its release ends it" {
+    assert(keyrep.set(500, 33));
+    assert(inq.usb_key(A, 1, 1000));
+    assert(one(A, 1));
+    assert(!inq.repeat(1000));
+    assert(!inq.repeat(1049));                    // 490 ms
+    assert(inq.queued() == 0);
+    assert(inq.repeat(1050));                     // 500 ms: the first
+    assert(one(A, 1));
+    assert(!inq.repeat(1053));                    // 530 ms: the second is due at 533
+    assert(inq.repeat(1054));
+    assert(one(A, 1));
+    assert(inq.repeat(1100));                     // a late pull: one, not the 14 it missed
+    assert(one(A, 1));
+    assert(!inq.repeat(1100));
+    assert(inq.usb_key(A, 0, 1101));
+    assert(one(A, 0));
+    for t in 1101..1400 {
+        assert(!inq.repeat(t));
+    }
+    assert(inq.queued() == 0);
+}
+
+test "PS/2: the keyboard's own make repeat is dropped, and the repeat comes from the tick instead" {
+    assert(keyrep.set(500, 33));
+    assert(inq.decode(0x1E, 2000) == A);          // the make: a press, given back for K-12's stamp
+    assert(one(A, 1));
+    for t in 2003..2050 {
+        assert(inq.decode(0x1E, t) == 0);         // the keyboard's typematic makes: dropped, no K-12 stamp
+    }
+    assert(inq.queued() == 0);
+    assert(inq.repeat(2050));                     // the kernel's repeat at 500 ms
+    assert(one(A, 1));
+    assert(inq.decode(0x9E, 2051) == 0);          // the break: a release, no stamp
+    assert(one(A, 0));
+    assert(!inq.repeat(2200));
+    assert(inq.decode(0xE0, 2300) == 0);          // an E0 key, the arrow up, held the same way
+    assert(inq.decode(0x48, 2300) == UP);
+    assert(one(UP, 1));
+    assert(inq.decode(0xE0, 2340) == 0);
+    assert(inq.decode(0x48, 2340) == 0);
+    assert(inq.queued() == 0);
+    assert(inq.repeat(2350));
+    assert(one(UP, 1));
+    assert(inq.decode(0xE0, 2351) == 0);
+    assert(inq.decode(0xC8, 2351) == 0);
+    assert(one(UP, 0));
+    assert(inq.decode(0x9E, 2400) == 0);          // a break of a key not down: dropped
+    assert(inq.queued() == 0);
+}
+
+test "RS-SHOT: PS/2 Print (E0 2A E0 37) and Alt+Print (set 1's SysRq, 0x54) are KEY_SYSRQ, the desk's Print" {
+    assert(keyrep.set(500, 33));
+    assert(inq.decode(0xE0, 3000) == 0);          // the fake shift before Print: dropped
+    assert(inq.decode(0x2A, 3000) == 0);
+    assert(inq.decode(0xE0, 3000) == 0);
+    assert(inq.decode(0x37, 3000) == 99);
+    assert(one(99, 1));
+    assert(inq.decode(0xE0, 3001) == 0);
+    assert(inq.decode(0xB7, 3001) == 0);
+    assert(one(99, 0));
+    assert(inq.decode(0xE0, 3001) == 0);          // and the fake shift's break: dropped
+    assert(inq.decode(0xAA, 3001) == 0);
+    assert(inq.queued() == 0);
+    assert(inq.decode(0x54, 3100) == 99);         // with Alt held the keyboard sends SysRq alone
+    assert(one(99, 1));
+    assert(inq.decode(0xD4, 3101) == 0);
+    assert(one(99, 0));
+    assert(inq.decode(0x37, 3200) == 55);         // 0x37 with no E0 is the keypad's *, as before
+    assert(one(55, 1));
+    assert(inq.decode(0xB7, 3201) == 0);
+    assert(one(55, 0));
+}
+
+test "a modifier or a lock key held never repeats; a key typed under it does, and goes on after it is let go" {
+    assert(keyrep.set(500, 33));
+    assert(inq.decode(0x2A, 3000) == SHIFT);
+    assert(one(SHIFT, 1));
+    for t in 3000..3300 {
+        assert(!inq.repeat(t));
+        assert(inq.decode(0x2A, t) == 0);         // its typematic makes dropped too
+    }
+    assert(inq.queued() == 0);
+    assert(inq.decode(0x3A, 3300) == CAPS);       // Caps Lock held: toggles once, never again
+    assert(one(CAPS, 1));
+    for t in 3300..3600 {
+        assert(!inq.repeat(t));
+    }
+    assert(inq.decode(0xBA, 3600) == 0);
+    assert(one(CAPS, 0));
+    assert(inq.usb_key(CTRL, 1, 3600));           // the USB keyboard's Ctrl
+    assert(one(CTRL, 1));
+    for t in 3600..3900 {
+        assert(!inq.repeat(t));
+    }
+    assert(inq.decode(0x1E, 3900) == A);          // A under Shift and Ctrl
+    assert(one(A, 1));
+    assert(inq.repeat(3950));
+    assert(one(A, 1));
+    assert(inq.decode(0xAA, 3960) == 0);          // Shift let go: A goes on
+    assert(one(SHIFT, 0));
+    assert(inq.usb_key(CTRL, 0, 3961));
+    assert(one(CTRL, 0));
+    assert(inq.repeat(3984));                     // 840 ms: the 11th, due at 830
+    assert(one(A, 1));
+    assert(inq.decode(0x9E, 3985) == 0);
+    assert(one(A, 0));
+    assert(!inq.repeat(4100));
+}
+
+test "the desk's EVIOCSREP values take effect on the next hold" {
+    assert(keyrep.set(500, 33));
+    assert(inq.usb_key(A, 1, 5000));
+    assert(one(A, 1));
+    assert(!inq.repeat(5049));
+    assert(inq.repeat(5050));
+    assert(one(A, 1));
+    assert(inq.usb_key(A, 0, 5051));
+    assert(one(A, 0));
+    assert(keyrep.set(250, 25));                  // the Keyboard page: delay 250, 40 a second
+    assert(inq.decode(0x1E, 5100) == A);
+    assert(one(A, 1));
+    assert(!inq.repeat(5124));                    // 240 ms
+    assert(inq.repeat(5125));                     // 250 ms
+    assert(one(A, 1));
+    assert(!inq.repeat(5127));                    // 270 ms: the second is due at 275
+    assert(inq.repeat(5128));
+    assert(one(A, 1));
+    assert(inq.decode(0x9E, 5129) == 0);
+    assert(one(A, 0));
+    assert(!keyrep.set(50, 25));                  // out of range: nothing changes
+    assert(inq.usb_key(A, 1, 5200));
+    assert(one(A, 1));
+    assert(!inq.repeat(5224));
+    assert(inq.repeat(5225));
+    assert(one(A, 1));
+    assert(inq.usb_key(A, 0, 5226));
+    assert(one(A, 0));
+    assert(keyrep.set(500, 33));
+}
+
+test "a USB keyboard gone: its empty report releases its keys, the reset ends any repeat, every key keeps its release" {
+    assert(keyrep.set(500, 33));
+    assert(inq.decode(0x2A, 6000) == SHIFT);      // Shift held on the PS/2 keyboard
+    assert(one(SHIFT, 1));
+    assert(inq.usb_key(A, 1, 6001));              // A held on the USB keyboard
+    assert(one(A, 1));
+    assert(inq.repeat(6051));
+    assert(one(A, 1));
+    assert(inq.usb_key(A, 0, 6052));              // xhci's gone(0): the empty report, then keyrep.reset()
+    assert(one(A, 0));
+    keyrep.reset();
+    for t in 6052..6400 {
+        assert(!inq.repeat(t));
+    }
+    assert(inq.decode(0xAA, 6400) == 0);          // Shift's release still reaches the reader
+    assert(one(SHIFT, 0));
+    assert(inq.decode(0x1E, 6500) == A);          // A held on the PS/2 keyboard, repeating
+    assert(one(A, 1));
+    assert(inq.usb_key(SHIFT, 1, 6501));          // the USB keyboard holds only Shift
+    assert(one(SHIFT, 1));
+    assert(inq.repeat(6550));
+    assert(one(A, 1));
+    assert(inq.usb_key(SHIFT, 0, 6551));          // the USB keyboard gone: its Shift up, then the reset
+    assert(one(SHIFT, 0));
+    keyrep.reset();
+    for t in 6551..6900 {
+        assert(!inq.repeat(t));                   // A repeats no more until its next press
+    }
+    assert(inq.decode(0x9E, 6900) == 0);          // and its release still reaches the reader
+    assert(one(A, 0));
+}
+
+test "presses fill the queue up to the places kept for their releases; past that a press is refused, and every release fits" {
+    assert(keyrep.set(500, 33));
+    inq.take(inq.queued());
+    I64 lost0 = inq.dropped();
+    for c in 2..34 {
+        assert(inq.usb_key(c, 1, 7000));          // 32 keys down: 64 events, and 64 places kept for their releases
+    }
+    assert(inq.queued() == 64 && inq.room() == 0);
+    assert(!inq.usb_key(34, 1, 7000));            // no room: refused and counted
+    assert(inq.decode(0x2C, 7001) == 0);          // Z on the PS/2 keyboard: refused too, and no K-12 stamp
+    assert(inq.queued() == 64 && inq.dropped() == lost0 + 2);
+    assert(inq.decode(0x02, 7002) == 0);          // the keyboard's own repeat of a key down: dropped, not a loss
+    assert(inq.dropped() == lost0 + 2);
+    assert(!inq.repeat(7100));                    // key 33's repeat is due, but the places left are its release's
+    assert(inq.queued() == 64);
+    assert(!inq.usb_key(34, 0, 7101));            // the refused presses' releases go with them
+    assert(inq.decode(0xAC, 7101) == 0);
+    assert(inq.queued() == 64);
+    for c in 2..34 {
+        assert(inq.usb_key(c, 0, 7102));          // every release fits
+    }
+    assert(inq.queued() == inq.QUEUE && inq.dropped() == lost0 + 2);
+    assert(ev(0, inq.EV_KEY, 2, 1) && ev(63, inq.EV_SYN, 0, 0) && ev(64, inq.EV_KEY, 2, 0) && ev(126, inq.EV_KEY, 33, 0));
+    inq.take(10);
+    assert(inq.queued() == 118 && ev(0, inq.EV_KEY, 7, 1));
+    assert(inq.at(118) == 0);
+    inq.take(1000);
+    assert(inq.queued() == 0 && inq.room() == inq.QUEUE);
+    assert(!inq.repeat(7200));                    // nothing held
+}
+
+I64[256] bal;       // a key's presses less its releases, as the reader reads them
+
+// The reader reads out up to n events: true when no key comes pressed twice with no release between, and none comes
+// released without its press.
+Bool reads(I64 n) {
+    I64 k = n;
+    if (k > inq.queued()) {
+        k = inq.queued();
+    }
+    Bool ok = true;
+    for i in 0..k {
+        U64 e = inq.at(i);
+        I64 c = ((e >> 16) & 0xFFFF) as I64;
+        if ((e & 0xFFFF) == 1 && c < 256) {
+            if ((e >> 32) == 1) {
+                ok = ok && bal[c] == 0;
+                bal[c] = 1;
+            } else {
+                ok = ok && bal[c] == 1;
+                bal[c] = 0;
+            }
+        }
+    }
+    inq.take(k);
+    return ok;
+}
+
+test "after an overflow every press the reader gets has its release, and no release comes without its press" {
+    assert(keyrep.set(500, 33));
+    inq.take(inq.queued());
+    I64 lost0 = inq.dropped();
+    for w in 0..6 {                               // a desk that stalls while both keyboards type, reading a little
+        for c in 2..40 {
+            _ = inq.usb_key(c, 1, 9000 + w);      // 38 presses: the first fill the room, the rest are refused
+        }
+        _ = inq.decode(0x10 + w, 9000 + w);       // and one on the PS/2 keyboard
+        assert(reads(7));
+        for c in 2..40 {
+            if (c % 2 == w % 2) {
+                _ = inq.usb_key(c, 0, 9000 + w);  // half let go, refused or not
+            }
+        }
+        _ = inq.decode(0x90 + w, 9000 + w);
+        assert(reads(20));
+    }
+    for c in 2..40 {
+        _ = inq.usb_key(c, 0, 9100);              // all let go
+    }
+    assert(reads(1000));
+    assert(inq.queued() == 0 && keyrep.keys_down() == 0 && inq.dropped() > lost0);
+    for c in 0..256 {
+        assert(bal[c] == 0);
+    }
+}
+
+test "a mouse button press past the room waits for the next report that holds it; its release always fits" {
+    inq.usb_mouse(0, 0, 0, 0);                    // every button up
+    inq.take(inq.queued());
+    I64 lost0 = inq.dropped();
+    for c in 2..34 {
+        assert(inq.usb_key(c, 1, 9500));
+    }
+    inq.take(1);
+    assert(inq.queued() == 63 && inq.room() == 1);
+    inq.usb_mouse(1, 4, 4, 0);                    // the left down and a motion: none of it fits
+    assert(inq.queued() == 63 && inq.dropped() == lost0 + 3);
+    inq.take(4);
+    inq.usb_mouse(1, 0, 0, 0);                    // still held: the press comes now
+    assert(inq.queued() == 61 && ev(59, inq.EV_KEY, 0x110, 1) && ev(60, inq.EV_SYN, 0, 0) && inq.room() == 1);
+    inq.usb_mouse(1, 3, 0, 0);                    // a motion with no room: dropped
+    assert(inq.queued() == 61 && inq.dropped() == lost0 + 4);
+    inq.usb_mouse(0, 3, 3, 0);                    // the release fits, then one motion, then the EV_SYN
+    assert(inq.queued() == 64 && ev(61, inq.EV_KEY, 0x110, 0) && ev(62, inq.EV_REL, 0, 3) && ev(63, inq.EV_SYN, 0, 0));
+    assert(inq.dropped() == lost0 + 5 && inq.room() == 0);
+    for c in 2..34 {
+        assert(inq.usb_key(c, 0, 9501));
+    }
+    assert(inq.queued() == inq.QUEUE && inq.dropped() == lost0 + 5);
+    inq.take(1000);
+}
+
+// The number after label in line[0..n), or -1 when label is not there.
+I64 number_after[l](in U8[l] label, in U8[200] line, I64 n) {
+    for i in 0..n {
+        if (i + l <= n) {
+            Bool same = true;
+            for j in 0..l {
+                if (line[i + j] != label[j]) {
+                    same = false;
+                }
+            }
+            if (same) {
+                I64 v = 0;
+                I64 k = i + l;
+                while (k < n && (line[k] as I64) >= 48 && (line[k] as I64) <= 57) {
+                    v = 10 * v + (line[k] as I64) - 48;
+                    k += 1;
+                }
+                return v;
+            }
+        }
+    }
+    return -1;
+}
+
+test "the drop line says what was dropped: key presses, mouse events, the queue's, the rings' bytes, the tile queues'" {
+    inq.take(inq.queued());
+    U8[200] line;
+    I64 n = inq.drop_line(0, 0, line);
+    I64 p0 = number_after("key presses ", line, n);
+    I64 m0 = number_after("mouse events ", line, n);
+    assert(p0 >= 0 && m0 >= 0);
+    for c in 2..34 {
+        assert(inq.usb_key(c, 1, 9800));
+    }
+    assert(!inq.usb_key(34, 1, 9800));            // a press refused
+    inq.usb_mouse(0, 0, 9, 0);                    // a motion refused
+    n = inq.drop_line(17, 5, line);
+    assert(number_after("daphnis: input dropped: key presses ", line, n) == p0 + 1);
+    assert(number_after(", mouse events ", line, n) == m0 + 1);
+    assert(number_after(", queue events ", line, n) == 0);
+    assert(number_after(", ring bytes ", line, n) == 17);
+    assert(number_after(", tile events ", line, n) == 5);
+    assert(line[n - 1] == 10 && number_after("daphnis: input dropped: ", line, n) == 0);
+    for c in 2..34 {
+        assert(inq.usb_key(c, 0, 9801));
+    }
+    inq.take(1000);
+}
+
+test "the mouse: a PS/2 packet and a USB report give their events with no repeat" {
+    inq.decode_mouse(0x09);                       // left down, no motion
+    inq.decode_mouse(0);
+    inq.decode_mouse(0);
+    assert(one(0x110, 1));
+    for t in 8000..8200 {
+        assert(!inq.repeat(t));
+    }
+    inq.usb_mouse(0, 0, 0, 0);                    // left up
+    assert(one(0x110, 0));
+}
+// SPDX-License-Identifier: Apache-2.0

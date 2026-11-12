@@ -1,0 +1,44 @@
+// user/ci/rmdir.ci: rmdir [-p] DIR... (docs/specs/2026-11-06-c-core.md, CT-2): each DIR removed when it is an empty
+// directory. -p then removes each directory named on DIR's way, the nearest first (a/b/c: a/b/c, a/b, a), and stops
+// at the first that cannot go.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+// The end of p[0..e]'s directory part: its trailing '/' and last component dropped; 0 when none is left.
+I64 up(in U8[_] p, I64 e) {
+    I64 k = e;
+    while (k > 0 && p[k - 1] == '/') { k = k - 1; }
+    while (k > 0 && p[k - 1] != '/') { k = k - 1; }
+    while (k > 0 && p[k - 1] == '/') { k = k - 1; }
+    return k;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"rmdir");
+    args.parse(a, b"p", b"");
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    for i in 0..n {
+        I64 s = args.op_start(i);
+        I64 e = args.op_stop(a, i);
+        Bool going = true;
+        while (going) {
+            I64 r = corectl.co_rmdir(a[s..e]);
+            if (r < 0) {
+                msg.file(a[s..e], 0 - r);
+                going = false;
+            } else if (!args.has('p')) {
+                going = false;
+            } else {
+                e = s + up(a[s..e], e - s);
+                if (e == s) { going = false; }
+            }
+        }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

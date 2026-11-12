@@ -1,0 +1,57 @@
+// user/ci/mkdir.ci: mkdir [-p] DIR... (docs/specs/2026-11-06-c-core.md, CT-2): each DIR made with mode 0777 less the
+// umask. -p makes each missing directory on the way first and takes a DIR that is a directory already. -m is refused
+// until C-2 (K4: chmod; a mode given here would still pass through the umask).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 EEXIST = 17;
+const I64 ENOTDIR = 20;
+
+I64[16] rt;
+
+Bool is_dir(in U8[_] p) {
+    return corectl.co_stat(p, 1, rt) == 0 && (rt[corectl.ST_MODE] & corectl.S_IFMT) == corectl.S_IFDIR;
+}
+
+// p[0..e] made; with parents its missing directories first. False after `mkdir: p: reason`.
+Bool make(in U8[_] p, Bool parents) {
+    I64 e = len(p);
+    if (parents) {
+        I64 i = 1;
+        while (i < e) {
+            if (p[i] == '/' && p[i - 1] != '/') {
+                if (!is_dir(p[0..i])) {
+                    I64 r = corectl.co_mkdir(p[0..i], 0x1FF);
+                    if (r < 0 && !(r == 0 - EEXIST && is_dir(p[0..i]))) {
+                        msg.file(p[0..i], 0 - r);
+                        return false;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+    I64 r = corectl.co_mkdir(p, 0x1FF);
+    if (r == 0 - EEXIST && parents && is_dir(p)) { return true; }
+    if (r < 0) {
+        msg.file(p, 0 - r);
+        return false;
+    }
+    return true;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"mkdir");
+    args.parse(a, b"p", b"");
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    for i in 0..n {
+        _ = make(a[args.op_start(i)..args.op_stop(a, i)], args.has('p'));
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

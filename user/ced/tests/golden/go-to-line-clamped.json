@@ -1,0 +1,27 @@
+{
+  "id": "go-to-line-clamped",
+  "rules": [
+    "KEY-8"
+  ],
+  "text": "a\nb\n",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "07",
+    "3939",
+    "0d"
+  ],
+  "expect": {
+    "text": "a\nb\n",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

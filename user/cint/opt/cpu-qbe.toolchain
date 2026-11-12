@@ -1,0 +1,21 @@
+cint-toolchain-1
+leg gcc
+cc /nonexistent-c-driver
+compiler_sources /home/opt/cint/compiler.cisrc
+executable_sha256 76fc4a18b65f359bcb2fae27ee3dbffe05b81577c46011772dc630d7151c27c5
+host Daphnis
+include /home/opt/cint/include
+runtime_object /home/opt/cint/libci.a
+flag -std=c17
+runtime_source /home/opt/cint/rt/cint_rt.c
+backend cpu-qbe
+qbe /home/opt/cint/qbe
+qbe_commit c0818978acec60ebb6167fade60fb7012cbf20ca
+qbe_sha256 6691f76ae3141e86858ecf5f7d7e113fc026a478d2565be0bec8940a80b1f569
+target amd64_sysv
+assembler /home/opt/cint/as
+linker /home/opt/cint/ld
+link_before /home/opt/cint/musl/crt1.o
+link_before /home/opt/cint/musl/crti.o
+link_after /home/opt/cint/musl/libc.a
+link_after /home/opt/cint/musl/crtn.o

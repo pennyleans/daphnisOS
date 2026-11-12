@@ -1,0 +1,54 @@
+// user/ci/opl/rate.ci: the OPL3's chip rate to 48,000 Hz (docs/specs/2026-11-06-au-audio.md section 4a), by integer
+// linear interpolation over an exact phase. Output frame k sits at chip sample k * 14,318,180 / 13,824,000
+// (13,824,000 = 288 x 48,000), so the phase is a whole part and a remainder of 13,824,000 and never drifts. The
+// chip runs faster than the output, so each chip sample gives at most one frame.
+//   rate_reset(); then rate_push(l, r, f) for each chip sample: 1 and the frame in f[0], f[1], or 0.
+
+export const I64 OUT_RATE = 48000;
+const I64 DEN = 13824000;      // 288 x 48,000
+const I64 NUM = 14318180;      // the chip's clock: chip samples a frame = NUM / DEN
+
+I64 n = 0;          // chip samples pushed
+I64 base = 0;       // the chip sample under the next frame
+I64 frac = 0;       // its remainder, 0 <= frac < DEN
+I64 pl = 0;         // chip sample n - 1, left and right
+I64 pr = 0;
+
+export void rate_reset() {
+    n = 0;
+    base = 0;
+    frac = 0;
+    pl = 0;
+    pr = 0;
+}
+
+I64 lerp(I64 a, I64 b) {
+    return a + (b - a) * frac / DEN;
+}
+
+export I64 rate_push(I64 l, I64 r, inout I64[_] f) {
+    I64 got = 0;
+    if (n >= 1 && base == n - 1) {
+        f[0] = lerp(pl, l);
+        f[1] = lerp(pr, r);
+        got = 1;
+        base = base + 1;
+        frac = frac + (NUM - DEN);
+        if (frac >= DEN) {
+            frac = frac - DEN;
+            base = base + 1;
+        }
+    }
+    pl = l;
+    pr = r;
+    n = n + 1;
+    return got;
+}
+
+// The frames rate_push gives for `samples` chip samples: frame k needs chip sample floor(k * NUM / DEN) + 1, so
+// the count is the k below (samples - 1) * DEN / NUM.
+export I64 rate_frames(I64 samples) {
+    if (samples < 1) { return 0; }
+    return ((samples - 1) * DEN + NUM - 1) / NUM;
+}
+// SPDX-License-Identifier: Apache-2.0

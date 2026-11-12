@@ -1,0 +1,28 @@
+// user/ci/msha.ci: SHA-256 in cint over 4 MiB in ring 3, the measure that sizes the stage R chain
+// (docs/specs/2026-11-05-r-desync.md section 5). Prints the digest, which the oracle compares; the
+// time is read by hand (the virtual clock under Daphnis does not run with the machine).
+import src.sha256;
+
+U8[4096] chunk;
+U8[32] digest;
+
+// The 4 MiB is streamed through a 4 KiB module array (a module array holds at most 65,536
+// elements): byte i is (i * 7 + i / 256) & 255.
+void main() {
+    sha256.Sha256[1] state;
+    sha256.sha_init(state);
+    for k in 0..1024 {
+        for j in 0..4096 {
+            I64 i = k * 4096 + j;
+            chunk[j] = ((i * 7 + (i >> 8)) & 255) as U8;
+        }
+        sha256.sha_update(state, chunk, 0, 4096);
+    }
+    sha256.sha_final(state, digest);
+    "msha: 4 MiB sha256 ";
+    for i in 0..32 {
+        "{digest[i]:02x}";
+    }
+    "\n";
+}
+// SPDX-License-Identifier: Apache-2.0

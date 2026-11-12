@@ -1,0 +1,414 @@
+// user/ci/cish/fmt.ci: `echo` and `printf` (CS-2), written to descriptor 1 through one buffer.
+//   echo ARG...      the arguments, a blank between each, then a newline. No options and no backslash escapes:
+//                    the busybox ash the oracle runs does the same (spec section 10).
+//   printf FORMAT [ARG...]   XCU printf: the escapes \\ \a \b \e \f \n \r \t \v \c \NNN \xHH; the conversions
+//                    %d %i %o %u %x %X %c %s %b %% with the flags - + space # 0, a width and a precision (digits or
+//                    *); the format again while arguments remain. Numbers are checked I64: blanks before, a sch,
+//                    0x hex, 0 octal, or 'C for C's code; anything else says `invalid number` and is 0, status 1.
+//                    The floating conversions are refused by name (gate 3: no floating point anywhere).
+import user.ci.cish.msg;
+
+U8[4096] buf;
+I64 n = 0;
+Bool broken = false;   // a write failed
+Bool stop = false;     // \c: no more output
+I64 st = 0;
+
+void flush() {
+    if (n > 0) {
+        if (!msg.write_all(1, buf[0..n])) { broken = true; }
+        n = 0;
+    }
+}
+
+void put(U8 c) {
+    if (n == 4096) { flush(); }
+    buf[n] = c;
+    n = n + 1;
+}
+
+void puts(in U8[_] s) {
+    for i in 0..len(s) { put(s[i]); }
+}
+
+void start() {
+    n = 0;
+    broken = false;
+    stop = false;
+    st = 0;
+}
+
+I64 finish() {
+    flush();
+    if (broken) { return 1; }
+    return st;
+}
+
+export I64 echo(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    start();
+    for i in 1..nf {
+        if (i > 1) { put(' '); }
+        puts(ab[fo[i]..fe[i]]);
+    }
+    put('\n');
+    return finish();
+}
+
+Bool octal(U8 c) { return c >= '0' && c <= '7'; }
+
+I64 hex(U8 c) {
+    if (c >= '0' && c <= '9') { return (c - '0') as I64; }
+    if (c >= 'a' && c <= 'f') { return (c - 'a') as I64 + 10; }
+    if (c >= 'A' && c <= 'F') { return (c - 'A') as I64 + 10; }
+    return -1;
+}
+
+// The escape at s[i] (a backslash) into dst at k, in a format (bare: \NNN is up to three digits) or in a %b
+// argument (\0NNN, or \NNN). Returns the index after it; sets stop at \c. The length written goes to wrote.
+I64 wrote = 0;
+
+I64 escape(in U8[_] s, I64 i, Bool bare, inout U8[_] dst, I64 k) {
+    wrote = 0;
+    if (i + 1 >= len(s)) {
+        dst[k] = '\\';
+        wrote = 1;
+        return i + 1;
+    }
+    U8 c = s[i + 1];
+    I64 v = -1;
+    I64 j = i + 2;
+    if (c == '\\') { v = 92; }
+    if (c == 'a') { v = 7; }
+    if (c == 'b') { v = 8; }
+    if (c == 'e') { v = 27; }
+    if (c == 'f') { v = 12; }
+    if (c == 'n') { v = 10; }
+    if (c == 'r') { v = 13; }
+    if (c == 't') { v = 9; }
+    if (c == 'v') { v = 11; }
+    if (c == 'c') {
+        stop = true;
+        return len(s);
+    }
+    if (octal(c)) {
+        j = i + 1;
+        if (!bare && c == '0') { j = i + 2; }
+        I64 e = j + 3;
+        v = 0;
+        while (j < len(s) && j < e && octal(s[j])) {
+            v = v * 8 + (s[j] - '0') as I64;
+            j = j + 1;
+        }
+        v = v & 0xFF;
+    }
+    if (c == 'x' && i + 2 < len(s) && hex(s[i + 2]) >= 0) {
+        v = 0;
+        j = i + 2;
+        while (j < len(s) && j < i + 4 && hex(s[j]) >= 0) {
+            v = v * 16 + hex(s[j]);
+            j = j + 1;
+        }
+    }
+    if (v < 0) {
+        dst[k] = '\\';
+        dst[k + 1] = c;
+        wrote = 2;
+        return i + 2;
+    }
+    dst[k] = v as U8;
+    wrote = 1;
+    return j;
+}
+
+void say_number(in U8[_] f) {
+    flush();
+    msg.begin();
+    msg.text(b"printf: invalid number '");
+    msg.text(f);
+    msg.text(b"'");
+    msg.send();
+    st = 1;
+}
+
+// f as a checked I64 (see the head), or 0 and status 1 (said).
+I64 number(in U8[_] f) {
+    if (len(f) == 0) { return 0; }
+    if (f[0] == '\'' || f[0] == '"') {
+        if (len(f) < 2) { return 0; }
+        return f[1] as I64;
+    }
+    I64 i = 0;
+    while (i < len(f) && (f[i] == ' ' || f[i] == '\t' || f[i] == '\n')) { i = i + 1; }
+    Bool neg = false;
+    if (i < len(f) && (f[i] == '-' || f[i] == '+')) {
+        neg = f[i] == '-';
+        i = i + 1;
+    }
+    U64 base = 10;
+    if (i + 1 < len(f) && f[i] == '0' && (f[i + 1] == 'x' || f[i + 1] == 'X')) {
+        base = 16;
+        i = i + 2;
+    } else if (i < len(f) && f[i] == '0') {
+        base = 8;
+    }
+    I64 first = i;
+    U64 m = 0;
+    U64 cap = 9223372036854775807;
+    if (neg) { cap = cap + 1; }
+    while (i < len(f) && hex(f[i]) >= 0 && (hex(f[i]) as U64) < base) {
+        U64 d = hex(f[i]) as U64;
+        if (m > (cap - d) / base) {
+            say_number(f);
+            return 0;
+        }
+        m = m * base + d;
+        i = i + 1;
+    }
+    if (i == first || i != len(f)) {
+        say_number(f);
+        return 0;
+    }
+    if (neg) {
+        if (m == cap) { return -9223372036854775807 - 1; }
+        return 0 - (m as I64);
+    }
+    return m as I64;
+}
+
+// One conversion: its pieces.
+Bool left = false;
+Bool plus = false;
+Bool space = false;
+Bool alt = false;
+Bool zero = false;
+I64 width = 0;
+I64 prec = -1;
+
+void pad(I64 k) {
+    for i in 0..k { put(' '); }
+}
+
+// An integer v by conversion c.
+void integer(I64 v, U8 c) {
+    U64 base = 10;
+    if (c == 'o') { base = 8; }
+    if (c == 'x' || c == 'X') { base = 16; }
+    Bool sgn = c == 'd' || c == 'i';
+    U64 m = v as% U64;
+    U8 sch = 0;
+    if (sgn && v < 0) {
+        m = 9223372036854775808;
+        if (v > -9223372036854775807 - 1) { m = (0 - v) as U64; }
+        sch = '-';
+    } else if (sgn && plus) {
+        sch = '+';
+    } else if (sgn && space) {
+        sch = ' ';
+    }
+    U8[24] d;
+    I64 nd = 0;
+    while (m > 0) {
+        U64 r = m % base;
+        U8 ch = (r as U8) + 48;
+        if (r >= 10 && c == 'x') { ch = (r as U8) + 87; }
+        if (r >= 10 && c == 'X') { ch = (r as U8) + 55; }
+        d[nd] = ch;
+        nd = nd + 1;
+        m = m / base;
+    }
+    I64 digits = nd;
+    if (prec < 0 && nd == 0) { digits = 1; }
+    if (prec > digits) { digits = prec; }
+    I64 pre = 0;   // the prefix: 0x, 0X, or the zero of #o
+    if (alt && (c == 'x' || c == 'X') && nd > 0) { pre = 2; }
+    if (alt && c == 'o' && digits <= nd) { digits = nd + 1; }
+    I64 body = digits + pre;
+    if (sch != 0) { body = body + 1; }
+    I64 gap = width - body;
+    Bool zeros = zero && !left && prec < 0;
+    if (!left && !zeros) { pad(gap); }
+    if (sch != 0) { put(sch); }
+    if (pre == 2) {
+        put('0');
+        put(c);
+    }
+    if (zeros) {
+        for i in 0..gap { put('0'); }
+    }
+    for i in nd..digits { put('0'); }
+    while (nd > 0) {
+        nd = nd - 1;
+        put(d[nd]);
+    }
+    if (left) { pad(gap); }
+}
+
+// A string by width and precision.
+void text_(in U8[_] s) {
+    I64 k = len(s);
+    if (prec >= 0 && prec < k) { k = prec; }
+    if (!left) { pad(width - k); }
+    puts(s[0..k]);
+    if (left) { pad(width - k); }
+}
+
+U8[4096] bb;   // a %b argument after its escapes
+
+Bool flag(U8 c) { return c == '-' || c == '+' || c == ' ' || c == '#' || c == '0'; }
+
+Bool digit(U8 c) { return c >= '0' && c <= '9'; }
+
+void bad_format(in U8[_] rest, in U8[_] why) {
+    flush();
+    msg.begin();
+    msg.text(b"printf: ");
+    msg.text(rest);
+    msg.text(why);
+    msg.send();
+    st = 1;
+    stop = true;
+}
+
+export I64 printf(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    start();
+    if (nf < 2) {
+        msg.begin();
+        msg.text(b"printf: usage: printf FORMAT [ARGUMENT...]");
+        msg.send();
+        return 2;
+    }
+    I64 fa = fo[1];
+    I64 fz = fe[1];
+    I64 arg = 2;
+    Bool again = true;
+    U8[1] none;
+    while (again && !stop) {
+        I64 used = arg;
+        I64 i = fa;
+        while (i < fz && !stop) {
+            U8 c = ab[i];
+            if (c == '\\') {
+                U8[2] e;
+                i = fa + escape(ab[fa..fz], i - fa, true, e, 0);
+                if (!stop) { puts(e[0..wrote]); }
+            } else if (c != '%') {
+                put(c);
+                i = i + 1;
+            } else if (i + 1 < fz && ab[i + 1] == '%') {
+                put('%');
+                i = i + 2;
+            } else {
+                I64 at = i;
+                i = i + 1;
+                left = false;
+                plus = false;
+                space = false;
+                alt = false;
+                zero = false;
+                width = 0;
+                prec = -1;
+                while (i < fz && flag(ab[i])) {
+                    U8 g = ab[i];
+                    if (g == '-') { left = true; }
+                    if (g == '+') { plus = true; }
+                    if (g == ' ') { space = true; }
+                    if (g == '#') { alt = true; }
+                    if (g == '0') { zero = true; }
+                    i = i + 1;
+                }
+                if (i < fz && ab[i] == '*') {
+                    if (arg < nf) {
+                        width = number(ab[fo[arg]..fe[arg]]);
+                        arg = arg + 1;
+                    }
+                    if (width < 0) {
+                        left = true;
+                        width = 0 - width;
+                    }
+                    i = i + 1;
+                } else {
+                    while (i < fz && digit(ab[i]) && width < 100000) {
+                        width = width * 10 + (ab[i] - '0') as I64;
+                        i = i + 1;
+                    }
+                }
+                if (i < fz && ab[i] == '.') {
+                    i = i + 1;
+                    prec = 0;
+                    if (i < fz && ab[i] == '*') {
+                        if (arg < nf) {
+                            prec = number(ab[fo[arg]..fe[arg]]);
+                            arg = arg + 1;
+                        }
+                        if (prec < 0) { prec = -1; }
+                        i = i + 1;
+                    } else {
+                        while (i < fz && digit(ab[i]) && prec < 100000) {
+                            prec = prec * 10 + (ab[i] - '0') as I64;
+                            i = i + 1;
+                        }
+                    }
+                }
+                while (i < fz && (ab[i] == 'h' || ab[i] == 'l' || ab[i] == 'L' || ab[i] == 'q' || ab[i] == 'j'
+                        || ab[i] == 'z' || ab[i] == 't')) {
+                    i = i + 1;
+                }
+                U8 k = 0;
+                if (i < fz) { k = ab[i]; }
+                i = i + 1;
+                if (k == 'd' || k == 'i' || k == 'o' || k == 'u' || k == 'x' || k == 'X') {
+                    I64 v = 0;
+                    if (arg < nf) {
+                        v = number(ab[fo[arg]..fe[arg]]);
+                        arg = arg + 1;
+                    }
+                    integer(v, k);
+                } else if (k == 's') {
+                    if (arg < nf) {
+                        text_(ab[fo[arg]..fe[arg]]);
+                        arg = arg + 1;
+                    } else {
+                        text_(none[0..0]);
+                    }
+                } else if (k == 'c') {
+                    U8[1] one;
+                    one[0] = 0;
+                    if (arg < nf) {
+                        if (fe[arg] > fo[arg]) { one[0] = ab[fo[arg]]; }
+                        arg = arg + 1;
+                    }
+                    prec = -1;
+                    text_(one);
+                } else if (k == 'b') {
+                    I64 m = 0;
+                    if (arg < nf) {
+                        I64 j = fo[arg];
+                        while (j < fe[arg] && !stop && m + 2 <= 4096) {
+                            if (ab[j] == '\\') {
+                                j = fo[arg] + escape(ab[fo[arg]..fe[arg]], j - fo[arg], false, bb, m);
+                                m = m + wrote;
+                            } else {
+                                bb[m] = ab[j];
+                                m = m + 1;
+                                j = j + 1;
+                            }
+                        }
+                        arg = arg + 1;
+                    }
+                    Bool cut = stop;
+                    stop = false;
+                    text_(bb[0..m]);
+                    stop = cut;
+                } else if (k == 'e' || k == 'E' || k == 'f' || k == 'F' || k == 'g' || k == 'G' || k == 'a'
+                        || k == 'A') {
+                    bad_format(ab[at..i], b": not supported (no floating point)");
+                } else {
+                    bad_format(ab[at..fz], b": invalid format");
+                }
+            }
+        }
+        again = arg < nf && arg > used;
+    }
+    return finish();
+}
+// SPDX-License-Identifier: Apache-2.0

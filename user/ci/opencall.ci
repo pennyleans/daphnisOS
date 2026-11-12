@@ -1,0 +1,6 @@
+// user/ci/opencall.ci: the extern of user/ci/finder.ci (FF-6c, FF-R8 A), a row of user/ci/host.c built only into a
+// program that imports this module (user/ci/build.sh defines CI_ROWS_OPEN).
+//   open_ask(path): Daphnis's call 1005, the desk asked to open the file at path (1..256 bytes) as the Super plane
+//   opens one; 0, else -errno (-ENOSYS on Linux)
+export extern unrestricted I64 open_ask(in U8[_] path);
+// SPDX-License-Identifier: Apache-2.0

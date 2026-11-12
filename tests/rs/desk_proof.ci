@@ -1,0 +1,50 @@
+// tests/rs/desk_proof.ci: RS-SET1's proof, frame 33: the Desk page with the first swatch chosen, Recent Files on,
+// six pins and the pointer on Edit, on theme TH (0 dark, 1 light) at zoom Z (1 or 2).
+// Frame 48: a fourth argument sizes the window (tests/rs/stwin.ci size_of: N 480 x 400, W 976 x 400).
+// Run: cint run --root . tests/rs/desk_proof.ci -- TH Z - [N|W]
+import user.ci.kit.tokens;
+import user.ci.kit.icons3;
+import user.ci.kit.stside;
+import user.ci.kit.stdesk;
+import user.ci.kit.stbox;
+import tests.rs.stwin;
+
+U32[2048] row;
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    I64 z = 1;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    if (len(a) > 2 && a[2] == '2') { z = 2; }
+    tokens.set_theme(th);
+    U8 sz = '-';
+    if (len(a) > 6) { sz = a[6]; }
+    stwin.size_of(sz);
+    stbox.show(stside.DESK);
+    stdesk.open();
+    stdesk.set_background(0);
+    stdesk.set_recent(true);
+    stdesk.pins_clear();
+    Bool b = stdesk.pin(b"Index", 5, icons3.FINDER);
+    b = stdesk.pin(b"Console", 7, icons3.TERMINAL);
+    b = stdesk.pin(b"Edit", 4, icons3.EDITOR);
+    b = stdesk.pin(b"CVim", 4, icons3.CVIM);
+    b = stdesk.pin(b"Web Browser", 11, icons3.BROWSER);
+    b = stdesk.pin(b"View", 4, icons3.IMAGES);
+    I64 cx = stwin.cx();
+    I64 y0 = stwin.y0();
+    I64 cr = stwin.cr();
+    I64 yb = stwin.yb();
+    b = stdesk.hover(cx, y0, cr, yb, cx + 100, y0 + stdesk.LIST + 2 * stdesk.PIN_PITCH + 10);
+    stbox.set_tall(stdesk.tall());
+    "frame {stwin.fw() * z} {stwin.fh() * z}\n";
+    for dy in 0..stwin.fh() * z {
+        I64 y = dy / z;
+        stwin.frame_row(row, dy, z);
+        if (stwin.in_body(dy, z)) { stdesk.row_at(row, cx, stbox.y0_at(y), cr, stbox.yb_at(y), y); }
+        stwin.over_row(row, dy, z);
+        stwin.corners_row(row, dy, z);
+        stwin.emit(row, stwin.fw() * z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

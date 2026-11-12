@@ -1,0 +1,333 @@
+// user/ci/core/path.ci: paths and the walk of a tree (docs/specs/2026-11-06-c-core.md sections 4 and 5).
+//   join(dir, name, buf): dir/name into buf (one '/' between them); its length, or `TOOL: limit: PATH_MAX`
+//   base_start(p), base_stop(p): the last component of p, trailing '/' aside (XCU basename)
+//   the walk: walk_start(root, follow_root, follow) then walk_next() until W_END. A directory comes as W_PRE (its
+//   names read and sorted: kids, kid_name, kid_path), then what it holds, then W_POST; anything else as W_FILE; an
+//   entry that cannot be read as W_ERR (walk_errno). walk_skip() after W_PRE leaves the directory unentered (its
+//   W_POST comes next). Iterative: a stack of at most DEPTH_MAX directories holding at most NAMES_MAX names and
+//   NAME_POOL (65,536) bytes of names together; past any, `TOOL: limit: NAME` and status 2. Names sort by their bytes,
+//   or by walk_order's key (newest or largest first, ties by bytes), reversed on request; `.` and `..` are listed
+//   only when walk_start's dots says so, and never entered. With follow, a directory that is its own ancestor is
+//   W_ERR with ELOOP.
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.msg;
+
+export const I64 PATH_MAX = 4096;
+export const I64 DEPTH_MAX = 256;
+export const I64 NAMES_MAX = 8192;    // names held on the stack, all directories together
+const I64 POOL = 65536;               // NAME_POOL: their bytes, each NUL-ended (cint arrays hold 65,536 elements)
+
+export const I64 W_END = 0;
+export const I64 W_PRE = 1;
+export const I64 W_POST = 2;
+export const I64 W_FILE = 3;
+export const I64 W_ERR = 4;
+
+export const I64 BY_NAME = 0;
+export const I64 BY_TIME = 1;
+export const I64 BY_SIZE = 2;
+
+// dir/name into buf: its length.
+export I64 join(in U8[_] dir, in U8[_] name, inout U8[_] buf) {
+    I64 k = len(dir);
+    Bool slash = k > 0 && dir[k - 1] != '/';
+    I64 m = k + len(name);
+    if (slash) { m = m + 1; }
+    if (m >= PATH_MAX || m > len(buf)) { msg.limit(b"PATH_MAX"); }
+    for i in 0..k { buf[i] = dir[i]; }
+    if (slash) {
+        buf[k] = '/';
+        k = k + 1;
+    }
+    for i in 0..len(name) { buf[k + i] = name[i]; }
+    return m;
+}
+
+// The end of p's last component: p's length less its trailing '/' (1 for a path of only '/').
+export I64 base_stop(in U8[_] p) {
+    I64 e = len(p);
+    while (e > 1 && p[e - 1] == '/') { e = e - 1; }
+    return e;
+}
+
+// The start of p's last component.
+export I64 base_start(in U8[_] p) {
+    I64 e = base_stop(p);
+    I64 s = e;
+    while (s > 0 && p[s - 1] != '/') { s = s - 1; }
+    if (s == e && e > 0) { s = e - 1; }
+    return s;
+}
+
+// --- the walk ---
+U8[65536] pool;      // the names of each directory on the stack, each NUL-ended
+I64 ptop = 0;
+I64[8192] idx;      // each name's offset in pool, sorted within its directory
+I64[8192] key;
+I64 itop = 0;
+U8[4096] wp;        // the path of the entry last returned
+I64 wl = 0;
+I64[256] l_plen;    // per open directory: its path's length, its names, the next one, the pool and its record
+I64[256] l_first;
+I64[256] l_count;
+I64[256] l_pos;
+I64[256] l_ptop;
+I64[4096] l_rec;    // 16 words each
+I64 depth = 0;
+I64[16] rec;
+I64 err = 0;
+I64 state = 0;      // 0 none, 1 the root next, 2 walking, 3 done
+Bool f_root = false;
+Bool f_all = false;
+Bool w_dots = false;
+I64 o_key = 0;
+Bool o_rev = false;
+
+export void walk_order(I64 sortkey, Bool backward) {
+    o_key = sortkey;
+    o_rev = backward;
+}
+
+export void walk_start(in U8[_] root, Bool follow_root, Bool follow, Bool dots) {
+    if (len(root) >= PATH_MAX) { msg.limit(b"PATH_MAX"); }
+    for i in 0..len(root) { wp[i] = root[i]; }
+    wl = len(root);
+    ptop = 0;
+    itop = 0;
+    depth = 0;
+    err = 0;
+    state = 1;
+    f_root = follow_root;
+    f_all = follow;
+    w_dots = dots;
+}
+
+Bool is_dir() {
+    return (rec[corectl.ST_MODE] & corectl.S_IFMT) == corectl.S_IFDIR;
+}
+
+I64 name_end(I64 off) {
+    I64 e = off;
+    while (pool[e] != 0) { e = e + 1; }
+    return e;
+}
+
+Bool dot_name(I64 off) {
+    return pool[off] == '.' && (pool[off + 1] == 0 || (pool[off + 1] == '.' && pool[off + 2] == 0));
+}
+
+// Name a sorts before name b (by key, then bytes; reversed with o_rev).
+Bool before(I64 a, I64 ka, I64 b, I64 kb) {
+    if (o_rev) { return after(a, ka, b, kb); }
+    if (o_key != BY_NAME && ka != kb) { return ka > kb; }
+    I64 i = 0;
+    while (pool[a + i] != 0 && pool[a + i] == pool[b + i]) { i = i + 1; }
+    return pool[a + i] < pool[b + i];
+}
+
+Bool after(I64 a, I64 ka, I64 b, I64 kb) {
+    if (o_key != BY_NAME && ka != kb) { return ka < kb; }
+    I64 i = 0;
+    while (pool[a + i] != 0 && pool[a + i] == pool[b + i]) { i = i + 1; }
+    return pool[a + i] > pool[b + i];
+}
+
+void trade(I64 i, I64 j) {
+    I64 t = idx[i];
+    idx[i] = idx[j];
+    idx[j] = t;
+    t = key[i];
+    key[i] = key[j];
+    key[j] = t;
+}
+
+// Sifts entry r of the heap idx[f..f+n] down.
+void sift(I64 f, I64 r, I64 n) {
+    I64 at = r;
+    Bool going = true;
+    while (going) {
+        I64 c = 2 * at + 1;
+        if (c >= n) {
+            going = false;
+        } else {
+            if (c + 1 < n && before(idx[f + c], key[f + c], idx[f + c + 1], key[f + c + 1])) { c = c + 1; }
+            if (before(idx[f + at], key[f + at], idx[f + c], key[f + c])) {
+                trade(f + at, f + c);
+                at = c;
+            } else {
+                going = false;
+            }
+        }
+    }
+}
+
+// Sorts idx[f..f+n] (and key) by before(): a heap sort, n log n in place. Names in one directory differ, so the
+// order is total and needs no stability.
+void sort(I64 f, I64 n) {
+    I64 r = n / 2;
+    while (r > 0) {
+        r = r - 1;
+        sift(f, r, n);
+    }
+    I64 e = n;
+    while (e > 1) {
+        e = e - 1;
+        trade(f, f + e);
+        sift(f, 0, e);
+    }
+}
+
+// Reads directory wp[0..wl] onto the stack: 0, or -errno.
+I64 read_dir() {
+    I64 got = shctl.sh_dirents(wp[0..wl], pool[ptop..POOL]);
+    if (got == -7) { msg.limit(b"NAME_POOL"); }   // -E2BIG: the stack's names past POOL bytes
+    if (got < 0) { return got; }
+    I64 f = itop;
+    I64 n = 0;
+    I64 s = ptop;
+    while (s < ptop + got) {
+        I64 e = name_end(s);
+        if (w_dots || !dot_name(s)) {
+            if (f + n == NAMES_MAX) { msg.limit(b"NAMES_MAX"); }
+            idx[f + n] = s;
+            key[f + n] = 0;
+            if (o_key != BY_NAME) {
+                U8[4096] p;
+                I64 pl = join(wp[0..wl], pool[s..e], p);
+                I64[16] r;
+                if (corectl.co_stat(p[0..pl], 0, r) == 0) {
+                    if (o_key == BY_TIME) { key[f + n] = r[corectl.ST_MTIME]; }
+                    else { key[f + n] = r[corectl.ST_SIZE]; }
+                }
+            }
+            n = n + 1;
+        }
+        s = e + 1;
+    }
+    ptop = ptop + got;
+    sort(f, n);
+    itop = f + n;
+    return n;
+}
+
+// Enters the directory just stat'd at wp[0..wl]: W_PRE, or W_ERR.
+I64 enter() {
+    if (depth == DEPTH_MAX) { msg.limit(b"DEPTH_MAX"); }
+    if (f_all) {
+        for k in 0..depth {
+            if (l_rec[16 * k + corectl.ST_DEV] == rec[corectl.ST_DEV] && l_rec[16 * k + corectl.ST_INO] == rec[corectl.ST_INO]) {
+                err = 40;
+                return W_ERR;
+            }
+        }
+    }
+    I64 L = depth;
+    l_plen[L] = wl;
+    l_ptop[L] = ptop;
+    l_first[L] = itop;
+    l_pos[L] = 0;
+    I64 n = read_dir();
+    if (n < 0) {
+        ptop = l_ptop[L];
+        itop = l_first[L];
+        err = 0 - n;
+        return W_ERR;
+    }
+    l_count[L] = n;
+    for w in 0..16 { l_rec[16 * L + w] = rec[w]; }
+    depth = depth + 1;
+    return W_PRE;
+}
+
+export I64 walk_next() {
+    if (state == 1) {
+        state = 2;
+        I64 follow = 0;
+        if (f_root || f_all) { follow = 1; }
+        I64 r = corectl.co_stat(wp[0..wl], follow, rec);
+        if (r < 0) {
+            err = 0 - r;
+            state = 3;
+            return W_ERR;
+        }
+        if (is_dir()) {
+            I64 w = enter();
+            if (w != W_PRE) { state = 3; }
+            return w;
+        }
+        state = 3;
+        return W_FILE;
+    }
+    if (state != 2 || depth == 0) { return W_END; }
+    I64 L = depth - 1;
+    while (l_pos[L] < l_count[L]) {
+        I64 off = idx[l_first[L] + l_pos[L]];
+        l_pos[L] = l_pos[L] + 1;
+        if (!dot_name(off)) {
+            U8[4096] p;
+            I64 pl = join(wp[0..l_plen[L]], pool[off..name_end(off)], p);
+            for i in 0..pl { wp[i] = p[i]; }
+            wl = pl;
+            I64 follow = 0;
+            if (f_all) { follow = 1; }
+            I64 r = corectl.co_stat(wp[0..wl], follow, rec);
+            if (r < 0) {
+                err = 0 - r;
+                return W_ERR;
+            }
+            if (is_dir()) { return enter(); }
+            return W_FILE;
+        }
+    }
+    wl = l_plen[L];
+    ptop = l_ptop[L];
+    itop = l_first[L];
+    for w in 0..16 { rec[w] = l_rec[16 * L + w]; }
+    depth = L;
+    if (depth == 0) { state = 3; }
+    return W_POST;
+}
+
+// After W_PRE: the directory's names are not entered; its W_POST comes next.
+export void walk_skip() {
+    if (depth > 0) { l_pos[depth - 1] = l_count[depth - 1]; }
+}
+
+// The path of the entry last returned, into buf: its length.
+export I64 walk_path(inout U8[_] buf) {
+    for i in 0..wl { buf[i] = wp[i]; }
+    return wl;
+}
+
+// The record (corectl ST_ words) of the entry last returned.
+export void walk_rec(inout I64[_] r) {
+    for w in 0..16 { r[w] = rec[w]; }
+}
+
+export I64 walk_errno() {
+    return err;
+}
+
+// The open directories: 1 at the root's W_PRE.
+export I64 walk_depth() {
+    return depth;
+}
+
+// The names of the directory of the last W_PRE, sorted: their count; name i into buf (its length); its path.
+export I64 kids() {
+    return l_count[depth - 1];
+}
+
+export I64 kid_name(I64 i, inout U8[_] buf) {
+    I64 off = idx[l_first[depth - 1] + i];
+    I64 e = name_end(off);
+    for k in off..e { buf[k - off] = pool[k]; }
+    return e - off;
+}
+
+export I64 kid_path(I64 i, inout U8[_] buf) {
+    I64 off = idx[l_first[depth - 1] + i];
+    return join(wp[0..l_plen[depth - 1]], pool[off..name_end(off)], buf);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,63 @@
+hello default empty [] set []
+assigned assigned
+[]
+now now
+5 8 0 3
+usr/local/lib/file.tar.gz file.tar.gz /usr/local/lib/file.tar /usr/local/lib/file /local/lib/file.tar.gz /usr/local/lib/file.tar.
+file.tar.gz hel he ello o
+7 9 3 -3 1 -1 16 64
+1 0 1 0 1 -1 2 7 5
+0 1 20 39 1024
+10 6 8 8 70
+loop 1
+loop 2
+loop 3
+inner quoted spaces back backq
+nested
+[a
+b]
+status 1
+files 5
+/etc /
+from function arg
+<a>
+<b>
+<>
+<c>
+one:two three:four
+onetwo threefour
+{x}
+{y}
+{z}
+(spaced)
+(out)
+hello.txt
+h*
+etc
+hello.txt
+etc/motd
+no*match
+*
+hello.txt lines.txt
+*.txt
+/home/me /home/me/bin ~ x~
+here hello and 4
+  indented "quotes" 'single'
+$escaped and sub
+literal $x $(echo no)
+tab stripped hello
+two tabs
+3
+glob hello.txt
+glob lines.txt
+subst a
+subst b
+subst c
+nested quotes here single double
+hello lazy run
+case of a substitution
+assignment status 3
+42
+100
+end 42
+status 7

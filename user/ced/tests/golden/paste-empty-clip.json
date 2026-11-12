@@ -1,0 +1,30 @@
+{
+  "id": "paste-empty-clip",
+  "rules": [
+    "UNDO-1",
+    "UNDO-5"
+  ],
+  "text": "hi",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "16"
+  ],
+  "expect": {
+    "text": "hi",
+    "screen": [
+      "hi",
+      "",
+      "",
+      "",
+      " x                                  1:1",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

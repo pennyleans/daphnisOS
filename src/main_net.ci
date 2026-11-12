@@ -1,0 +1,186 @@
+// src/main_net.ci: stage N (docs/specs/2026-11-05-n-net.md section 5). N-1: the kernel finds virtio-net, asks
+// who has the gateway 10.0.2.2 (nothing arrives unasked on QEMU's user network) and ticks with the timer until
+// the reply is in the ARP table or LIMIT ticks pass. N-2: when the image holds mudp, it runs alone with the
+// host's echo at 10.0.2.2:50007. N-3: when it holds sh (busybox-net), sh runs `wget -q -O - | md5sum` of the
+// host's 256 KiB file at 10.0.2.2:8080; when it holds mtcp, mtcp echoes one connection on port 7007, which
+// the host makes through a forward. Then the kernel ticks until every TCP connection has closed, at most
+// SETTLE ticks. N-4: when it holds grant, each of these runs under `grant net` (GR-1 A), and then sh runs
+// `wget` once without the grant, which opens no socket (-EACCES). A-0 (docs/specs/2026-11-06-a-agent.md): when
+// it holds talk and sh, sh pipes two lines into talk (and runs neither wget), which speaks to the host's bridge at 10.0.2.2:7070, under
+// `grant net` when the image holds grant. A-1: when it holds agent and sh, sh pipes two lines into agent, which
+// speaks to the host's mock Messages API at 10.0.2.2:8080 (tools/apihost.py). A-2: when it holds go.sh, sh runs
+// that script instead (a command line over the 64 bytes of the kernel's arguments). With net.journal in the image the same kernel replays the record.
+// BU-5 (docs/specs/2026-11-07-bu5-fetch.md): when the image holds fetch, both of sh's wget runs are `./fetch -o -`.
+// A-3: getrandom's source (src/rng.ci) and the date (src/rtc.ci) are fixed before any process; when the image holds
+// mrng it runs last, with or without the network, and draws 64 bytes. rng.journal in the image replays the draws.
+
+import src.serial;
+import src.text;
+import src.cpu;
+import src.pit;
+import src.trap;
+import src.user;
+import src.fs;
+import src.proc;
+import src.pool;
+import src.net;
+import src.eth;
+import src.dhcp;
+import src.udp;
+import src.tcp;
+import src.rng;
+import src.rtc;
+
+const I64 LIMIT = 300;   // ticks: 3 s at 100 Hz
+const I64 SETTLE = 1000;
+
+void put_hex2(U8 b) {
+    serial.serial_putc(text.hex_digit(b >> 4));
+    serial.serial_putc(text.hex_digit(b));
+}
+
+// N-4: pushes `net` and name, so that name runs under `grant net`, when the image holds grant; true if it did.
+Bool granted[m](in U8[m] name) {
+    if (!proc.in_image("grant")) {
+        return false;
+    }
+    proc.push_arg("net");
+    proc.push_arg(name);
+    return true;
+}
+
+// Runs name as pid, under grant when granted pushed it.
+void go[m](I64 pid, Bool g, in U8[m] name) {
+    if (g) {
+        proc.run_alone(pid, "grant");
+    } else {
+        proc.run_alone(pid, name);
+    }
+}
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("Daphnis N: the network device\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    user.user_init();
+    fs.init();
+    pit.pic_remap();
+    pit.pit_start(11932);
+    rng.init();
+    rtc.boot();
+    if (net.init()) {
+        if (dhcp.boot_begin()) {
+            while (!dhcp.bound() && net.timers() < LIMIT) {   // NW-1's wait: the bound counts timer interrupts
+                _ = udp.wait();
+                udp.pump();
+            }
+        }
+        dhcp.report_boot(LIMIT);
+        I64 gw = eth.gateway();
+        if (gw != 0) {
+            eth.request(gw);
+            I64 gw_until = net.timers() + LIMIT;
+            while (!eth.known(gw) && net.timers() < gw_until) {
+                _ = udp.wait();
+                udp.pump();
+            }
+            if (eth.known(gw)) {
+                serial.serial_write("daphnis: net gateway ");
+                dhcp.put_ip(gw);
+                serial.serial_write(" is at ");
+                for i in 0..6 {
+                    if (i > 0) {
+                        serial.serial_write(":");
+                    }
+                    put_hex2(eth.mac_of(gw, i));
+                }
+                serial.serial_write(" (tick ");
+                proc.put_dec(net.ticks());
+                serial.serial_write(")\n");
+            } else {
+                serial.serial_write("daphnis: net no reply from the gateway in ");
+                proc.put_dec(LIMIT);
+                serial.serial_write(" ticks\n");
+            }
+        }
+        if (proc.in_image("mudp")) {
+            Bool g = granted("mudp");
+            proc.push_arg("10.0.2.2");
+            proc.push_arg("50007");
+            go(1, g, "mudp");
+        }
+        Bool talk = proc.in_image("talk");
+        Bool script = proc.in_image("go.sh");
+        Bool app = talk || script || proc.in_image("agent");
+        Bool fetch = proc.in_image("fetch");
+        if (proc.in_image("sh") && !app) {
+            Bool g = granted("sh");
+            proc.push_arg("-c");
+            if (fetch) {
+                proc.push_arg("./fetch -o - http://10.0.2.2:8080/f | md5sum");
+            } else {
+                proc.push_arg("wget -q -O - http://10.0.2.2:8080/f | md5sum");
+            }
+            go(2, g, "sh");
+        }
+        if (proc.in_image("mtcp")) {
+            Bool g = granted("mtcp");
+            proc.push_arg("7007");
+            go(3, g, "mtcp");
+        }
+        if (proc.in_image("sh") && proc.in_image("grant") && !app) {
+            proc.push_arg("-c");
+            if (fetch) {
+                proc.push_arg("./fetch -o - http://10.0.2.2:8080/f");
+            } else {
+                proc.push_arg("wget -q -O - http://10.0.2.2:8080/f");
+            }
+            proc.run_alone(4, "sh");
+        }
+        if (talk && proc.in_image("sh")) {
+            Bool g = granted("sh");
+            proc.push_arg("-c");
+            proc.push_arg("printf 'hello Daphnis\\nbye\\n'|./talk 10.0.2.2 7070");
+            go(5, g, "sh");
+        }
+        if (proc.in_image("agent") && proc.in_image("sh") && !script) {
+            Bool g = granted("sh");
+            proc.push_arg("-c");
+            proc.push_arg("printf 'hello Daphnis\\nbye\\n'|./agent 10.0.2.2 8080");
+            go(6, g, "sh");
+        }
+        if (script && proc.in_image("sh")) {
+            Bool g = granted("sh");
+            proc.push_arg("go.sh");
+            go(7, g, "sh");
+        }
+        I64 until = net.timers() + SETTLE;
+        while (tcp.busy() > 0 && net.timers() < until) {
+            _ = udp.wait();
+            udp.pump();
+        }
+        serial.serial_write("daphnis: net tcp connections open ");
+        proc.put_dec(tcp.busy());
+        serial.serial_write(", resets sent ");
+        proc.put_dec(tcp.reset_count());
+        serial.serial_write("\n");
+        if (tcp.fast_retransmits() > 0 || tcp.ooo_kept() > 0) {
+            serial.serial_write("daphnis: net tcp fast retransmits ");
+            proc.put_dec(tcp.fast_retransmits());
+            serial.serial_write(", out-of-order kept ");
+            proc.put_dec(tcp.ooo_kept());
+            serial.serial_write("\n");
+        }
+        net.report();
+        serial.serial_write("daphnis: net datagrams dropped ");
+        proc.put_dec(udp.dropped());
+        serial.serial_write("\n");
+    }
+    if (proc.in_image("mrng")) {
+        proc.run_alone(7, "mrng");
+    }
+    serial.serial_write("net: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

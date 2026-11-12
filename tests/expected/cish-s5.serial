@@ -1,0 +1,25 @@
+Daphnis CS: cish
+daphnis: image 2803640 bytes from the loader module
+daphnis: input 395 bytes
+daphnis: run cish pid 1
+child sees [1] [1] [two words]
+parent sees []
+after unset [] [two words]
+zero one
+end
+daphnis: state c736521bbecdf3d1c878f98b710f1cb11bafcc9477c1876e82a3d7b65852185f
+daphnis: exit 0
+daphnis: pid 1 forked 3
+daphnis: run cish pid 2
+child sees [1] [1] [two words]
+parent sees []
+after unset [] [two words]
+zero one
+end
+daphnis: state c736521bbecdf3d1c878f98b710f1cb11bafcc9477c1876e82a3d7b65852185f
+daphnis: exit 0
+daphnis: pid 2 forked 3
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 16 frames held
+daphnis: pool frames free 16367 of 16383
+cish: done

@@ -1,0 +1,330 @@
+// user/ci/kit/wheel.ci: the loading wheel (DN-37, DN-38; l "let it be our signature loading bar"), Daphnis's one sign
+// of waiting: it replaces every progress bar and spinner (volume level bars stay bars).
+//
+// In a 24-unit box: a disc at 12,12 r10.25 under a 1.5 edge, and an arc r6 of stroke 3.5 with round caps from 12
+// o'clock clockwise. Dark: disc #141413, edge #f3efe6, arc #fabd2f; light: disc #e8eaee, edge #141413, arc #c98f00.
+// A known share draws the arc as that share of the circle (the full ring at 100). Unknown (share < 0): a quarter arc
+// turning clockwise, one turn per TURN_MS, linear; with motion off a still quarter arc at 12 o'clock. Sizes 16, 24
+// and 32 px (S16, S24, S32, in quarter pixels) at every UI scale. The Busy pointer (busy_row) is the arrow with the
+// dark wheel at r4.5 beside it, in both themes.
+//
+// Integer only. A box of q quarter pixels at zoom z has n = q * z samples across, 4 x 4 a device pixel; a pixel takes
+// the colors of its samples by their count (the kit's coverage). Coordinates are in units of 1 / (8 n) box units, so
+// every sample center and radius is an integer; angles are quarter degrees clockwise from 12 o'clock, by the tan and
+// sin tables below (tools/wheel.py writes them, checks them and is the twin).
+
+export const I64 S16 = 64;            // sizes in quarter pixels
+export const I64 S24 = 96;
+export const I64 S32 = 128;
+export const I64 BUSY_Q = 42;         // the Busy pointer's wheel: r4.5 (10.5 px box)
+export const I64 BUSY_X = 9;          // its box's top left from the arrow's hot spot, 1x
+export const I64 BUSY_Y = 10;
+export const I64 TURN_MS = 1200;      // one turn of the unknown arc (DN-37), linear
+export const I64 QUARTER = 360;       // the unknown arc's length, quarter degrees
+export const I64 UNKNOWN = -1;        // the share of a wait whose end is not known
+
+export const I64 DARK = 0;
+export const I64 LIGHT = 1;
+
+const I64 ONE = 65536;
+const U32 PAPER = 0x00f3efe6 as U32;  // the arrow's outline and ink (src/cursor.ci's pens)
+const U32 INK = 0x00141413 as U32;
+
+U8[16] arrow_edge = [0x80, 0xC0, 0xA0, 0x90, 0x88, 0x84, 0x82, 0x81, 0x87, 0x94, 0xAA, 0xCA, 0x85, 0x05, 0x02, 0x00];
+U8[16] arrow_body = [0x00, 0x00, 0x40, 0x60, 0x70, 0x78, 0x7C, 0x7E, 0x78, 0x68, 0x44, 0x04, 0x02, 0x02, 0x00, 0x00];
+
+// --- tables (tools/wheel.py) ---
+I64[181] TAN = [
+    0, 286, 572, 858, 1144, 1430, 1716, 2002, 2289, 2575, 2861, 3148,
+    3435, 3721, 4008, 4295, 4583, 4870, 5158, 5446, 5734, 6022, 6310, 6599,
+    6888, 7177, 7467, 7757, 8047, 8337, 8628, 8919, 9210, 9502, 9794, 10087,
+    10380, 10673, 10967, 11261, 11556, 11851, 12146, 12442, 12739, 13036, 13333, 13632,
+    13930, 14229, 14529, 14829, 15130, 15432, 15734, 16037, 16340, 16644, 16949, 17254,
+    17560, 17867, 18175, 18483, 18792, 19102, 19413, 19724, 20036, 20349, 20663, 20978,
+    21294, 21611, 21928, 22246, 22566, 22886, 23208, 23530, 23853, 24178, 24503, 24829,
+    25157, 25486, 25815, 26146, 26478, 26811, 27146, 27482, 27818, 28156, 28496, 28837,
+    29179, 29522, 29866, 30213, 30560, 30909, 31259, 31611, 31964, 32319, 32675, 33033,
+    33392, 33753, 34116, 34480, 34846, 35214, 35583, 35954, 36327, 36702, 37078, 37457,
+    37837, 38219, 38604, 38990, 39378, 39768, 40161, 40555, 40951, 41350, 41751, 42154,
+    42560, 42967, 43377, 43790, 44205, 44622, 45042, 45464, 45889, 46316, 46746, 47179,
+    47615, 48053, 48494, 48938, 49385, 49835, 50288, 50743, 51202, 51664, 52130, 52598,
+    53070, 53545, 54024, 54506, 54991, 55480, 55973, 56469, 56970, 57474, 57981, 58493,
+    59009, 59529, 60053, 60581, 61113, 61650, 62191, 62737, 63287, 63842, 64402, 64967,
+    65536];
+I64[361] SIN = [
+    0, 286, 572, 858, 1144, 1430, 1716, 2001, 2287, 2573, 2859, 3144,
+    3430, 3715, 4001, 4286, 4572, 4857, 5142, 5427, 5712, 5997, 6281, 6566,
+    6850, 7135, 7419, 7703, 7987, 8271, 8554, 8838, 9121, 9404, 9687, 9970,
+    10252, 10534, 10817, 11098, 11380, 11662, 11943, 12224, 12505, 12785, 13066, 13346,
+    13626, 13905, 14185, 14464, 14742, 15021, 15299, 15577, 15855, 16132, 16409, 16686,
+    16962, 17238, 17514, 17789, 18064, 18339, 18613, 18887, 19161, 19434, 19707, 19980,
+    20252, 20524, 20795, 21066, 21336, 21607, 21876, 22146, 22415, 22683, 22951, 23219,
+    23486, 23753, 24019, 24285, 24550, 24815, 25080, 25343, 25607, 25870, 26132, 26394,
+    26656, 26917, 27177, 27437, 27697, 27956, 28214, 28472, 28729, 28986, 29242, 29498,
+    29753, 30007, 30261, 30515, 30767, 31019, 31271, 31522, 31772, 32022, 32271, 32520,
+    32768, 33015, 33262, 33508, 33754, 33998, 34242, 34486, 34729, 34971, 35212, 35453,
+    35693, 35933, 36172, 36410, 36647, 36884, 37120, 37355, 37590, 37824, 38057, 38289,
+    38521, 38752, 38982, 39212, 39441, 39669, 39896, 40122, 40348, 40573, 40797, 41021,
+    41243, 41465, 41686, 41906, 42126, 42344, 42562, 42779, 42995, 43211, 43425, 43639,
+    43852, 44064, 44275, 44486, 44695, 44904, 45112, 45319, 45525, 45730, 45935, 46138,
+    46341, 46543, 46744, 46944, 47143, 47341, 47538, 47735, 47930, 48125, 48318, 48511,
+    48703, 48894, 49084, 49273, 49461, 49648, 49834, 50019, 50203, 50387, 50569, 50751,
+    50931, 51111, 51289, 51467, 51643, 51819, 51993, 52167, 52339, 52511, 52682, 52851,
+    53020, 53187, 53354, 53519, 53684, 53847, 54010, 54171, 54332, 54491, 54650, 54807,
+    54963, 55118, 55273, 55426, 55578, 55729, 55879, 56028, 56175, 56322, 56468, 56612,
+    56756, 56898, 57040, 57180, 57319, 57457, 57594, 57730, 57865, 57999, 58131, 58263,
+    58393, 58522, 58650, 58777, 58903, 59028, 59152, 59274, 59396, 59516, 59635, 59753,
+    59870, 59986, 60100, 60214, 60326, 60437, 60547, 60656, 60764, 60870, 60976, 61080,
+    61183, 61285, 61386, 61485, 61584, 61681, 61777, 61872, 61966, 62058, 62149, 62239,
+    62328, 62416, 62503, 62588, 62672, 62755, 62837, 62918, 62997, 63075, 63152, 63228,
+    63303, 63376, 63449, 63520, 63589, 63658, 63725, 63791, 63856, 63920, 63983, 64044,
+    64104, 64163, 64220, 64277, 64332, 64386, 64439, 64490, 64540, 64589, 64637, 64684,
+    64729, 64773, 64816, 64858, 64898, 64937, 64975, 65012, 65048, 65082, 65115, 65146,
+    65177, 65206, 65234, 65261, 65287, 65311, 65334, 65356, 65376, 65396, 65414, 65431,
+    65446, 65461, 65474, 65485, 65496, 65505, 65514, 65520, 65526, 65530, 65534, 65535,
+    65536];
+// --- end of tables ---
+
+U32 disc_of(I64 th) {
+    if (th == LIGHT) { return 0x00e8eaee as U32; }
+    return 0x00141413 as U32;
+}
+
+U32 edge_of(I64 th) {
+    if (th == LIGHT) { return 0x00141413 as U32; }
+    return 0x00f3efe6 as U32;
+}
+
+U32 arc_of(I64 th) {
+    if (th == LIGHT) { return 0x00c98f00 as U32; }
+    return 0x00fabd2f as U32;
+}
+
+// u >= 0, v > 0: the angle of (u, v) from +v toward +u, 0..359.
+I64 atan_q(I64 u, I64 v) {
+    if (u > v) { return 360 - atan_q(v, u); }
+    I64 t = u * ONE / v;
+    I64 lo = 0;
+    I64 hi = 180;
+    while (lo < hi) {
+        I64 mid = (lo + hi + 1) / 2;
+        if (TAN[mid] <= t) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if (lo < 180 && TAN[lo + 1] - t < t - TAN[lo]) { lo = lo + 1; }
+    return lo;
+}
+
+// The angle of (u, v) (v up) clockwise from 12 o'clock, 0..1439.
+I64 angle(I64 u0, I64 v0) {
+    I64 u = u0;
+    I64 v = v0;
+    I64 q = 0;
+    while (!(u >= 0 && v > 0)) {
+        I64 w = u;
+        u = 0 - v;
+        v = w;
+        q = q + 1;
+    }
+    return (q * 360 + atan_q(u, v)) % 1440;
+}
+
+I64 sin_q(I64 a0) {
+    I64 a = a0 % 1440;
+    if (a <= 360) { return SIN[a]; }
+    if (a <= 720) { return SIN[720 - a]; }
+    if (a <= 1080) { return 0 - SIN[a - 720]; }
+    return 0 - SIN[1440 - a];
+}
+
+I64 cos_q(I64 a) { return sin_q(a + 360); }
+
+// The arc's start and length (quarter degrees) into sl: length 0 none, 1440 the full ring.
+void span(I64 share, I64 t_ms, Bool motion, inout I64[2] sl) {
+    sl[0] = 0;
+    if (share >= 0) {
+        sl[1] = min(share, 100) * 1440 / 100;
+        return;
+    }
+    sl[1] = QUARTER;
+    if (motion) { sl[0] = (t_ms % TURN_MS) * 1440 / TURN_MS; }
+}
+
+// The sample at (u, v) from the center: 0 outside, 1 disc, 2 edge, 3 arc.
+I64 classify(I64 u, I64 v, I64 n, I64 st, I64 ln) {
+    I64 d2 = u * u + v * v;
+    if (ln > 0) {
+        if (d2 >= 34 * n * 34 * n && d2 <= 62 * n * 62 * n) {
+            if (ln >= 1440) { return 3; }
+            I64 a = 0;
+            if (d2 > 0) { a = angle(u, v); }
+            if (((a - st) % 1440 + 1440) % 1440 < ln) { return 3; }
+        }
+        if (ln < 1440) {
+            for k in 0..2 {
+                I64 e = st + k * ln;
+                I64 cu = 48 * n * sin_q(e) / ONE;
+                I64 cv = 48 * n * cos_q(e) / ONE;
+                if ((u - cu) * (u - cu) + (v - cv) * (v - cv) <= 14 * n * 14 * n) { return 3; }
+            }
+        }
+    }
+    if (d2 >= 76 * n * 76 * n && d2 <= 88 * n * 88 * n) { return 2; }
+    if (d2 <= 82 * n * 82 * n) { return 1; }
+    return 0;
+}
+
+U32 channel_mix(U32 bg, U32 a, U32 b, U32 c, I64 na, I64 nb, I64 nc, I64 sh) {
+    I64 s = sh as I64;
+    I64 acc = (((bg >> (s as U64)) & 255) as I64) * (16 - na - nb - nc);
+    acc = acc + (((a >> (s as U64)) & 255) as I64) * na + (((b >> (s as U64)) & 255) as I64) * nb;
+    acc = acc + (((c >> (s as U64)) & 255) as I64) * nc;
+    return ((acc / 16) as U32) << (s as U64);
+}
+
+// Device row y of a wheel whose box (q quarter pixels at zoom z) has its top left at device (x0, y0), on theme th,
+// over row: share 0..100, or UNKNOWN with t_ms the time since the wait began and motion the Motion setting.
+export void row_at(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 q, I64 z, I64 th, I64 share, I64 t_ms, Bool motion) {
+    row_in(row, y, x0, y0, q, z, th, share, t_ms, motion, arc_of(th));
+}
+
+// row_at for a known share with the arc in c: Monitor's gauge, its arc the part's color (DN-58 item 4).
+export void part_row(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 q, I64 z, I64 th, I64 share, U32 c) {
+    row_in(row, y, x0, y0, q, z, th, share, 0, false, c);
+}
+
+void row_in(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 q, I64 z, I64 th, I64 share, I64 t_ms, Bool motion, U32 ca) {
+    I64 n = q * z;
+    I64 px = (n + 3) / 4;
+    if (y < y0 || y >= y0 + px) { return; }
+    I64[2] sl;
+    span(share, t_ms, motion, sl);
+    U32 cd = disc_of(th);
+    U32 ce = edge_of(th);
+    I64 x1 = min(x0 + px, len(row));
+    I64 xs = max(x0, 0);
+    for x in xs..x1 {
+        I64 nd = 0;
+        I64 ne = 0;
+        I64 na = 0;
+        for j in 0..4 {
+            I64 sy = 4 * (y - y0) + j;
+            for i in 0..4 {
+                I64 sx = 4 * (x - x0) + i;
+                if (sx < n && sy < n) {
+                    I64 c = classify(192 * sx + 96 - 96 * n, 96 * n - (192 * sy + 96), n, sl[0], sl[1]);
+                    if (c == 1) { nd = nd + 1; }
+                    if (c == 2) { ne = ne + 1; }
+                    if (c == 3) { na = na + 1; }
+                }
+            }
+        }
+        if (nd + ne + na > 0) {
+            U32 bg = row[x];
+            row[x] = channel_mix(bg, cd, ce, ca, nd, ne, na, 16) | channel_mix(bg, cd, ce, ca, nd, ne, na, 8) |
+                channel_mix(bg, cd, ce, ca, nd, ne, na, 0);
+        }
+    }
+}
+
+// The coverage word of pixel (px, py) of a wheel's box (q quarter pixels at zoom z): 0xAARRGGBB, AA the covered
+// samples in sixteenths (0 to 16), RRGGBB the covered part's color (FBIO_TILE_BUSY's pixel word).
+export I64 sprite_px(I64 px, I64 py, I64 q, I64 z, I64 th, I64 share, I64 t_ms, Bool motion) {
+    I64 n = q * z;
+    I64[2] sl;
+    span(share, t_ms, motion, sl);
+    I64 nd = 0;
+    I64 ne = 0;
+    I64 na = 0;
+    for j in 0..4 {
+        I64 sy = 4 * py + j;
+        for i in 0..4 {
+            I64 sx = 4 * px + i;
+            if (sx < n && sy < n) {
+                I64 c = classify(192 * sx + 96 - 96 * n, 96 * n - (192 * sy + 96), n, sl[0], sl[1]);
+                if (c == 1) { nd = nd + 1; }
+                if (c == 2) { ne = ne + 1; }
+                if (c == 3) { na = na + 1; }
+            }
+        }
+    }
+    I64 tot = nd + ne + na;
+    if (tot == 0) { return 0; }
+    I64 w = tot << 24;
+    U32 cd = disc_of(th);
+    U32 ce = edge_of(th);
+    U32 ca = arc_of(th);
+    for k in 0..3 {
+        U64 sh = (8 * k) as U64;
+        I64 v = ((cd >> sh) & 255) as I64 * nd + ((ce >> sh) & 255) as I64 * ne + ((ca >> sh) & 255) as I64 * na;
+        w = w | ((v / tot) << (8 * k));
+    }
+    return w;
+}
+
+// The coverage word px over under, a channel at a time: (c * a + under * (16 - a)) / 16 (src/cursor.ci's blend).
+export U32 blend(U32 under, I64 px) {
+    I64 a = (px >> 24) & 255;
+    if (a <= 0) { return under; }
+    if (a > 16) { a = 16; }
+    I64 mixed = 0;
+    for k in 0..3 {
+        I64 c = (px >> (8 * k)) & 255;
+        I64 u = ((under >> ((8 * k) as U64)) & 255) as I64;
+        mixed = mixed | (((c * a + u * (16 - a)) / 16) << (8 * k));
+    }
+    return mixed as U32;
+}
+
+// The Busy pointer's wheel sprite at zoom z into buf from byte at, as FBIO_TILE_BUSY takes it: side x side pixel
+// words, row by row, little end first (the dark wheel, unknown); side, its width and height in device pixels.
+export I64 sprite(inout U8[_] buf, I64 at, I64 z, I64 t_ms, Bool motion) {
+    I64 side = (BUSY_Q * z + 3) / 4;
+    for py in 0..side {
+        for px in 0..side {
+            I64 w = sprite_px(px, py, BUSY_Q, z, DARK, UNKNOWN, t_ms, motion);
+            I64 o = at + 4 * (py * side + px);
+            for k in 0..4 { buf[o + k] = ((w >> (8 * k)) & 255) as U8; }
+        }
+    }
+    return side;
+}
+
+// Device row y of the Busy pointer, its hot spot at device (x0, y0), at zoom z, as the kernel draws it
+// (docs/specs/2026-11-10-busy-pointer.md): the dark wheel's sprite blended at (BUSY_X, BUSY_Y) times z, then the
+// arrow (src/cursor.ci's) on top.
+export void busy_row(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 z, I64 t_ms, Bool motion) {
+    I64 side = (BUSY_Q * z + 3) / 4;
+    I64 sx0 = x0 + BUSY_X * z;
+    I64 sy0 = y0 + BUSY_Y * z;
+    if (y >= sy0 && y < sy0 + side) {
+        for px in 0..side {
+            I64 x = sx0 + px;
+            if (x >= 0 && x < len(row)) {
+                row[x] = blend(row[x], sprite_px(px, y - sy0, BUSY_Q, z, DARK, UNKNOWN, t_ms, motion));
+            }
+        }
+    }
+    if (y >= y0) {
+        I64 j = (y - y0) / z;
+        if (j < 16) {
+            for i in 0..8 {
+                I64 m = 0x80 >> (i as U64);
+                Bool b = ((arrow_body[j] as I64) & m) != 0;
+                Bool e = ((arrow_edge[j] as I64) & m) != 0;
+                if (b || e) {
+                    for k in 0..z {
+                        I64 x = x0 + i * z + k;
+                        if (x >= 0 && x < len(row)) {
+                            if (b) { row[x] = INK; } else { row[x] = PAPER; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

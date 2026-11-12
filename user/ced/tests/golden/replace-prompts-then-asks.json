@@ -1,0 +1,29 @@
+{
+  "id": "replace-prompts-then-asks",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a b",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12"
+  ],
+  "expect": {
+    "text": "a b",
+    "screen": [
+      "a b",
+      "",
+      "",
+      "",
+      " x                                  1:1",
+      "find:"
+    ]
+  }
+}

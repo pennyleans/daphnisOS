@@ -1,0 +1,582 @@
+// tests/dn6/settings_test.ci: hosted tests of what the desk still draws of DN-10's Settings (frame 11; design note 10,
+// l 2026-11-10 05:01Z; RES-1) now that the pages are the kit's (PR 412, DN-50): the rows of its own pages (Display,
+// Sound, About: st_line; Grants: grant_rows), the Resolution menu over Display (res_menu, menu_shadow), the revert
+// prompt (revert_at) and its rule (mode_fits, rv_secs, rv_plan, rv_note). hdesk.ci is a program, so cint test cannot
+// import it: those functions and the ones they call (expand_by, keep_at, chan, corners_at, txt_w, ptxt, ptxt_mid,
+// seg_at, digits, put_text, res_text) are hdesk.ci's, copied verbatim, with RES-1's table; plate is win_row's OV window
+// for a plate. The sums are tools/check-hdesk.py's (dn_rows, dn_revert_plate) at UI scale 1 and 2 in both themes.
+// The pages' sidebar, titles, rules and Restore Defaults are the kit's: tests/rs (stpage, stbox) and
+// tests/rs/side_proof.ci.
+// Run by check.sh.
+
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.draw;
+import user.ci.kit.pen;
+import user.ci.kit.shade;
+
+const I64 TBASE = 13;       // hdesk.ci's
+const I64 RAD = 8;
+const I64 R_CTRL = 6;
+const I64 R_KEY = 4;
+const I64 R_PLATE = 12;
+const I64 RV_W = 420;
+const I64 RV_H = 160;
+I64[21] RES_W = [1280, 1360, 1600, 1920, 1920, 2560, 2560, 3840, 2560, 3440, 3840, 5120, 720, 1080, 1200, 1440, 1600,
+                 2160, 1024, 800, 640];
+I64[21] RES_H = [720, 768, 900, 1080, 1200, 1440, 1600, 2160, 1080, 1440, 1600, 1440, 1280, 1920, 1920, 2560, 2560,
+                 3840, 768, 600, 480];
+I64[5] RES_AT = [0, 8, 12, 18, 21];
+const I64 RV_MS = 15000;
+const I64 RV_WAIT = 0;
+const I64 RV_KEEP = 1;
+const I64 RV_BACK = 2;
+const I64 KEY_ESC = 1;
+const I64 KEY_ENTER = 28;
+const I64 MODE_W_MAX = 5120;
+const I64 MODE_H_MAX = 3840;
+const I64 MODE_PX_MAX = 8294400;
+
+U32[3840] row;
+U32[256] under;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+void expand_by(I64 x0, I64 n, I64 m) {
+    if (m == 1) { return; }
+    for qq in 0..n {
+        I64 q = n - 1 - qq;
+        U32 v = row[x0 + q];
+        for t in 0..m { row[x0 + m * q + t] = v; }
+    }
+}
+
+void keep_at(I64 x0, I64 x1, I64 r) {
+    for k in 0..r {
+        under[k] = row[x0 + k];
+        under[r + k] = row[x1 - r + k];
+    }
+}
+
+I64 chan(in U32[_] b, I64 k, I64 c) { return ((b[k] >> ((8 * c) as U32)) & 255) as I64; }
+
+void corners_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 r, I64 b, U32 e, I64 y) {
+    if (y < y0 || y >= y1 || (y >= y0 + r && y < y1 - r)) { return; }
+    I64 py = y - y0;
+    if (y >= y1 - r) { py = y1 - 1 - y; }
+    U32[1] ec;
+    ec[0] = e;
+    for px in 0..r {
+        I64 nu = 0;
+        I64 no = 0;
+        for s in 0..4 {
+            for t in 0..4 {
+                I64 dx = 8 * r - (8 * px + 2 * s + 1);
+                I64 dy = 8 * r - (8 * py + 2 * t + 1);
+                I64 d2 = dx * dx + dy * dy;
+                if (d2 > 64 * r * r) {
+                    nu = nu + 1;
+                } else if (d2 > 64 * (r - b) * (r - b)) {
+                    no = no + 1;
+                }
+            }
+        }
+        I64 ni = 16 - nu - no;
+        for side in 0..2 {
+            I64 x = x0 + px;
+            I64 k = px;
+            if (side == 1) {
+                x = x1 - 1 - px;
+                k = 2 * r - 1 - px;
+            }
+            I64 c = 0;
+            for ch in 0..3 {
+                I64 v = (nu * chan(under, k, ch) + no * chan(ec, 0, ch) + ni * chan(row, x, ch) + 8) / 16;
+                c = c | (v << (8 * ch));
+            }
+            draw.put(row, x, c as U32);
+        }
+    }
+}
+
+I64 txt_w(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+
+I64 ptxt(I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text(row, x0, y0 + TBASE, x1, s, n, c, f);
+}
+
+I64 ptxt_mid(I64 x0, I64 span, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text_mid(row, x0, span, y0 + TBASE, x1, s, n, c, f);
+}
+
+void seg_at(I64 x0, I64 y0, I64 wd, in U8[_] labs, I64 n, I64 sel) {
+    pen.round(row, x0, y0, x0 + wd, y0 + 32, 16, tok(tokens.MANTLE));
+    I64 sw = (wd - 4) / n;
+    I64 at = 0;
+    for k in 0..n {
+        I64 b = at;
+        while (b < len(labs) && labs[b] != '|') { b = b + 1; }
+        U8[24] t;
+        for q in at..b { t[q - at] = labs[q]; }
+        I64 sx = x0 + 2 + sw * k;
+        I64 e = 0;
+        if (k == sel) {
+            pen.round(row, sx, y0 + 2, sx + sw, y0 + 30, 14, tok(tokens.FILL));
+            e = ptxt_mid(sx, sw, y0 + 8, sx + sw, t, b - at, tok(tokens.ON_FILL), faces.NAME);
+        } else {
+            e = ptxt_mid(sx, sw, y0 + 8, sx + sw, t, b - at, tok(tokens.INK_DIM), faces.BODY);
+        }
+        at = b + 1;
+    }
+}
+
+I64 digits(inout U8[_] dst, I64 at, I64 v) {
+    U8[20] dg;
+    I64 n = 0;
+    I64 q = v;
+    if (q == 0) { dg[0] = '0'; n = 1; }
+    while (q > 0) {
+        dg[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { dst[at + k] = dg[n - 1 - k]; }
+    return at + n;
+}
+
+I64 put_text(inout U8[_] dst, I64 at, in U8[_] t) {
+    for q in 0..len(t) { dst[at + q] = t[q]; }
+    return at + len(t);
+}
+
+I64 res_text(inout U8[_] dst, I64 at, I64 rw, I64 rh) {
+    I64 n = digits(dst, at, rw);
+    n = put_text(dst, n, b" x ");
+    return digits(dst, n, rh);
+}
+
+Bool mode_fits(I64 mw, I64 mh) {
+    if (mw < 640 || mw > MODE_W_MAX || mw % 8 != 0 || mh < 480 || mh > MODE_H_MAX) { return false; }
+    return mw * mh <= MODE_PX_MAX;
+}
+
+I64 rv_secs(I64 ms) {
+    I64 s = (RV_MS - ms + 999) / 1000;
+    if (s < 0) { s = 0; }
+    return s;
+}
+
+// MS-4 (DN-10, mini 20261110T055857Z): the Resolution menu's shadow, High, radius RAD, over Settings' content
+// between x0 and x1 on the pen's row, at the pen's zoom (spread with the content at a larger UI scale); the menu's
+// right edge cr and bottom yb at 1x, as res_menu places it.
+void menu_shadow(I64 x0, I64 x1, I64 cr, I64 yb, in I64[16] s) {
+    I64 n = RES_AT[s[5] + 1] - RES_AT[s[5]];
+    I64 mh = 12 + 28 * n + 2 * (n - 1);
+    shade.shade_row(row, pen.x(x0), pen.x(x1), pen.row_y(), pen.x(cr - 240), pen.y(yb - mh), pen.x(cr), pen.y(yb), RAD,
+                    3, tokens.theme(), pen.zoom());
+}
+
+void grant_rows(I64 x0, I64 x1, I64 y0, I64 n, in I64[8] gt, in U8[_] nm, in I64[8] nl, I64 y) {
+    I64 e = 0;
+    I64 k = n;
+    if (k < 1) { k = 1; }
+    for r in 0..k {
+        I64 ry = y0 + 40 * r;
+        if (y >= ry && y < ry + 32) {
+            pen.round(row, x0, ry, x1, ry + 32, 16, tok(tokens.PAPER));
+            if (n == 0) {
+                e = ptxt(x0 + 12, ry + 8, x1 - 12, b"None active", 11, tok(tokens.INK_DIM), faces.BODY);
+            } else {
+                I64 c = tokens.SIENNA;
+                if (gt[r] == 1) { c = tokens.OCHRE; }
+                if (gt[r] == 8) { c = tokens.CADMIUM; }
+                pen.round(row, x0 + 12, ry + 12, x0 + 20, ry + 20, 4, tok(c));
+                U8[16] t;
+                for q in 0..nl[r] { t[q] = nm[16 * r + q]; }
+                if (gt[r] == 2) {
+                    e = pen.text_right(row, x1 - 12, ry + 8 + TBASE, b"Network", 7, tok(tokens.INK_DIM), faces.BODY);
+                } else if (gt[r] == 1) {
+                    e = pen.text_right(row, x1 - 12, ry + 8 + TBASE, b"Disk", 4, tok(tokens.INK_DIM), faces.BODY);
+                } else {
+                    e = pen.text_right(row, x1 - 12, ry + 8 + TBASE, b"Ring 0", 6, tok(tokens.INK_DIM), faces.BODY);
+                }
+                e = ptxt(x0 + 30, ry + 8, x1 - 80, t, nl[r], tok(tokens.INK), faces.NAME);
+            }
+        }
+    }
+}
+
+void st_line(I64 cx, I64 ry, I64 cr, I64 what, Bool focus, in I64[16] s, in U8[_] pn, I64 y) {
+    U8[48] t;
+    I64 n = 0;
+    I64 e = 0;
+    if (what == 1) {
+        e = ptxt(cx, ry + 12, cr - 184, b"Theme", 5, tok(tokens.INK), faces.NAME);
+        if (y >= ry + 4 && y < ry + 36) { seg_at(cr - 176, ry + 4, 176, b"Dark|Light", 2, s[2]); }
+    } else if (what == 2) {
+        e = ptxt(cx, ry + 12, cr - 184, b"Size", 4, tok(tokens.INK), faces.NAME);
+        if (y >= ry + 4 && y < ry + 36) { seg_at(cr - 176, ry + 4, 176, b"1x|2x|3x", 3, s[3] - 1); }
+    } else if (what == 3) {
+        e = ptxt(cx, ry + 12, cr - 52, b"Motion", 6, tok(tokens.INK), faces.NAME);
+        if (y >= ry + 8 && y < ry + 32) {
+            if (s[4] == 1) {
+                pen.round(row, cr - 44, ry + 8, cr, ry + 32, 12, tok(tokens.FILL));
+                pen.round(row, cr - 22, ry + 10, cr - 2, ry + 30, 10, tok(tokens.ON_FILL));
+            } else {
+                pen.round(row, cr - 44, ry + 8, cr, ry + 32, 12, tok(tokens.SURF1));
+                pen.round(row, cr - 42, ry + 10, cr - 22, ry + 30, 10, tok(tokens.INK_DIM));
+            }
+        }
+    } else if (what == 4) {
+        e = ptxt(cx, ry + 12, cr - 344, b"Screen shape", 12, tok(tokens.INK), faces.NAME);
+        if (y >= ry + 4 && y < ry + 36) {
+            seg_at(cr - 336, ry + 4, 336, b"Landscape|Ultrawide|Portrait|Legacy", 4, s[5]);
+        }
+    } else if (what == 5) {
+        e = ptxt(cx, ry + 12, cr - 184, b"Resolution", 10, tok(tokens.INK), faces.NAME);
+        n = res_text(t, 0, s[6], s[7]);
+        if (s[8] == 1) {
+            e = pen.text_right(row, cr, ry + 12 + TBASE, t, n, tok(tokens.INK_DIM), faces.PATH);
+        } else {
+            if (y >= ry + 4 && y < ry + 36) { pen.round(row, cr - 176, ry + 4, cr, ry + 36, R_CTRL, tok(tokens.SURF1)); }
+            e = ptxt(cr - 164, ry + 12, cr - 24, t, n, tok(tokens.INK), faces.PATH);
+            if (s[9] == 1) {
+                e = ptxt_mid(cr - 24, 14, ry + 12, cr - 10, b"^", 1, tok(tokens.INK), faces.BODY);
+            } else {
+                e = ptxt_mid(cr - 24, 14, ry + 12, cr - 10, b"v", 1, tok(tokens.INK), faces.BODY);
+            }
+        }
+    } else if (what == 6) {
+        e = ptxt(cx, ry + 12, cr - 344, b"Tiling", 6, tok(tokens.INK), faces.NAME);
+        if (y >= ry + 4 && y < ry + 36) { seg_at(cr - 336, ry + 4, 336, b"Long side|Columns|Rows", 3, s[11]); }
+    } else if (what == 7) {
+        U32 lc = tok(tokens.INK);      // DN-25: dimmed and disabled with no device
+        if (s[13] < 0) { lc = tok(tokens.INK_DIM); }
+        e = ptxt(cx, ry + 12, cr - 248, b"Volume", 6, lc, faces.NAME);
+        if (y >= ry + 10 && y < ry + 30) {   // a 240 x 20 pill: MANTLE, the level ULTRAMARINE, a 16 px INK knob 2 in
+            pen.round(row, cr - 240, ry + 10, cr, ry + 30, 10, tok(tokens.MANTLE));
+            if (s[13] >= 0) {
+                I64 fw = 20 + 220 * s[13] / 100;
+                pen.round(row, cr - 240, ry + 10, cr - 240 + fw, ry + 30, 10, tok(tokens.ULTRAMARINE));
+                pen.round(row, cr - 258 + fw, ry + 12, cr - 242 + fw, ry + 28, 8, tok(tokens.INK));
+            }
+        }
+    } else if (what == 12) {
+        e = ptxt(cx, ry + 12, cr - 184, b"Output", 6, tok(tokens.INK), faces.NAME);
+        if (s[13] < 0) {
+            e = pen.text_right(row, cr, ry + 12 + TBASE, b"Not available", 13, tok(tokens.INK_DIM), faces.BODY);
+        } else {
+            e = pen.text_right(row, cr, ry + 12 + TBASE, b"Built-in audio", 14, tok(tokens.INK_DIM), faces.BODY);
+        }
+    } else if (what == 13) {
+        e = ptxt(cx, ry + 12, cr - 248, b"Now playing", 11, tok(tokens.INK), faces.NAME);
+        if (s[14] == 1) {
+            n = digits(t, put_text(t, 0, b"pid "), s[15]);
+            I64 pw = pen.width(t, n, faces.PATH);
+            e = pen.text_right(row, cr, ry + 12 + TBASE, t, n, tok(tokens.INK_DIM), faces.PATH);
+            I64 nx = pen.x(cr) - pw - 8 * pen.zoom() - pen.width(pn, len(pn), faces.NAME);
+            e = ctext.text(row, pen.row_y(), nx, pen.y(ry + 12 + TBASE), pen.x(cr) - pw - 8 * pen.zoom(), pn, len(pn),
+                           tok(tokens.INK), faces.NAME, pen.zoom());
+        } else if (s[14] == 0) {
+            e = pen.text_right(row, cr, ry + 12 + TBASE, b"Nothing playing", 15, tok(tokens.INK_DIM), faces.BODY);
+        } else {
+            e = pen.text_right(row, cr, ry + 12 + TBASE, b"Not available", 13, tok(tokens.INK_DIM), faces.BODY);
+        }
+    } else if (what == 8) {
+        e = ptxt(cx, ry + 12, cr - 184, b"Version", 7, tok(tokens.INK), faces.NAME);
+        e = pen.text_right(row, cr, ry + 12 + TBASE, b"Daphnis 0.1.0", 13, tok(tokens.INK_DIM), faces.BODY);
+    } else if (what == 9) {
+        e = ptxt(cx, ry + 12, cr - 184, b"Screen", 6, tok(tokens.INK), faces.NAME);
+        n = res_text(t, 0, s[6], s[7]);
+        e = pen.text_right(row, cr, ry + 12 + TBASE, t, n, tok(tokens.INK_DIM), faces.PATH);
+    } else if (what == 10) {
+        e = ptxt(cx, ry + 12, cr - 184, b"Storage", 7, tok(tokens.INK), faces.NAME);
+        if (s[12] == 1) {
+            e = pen.text_right(row, cr, ry + 12 + TBASE, b"Volume on /home", 15, tok(tokens.INK_DIM), faces.BODY);
+        } else {
+            e = pen.text_right(row, cr, ry + 12 + TBASE, b"No volume", 9, tok(tokens.INK_DIM), faces.BODY);
+        }
+    }
+    if (focus && y >= ry + 0 && y < ry + 40) {
+        // DN-40: a segmented control holds a FILL segment: its focus ring is outside it, on the page's PAPER
+        if (what == 1 || what == 2) {
+            pen.focus_ring(row, cr - 176, ry + 4, cr, ry + 36, 16, tok(tokens.PAPER), tok(tokens.ULTRAMARINE));
+        }
+        if (what == 4 || what == 6) {
+            pen.focus_ring(row, cr - 336, ry + 4, cr, ry + 36, 16, tok(tokens.PAPER), tok(tokens.ULTRAMARINE));
+        }
+        if (what == 5 && s[8] == 0) {      // DN-42: the Resolution button's focus, outside it
+            pen.focus_ring(row, cr - 176, ry + 4, cr, ry + 36, R_CTRL, tok(tokens.PAPER), tok(tokens.ULTRAMARINE));
+        }
+        if (what == 7 && s[13] >= 0) { pen.ring(row, cr - 242, ry + 8, cr + 2, ry + 32, 12, 2, tok(tokens.ULTRAMARINE)); }
+    }
+    if (focus && what == 3 && y >= ry + 6 && y < ry + 34) {
+        pen.ring(row, cr - 46, ry + 6, cr + 2, ry + 34, 14, 2, tok(tokens.ULTRAMARINE));
+    }
+}
+
+void res_menu(I64 cr, I64 yb, in I64[16] s, I64 y) {
+    I64 a = RES_AT[s[5]];
+    I64 n = RES_AT[s[5] + 1] - a;
+    I64 mh = 12 + 28 * n + 2 * (n - 1);
+    I64 x0 = cr - 240;
+    I64 y0 = yb - mh;
+    if (y < y0 || y >= yb) { return; }
+    pen.round(row, x0, y0, cr, yb, RAD, tok(tokens.SURF1));
+    for k in 0..n {
+        I64 ry = y0 + 6 + 30 * k;
+        U32 fg = tok(tokens.INK);
+        U32 dim = tok(tokens.INK_DIM);
+        if (a + k == s[10]) {
+            if (y >= ry && y < ry + 28) { pen.round(row, x0 + 6, ry, cr - 6, ry + 28, 14, tok(tokens.FILL)); }
+            fg = tok(tokens.ON_FILL);
+            dim = fg;
+        }
+        U8[24] t;
+        I64 m = res_text(t, 0, RES_W[a + k], RES_H[a + k]);
+        I64 e = ptxt(x0 + 16, ry + 6, cr - 16, t, m, fg, faces.PATH);
+        if (RES_W[a + k] == 1920 && RES_H[a + k] == 1080) {
+            e = pen.text_right(row, cr - 16, ry + 6 + TBASE, b"Full HD", 7, dim, faces.BODY);
+        }
+        if (RES_W[a + k] == 3840 && RES_H[a + k] == 2160) {
+            e = pen.text_right(row, cr - 16, ry + 6 + TBASE, b"4K", 2, dim, faces.BODY);
+        }
+    }
+}
+
+void revert_at(I64 x0, I64 y0, I64 ow, I64 oh, I64 left, I64 y) {
+    I64 x1 = x0 + RV_W;
+    I64 e = 0;
+    if (y >= y0 + 16 && y < y0 + 44) {
+        e = pen.text(row, x0 + 24, y0 + 39, x1 - 24, b"Keep this resolution?", 21, tok(tokens.INK), faces.TITLE);
+    }
+    U8[48] t;
+    I64 n = put_text(t, 0, b"Back to ");
+    n = res_text(t, n, ow, oh);
+    n = put_text(t, n, b" in ");
+    n = digits(t, n, left);
+    n = put_text(t, n, b" s");
+    e = ptxt(x0 + 24, y0 + 64, x1 - 24, t, n, tok(tokens.INK_DIM), faces.BODY);
+    I64 kw = txt_w(b"Enter", 5, faces.PATH) + 12;
+    I64 rw = 12 + kw + 10 + txt_w(b"Keep", 4, faces.NAME) + 12;
+    pen.round(row, x0 + 24, y0 + 104, x0 + 24 + rw, y0 + 140, R_CTRL, tok(tokens.FILL));
+    pen.ring(row, x0 + 36, y0 + 112, x0 + 36 + kw, y0 + 132, R_KEY, 1, tok(tokens.ON_FILL));
+    e = ptxt_mid(x0 + 36, kw, y0 + 114, x0 + 36 + kw, b"Enter", 5, tok(tokens.ON_FILL), faces.PATH);
+    e = ptxt(x0 + 46 + kw, y0 + 114, x0 + 24 + rw, b"Keep", 4, tok(tokens.ON_FILL), faces.NAME);
+    I64 ew = txt_w(b"Esc", 3, faces.PATH) + 12;
+    I64 fw = 12 + ew + 10 + txt_w(b"Revert", 6, faces.NAME) + 12;
+    pen.round(row, x1 - 24 - fw, y0 + 104, x1 - 24, y0 + 140, R_CTRL, tok(tokens.SURF1));
+    pen.ring(row, x1 - 12 - fw, y0 + 112, x1 - 12 - fw + ew, y0 + 132, R_KEY, 1, tok(tokens.RULE));
+    e = ptxt_mid(x1 - 12 - fw, ew, y0 + 114, x1 - 12 - fw + ew, b"Esc", 3, tok(tokens.INK_DIM), faces.PATH);
+    e = ptxt(x1 - 2 - fw + ew, y0 + 114, x1 - 24, b"Revert", 6, tok(tokens.INK), faces.NAME);
+}
+
+I64 rv_plan(I64 key, I64 ms) {
+    if (rv_secs(ms) == 0) { return RV_BACK; }
+    if (key == KEY_ENTER) { return RV_KEEP; }
+    if (key == KEY_ESC) { return RV_BACK; }
+    return RV_WAIT;
+}
+
+I64 rv_note(I64 st, inout U8[_] t) {
+    if (st == 0) { return 0; }
+    return put_text(t, 0, b"Couldn't save the resolution.");
+}
+
+// The rows frame (tools/check-hdesk.py DN_ROWS_AT), 736 x 1431 (MANTLE): six 720 px PAPER plates from x 8, each its
+// top, height, first row's top, rows (kinds, 0 none), focused row and the state st_line reads (page, -, theme, size,
+// motion, shape, screen w, h, one firmware mode, the menu open, its size, tiling, a volume, the level, the player, its
+// pid). Display (Theme focused); Display on one firmware mode at 1080 x 1920 (Motion off and focused); Display with the
+// Resolution menu open (Resolution focused); Sound (Volume at 64 focused, cat playing, pid 14); About; Grants' list.
+I64[6] PL_Y = [8, 300, 543, 875, 1069, 1263];
+I64[6] PL_H = [284, 235, 324, 186, 186, 160];
+I64[6] PL_TOP = [24, 24, 64, 24, 24, 24];
+I64[30] PL_K = [1, 2, 3, 4, 5, 1, 2, 3, 5, 0, 1, 2, 3, 4, 5, 12, 7, 13, 0, 0, 8, 9, 10, 0, 0, 0, 0, 0, 0, 0];
+I64[6] PL_F = [0, 2, 4, 1, -1, -1];
+I64[80] PL_ST = [0, -1, 0, 1, 1, 0, 1920, 1080, 0, 0, 3, 0, 1, -1, 0, 0,
+                 0, -1, 0, 2, 0, 2, 1080, 1920, 1, 0, 0, 0, 0, 64, 0, 0,
+                 0, -1, 0, 1, 1, 0, 1920, 1080, 0, 1, 3, 0, 1, -1, 0, 0,
+                 2, -1, 0, 1, 1, 0, 1920, 1080, 0, 0, 0, 0, 1, 64, 1, 14,
+                 4, -1, 0, 1, 1, 0, 1920, 1080, 0, 0, 0, 0, 1, -1, 0, 0];   // none for Grants
+const I64 PL_GRANTS = 5;
+
+// DN-34: Grants' list in the frame (tools/check-hdesk.py DN_GRANTS): fetch Network, ced Disk, kern Ring 0.
+I64[8] tg_gt = [2, 1, 8, 0, 0, 0, 0, 0];
+U8[128] tg_nm;
+I64[8] tg_nl = [5, 3, 4, 0, 0, 0, 0, 0];
+
+void grant_names() {
+    for q in 0..5 { tg_nm[q] = b"fetch"[q]; }
+    for q in 0..3 { tg_nm[16 + q] = b"ced"[q]; }
+    for q in 0..4 { tg_nm[32 + q] = b"kern"[q]; }
+}
+
+// Plate k of the rows frame at 1x from (x0, y0): its rows by st_line, the Resolution menu over them when open (its
+// bottom the Resolution row's top and 4, as hdesk.ci dp_res_bottom puts it), or Grants' list by grant_rows.
+void rows_at(I64 x0, I64 y0, I64 k, I64 y) {
+    I64 cx = x0 + 24;
+    I64 cr = x0 + 696;
+    I64 top = y0 + PL_TOP[k];
+    if (k == PL_GRANTS) {
+        grant_rows(cx, cr, top, 3, tg_gt, tg_nm, tg_nl, y);
+        return;
+    }
+    I64[16] s;
+    for q in 0..16 { s[q] = PL_ST[16 * k + q]; }
+    s[2] = tokens.theme();
+    I64 rb = 0;
+    for r in 0..5 {
+        I64 what = PL_K[5 * k + r];
+        I64 ry = top + 49 * r;
+        if (what == 5) { rb = ry + 4; }
+        if (what > 0 && y >= ry && y < ry + 40) { st_line(cx, ry, cr, what, r == PL_F[k], s, b"cat", y); }
+    }
+    if (s[9] == 1) {
+        menu_shadow(x0, x0 + 720, cr, rb, s);
+        res_menu(cr, rb, s, y);
+    }
+}
+
+// The OV window holding a plate from device (x0, y0), pw x ph at 1x, at UI scale s (tools/check-hdesk.py dn_plate):
+// plate k of the rows frame, or (k -1) the revert prompt, back to 1280 x 720 in 12 s.
+void plate(I64 x0, I64 y0, I64 pw, I64 ph, I64 s, I64 k, I64 y) {
+    I64 x1 = x0 + pw * s;
+    I64 y1 = y0 + ph * s;
+    if (y < y0 || y >= y1) { return; }
+    I64 r = R_PLATE * s;
+    Bool rnd = y < y0 + r || y >= y1 - r;
+    if (rnd) { keep_at(x0, x1, r); }
+    draw.paint(row, x0, x1, tok(tokens.PAPER));
+    I64 z = 1;
+    if (s % 2 == 0) { z = 2; }
+    pen.at(x0, y0, z, y0 + (y - y0) / (s / z));
+    if (k < 0) {
+        revert_at(x0, y0, 1280, 720, 12, y0 + (y - y0) / s);
+    } else {
+        rows_at(x0, y0, k, y0 + (y - y0) / s);
+    }
+    expand_by(x0, pw * z, s / z);
+    if (rnd) { corners_at(x0, y0, x1, y1, r, 0, tok(tokens.RULE), y); }
+}
+
+I64 rows_sum(I64 s) {
+    grant_names();
+    I64 h = 0;
+    for y in 0..1431 * s {
+        draw.paint(row, 0, 736 * s, tok(tokens.MANTLE));
+        for k in 0..6 { plate(8 * s, PL_Y[k] * s, 720, PL_H[k], s, k, y); }
+        for x in 0..736 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+// The revert prompt from (8, 8) in a 436 x 176 frame (MANTLE).
+I64 revert_sum(I64 s) {
+    I64 h = 0;
+    for y in 0..176 * s {
+        draw.paint(row, 0, 436 * s, tok(tokens.MANTLE));
+        plate(8 * s, 8 * s, RV_W, RV_H, s, -1, y);
+        for x in 0..436 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "RES-1: 21 sizes in four groups, Full HD and 4K among the landscape ones" {
+    assert(RES_AT[4] == 21);
+    assert(RES_W[3] == 1920 && RES_H[3] == 1080 && RES_W[7] == 3840 && RES_H[7] == 2160);
+    for k in 0..21 { assert(RES_W[k] % 8 == 0); }
+}
+
+test "RES-1's bound (rt/fbmode.h): every listed size, 5120 x 1440 and 2160 x 3840 taken; 1366 x 768 refused" {
+    for k in 0..21 { assert(mode_fits(RES_W[k], RES_H[k])); }
+    assert(mode_fits(5120, 1440) && mode_fits(2160, 3840));
+    assert(!mode_fits(1366, 768) && !mode_fits(5120, 2160) && !mode_fits(632, 480) && !mode_fits(640, 3848));
+}
+
+test "the revert rule: 15 s at the ask, 1 s left at 14.99 s, the old size back at 15 s (1500 stepped frames)" {
+    assert(rv_secs(0) == 15);
+    assert(rv_secs(1000) == 14 && rv_secs(1001) == 14);
+    assert(rv_secs(14990) == 1);
+    assert(rv_secs(1500 * 10) == 0);
+    assert(rv_secs(20000) == 0);
+}
+
+test "Keep saves (FBIO_TILE_SAVE), Esc and the 15 s switch back with no save; a failed save says so (dn_rv_plan)" {
+    assert(rv_plan(KEY_ENTER, 3000) == RV_KEEP);
+    assert(rv_plan(KEY_ESC, 3000) == RV_BACK);
+    assert(rv_plan(0, 3000) == RV_WAIT && rv_plan(0, 14990) == RV_WAIT);
+    assert(rv_plan(0, 15000) == RV_BACK && rv_plan(KEY_ENTER, 15000) == RV_BACK);
+    assert(rv_plan(57, 3000) == RV_WAIT);
+    U8[48] t;
+    assert(rv_note(0, t) == 0);
+    assert(rv_note(-30, t) == 29 && t[0] == 'C' && t[28] == '.');
+    assert(rv_note(-5, t) == 29);
+}
+
+test "the desk's own pages' rows, the Resolution menu and Grants' list at scale 1 and 2 equal the twin's, both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(rows_sum(1) == 772214928);
+    assert(rows_sum(2) == 413779726);
+    tokens.set_theme(tokens.LIGHT);
+    assert(rows_sum(1) == 298833329);
+    assert(rows_sum(2) == 148949691);
+    tokens.set_theme(tokens.DARK);
+}
+
+test "the revert prompt at UI scale 1 and 2 equals the twin's, both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(revert_sum(1) == 670598930);
+    assert(revert_sum(2) == 615274889);
+    tokens.set_theme(tokens.LIGHT);
+    assert(revert_sum(1) == 672371974);
+    assert(revert_sum(2) == 115689826);
+    tokens.set_theme(tokens.DARK);
+}
+
+// Row y of a page's row of kind what at 1x from (0, 0) at zoom z, focused, its control's right edge cr (684).
+void line_row(I64 what, I64 th, I64 z, I64 y) {
+    I64[16] st = [0, -1, th, 1, 1, 0, 1920, 1080, 0, 0, 3, 0, 1, -1, 0, 0];
+    draw.paint(row, 0, 720 * z, tok(tokens.PAPER));
+    pen.at(0, 0, z, y);
+    st_line(232, 68, 684, what, true, st, b"cat", y / z);
+}
+
+test "DN-40: a focused segmented control (Theme, Dark|Light): a 2 px PAPER gap, then the ring, outside it" {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            I64 cr = 684;
+            I64 y = (68 + 20) * z;              // the control's middle (DN-46: 40 px rows, the control at ry + 4)
+            line_row(1, th, z, y);
+            I64 x0 = (cr - 176) * z;
+            I64 x1 = cr * z;
+            for k in 0..2 * z {
+                assert(row[x0 - 1 - k] == tok(tokens.PAPER) && row[x0 - 2 * z - 1 - k] == tok(tokens.ULTRAMARINE));
+                assert(row[x1 + k] == tok(tokens.PAPER) && row[x1 + 2 * z + k] == tok(tokens.ULTRAMARINE));
+            }
+            assert(row[x0] == tok(tokens.MANTLE));   // the track itself, untouched
+        }
+    }
+    tokens.set_theme(tokens.DARK);
+}
+
+test "DN-42: a focused button (Resolution) takes the gap ring: PAPER, then ULTRAMARINE, outside it" {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            I64 cr = 684;
+            I64 y = (68 + 20) * z;
+            line_row(5, th, z, y);
+            I64 x0 = (cr - 176) * z;
+            I64 x1 = cr * z;
+            for k in 0..2 * z {
+                assert(row[x0 - 1 - k] == tok(tokens.PAPER) && row[x0 - 2 * z - 1 - k] == tok(tokens.ULTRAMARINE));
+                assert(row[x1 + k] == tok(tokens.PAPER) && row[x1 + 2 * z + k] == tok(tokens.ULTRAMARINE));
+            }
+            assert(row[x0] == tok(tokens.SURF1) && row[x1 - 1] == tok(tokens.SURF1));   // the button: no inset ring
+        }
+    }
+    tokens.set_theme(tokens.DARK);
+}
+// SPDX-License-Identifier: Apache-2.0

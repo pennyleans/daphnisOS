@@ -1,0 +1,19 @@
+# AC-Q's pty case (board 20261111T191835Z) and PR 300's limits (kit/launch.ci): Index opens two files of /rs whose
+# lines are `ced '/rs/NAME'` of 251 and 250 bytes. The desk types an app as `exec ` and the line, and the pty's edited
+# line holds 255 bytes (src/pty.ci EDIT), so 251 is refused before a byte is typed and no terminal opens; 250 is 255
+# bytes and Enter: Edit runs as the terminal's process and Ctrl+Q ends it, the terminal with it, with status 0. A byte
+# dropped from that line would leave the shell waiting for its closing quote, and the terminal would not end.
+hdesk: screen 1920x1080 plane 1920x
+~hdesk: bar desktop 1 \|Index\| var \|/rs\|.*
+finder: filter |w251| items 1
+~hdesk: ff runs \|ced '/rs/w251x{237}'\|
+~hdesk: launch none \|ced '/rs/w251x{237}'\|
+-hdesk: terminal
+finder: filter |w250| items 1
+~hdesk: ff runs \|ced '/rs/w250x{236}'\|
+hdesk: terminal 2 slot 
+=hdesk: terminal 2 ended, status 0
+daphnis: shut down
+!hdesk: launch none |ced '/rs/w250
+!hdesk: ff path refused
+!hdesk: launch refused

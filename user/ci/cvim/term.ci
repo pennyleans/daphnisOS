@@ -1,0 +1,165 @@
+// user/ci/cvim/term.ci: cells to terminal bytes with frame diffing (docs/specs/2026-11-07-cv-cvim.md sections 13 and
+// 14, CV-3; ced's VIEW-5). A frame writes only the cells that differ from the last frame, a run at a time: one CUP,
+// then the run's characters, with SGR only where the role changes. A full frame (the first, or after a resize)
+// clears the screen first. The cursor is hidden while drawing, then placed and shown; its form per mode goes out as
+// DECSCUSR only when it changes (the terminal draws it once terms.ci reads it; until then it drops the sequence).
+//
+// The roles' SGR is the S1 sheet's role map (studio-assets reference/daphnis-cvim/sheet.md, section 1), KD-5 B: bold,
+// reverse and the eight ANSI colors. Every SGR starts from 0, so a role is the same bytes whatever came before it.
+import user.ci.cvim.view;
+import user.ci.cvim.theme;
+
+// Runs of changed cells closer than this many cells are written as one run (a CUP costs about as much).
+export const I64 GAP = 4;
+
+void b1(inout I64[_] n, inout U8[_] o, I64 v) {
+    if (n[0] < len(o)) { o[n[0]] = v as U8; }
+    n[0] = n[0] + 1;
+}
+
+void put(inout I64[_] n, inout U8[_] o, in U8[_] b) {
+    for i in 0..len(b) { b1(n, o, b[i] as I64); }
+}
+
+void num(inout I64[_] n, inout U8[_] o, I64 v) {
+    if (v >= 10) { num(n, o, v / 10); }
+    b1(n, o, '0' + v % 10);
+}
+
+void cup(inout I64[_] n, inout U8[_] o, I64 row, I64 col) {
+    put(n, o, b"\x1b[");
+    num(n, o, row + 1);
+    b1(n, o, ';');
+    num(n, o, col + 1);
+    b1(n, o, 'H');
+}
+
+void put_cp(inout I64[_] n, inout U8[_] o, I64 cp) {
+    if (cp < 128) { b1(n, o, cp); return; }
+    if (cp < 2048) { b1(n, o, 192 + cp / 64); b1(n, o, 128 + cp % 64); return; }
+    if (cp < 65536) { b1(n, o, 224 + cp / 4096); b1(n, o, 128 + cp / 64 % 64); b1(n, o, 128 + cp % 64); return; }
+    b1(n, o, 240 + cp / 262144); b1(n, o, 128 + cp / 4096 % 64); b1(n, o, 128 + cp / 64 % 64); b1(n, o, 128 + cp % 64);
+}
+
+// The SGR of a role (sheet section 1).
+export void sgr(inout I64[_] n, inout U8[_] o, I64 role) {
+    if (role == view.R_MENU || role == view.R_MENU_SEL || role == view.R_MENU_DIM) {   // CV-7: the completion menu
+        U8[16] t;
+        I64 m = theme.MARK_MENU;
+        if (role == view.R_MENU_SEL) { m = theme.MARK_MENU_CHOSEN; }
+        if (role == view.R_MENU_DIM) { m = theme.MARK_MENU_DIM; }
+        I64 tn = theme.mark(m, t);
+        put(n, o, b"\x1b[0");
+        put(n, o, t[0..tn]);
+        put(n, o, b"m");
+        return;
+    }
+    if (role == view.R_DIAG_E || role == view.R_DIAG_W) {   // CV-8: the margin's E and W (DN-45)
+        U8[16] t;
+        I64 m = theme.MARK_DIAG_E;
+        if (role == view.R_DIAG_W) { m = theme.MARK_DIAG_W; }
+        I64 tn = theme.mark(m, t);
+        put(n, o, b"\x1b[0");
+        put(n, o, t[0..tn]);
+        put(n, o, b"m");
+        return;
+    }
+    if (role >= view.R_SYN0) {                 // CV-6: the text's highlighting, theme.ci's one table
+        U8[16] t;
+        I64 tn = theme.sgr(role - view.R_SYN0, t);
+        put(n, o, b"\x1b[0");
+        put(n, o, t[0..tn]);
+        put(n, o, b"m");
+        return;
+    }
+    if (role == view.R_GUTTER) {               // DN-45: line numbers, theme.ci's
+        U8[16] t;
+        I64 tn = theme.mark(theme.MARK_LINE_NUMBER, t);
+        put(n, o, b"\x1b[0");
+        put(n, o, t[0..tn]);
+        put(n, o, b"m");
+        return;
+    }
+    if (role == view.R_SELECTION) {            // DN-45: the selection, theme.ci's
+        U8[16] t;
+        I64 tn = theme.mark(theme.MARK_SELECTION, t);
+        put(n, o, b"\x1b[0");
+        put(n, o, t[0..tn]);
+        put(n, o, b"m");
+        return;
+    }
+    if (role == view.R_EOB) { put(n, o, b"\x1b[0;34m"); }
+    else if (role == view.R_GUTTER_CUR) { put(n, o, b"\x1b[0;1m"); }
+    else if (role == view.R_BUF_CUR) { put(n, o, b"\x1b[0;1;7m"); }
+    else if (role == view.R_BUF_OTHER || role == view.R_STATUS) { put(n, o, b"\x1b[0;40m"); }
+    else if (role == view.R_STATUS_MOD) { put(n, o, b"\x1b[0;1;40m"); }
+    else if (role == view.R_MODE_NORMAL) { put(n, o, b"\x1b[0;1;7;34m"); }
+    else if (role == view.R_MODE_INSERT) { put(n, o, b"\x1b[0;1;7;32m"); }
+    else if (role == view.R_MODE_VISUAL) { put(n, o, b"\x1b[0;1;7;35m"); }
+    else if (role == view.R_MODE_REPLACE) { put(n, o, b"\x1b[0;1;7;31m"); }
+    else if (role == view.R_REFUSAL) { put(n, o, b"\x1b[0;33m"); }
+    else { put(n, o, b"\x1b[0m"); }
+}
+
+// One frame of g (rows times cols) against last, the frame the terminal shows; full draws every cell. last becomes g.
+// st[0] is the cursor form last sent (0: none yet). The bytes go to o; their count is returned (past len(o) when o
+// is too small: the caller gives o room for a full frame, 24 bytes a cell).
+export I64 frame(inout I64[_] last, in I64[_] g, I64 rows, I64 cols, Bool full, I64 at, I64 form,
+                 inout I64[_] st, inout U8[_] o) {
+    I64[1] n;
+    n[0] = 0;
+    put(n, o, b"\x1b[?25l");
+    if (full) { put(n, o, b"\x1b[0m\x1b[2J"); }
+    I64 role = -1;
+    for row in 0..rows {
+        I64 c = 0;
+        while (c < cols) {
+            I64 i = row * cols + c;
+            if (!full && last[i] == g[i]) { c += 1; continue; }
+            // A run: up to the last changed cell that is less than GAP cells from the one before it.
+            I64 end = c + 1;
+            I64 q = c + 1;
+            while (q < cols && q < end + GAP) {
+                if (full || last[row * cols + q] != g[row * cols + q]) { end = q + 1; }
+                q += 1;
+            }
+            cup(n, o, row, c);
+            for k in c..end {
+                I64 v = g[row * cols + k];
+                I64 rl = v / view.ROLE;
+                if (rl != role) { sgr(n, o, rl); role = rl; }
+                put_cp(n, o, v % view.ROLE);
+                last[row * cols + k] = v;
+            }
+            c = end;
+        }
+    }
+    if (role != 0 && role != -1) { put(n, o, b"\x1b[0m"); }
+    cup(n, o, at / 65536, at % 65536);
+    if (form != st[0]) {
+        put(n, o, b"\x1b[");
+        num(n, o, form);
+        put(n, o, b" q");
+        st[0] = form;
+    }
+    put(n, o, b"\x1b[?25h");
+    return n[0];
+}
+
+test "a full frame of two cells, then a frame with one changed" {
+    I64[2] last;
+    I64[2] g;
+    g[0] = 'h';
+    g[1] = 'i' + view.R_SELECTION * view.ROLE;
+    I64[1] st;
+    st[0] = 0;
+    U8[128] o;
+    I64 n = frame(last, g, 1, 2, true, 1, 2, st, o);
+    assert(equal(o[0..n], b"\x1b[?25l\x1b[0m\x1b[2J\x1b[1;1H\x1b[0mh\x1b[0;37;44mi\x1b[0m\x1b[1;2H\x1b[2 q\x1b[?25h"));
+    g[0] = 'j';
+    n = frame(last, g, 1, 2, false, 0, 2, st, o);
+    assert(equal(o[0..n], b"\x1b[?25l\x1b[1;1H\x1b[0mj\x1b[1;1H\x1b[?25h"));
+    n = frame(last, g, 1, 2, false, 0, 6, st, o);
+    assert(equal(o[0..n], b"\x1b[?25l\x1b[1;1H\x1b[6 q\x1b[?25h"));
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,211 @@
+// src/gpt.ci: HW-4m's stick (docs/specs/2026-11-06-hw-hardware.md rows HW-4m and HW-8), the GUID partition table that
+// tools/build-stick.sh writes: partition 1 the EFI system partition, partition 2 the ext2 volume. Pure, so the hosted
+// tests run it on fixed bytes (tests/hw/gpt_test.ci); src/usbms.ci reads the sectors and asks it.
+//
+// The header is at LBA 1: the signature `EFI PART`, revision 1.0, its own size (92 to 512 bytes) and CRC32 (taken with
+// the CRC field zeroed), the first and last usable LBA, the entry array's LBA, count and entry size (128 here: no
+// other size is read), and the array's CRC32. An entry: its type GUID, first and last LBA, inclusive. Only the primary
+// table is read: a stick written with dd keeps it at LBA 1, and its backup is wherever the image ended; a primary that
+// is not sound is no volume, never a reason to trust the backup.
+//
+// HW-12: the boot line names the partition a board may write by its unique partition GUID, `daphnis.disk.write=GUID`,
+// the text `lsblk -o PARTUUID` and sfdisk print (guid, names).
+
+export const I64 HEADER_LBA = 1;
+export const I64 MAX_ENTRIES = 128;
+
+// The Linux filesystem data type, 0FC63DAF-8483-4772-8E79-3D69D8477DE4, in its on-disk byte order.
+U8[16] LINUX = [0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4];
+
+// CRC32 (IEEE 802.3, reflected, polynomial 0xEDB88320) over n bytes of b from at, carried in c: start with
+// 0xFFFFFFFF, end with crc_final.
+export U64 crc_update(U64 c, in U8[_] b, I64 at, I64 n) {
+    U64 r = c;
+    for i in 0..n {
+        r = r ^ (b[at + i] as U64);
+        for k in 0..8 {
+            if ((r & 1) != 0) {
+                r = (r >> 1) ^ 0xEDB88320;
+            } else {
+                r = r >> 1;
+            }
+        }
+    }
+    return r;
+}
+
+export U64 crc_final(U64 c) {
+    return c ^ 0xFFFFFFFF;
+}
+
+U64 le(in U8[_] b, I64 at, I64 n) {
+    U64 v = 0;
+    for k in 0..n {
+        v |= (b[at + k] as U64) << (8 * k) as U64;
+    }
+    return v;
+}
+
+// True when LBA 0 is a protective MBR (the boot signature and a partition of type 0xEE): the device says it has a GUID
+// table, so a table that is absent or not sound means no volume, never the whole device.
+export Bool protective(in U8[512] mbr) {
+    if (mbr[510] != 0x55 || mbr[511] != 0xAA) {
+        return false;
+    }
+    for i in 0..4 {
+        if (mbr[446 + 16 * i + 4] == 0xEE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The header at LBA 1 (its 512 bytes) of a device of sectors sectors: 1 a sound table, with its entry array's LBA,
+// count, CRC32, and the first and last usable LBA into got; 0 no signature; -1 a signature on a header that is not
+// sound. Every field is the device's word: each is bounded as an unsigned number before it is used, so no arithmetic
+// here can overflow. Sound: revision 1.0, size 92 to 512, the CRC, its own LBA 1, entries of 128 bytes (the only size
+// read), 1 to MAX_ENTRIES of them, the array from LBA 2 on and ending before the first usable LBA, the usable range
+// inside the device.
+export I64 header(in U8[512] h, I64 sectors, inout I64[5] got) {
+    U8[8] sig = [0x45, 0x46, 0x49, 0x20, 0x50, 0x41, 0x52, 0x54];   // EFI PART
+    for k in 0..8 {
+        if (h[k] != sig[k]) {
+            return 0;
+        }
+    }
+    U64 hsize = le(h, 12, 4);
+    if (le(h, 8, 4) != 0x10000 || hsize < 92 || hsize > 512 || sectors < 34) {
+        return -1;
+    }
+    U8[512] z;
+    for k in 0..512 { z[k] = h[k]; }
+    for k in 0..4 { z[16 + k] = 0; }
+    if (crc_final(crc_update(0xFFFFFFFF, z, 0, hsize as I64)) != le(h, 16, 4)) {
+        return -1;
+    }
+    U64 dev = sectors as U64;
+    U64 lba = le(h, 72, 8);
+    U64 nent = le(h, 80, 4);
+    U64 first = le(h, 40, 8);
+    U64 last = le(h, 48, 8);
+    if (le(h, 24, 8) != 1 || le(h, 84, 4) != 128 || nent < 1 || nent > MAX_ENTRIES as U64 || lba < 2 ||
+        lba >= dev || first >= dev || last >= dev || first > last) {
+        return -1;
+    }
+    U64 span = (nent * 128 + 511) / 512;                   // at most 32 sectors: nent is bounded above
+    if (lba + span > first) {
+        return -1;                                         // the array runs into the usable range
+    }
+    got[0] = lba as I64;
+    got[1] = nent as I64;
+    got[2] = le(h, 88, 4) as I64;
+    got[3] = first as I64;
+    got[4] = last as I64;
+    return 1;
+}
+
+// An entry's first and last LBA into range and its unique partition GUID (bytes 16 to 31, in their on-disk order) into
+// uid: 1 a Linux filesystem partition, 2 another kind, 0 an unused entry (type all zero), -1 an entry that is not
+// sound (last before first, or outside the usable range first..last).
+export I64 entry(in U8[_] b, I64 at, I64 first, I64 last, inout I64[2] range, inout U8[16] uid) {
+    Bool linux = true;
+    Bool unused = true;
+    for k in 0..16 {
+        linux = linux && b[at + k] == LINUX[k];
+        unused = unused && b[at + k] == 0;
+    }
+    if (unused) {
+        return 0;
+    }
+    U64 lo = le(b, at + 32, 8);
+    U64 hi = le(b, at + 40, 8);
+    if (lo < first as U64 || hi > last as U64 || hi < lo) {
+        return -1;
+    }
+    range[0] = lo as I64;
+    range[1] = hi as I64;
+    for k in 0..16 {
+        uid[k] = b[at + 16 + k];
+    }
+    if (linux) {
+        return 1;
+    }
+    return 2;
+}
+
+// True when two inclusive ranges share a sector.
+export Bool overlap(I64 a0, I64 a1, I64 b0, I64 b1) {
+    return a0 <= b1 && b0 <= a1;
+}
+
+// A hex digit's value, -1 for a byte that is not one.
+I64 hex(U8 c) {
+    if (c >= 48 && c <= 57) {
+        return (c - 48) as I64;
+    }
+    if (c >= 65 && c <= 70) {
+        return (c - 55) as I64;
+    }
+    if (c >= 97 && c <= 102) {
+        return (c - 87) as I64;
+    }
+    return -1;
+}
+
+// A GUID's text, n bytes of s from at: 8-4-4-4-12 hex digits of either case, as `lsblk -o PARTUUID` and sfdisk print
+// it. True with its 16 bytes in on-disk order in g: the first three groups least significant byte first, the last
+// two as written. False for any other text.
+export Bool guid(in U8[_] s, I64 at, I64 n, inout U8[16] g) {
+    if (n != 36) {
+        return false;
+    }
+    I64[16] place = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];   // the text's byte k is g[place[k]]
+    Bool ok = true;
+    I64 k = 0;
+    I64 i = 0;
+    while (i < 36 && ok) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            ok = s[at + i] == 45;                          // `-`
+            i += 1;
+        } else {
+            I64 hi = hex(s[at + i]);
+            I64 lo = hex(s[at + i + 1]);
+            ok = hi >= 0 && lo >= 0;
+            if (ok) {
+                g[place[k]] = (16 * hi + lo) as U8;
+            }
+            k += 1;
+            i += 2;
+        }
+    }
+    return ok;
+}
+
+// True when the boot line (nbytes of it) holds the word key followed by a GUID's text whose bytes are uid's, whole:
+// between spaces or at an end. A GUID of all zeros (an unused entry's) is never named.
+export Bool names[k](in U8[_] line, I64 nbytes, in U8[k] key, in U8[16] uid) {
+    Bool blank = true;
+    for j in 0..16 {
+        blank = blank && uid[j] == 0;
+    }
+    I64 w = k + 36;
+    Bool found = false;
+    I64 i = 0;
+    while (!blank && !found && i + w <= nbytes) {
+        if ((i == 0 || line[i - 1] == 32) && (i + w == nbytes || line[i + w] == 32)) {
+            Bool hit = true;
+            for j in 0..k {
+                hit = hit && line[i + j] == key[j];
+            }
+            U8[16] g;
+            hit = hit && guid(line, i + k, 36, g);
+            for j in 0..16 {
+                hit = hit && g[j] == uid[j];
+            }
+            found = hit;
+        }
+        i += 1;
+    }
+    return found;
+}
+// SPDX-License-Identifier: Apache-2.0

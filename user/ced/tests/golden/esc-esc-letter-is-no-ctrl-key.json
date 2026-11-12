@@ -1,0 +1,26 @@
+{
+  "id": "esc-esc-letter-is-no-ctrl-key",
+  "rules": [
+    "KEY-1",
+    "KEY-9"
+  ],
+  "text": "abc\ndef\n",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b1b78"
+  ],
+  "expect": {
+    "text": "abc\ndef\n",
+    "sel": [
+      0,
+      0
+    ]
+  }
+}

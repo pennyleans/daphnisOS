@@ -1,0 +1,160 @@
+// tests/rs/stacct_test.ci: hosted tests of RS-SET2, Settings' Accounts page (user/ci/kit/stacct.ci, frame 34).
+// Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+import user.ci.kit.stacct;
+
+U32[1600] row;
+
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+void two() {
+    stacct.accounts_clear();
+    Bool b = stacct.account(b"ci", 2, 1000, stacct.PARENT, stacct.ALL, true);
+    b = stacct.account(b"sam", 3, 1001, stacct.CHILD, stacct.DISK | stacct.AUDIO, false);
+    stacct.open();
+}
+
+I64 pill_mid(I64 k) { return Y0 + stpage.BODY + stacct.PILL_PITCH * k + 20; }
+I64 rows_top() { return Y0 + stpage.BODY + 2 * stacct.PILL_PITCH - 2 + stpage.GAP + stpage.LAB; }   // two accounts
+
+void draw(I64 y) {
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stacct.row_at(row, CX, Y0, CR, YB, y);
+}
+
+test "frame 34: the rows land where the frame draws them" {
+    two();
+    draw(Y0);
+    assert(rows_top() == Y0 + 191);                                                         // SAM's Role row
+    assert(stacct.shown(Y0, YB) == 2);
+    assert(stacct.disc_color(0) == 0x009e4724 as U32 && stacct.disc_color(1) == 0x002f7a72 as U32);
+}
+
+test "frame 34: the account in use opens chosen; a press chooses another" {
+    two();
+    assert(stacct.chosen() == 0);
+    assert(stacct.click(CX, Y0, CR, YB, CX + 100, pill_mid(1)) == stpage.DRAW && stacct.chosen() == 1);
+    assert(stacct.click(CX, Y0, CR, YB, CX + 100, pill_mid(1)) == stpage.NONE);
+    tokens.set_theme(0);
+    draw(pill_mid(1));
+    assert(row[CX + 200] == tokens.word(tokens.FILL));
+    draw(pill_mid(0));
+    assert(row[CX + 200] == tokens.word(tokens.PAPER));
+}
+
+test "RS-ROLE: Role, Password, May Use and Remove ask the host, with the chosen account" {
+    two();
+    I64 c = stacct.click(CX, Y0, CR, YB, CX + 100, pill_mid(1));                           // sam
+    I64 seg = CR - stpage.SEG_W;
+    assert(stacct.click(CX, Y0, CR, YB, seg + 30, rows_top() + 20) == stacct.ROLE);
+    assert(stacct.arg() == 1 && stacct.arg2() == stacct.PARENT);
+    assert(stacct.click(CX, Y0, CR, YB, CR - 30, rows_top() + 20) == stpage.DRAW);          // Child already
+    assert(stacct.click(CX, Y0, CR, YB, CR - 30, rows_top() + stpage.PITCH + 20) == stacct.PASSWORD);
+    assert(stacct.arg() == 1);
+    I64 use = rows_top() + 2 * stpage.PITCH + 20;
+    assert(stacct.click(CX, Y0, CR, YB, CR - 50, use) == stacct.CEILING);                   // Sound off
+    assert(stacct.arg() == 1 && stacct.arg2() == stacct.DISK);
+    I64 rm = rows_top() + stpage.ROW + 2 * stpage.PITCH + 2 * stpage.GAP;
+    assert(rm == Y0 + 377);
+    assert(stacct.click(CX, Y0, CR, YB, CR - 20, rm + 16) == stacct.REMOVE && stacct.arg() == 1);
+    assert(stacct.click(CX, Y0, CR, YB, CR - 20, Y0 + 30) == stacct.ADD);
+}
+
+test "DN-58 item 11: the last Parent's Role and Remove do nothing and draw at 40 percent" {
+    two();
+    assert(stacct.last_parent(0) && !stacct.last_parent(1));
+    assert(stacct.chosen() == 0);
+    I64 seg = CR - stpage.SEG_W;
+    assert(stacct.click(CX, Y0, CR, YB, CR - 30, rows_top() + 20) == stpage.NONE);
+    I64 rm = rows_top() + stpage.ROW + 2 * stpage.PITCH + 2 * stpage.GAP;
+    assert(stacct.click(CX, Y0, CR, YB, CR - 20, rm + 16) == stpage.NONE);
+    assert(stacct.click(CX, Y0, CR, YB, CR - 50, rows_top() + 2 * stpage.PITCH + 20) == stpage.NONE);   // a Parent's
+    tokens.set_theme(0);
+    draw(rows_top() + 20);
+    assert(row[seg + 20] == pen_mix(tokens.word(tokens.FILL)));                              // Parent's part, faded
+    stacct.accounts_clear();                                                                // a second Parent: it works
+    Bool b = stacct.account(b"ci", 2, 1000, stacct.PARENT, stacct.ALL, true);
+    b = stacct.account(b"lee", 3, 1002, stacct.PARENT, stacct.ALL, false);
+    assert(!stacct.last_parent(0));
+    assert(stacct.click(CX, Y0, CR, YB, CR - 30, rows_top() + 20) == stacct.ROLE && stacct.arg2() == stacct.CHILD);
+}
+
+U32 pen_mix(U32 c) {
+    U32[1] r;
+    r[0] = c;
+    pen.at(0, 0, 1, 0);
+    stpage.fade(r, 0, 1);
+    return r[0];
+}
+
+test "the desk's Tab order: every control once, past what cannot work, then the sidebar" {
+    two();                                                                                  // ci, the last Parent
+    assert(stacct.enter() && stacct.focused() == stacct.F_ADD);
+    assert(stacct.key(stpage.K_ENTER) == stacct.ADD);
+    assert(stacct.key(stpage.K_TAB) == stpage.DRAW && stacct.focused() == stacct.F_LIST);
+    assert(stacct.key(stpage.K_TAB) == stpage.DRAW && stacct.focused() == stacct.F_PASS);  // past Role
+    assert(stacct.key(stpage.K_TAB) == stpage.BACK && stacct.focused() == stacct.F_NONE);  // nothing below works
+    assert(stacct.enter() && stacct.key(stpage.K_TAB) == stpage.DRAW);                      // the list
+    assert(stacct.key(stpage.K_DOWN) == stpage.DRAW && stacct.chosen() == 1);              // sam, a Child: all stops
+    assert(stacct.key(stpage.K_DOWN) == stpage.DRAW && stacct.chosen() == 1);              // the list's end holds
+    assert(stacct.key(stpage.K_TAB) == stpage.DRAW && stacct.focused() == stacct.F_ROLE);
+    assert(stacct.key(stpage.K_LEFT) == stacct.ROLE && stacct.arg2() == stacct.PARENT);
+    assert(stacct.key(stpage.K_RIGHT) == stpage.DRAW);                                     // Child already
+    assert(stacct.key(stpage.K_TAB) == stpage.DRAW && stacct.focused() == stacct.F_PASS);
+    assert(stacct.key(stpage.K_SPACE) == stacct.PASSWORD);
+    assert(stacct.key(stpage.K_UP) == stpage.DRAW && stacct.focused() == stacct.F_PASS);   // no arrow leaves a stop
+    for k in 0..3 {                                                                         // Disk, Network, Sound
+        assert(stacct.key(stpage.K_TAB) == stpage.DRAW && stacct.focused() == stacct.F_USE);
+        assert(stacct.focused_box() == k && stacct.key(stpage.K_SPACE) == stacct.CEILING);
+    }
+    assert(stacct.arg2() == stacct.DISK);                                                   // Sound off
+    assert(stacct.key(stpage.K_TAB) == stpage.DRAW && stacct.focused() == stacct.F_REMOVE);
+    assert(stacct.key(stpage.K_ENTER) == stacct.REMOVE && stacct.arg() == 1);
+    assert(stacct.key(stpage.K_TAB) == stpage.BACK && stacct.focused() == stacct.F_NONE);
+    assert(stacct.enter_last() && stacct.focused() == stacct.F_REMOVE);                     // Shift+Tab, back again
+    I64[7] back = [stacct.F_USE, stacct.F_USE, stacct.F_USE, stacct.F_PASS, stacct.F_ROLE, stacct.F_LIST, stacct.F_ADD];
+    for k in 0..7 { assert(stacct.key(stpage.K_BACKTAB) == stpage.DRAW && stacct.focused() == back[k]); }
+    assert(stacct.key(stpage.K_BACKTAB) == stpage.BACK);
+    two();                                                                                  // ci chosen
+    assert(stacct.enter());
+    I64 c = stacct.key(stpage.K_TAB);
+    stacct.accounts_clear();
+    Bool b = stacct.account(b"ci", 2, 1000, stacct.PARENT, stacct.ALL, true);
+    c = stacct.key(stpage.K_TAB);
+    assert(stacct.focused() == stacct.F_PASS);                                              // past Role
+    assert(stacct.key(stpage.K_TAB) == stpage.BACK);
+    stacct.accounts_clear();
+    assert(stacct.enter_last() && stacct.focused() == stacct.F_ADD);                         // no accounts: Add alone
+}
+
+test "frame 34: more accounts than fit scroll; a removal keeps the choice in the list" {
+    stacct.accounts_clear();
+    U8[4] nm = [0x75 as U8, 0x30 as U8, 0x30 as U8, 0x30 as U8];
+    for k in 0..20 {
+        nm[2] = (0x30 + k / 10) as U8;
+        nm[3] = (0x30 + k % 10) as U8;
+        Bool b = stacct.account(nm, 4, 1000 + k, stacct.CHILD, 0, k == 0);
+    }
+    assert(stacct.accounts() == stacct.MAX);
+    stacct.open();
+    draw(Y0);
+    assert(stacct.scroll(5) && stacct.first() == 5);
+    draw(Y0);
+    assert(stacct.first() == 5 && stacct.chosen() == 0);    // Codex on PR 310: a draw keeps the wheel's place
+    I64 c0 = stacct.click(CX, Y0, CR, YB, CX + 100, pill_mid(0));
+    assert(stacct.chosen() == 5);                           // a pointer reaches an account the wheel showed
+    assert(stacct.scroll(100) && stacct.first() == stacct.MAX - 2);
+    I64 c = stacct.click(CX, Y0, CR, YB, CX + 100, pill_mid(1));
+    assert(stacct.chosen() == stacct.MAX - 1);
+    stacct.accounts_clear();
+    for k in 0..3 { Bool b = stacct.account(nm, 4, 1000 + k, stacct.CHILD, 0, k == 0); }
+    stacct.refreshed();
+    assert(stacct.chosen() == 2 && stacct.first() == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

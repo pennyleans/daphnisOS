@@ -1,0 +1,27 @@
+// src/bits.ci: the words of the frame bitmap (unit FB, docs/specs/2026-11-08-fb-frame-bitmap.md, ruling FB-1 A). The
+// bitmap lies in pool frames from physical address `at` (src/frames.ci places it and marks its frames taken), and is
+// read and written through the view shim, as FS-4's entry table is (src/fs.ci rd, wr). The hosted builds
+// (tests/src_test.ci, tests/mem_twin.ci) take tests/hosted/src/bits.ci in its place, which keeps the words in module
+// state (FB-2 A): cint test and a cint build program start only when nothing they import is an extern.
+
+import src.phys;
+
+// Word i of the bitmap at physical address at.
+export U64 word(U64 at, I64 i) {
+    U64[1] w;
+    phys.phys_read64(at + (i as U64) * 8, w);
+    return w[0];
+}
+
+// Words i to i + len(dst) - 1 of the bitmap at physical address at, in one call (find_run's scan).
+export void read(U64 at, I64 i, inout U64[_] dst) {
+    phys.phys_read64(at + (i as U64) * 8, dst);
+}
+
+// Word i of the bitmap at physical address at becomes v.
+export void set(U64 at, I64 i, U64 v) {
+    U64[1] w;
+    w[0] = v;
+    phys.phys_write64(at + (i as U64) * 8, w);
+}
+// SPDX-License-Identifier: Apache-2.0

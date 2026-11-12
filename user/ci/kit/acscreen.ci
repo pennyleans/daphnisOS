@@ -1,0 +1,532 @@
+// user/ci/kit/acscreen.ci: login, lock and first boot as frame 12 draws them (DN-52, DN-53; design note 49 as
+// redrawn and approved by l 2026-11-11 14:45Z). The desk sets what a screen shows (set_* below) and draws it row by
+// row through kit/pen.ci at the plate's zoom, like the other kit surfaces; nothing here reads a device, a clock or a
+// file, and the passwords come in as lengths only, so the drawing never holds a byte of one.
+//
+// Every screen is the MANTLE ground under the bar (the bar keeps the roundel and the clock, DN-41 (a)) with one
+// column COL_W wide in the middle, its top TOP below the bar: the roundel at MARK, then
+//   login: the clock (CLOCK, mono 40 px 600) and the date (Inter 13, dim); the names, 36 px pills 4 apart, the
+//     chosen one FILL with its name at 600, each with Parent or Child at its right; the Password field; the note line;
+//   lock: the clock and the date; the name at 600; the Password field; the note line ("Wrong password, try again in
+//     N s" in OCHRE while AC-D2's wait holds);
+//   first boot: "Welcome to Daphnis" (Inter 20 600); "You are creating a Parent account that has approval rights"
+//     (Inter 13, dim, in the sheet's two 18 px lines); the name, Password and "Type Password again" fields 10 apart; the rule
+//     line ("N characters or more.", rule_text from the account store's own minimum) or the last note; the Create
+//     button (FILL, the Enter keycap and Create at 600) at 40 percent until the fields pass.
+// A field is a 40 px pill of PAPER, the focused one ringed 2 px in ULTRAMARINE; a password shows one 8 px dot a
+// character and a 2 x 18 caret, an empty field its placeholder in INK_DIM. Restart and Shut Down are 28 px SURF2
+// pills, centered, 24 px over the bottom (first boot: Shut Down alone); pill_at says which one a click is on.
+// A screen too short for the column (640 x 480) first gives up TOP down to TOP_MIN, then the roundel.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.blend;
+import user.ci.kit.pen;
+import user.ci.kit.roundel;
+
+export const I64 NONE = 0;
+export const I64 LOGIN = 1;
+export const I64 LOCK = 2;
+export const I64 FIRST = 3;
+
+export const I64 COL_W = 256;
+export const I64 TOP = 72;            // the column's top under the bar (frame 12)
+export const I64 TOP_MIN = 24;
+export const I64 MARK = 72;           // the roundel
+export const I64 ROW_H = 36;          // a name's pill on login
+export const I64 ROW_GAP = 4;
+export const I64 ROWS = 8;            // names shown at once (the desk scrolls the rest, acct.list_top)
+export const I64 FIELD_H = 40;
+export const I64 PILL_H = 28;
+export const I64 PILL_FOOT = 24;      // the power pills over the bottom
+export const I64 BTN_H = 36;
+export const I64 DIM = 102;           // Create before the fields pass: 40 percent of 256
+export const I64 ACT_RESTART = 2;     // pill_at's answers, the desk's power actions
+export const I64 ACT_SHUTDOWN = 3;
+
+I64 scr = 0;
+U8[8] clk;
+I64 clkn = 0;
+U8[32] dat;
+I64 datn = 0;
+U8[256] nm;                           // login: the names in view, 32 bytes each
+I64[8] nml;
+Bool[8] par;
+I64 rows = 0;
+I64 sel = -1;                         // the chosen name's row in view
+U8[32] who;                           // lock: the account's name
+I64 whon = 0;
+U8[32] fname;                         // first boot: the name typed
+I64 fnamen = 0;
+I64[3] plen;                          // the password fields' lengths (field 0 on login and lock; 1 and 2 first boot)
+I64 focus = 0;                        // first boot's focused field, 0 to 2
+Bool ready = false;                   // first boot: the fields pass (the desk's own check)
+U8[64] note;
+I64 noten = 0;
+Bool note_bad = false;                // OCHRE (a wrong password, a refusal), else INK_DIM
+U8[32] rule;
+I64 rulen = 0;
+// DN-56 (l 2026-11-11 16:11Z, A; accounts spec edition 7, AC-D5): the lock screen's Restart and Shut Down act as on
+// login, a click on the pill or Super+Esc for Shut Down, as frame 12 draws them; the desk reads this for its keys too.
+export const Bool LOCK_POWER = true;
+
+export void set_screen(I64 s) { scr = s; }
+export I64 screen() { return scr; }
+
+// The clock, HH:MM, and the date, as the desk words them (date_text).
+export void set_clock(in U8[_] t, I64 n) {
+    clkn = n;
+    if (clkn > 8) { clkn = 8; }
+    for k in 0..clkn { clk[k] = t[k]; }
+}
+
+export void set_date(in U8[_] t, I64 n) {
+    datn = n;
+    if (datn > 32) { datn = 32; }
+    for k in 0..datn { dat[k] = t[k]; }
+}
+
+// Login: the names in view, row v of them name t[0..n], a parent or not, the chosen one row s.
+export void set_rows(I64 r, I64 s) {
+    rows = r;
+    if (rows > ROWS) { rows = ROWS; }
+    sel = s;
+}
+
+export void set_row(I64 v, in U8[_] t, I64 n, Bool parent) {
+    if (v < 0 || v >= ROWS) { return; }
+    I64 m = n;
+    if (m > 32) { m = 32; }
+    for k in 0..m { nm[32 * v + k] = t[k]; }
+    nml[v] = m;
+    par[v] = parent;
+}
+
+// Lock: the account's name.
+export void set_who(in U8[_] t, I64 n) {
+    whon = n;
+    if (whon > 32) { whon = 32; }
+    for k in 0..whon { who[k] = t[k]; }
+}
+
+// First boot: the name as typed, the focused field and whether the fields pass.
+export void set_first(in U8[_] t, I64 n, I64 f, Bool ok) {
+    fnamen = n;
+    if (fnamen > 32) { fnamen = 32; }
+    for k in 0..fnamen { fname[k] = t[k]; }
+    focus = f;
+    ready = ok;
+}
+
+// Field k's password length (a count only).
+export void set_len(I64 k, I64 n) {
+    if (k >= 0 && k < 3) { plen[k] = n; }
+}
+
+// The note line's text, bad for a refusal (OCHRE); n 0 none.
+export void set_note(in U8[_] t, I64 n, Bool bad) {
+    noten = n;
+    if (noten > 64) { noten = 64; }
+    for k in 0..noten { note[k] = t[k]; }
+    note_bad = bad;
+}
+
+export void set_rule(in U8[_] t, I64 n) {
+    rulen = n;
+    if (rulen > 32) { rulen = 32; }
+    for k in 0..rulen { rule[k] = t[k]; }
+}
+
+// --- words ---
+
+I64 put(inout U8[_] t, I64 at, in U8[_] s) {
+    for k in 0..len(s) { t[at + k] = s[k]; }
+    return at + len(s);
+}
+
+I64 put_dec(inout U8[_] t, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 x = v;
+    if (x < 0) { x = 0; }
+    while (n == 0 || x > 0) {
+        d[n] = (48 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    for k in 0..n { t[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// DN-52 (c): first boot's rule line for a minimum of m characters, "m characters or more."; its length.
+export I64 rule_text(I64 m, inout U8[_] t) {
+    I64 n = put_dec(t, 0, m);
+    return put(t, n, b" characters or more.");
+}
+
+// DN-52 (b): the lock's line while AC-D2's wait holds, s seconds left: "Wrong password, try again in s s".
+export I64 wait_text(I64 s, inout U8[_] t) {
+    I64 n = put(t, 0, b"Wrong password, try again in ");
+    n = put_dec(t, n, s);
+    return put(t, n, b" s");
+}
+
+// The date as frame 12 words it, "Monday, November 9": weekday w (0 Sunday), month m (1 January), day d.
+export I64 date_text(I64 w, I64 m, I64 d, inout U8[_] t) {
+    I64 n = 0;
+    if (w == 0) { n = put(t, 0, b"Sunday"); }
+    else if (w == 1) { n = put(t, 0, b"Monday"); }
+    else if (w == 2) { n = put(t, 0, b"Tuesday"); }
+    else if (w == 3) { n = put(t, 0, b"Wednesday"); }
+    else if (w == 4) { n = put(t, 0, b"Thursday"); }
+    else if (w == 5) { n = put(t, 0, b"Friday"); }
+    else { n = put(t, 0, b"Saturday"); }
+    n = put(t, n, b", ");
+    if (m == 1) { n = put(t, n, b"January"); }
+    else if (m == 2) { n = put(t, n, b"February"); }
+    else if (m == 3) { n = put(t, n, b"March"); }
+    else if (m == 4) { n = put(t, n, b"April"); }
+    else if (m == 5) { n = put(t, n, b"May"); }
+    else if (m == 6) { n = put(t, n, b"June"); }
+    else if (m == 7) { n = put(t, n, b"July"); }
+    else if (m == 8) { n = put(t, n, b"August"); }
+    else if (m == 9) { n = put(t, n, b"September"); }
+    else if (m == 10) { n = put(t, n, b"October"); }
+    else if (m == 11) { n = put(t, n, b"November"); }
+    else { n = put(t, n, b"December"); }
+    n = put(t, n, b" ");
+    return put_dec(t, n, d);
+}
+
+// --- layout, at 1x from the screen's top left (x0, y0) to (x1, y1) under the bar ---
+
+const I64 TITLE_SUB = 2;              // first boot's subtitle lines
+const I64 SUB_LINE = 18;
+
+// The column's height from the roundel's top to its last part's bottom, the roundel counted when mk, with r names
+// on login.
+I64 col_h_r(Bool mk, I64 r) {
+    I64 h = 0;
+    if (mk) { h = MARK; }
+    if (scr == FIRST) {
+        return h + 24 + 20 + 10 + SUB_LINE * TITLE_SUB + 28 + 3 * FIELD_H + 2 * 10 + 12 + 12 + 20 + BTN_H;
+    }
+    h = h + 20 + 40 + 10 + 13 + 36;
+    if (scr == LOGIN) {
+        h = h + ROW_H * r + ROW_GAP * (r - 1);
+    } else {
+        h = h + 13;
+    }
+    return h + 16 + FIELD_H + 12 + 12;
+}
+
+// The room under the column for the power pills: their row and a gap of 16 over them.
+I64 foot_h() { return PILL_FOOT + PILL_H + 16; }
+
+// Login: the most names a screen from y0 to y1 shows for n accounts, the roundel given up first: at least 1, at most
+// ROWS and n, so the Password field, the note line and the gap over the power pills stay on screen. The desk scrolls
+// the names by this same count (acct.list_top). One name fits any RES-1 mode (it needs 327 px under the bar).
+export I64 rows_fit(I64 y0, I64 y1, I64 n) {
+    I64 r = n;
+    if (r > ROWS) { r = ROWS; }
+    while (r > 1 && TOP_MIN + col_h_r(false, r) + foot_h() > y1 - y0) { r = r - 1; }
+    if (r < 1) { r = 1; }
+    return r;
+}
+
+// The names drawn: those set, never more than fit.
+I64 vis_rows(I64 h) {
+    if (scr != LOGIN) { return rows; }
+    I64 f = rows_fit(0, h, rows);
+    if (rows < f) { return rows; }
+    return f;
+}
+
+I64 col_h(Bool mk, I64 h) { return col_h_r(mk, vis_rows(h)); }
+
+// Whether the roundel is drawn, and the column's top, for a screen of height h.
+Bool has_mark(I64 h) { return TOP_MIN + col_h(true, h) + foot_h() <= h; }
+export Bool mark_shown(I64 y0, I64 y1) { return has_mark(y1 - y0); }
+
+export I64 col_top(I64 y0, I64 y1) {
+    I64 h = y1 - y0;
+    Bool mk = has_mark(h);
+    I64 t = h - foot_h() - col_h(mk, h);
+    if (t > TOP) { t = TOP; }
+    if (t < TOP_MIN) { t = TOP_MIN; }
+    return y0 + t;
+}
+
+// The top of the first part after the roundel (the clock, or first boot's title).
+I64 after_mark(I64 y0, I64 y1) {
+    I64 t = col_top(y0, y1);
+    if (has_mark(y1 - y0)) { return t + MARK; }
+    return t;
+}
+
+// The clock's and the date's tops (login and lock).
+I64 clock_top(I64 y0, I64 y1) { return after_mark(y0, y1) + 20; }
+I64 date_top(I64 y0, I64 y1) { return clock_top(y0, y1) + 40 + 10; }
+I64 below_date(I64 y0, I64 y1) { return date_top(y0, y1) + 13 + 36; }
+
+// Login: row v's top.
+export I64 row_top(I64 y0, I64 y1, I64 v) { return below_date(y0, y1) + (ROW_H + ROW_GAP) * v; }
+
+// First boot: the title's top, the subtitle's, the fields' (field k's top).
+I64 title_top(I64 y0, I64 y1) { return after_mark(y0, y1) + 24; }
+I64 sub_top(I64 y0, I64 y1) { return title_top(y0, y1) + 20 + 10; }
+export I64 field_top(I64 y0, I64 y1, I64 k) {
+    if (scr == FIRST) { return sub_top(y0, y1) + SUB_LINE * TITLE_SUB + 28 + (FIELD_H + 10) * k; }
+    if (scr == LOGIN) { return row_top(y0, y1, vis_rows(y1 - y0)) - ROW_GAP + 16; }
+    return below_date(y0, y1) + 13 + 16;
+}
+
+// DN-51 frame 26: whether (x, y) on the screen (x0, y0)-(x1, y1) is on a field (the Text pointer): first boot's
+// three, login's and lock's one, COL_W wide in the column.
+export Bool field_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 x, I64 y) {
+    I64 cx = (x0 + x1 - COL_W) / 2;
+    if (scr == NONE || x < cx || x >= cx + COL_W) { return false; }
+    I64 n = 1;
+    if (scr == FIRST) { n = 3; }
+    for k in 0..n {
+        I64 t = field_top(y0, y1, k);
+        if (y >= t && y < t + FIELD_H) { return true; }
+    }
+    return false;
+}
+
+// The note line's top (first boot: the rule line's).
+export I64 note_top(I64 y0, I64 y1) {
+    if (scr == FIRST) { return field_top(y0, y1, 2) + FIELD_H + 12; }
+    return field_top(y0, y1, 0) + FIELD_H + 12;
+}
+
+I64 btn_top(I64 y0, I64 y1) { return note_top(y0, y1) + 12 + 20; }
+I64 pill_top(I64 y1) { return y1 - PILL_FOOT - PILL_H; }
+
+// Text in a line box of size s from top: the baseline, as CSS's line-height 1 sets it.
+I64 base(I64 top, I64 s, I64 f) { return top + (s + ctext.ascent(f, 1) - ctext.descent(f, 1)) / 2; }
+
+I64 w1(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+
+// --- the power pills ---
+
+Bool shows_restart() { return scr == LOGIN || (scr == LOCK && LOCK_POWER); }
+Bool shows_shutdown() { return scr == LOGIN || scr == FIRST || (scr == LOCK && LOCK_POWER); }
+
+I64 pill_w(in U8[_] s, I64 n) { return 12 + w1(s, n, faces.BODY) + 12; }
+
+I64 pills_w() {
+    I64 w = 0;
+    if (shows_restart()) { w = pill_w(b"Restart", 7) + 8; }
+    if (shows_shutdown()) { w = w + pill_w(b"Shut Down", 9); }
+    return w;
+}
+
+// What a click at (x, y) on the screen (x0, y0)-(x1, y1) takes: ACT_RESTART, ACT_SHUTDOWN, or 0.
+export I64 pill_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 x, I64 y) {
+    I64 py = pill_top(y1);
+    if (y < py || y >= py + PILL_H) { return 0; }
+    I64 px = (x0 + x1 - pills_w()) / 2;
+    if (shows_restart()) {
+        I64 w = pill_w(b"Restart", 7);
+        if (x >= px && x < px + w) { return ACT_RESTART; }
+        px = px + w + 8;
+    }
+    if (shows_shutdown() && x >= px && x < px + pill_w(b"Shut Down", 9)) { return ACT_SHUTDOWN; }
+    return 0;
+}
+
+void pills_row(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1) {
+    I64 py = pill_top(y1);
+    I64 px = (x0 + x1 - pills_w()) / 2;
+    if (shows_restart()) {
+        I64 w = pill_w(b"Restart", 7);
+        pen.round(row, px, py, px + w, py + PILL_H, PILL_H / 2, tokens.word(tokens.SURF2));
+        I64 e = pen.text_mid(row, px, w, base(py, PILL_H, faces.BODY), px + w, b"Restart", 7,
+                             tokens.word(tokens.INK_DIM), faces.BODY);
+        px = px + w + 8;
+    }
+    if (shows_shutdown()) {
+        I64 w = pill_w(b"Shut Down", 9);
+        pen.round(row, px, py, px + w, py + PILL_H, PILL_H / 2, tokens.word(tokens.SURF2));
+        I64 e = pen.text_mid(row, px, w, base(py, PILL_H, faces.BODY), px + w, b"Shut Down", 9,
+                             tokens.word(tokens.INK_DIM), faces.BODY);
+    }
+}
+
+// --- the parts ---
+
+U32[20736] mk_px;                     // the roundel at MARK x z, over MANTLE (144 x 144 at 2x)
+I64 mk_n = 0;
+U32 mk_g = 0;
+
+void mark_row(inout U32[_] row, I64 cx, I64 top) {
+    I64 z = pen.zoom();
+    I64 n = MARK * z;
+    U32 g = tokens.word(tokens.MANTLE);
+    if (mk_n != n || mk_g != g) {
+        for j in 0..n { for i in 0..n { mk_px[j * n + i] = roundel.px(n, i, j, g); } }
+        mk_n = n;
+        mk_g = g;
+    }
+    I64 dy = pen.row_y() - pen.y(top);
+    if (dy < 0 || dy >= n) { return; }
+    I64 dx = pen.x(cx - MARK / 2);
+    for i in 0..n {
+        I64 x = dx + i;
+        if (x >= 0 && x < len(row)) { row[x] = mk_px[dy * n + i]; }
+    }
+}
+
+// A field's pill at top in the column from lx: ringed when focused.
+void field_box(inout U32[_] row, I64 lx, I64 top, Bool on) {
+    pen.round(row, lx, top, lx + COL_W, top + FIELD_H, FIELD_H / 2, tokens.word(tokens.PAPER));
+    if (on) { pen.ring(row, lx, top, lx + COL_W, top + FIELD_H, FIELD_H / 2, 2, tokens.word(tokens.ULTRAMARINE)); }
+}
+
+// A password field: n dots and the caret when focused, else its placeholder when empty.
+void pass_field(inout U32[_] row, I64 lx, I64 top, I64 n, Bool on, in U8[_] ph) {
+    field_box(row, lx, top, on);
+    if (n == 0 && (!on || scr != FIRST)) {
+        I64 e = pen.text(row, lx + 16, base(top, FIELD_H, faces.BODY), lx + COL_W - 16, ph, len(ph),
+                         tokens.word(tokens.INK_DIM), faces.BODY);
+        return;
+    }
+    I64 d = n;
+    if (d > (COL_W - 40) / 14) { d = (COL_W - 40) / 14; }
+    for k in 0..d {
+        I64 x = lx + 16 + 14 * k;
+        pen.round(row, x, top + 16, x + 8, top + 24, 4, tokens.word(tokens.INK));
+    }
+    if (on) {
+        I64 cx = lx + 18 + 14 * d;
+        pen.rect(row, cx, top + 11, cx + 2, top + 29, tokens.word(tokens.INK));
+    }
+}
+
+// First boot's name field: the name typed, the caret after it when focused, "Name" when empty and not focused.
+void name_field(inout U32[_] row, I64 lx, I64 top, Bool on) {
+    field_box(row, lx, top, on);
+    I64 b = base(top, FIELD_H, faces.BODY);
+    if (fnamen == 0 && !on) {
+        I64 e = pen.text(row, lx + 16, b, lx + COL_W - 16, b"Name", 4, tokens.word(tokens.INK_DIM), faces.BODY);
+        return;
+    }
+    if (!on) {
+        I64 e = pen.text(row, lx + 16, b, lx + COL_W - 16, fname, fnamen, tokens.word(tokens.INK), faces.BODY);
+        return;
+    }
+    I64 z = pen.zoom();
+    I64 s0 = name_start(z);
+    I64 e = pen.text(row, lx + 16, b, lx + COL_W - 16, fname[s0..fnamen], fnamen - s0, tokens.word(tokens.INK),
+                     faces.BODY);
+    I64 cx = lx + 16 + (pen.width(fname[s0..fnamen], fnamen - s0, faces.BODY) + z - 1) / z + 2;
+    if (cx > lx + COL_W - 16 - 2) { cx = lx + COL_W - 16 - 2; }   // never past the text area
+    pen.rect(row, cx, top + 11, cx + 2, top + 29, tokens.word(tokens.INK));
+}
+
+// The focused name field's first shown byte: 0 when the name fits the text area (COL_W less 16 each side, less the
+// caret and its gap), else the start of the widest suffix that fits, on a code point's first byte, measured at zoom
+// z, so the name's end and the caret stay inside the field while a long name is typed.
+export I64 name_start(I64 z) {
+    I64 room = (COL_W - 32 - 4) * z;
+    I64 s0 = 0;
+    while (s0 < fnamen && pen.width(fname[s0..fnamen], fnamen - s0, faces.BODY) > room) {
+        s0 = s0 + 1;
+        while (s0 < fnamen && ((fname[s0] as I64) & 192) == 128) { s0 = s0 + 1; }
+    }
+    return s0;
+}
+
+void line_mid(inout U32[_] row, I64 lx, I64 top, I64 s, in U8[_] t, I64 n, U32 c, I64 f) {
+    I64 e = pen.text_mid(row, lx - 64, COL_W + 128, base(top, s, f), lx + COL_W + 64, t, n, c, f);
+}
+
+// First boot's subtitle in the sheet's two lines.
+void sub_lines(inout U32[_] row, I64 lx, I64 top) {
+    U32 dim = tokens.word(tokens.INK_DIM);
+    line_mid(row, lx, top, SUB_LINE, b"You are creating a Parent account", 33, dim, faces.BODY);
+    line_mid(row, lx, top + SUB_LINE, SUB_LINE, b"that has approval rights", 24, dim, faces.BODY);
+}
+
+// The Create button, centered at top: its ground FILL, the Enter keycap and Create; at DIM over MANTLE until ready.
+void create_row(inout U32[_] row, I64 x0, I64 x1, I64 top) {
+    I64 kw = w1(b"Enter", 5, faces.SHORTCUT) + 12 + 2;
+    I64 bw = 12 + kw + 10 + w1(b"Create", 6, faces.NAME_BOLD) + 12;
+    I64 bx = (x0 + x1 - bw) / 2;
+    U32 g = tokens.word(tokens.FILL);
+    U32 on = tokens.word(tokens.ON_FILL);
+    if (!ready) {
+        U32 m = tokens.word(tokens.MANTLE);
+        g = blend.mix_px(m, g, DIM);
+        on = blend.mix_px(m, on, DIM);
+    }
+    pen.round(row, bx, top, bx + bw, top + BTN_H, 6, g);
+    I64 ky = top + (BTN_H - 21) / 2;
+    pen.ring(row, bx + 12, ky, bx + 12 + kw, ky + 21, 4, 1, on);
+    I64 e = pen.text_mid(row, bx + 12, kw, base(ky + 5, 11, faces.SHORTCUT), bx + 12 + kw, b"Enter", 5, on,
+                         faces.SHORTCUT);
+    e = pen.text(row, bx + 12 + kw + 10, base(top, BTN_H, faces.NAME_BOLD), bx + bw, b"Create", 6, on,
+                 faces.NAME_BOLD);
+}
+
+// Row y (1x, through the pen) of the screen (x0, y0)-(x1, y1) at 1x under the bar.
+export void row_at(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1) {
+    pen.rect(row, x0, y0, x1, y1, tokens.word(tokens.MANTLE));
+    if (scr == NONE) { return; }
+    I64 cx = (x0 + x1) / 2;
+    I64 lx = cx - COL_W / 2;
+    if (has_mark(y1 - y0)) { mark_row(row, cx, col_top(y0, y1)); }
+    U32 ink = tokens.word(tokens.INK);
+    U32 dim = tokens.word(tokens.INK_DIM);
+    if (scr == FIRST) {
+        line_mid(row, lx, title_top(y0, y1), 20, b"Welcome to Daphnis", 18, ink, faces.TITLE);
+        sub_lines(row, lx, sub_top(y0, y1));
+        name_field(row, lx, field_top(y0, y1, 0), focus == 0);
+        pass_field(row, lx, field_top(y0, y1, 1), plen[1], focus == 1, b"Password");
+        pass_field(row, lx, field_top(y0, y1, 2), plen[2], focus == 2, b"Type Password again");
+        if (noten > 0) {
+            U32 c = dim;
+            if (note_bad) { c = tokens.word(tokens.OCHRE); }
+            line_mid(row, lx, note_top(y0, y1), 12, note, noten, c, faces.SMALL);
+        } else {
+            line_mid(row, lx, note_top(y0, y1), 12, rule, rulen, dim, faces.SMALL);
+        }
+        create_row(row, x0, x1, btn_top(y0, y1));
+        pills_row(row, x0, y0, x1, y1);
+        return;
+    }
+    line_mid(row, lx, clock_top(y0, y1), 40, clk, clkn, ink, faces.CLOCK);
+    line_mid(row, lx, date_top(y0, y1), 13, dat, datn, dim, faces.BODY);
+    if (scr == LOGIN) {
+        for v in 0..vis_rows(y1 - y0) {
+            I64 t = row_top(y0, y1, v);
+            I64 f = faces.BODY;
+            U32 rc = dim;
+            if (v == sel) {
+                pen.round(row, lx, t, lx + COL_W, t + ROW_H, ROW_H / 2, tokens.word(tokens.FILL));
+                f = faces.NAME_BOLD;
+                rc = tokens.word(tokens.ON_FILL);
+            }
+            U8[8] role;
+            I64 rn = put(role, 0, b"Child");
+            if (par[v]) { rn = put(role, 0, b"Parent"); }
+            I64 e = pen.text_right(row, lx + COL_W - 16, base(t, ROW_H, faces.BODY), role, rn, rc, faces.BODY);
+            I64 nx1 = lx + COL_W - 24 - (w1(role, rn, faces.BODY));
+            U32 nc = ink;
+            if (v == sel) { nc = tokens.word(tokens.ON_FILL); }
+            e = pen.text(row, lx + 16, base(t, ROW_H, f), nx1, nm[32 * v..32 * v + nml[v]], nml[v], nc, f);
+        }
+    } else {
+        line_mid(row, lx, below_date(y0, y1), 13, who, whon, ink, faces.NAME_BOLD);
+    }
+    pass_field(row, lx, field_top(y0, y1, 0), plen[0], true, b"Password");
+    if (noten > 0) {
+        U32 c = dim;
+        if (note_bad) { c = tokens.word(tokens.OCHRE); }
+        line_mid(row, lx, note_top(y0, y1), 12, note, noten, c, faces.SMALL);
+    }
+    pills_row(row, x0, y0, x1, y1);
+}
+// SPDX-License-Identifier: Apache-2.0

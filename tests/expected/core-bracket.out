@@ -1,0 +1,28 @@
+$ ]
+status 1
+$ x ]
+status 0
+$ -n x ]
+status 0
+$ -z x ]
+status 1
+$ a = a ]
+status 0
+$ a != a ]
+status 1
+$ 3 -gt 2 ]
+status 0
+$ -f text.txt ]
+status 0
+$ -d text.txt ]
+status 1
+$ ! -e missing ]
+status 0
+$ -f text.txt
+-- stderr
+cish: [: missing ]
+status 2
+$ 
+-- stderr
+cish: [: missing ]
+status 2

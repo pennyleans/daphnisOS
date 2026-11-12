@@ -1,0 +1,349 @@
+// user/ci/kit/layout.ci: stage H's layout (docs/specs/2026-11-05-h-hybrid.md sections 4 and 5, unit H-1), on
+// integers only, repeated line for line by tools/check-layout.py. A window is a frame on a desktop 1..9 in one of
+// four modes. The plane is the screen below the top bar (28 px at 1x, K-5). On the active desktop the tiled windows,
+// in window order, share the plane by HX-7's rule, GAP apart and GAP from its edges (K-7); a monocle window covers
+// the plane above them, edge to edge; floating and monocle windows sit above the tiles in their stacking rank. Each window's visible part is its frame less every frame above it, cut
+// into rectangles canonically: y bands top to bottom at every edge, each band's spans left to right, and adjacent
+// bands with equal spans merged; more than RECTS rectangles is a refusal (-1). Windows on another desktop, and
+// minimized ones, have 0.
+
+export const I64 WINS = 16;
+export const I64 RECTS = 32;
+export const I64 BAR = 28;        // the top system bar at 1x (HX-6; K-5, E2-1: 28 px)
+export const I64 GAP = 8;         // K-7: between tiles and at the plane's edges at 1x; monocle stays edge to edge
+export const I64 TILED = 0;
+export const I64 FLOAT = 1;
+export const I64 MONOCLE = 2;
+export const I64 MINIMIZED = 3;
+export const I64 OVERLAY = 15;    // the desk's overlay (switcher, prompts, the account and lock screens): above every
+                                  // other window whatever the ranks, so no rank a program can push it to covers it
+export const I64 RANK_CAP = 1099511627776;   // 2^40: a rank above it stacks as it (stack keys stay in range)
+
+Bool[16] live;
+I64[16] desk;
+I64[16] mode;
+I64[16] rank;       // floats: higher is above; tiled: the order of the cells
+I64[16] fx;
+I64[16] fy;
+I64[16] fw;
+I64[16] fh;
+I64[16] nr;         // rectangles, or -1 past RECTS
+I64[512] rx;        // window i's rectangles at 32 * i
+I64[512] ry;
+I64[512] rw;
+I64[512] rh;
+I64[16] mru;        // the windows, most recently focused first (HX-11)
+I64 nmru = 0;
+I64 sw = 640;
+I64 sh = 480;
+I64 sc = 1;
+I64[10] ddir;       // each desktop's tiling direction (HX-14): 0 along the long side, 1 columns, 2 rows
+I64 cdir = 0;       // the direction of the desktop being computed
+I64[40] cut;        // y or x cuts of one window
+I64 ncut = 0;
+I64[40] bx0;        // the previous band's spans
+I64[40] bx1;
+I64[40] cx0;        // this band's spans
+I64[40] cx1;
+
+export void screen(I64 w, I64 h, I64 scale) {
+    sw = w;
+    sh = h;
+    sc = scale;
+    for i in 0..WINS { live[i] = false; nr[i] = 0; }
+    for d in 0..10 { ddir[d] = 0; }
+    nmru = 0;
+}
+
+export I64 plane_y() { return BAR * sc; }
+
+// HX-8: the UI scale is s now (Super+= / Super+-); the windows stay.
+export void set_scale(I64 s) { sc = s; }
+
+// HX-13: the screen is w x h now; the windows stay.
+export void resize(I64 w, I64 h) {
+    sw = w;
+    sh = h;
+}
+
+// HX-14: desktop d tiles along the long side (0), in columns (1) or in rows (2).
+export void direction(I64 d, I64 v) { ddir[d] = v; }
+export I64 direction_of(I64 d) { return ddir[d]; }
+
+// Window i, live from now, on desktop d in mode m; a float's frame is x, y, w, h (others get theirs from compute).
+export void put(I64 i, I64 d, I64 m, I64 r, I64 px, I64 py, I64 pw, I64 ph) {
+    live[i] = true;
+    desk[i] = d;
+    mode[i] = m;
+    rank[i] = r;
+    fx[i] = px;
+    fy[i] = py;
+    fw[i] = pw;
+    fh[i] = ph;
+}
+
+export void remove(I64 i) { live[i] = false; nr[i] = 0; }
+export I64 frame_x(I64 i) { return fx[i]; }
+export I64 frame_y(I64 i) { return fy[i]; }
+export I64 frame_w(I64 i) { return fw[i]; }
+export I64 frame_h(I64 i) { return fh[i]; }
+export Bool is_live(I64 i) { return live[i]; }
+export I64 desktop(I64 i) { return desk[i]; }
+export I64 mode_of(I64 i) { return mode[i]; }
+export I64 rects(I64 i) { return nr[i]; }
+export I64 rect_x(I64 i, I64 k) { return rx[RECTS * i + k]; }
+export I64 rect_y(I64 i, I64 k) { return ry[RECTS * i + k]; }
+export I64 rect_w(I64 i, I64 k) { return rw[RECTS * i + k]; }
+export I64 rect_h(I64 i, I64 k) { return rh[RECTS * i + k]; }
+
+// The edge of cell i of n on a span starting at a (grid.ci's rule: the remainder to the last cell).
+I64 at(I64 a, I64 span, I64 n, I64 i) {
+    if (i == n) { return a + span; }
+    return a + i * (span / n);
+}
+
+// HX-7: the frame of the k-th of n tiled windows on the plane (column-major; for N = 3 the first spans the left
+// half; for odd N >= 5 the last spans the last column). A portrait plane turns the grid (HX-12 A).
+void tile(I64 i, I64 k, I64 n) {
+    I64 px = 0;
+    I64 py = plane_y();
+    I64 pw = sw;
+    I64 ph = sh - py;
+    I64 cols = 1;
+    I64 rows = 1;
+    I64 c = 0;
+    I64 r = 0;
+    I64 span = 1;
+    if (n == 2) {
+        cols = 2;
+        c = k;
+    } else if (n == 3) {
+        cols = 2;
+        rows = 2;
+        if (k == 0) { span = 2; } else { c = 1; r = k - 1; }
+    } else if (n >= 4) {
+        cols = (n + 1) / 2;
+        rows = 2;
+        c = k / 2;
+        r = k % 2;
+        if (n % 2 == 1 && k == n - 1) { span = 2; r = 0; }
+    }
+    // K-7: the cells divide the plane less one gap; each frame starts one gap into its cell, so every edge and
+    // every seam is GAP * sc wide
+    I64 g = GAP * sc;
+    if ((cdir == 0 && ph > pw) || cdir == 2) {
+        // HX-12 A: a portrait plane splits along its long side, the same grid turned (columns run down the plane)
+        fy[i] = at(py, ph - g, cols, c) + g;
+        fh[i] = at(py, ph - g, cols, c + 1) - fy[i];
+        fx[i] = at(px, pw - g, rows, r) + g;
+        fw[i] = at(px, pw - g, rows, r + span) - fx[i];
+        return;
+    }
+    fx[i] = at(px, pw - g, cols, c) + g;
+    fw[i] = at(px, pw - g, cols, c + 1) - fx[i];
+    fy[i] = at(py, ph - g, rows, r) + g;
+    fh[i] = at(py, ph - g, rows, r + span) - fy[i];
+}
+
+// Layer of window i in mode m at rank r: the overlay above all; tiled 0; a float or a monocle window 1 + its rank, held
+// at RANK_CAP (HX-1: focusing a window raises it, so a focused monocle window covers the floats and a float focused
+// after it covers it). user/ci/hdesk.ci paints in this order.
+export I64 layer_for(I64 i, I64 m, I64 r) {
+    if (i == OVERLAY) { return RANK_CAP + 2; }
+    if (m == TILED) { return 0; }
+    return 1 + min(max(r, 0), RANK_CAP);
+}
+
+I64 layer(I64 i) { return layer_for(i, mode[i], rank[i]); }
+
+Bool shown(I64 i, I64 d) {
+    return live[i] && desk[i] == d && mode[i] != MINIMIZED;
+}
+
+// Does window j cover window i (above it, on the same desktop)? Ties in layer go to the higher window number.
+Bool above(I64 j, I64 i) {
+    I64 a = layer(j);
+    I64 b = layer(i);
+    return a > b || (a == b && j > i);
+}
+
+void add_cut(I64 v, I64 lo, I64 hi) {
+    if (v <= lo || v >= hi) { return; }
+    for k in 0..ncut {
+        if (cut[k] == v) { return; }
+    }
+    I64 at_ = ncut;
+    while (at_ > 0 && cut[at_ - 1] > v) {
+        cut[at_] = cut[at_ - 1];
+        at_ = at_ - 1;
+    }
+    cut[at_] = v;
+    ncut = ncut + 1;
+}
+
+// Window i's visible rectangles on desktop d.
+void clip(I64 i, I64 d) {
+    I64 base = RECTS * i;
+    I64 n = 0;
+    I64 nb = 0;          // spans in the previous band
+    I64 first = 0;       // the previous band's first rectangle
+    I64 prev_y1 = -1;
+    ncut = 0;
+    cut[0] = fy[i];
+    ncut = 1;
+    for j in 0..WINS {
+        if (j != i && shown(j, d) && above(j, i)) {
+            add_cut(fy[j], fy[i], fy[i] + fh[i]);
+            add_cut(fy[j] + fh[j], fy[i], fy[i] + fh[i]);
+        }
+    }
+    I64 ny = ncut;
+    I64[40] ys;
+    for k in 0..ny { ys[k] = cut[k]; }
+    ys[ny] = fy[i] + fh[i];
+    for b in 0..ny {
+        I64 y0 = ys[b];
+        I64 y1 = ys[b + 1];
+        ncut = 1;
+        cut[0] = fx[i];
+        for j in 0..WINS {
+            if (j != i && shown(j, d) && above(j, i) && fy[j] <= y0 && fy[j] + fh[j] >= y1) {
+                add_cut(fx[j], fx[i], fx[i] + fw[i]);
+                add_cut(fx[j] + fw[j], fx[i], fx[i] + fw[i]);
+            }
+        }
+        I64 nx = ncut;
+        I64 nc = 0;
+        for k in 0..nx {
+            I64 x0 = cut[k];
+            I64 x1 = fx[i] + fw[i];
+            if (k + 1 < nx) { x1 = cut[k + 1]; }
+            Bool hid = false;
+            for j in 0..WINS {
+                if (j != i && shown(j, d) && above(j, i) && fy[j] <= y0 && fy[j] + fh[j] >= y1 &&
+                    fx[j] <= x0 && fx[j] + fw[j] >= x1) {
+                    hid = true;
+                }
+            }
+            if (!hid) {
+                if (nc > 0 && cx1[nc - 1] == x0) {
+                    cx1[nc - 1] = x1;
+                } else {
+                    cx0[nc] = x0;
+                    cx1[nc] = x1;
+                    nc = nc + 1;
+                }
+            }
+        }
+        Bool same = nc > 0 && nc == nb && prev_y1 == y0;
+        for k in 0..nc {
+            if (same && (bx0[k] != cx0[k] || bx1[k] != cx1[k])) { same = false; }
+        }
+        if (same) {
+            for k in 0..nc { rh[base + first + k] = y1 - ry[base + first + k]; }
+        } else if (nc > 0) {
+            if (n + nc > RECTS) {
+                nr[i] = -1;
+                return;
+            }
+            first = n;
+            for k in 0..nc {
+                rx[base + n] = cx0[k];
+                ry[base + n] = y0;
+                rw[base + n] = cx1[k] - cx0[k];
+                rh[base + n] = y1 - y0;
+                bx0[k] = cx0[k];
+                bx1[k] = cx1[k];
+                n = n + 1;
+            }
+            nb = nc;
+        } else {
+            nb = 0;
+        }
+        if (nc > 0) { prev_y1 = y1; }
+    }
+    nr[i] = n;
+}
+
+// The frames of desktop d's tiled and monocle windows, then every window's rectangles.
+export void compute(I64 d) {
+    cdir = ddir[d];
+    I64 n = 0;
+    for i in 0..WINS {
+        if (shown(i, d) && mode[i] == TILED) { n = n + 1; }
+    }
+    // tiled windows take their cells in the order of their rank, ties by number (H-3b: Super+Shift+Arrow swaps two)
+    I64 last_r = -1;
+    I64 last_i = -1;
+    for k in 0..n {
+        I64 best = -1;
+        for i in 0..WINS {
+            if (shown(i, d) && mode[i] == TILED && (rank[i] > last_r || (rank[i] == last_r && i > last_i)) &&
+                (best < 0 || rank[i] < rank[best] || (rank[i] == rank[best] && i < best))) {
+                best = i;
+            }
+        }
+        tile(best, k, n);
+        last_r = rank[best];
+        last_i = best;
+    }
+    for i in 0..WINS {
+        if (shown(i, d) && mode[i] == MONOCLE) {
+            fx[i] = 0;
+            fy[i] = plane_y();
+            fw[i] = sw;
+            fh[i] = sh - plane_y();
+        }
+    }
+    for i in 0..WINS {
+        nr[i] = 0;
+        if (shown(i, d)) { clip(i, d); }
+    }
+}
+
+// HX-11: window i focused; it moves to the front of the most-recent list.
+export void focus(I64 i) {
+    I64 at_ = nmru;
+    for k in 0..nmru {
+        if (mru[k] == i) { at_ = k; }
+    }
+    if (at_ == nmru) { nmru = nmru + 1; }
+    while (at_ > 0) {
+        mru[at_] = mru[at_ - 1];
+        at_ = at_ - 1;
+    }
+    mru[0] = i;
+}
+
+export void forget(I64 i) {
+    I64 n = 0;
+    for k in 0..nmru {
+        if (mru[k] != i) {
+            mru[n] = mru[k];
+            n = n + 1;
+        }
+    }
+    nmru = n;
+}
+
+// The switcher's k-th entry on desktop d (minimized windows included), or -1.
+export I64 entry(I64 d, I64 k) {
+    I64 n = 0;
+    for j in 0..nmru {
+        I64 i = mru[j];
+        if (live[i] && desk[i] == d) {
+            if (n == k) { return i; }
+            n = n + 1;
+        }
+    }
+    return -1;
+}
+
+export I64 entries(I64 d) {
+    I64 n = 0;
+    for j in 0..nmru {
+        if (live[mru[j]] && desk[mru[j]] == d) { n = n + 1; }
+    }
+    return n;
+}
+// SPDX-License-Identifier: Apache-2.0

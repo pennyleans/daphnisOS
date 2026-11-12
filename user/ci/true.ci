@@ -1,0 +1,7 @@
+// user/ci/true.ci: true (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C; XCU true): status 0, its arguments ignored.
+import user.ci.dev;
+
+void main(in U8[_] a) {
+    dev.exit_now(0);
+}
+// SPDX-License-Identifier: Apache-2.0

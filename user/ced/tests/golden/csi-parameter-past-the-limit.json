@@ -1,0 +1,27 @@
+{
+  "id": "csi-parameter-past-the-limit",
+  "rules": [
+    "KEY-1",
+    "KEY-9"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b3130303030303041",
+    "58"
+  ],
+  "expect": {
+    "text": "Xabc",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

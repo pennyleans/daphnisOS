@@ -1,0 +1,44 @@
+// user/ci/kit/surfask.ci: RS-SURF on a pixel client's side (docs/specs/2026-11-05-h-hybrid.md section 5a): which
+// surface size to ask next and when. The desk tells a client its content box (EV_WIN_RESIZE, in 1x pixels); the
+// client takes the latest box only (a drag sends many), asks it once its queue is empty (tilesurf.fb_resize: munmap,
+// FBIO_TILE_WANT, mmap), lays out for the size it got and draws. The kernel takes one new size a placement by the
+// desk, so an ask the desk has not yet placed answers -EINVAL and the surface comes back at the size it had: the
+// client draws that and asks again RETRY_NS later, at most TRIES times for one box. A box larger than the client's
+// rows (cap_w x cap_h) is asked at the cap; the desk centers it. Pure: no file, no kernel entry; tests/rs/
+// surfask_test.ci drives it.
+export const I64 RETRY_NS = 50000000;  // 50 ms: the desk places at its next sync
+export const I64 TRIES = 40;           // two seconds of asks for one box, then the size it has stands
+
+I64 ww = 0;                            // the box asked for
+I64 wh = 0;
+Bool pend = false;
+I64 at = 0;                            // not before this wall time
+I64 tries = 0;
+
+// EV_WIN_RESIZE's box (w x h), the client's row caps, and the surface it has (sw x sh): asked when it differs.
+export void told(I64 w, I64 h, I64 cap_w, I64 cap_h, I64 sw, I64 sh) {
+    ww = max(1, min(w, cap_w));
+    wh = max(1, min(h, cap_h));
+    pend = ww != sw || wh != sh;
+    at = 0;
+    tries = 0;
+}
+
+// Whether to ask now (the queue is empty): a box is waiting and its time has come.
+export Bool due(I64 now) { return pend && now >= at; }
+
+export I64 want_w() { return ww; }
+export I64 want_h() { return wh; }
+
+// fb_resize answered r and the surface is now sw x sh: done when it is the box, else asked again later.
+export void answered(I64 r, I64 sw, I64 sh, I64 now) {
+    tries = tries + 1;
+    if ((r == 0 && sw == ww && sh == wh) || tries >= TRIES) {
+        pend = false;
+        return;
+    }
+    at = now + RETRY_NS;
+}
+
+export Bool waiting() { return pend; }
+// SPDX-License-Identifier: Apache-2.0

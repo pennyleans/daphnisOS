@@ -1,0 +1,1242 @@
+// user/ci/kit/monpad.ci: Monitor's body (stage RS, RS-MON; frames 42 and 45 approved by DN-58, design note 59, DN-58
+// item 4), on draw.ci's row contract. The program (user/ci/monitor.ci) reads the system's counts once a second and
+// tells them here; this module keeps a minute of each part's history, makes every share and rate from two readings
+// (the kernel keeps neither), and draws. The hosted tests drive it the same way.
+//
+// The parts sit at the left, each with its symbol, live figure and a small graph; the chosen part fills the right:
+// its name and what it is, the wheel (only where there is a true share: Processor, Memory, Disk) and the figure (for
+// Disk the space used, as its wheel: design note 68), one minute of history, its facts, then for Processor and Memory
+// the processes sorted by that part; a short box shortens the graph so the list keeps a whole row. Each part has one
+// color, for its symbol, wheel arc, graphs and list column; the colors are literal in each theme (design note 62).
+// Graphics has no load figure without a driver: the mode and the card, no graph, no list. A part whose call is
+// absent (Graphics Memory always; Disk with no disk; Network with no network device, or no facts kind 3) is drawn at
+// 40 percent, name and symbol, and cannot be chosen (DN-58 item 12). A device that is there is drawn at full strength
+// however idle: Network with no link or no traffic reads 0 B/s, its graph flat, its Link "Not connected" (design note
+// 68). The parts never reorder. A fact that is missing closes the facts row up; every graph starts empty and fills
+// from the right. The list is what facts kind 2 gives the caller, a Child's own processes or a Parent's all (DN-69
+// item 5), with no word for what it leaves out (DN-46); the totals are the machine's. End Process ends the chosen one.
+//
+// The layout is one function of the box (box(w, h)), so a surface of another size takes one call. Geometry is in 1x
+// pixels; row_at draws at zoom z.
+import user.ci.kit.tokens;
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.shade;
+import user.ci.kit.stroke;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.appfaces;
+import user.ci.kit.apptext;
+import user.ci.kit.wheel;
+import user.ci.kit.icons3;
+import user.ci.kit.apps;
+import user.ci.kit.winname;   // note 28: a process's app by its program, the desk's one mapping
+
+export const I64 W = 758;              // frame 42's window body: 760 less its sides, 620 less the bar and the bottom
+export const I64 H = 587;
+export const I64 CPU = 0;              // the parts, in the sidebar's order
+export const I64 MEM = 1;
+export const I64 DISK = 2;
+export const I64 NET = 3;
+export const I64 GPU = 4;
+export const I64 GMEM = 5;
+export const I64 PARTS = 6;
+export const I64 PROCS = 64;           // facts kind 2's table
+export const I64 NONE = -1;            // what a click or a key did: nothing,
+export const I64 FOLD = 10;            // the list folded or opened,
+export const I64 END = 11;             // End Process on the chosen process (end_pid),
+export const I64 PICK = 12;            // a process chosen; or a part's own number, that part chosen
+export const I64 SIDE_FLIP = 13;       // the folded sidebar opened or closed
+export const I64 GRANT_DISK = 1;       // the grant word's bits (src/fs.ci)
+export const I64 GRANT_NET = 2;
+export const I64 GRANT_AUDIO = 4;
+
+const I64 SIDE = 216;                  // the sidebar's width
+const I64 HIST = 61;                   // a minute of samples, both ends
+const I64 SPARK = 15;                  // the sidebar graph's samples
+const I64 DIM = 102;                   // 40 percent in 256ths
+const I64 WASH = 51;                   // a graph's wash, 20 percent
+const I64 SPARK_WASH = 56;             // a sidebar graph's, 22 percent
+const I64 THUMB = 128;                 // the scroll thumb, 50 percent
+const I64 PITCH = 30;                  // a list row and its gap
+const I64 MIN_W = 480;                 // the least box laid out; a smaller one clips at the right and bottom (DN-63)
+const I64 MIN_H = 360;
+const I64 NARROW = 640;                // under this width the sidebar folds behind a button (DN-63, DN-55's form)
+const I64 CONTENT_MAX = 960;           // the right side's content, centered past this
+const I64 GRAPH_H = 132;               // the minute's graph; on a part with no list it grows with the box to GRAPH_MAX
+const I64 GRAPH_MAX = 240;
+const I64 RATE_MAX = 1125899906842624; // 1 PiB/s, the most a rate reads; a graph's points stay inside I64 under it
+const I64 GRAPH_MIN = 48;              // a short box shortens a listed part's graph to this, for a whole row
+const I64 SHADOW = 3;                  // the folded sidebar's shadow: High
+
+// The parts' colors, dark then light (frames 42 and 45; RS spec section 5's light map).
+U32[12] part_c = [0x4a88c7, 0xfabd2f, 0xd65d0e, 0x8ec07c, 0xd3869b, 0x7daea3,
+                  0x1a4b8c, 0xc98f00, 0x9e4724, 0x3f7d3a, 0xa04a78, 0x2f7a72];
+U8[64] part_words;
+Bool words_ready = false;
+
+void copy_words(in U8[_] src) {
+    for i in 0..len(src) { part_words[i] = src[i]; }
+}
+
+void words() {
+    if (words_ready) { return; }
+    copy_words("ProcessorMemoryDiskNetworkGraphicsGraphics Memory");
+    words_ready = true;
+}
+I64[7] part_at = [0, 9, 15, 19, 26, 34, 49];
+
+// The symbols of frame 42, each a 16 unit box in sixteenths, segments (ax, ay, ex, ey), stroked 1.5 wide.
+I64[96] sym_cpu = [168, 72, 176, 74, 176, 74, 182, 80, 182, 80, 184, 88, 184, 88, 184, 168, 184, 168, 182, 176,
+                   182, 176, 176, 182, 176, 182, 168, 184, 168, 184, 88, 184, 88, 184, 80, 182, 80, 182, 74, 176,
+                   74, 176, 72, 168, 72, 168, 72, 88, 72, 88, 74, 80, 74, 80, 80, 74, 80, 74, 88, 72, 88, 72, 168, 72,
+                   104, 32, 104, 72, 152, 32, 152, 72, 104, 184, 104, 224, 152, 184, 152, 224, 32, 104, 72, 104,
+                   32, 152, 72, 152, 184, 104, 224, 104, 184, 152, 224, 152];
+I64[72] sym_mem = [192, 48, 204, 51, 204, 51, 213, 60, 213, 60, 216, 72, 216, 72, 216, 184, 216, 184, 213, 196,
+                   213, 196, 204, 205, 204, 205, 192, 208, 192, 208, 64, 208, 64, 208, 52, 205, 52, 205, 43, 196,
+                   43, 196, 40, 184, 40, 184, 40, 72, 40, 72, 43, 60, 43, 60, 52, 51, 52, 51, 64, 48, 64, 48, 192, 48,
+                   100, 48, 100, 208, 156, 48, 156, 208];
+I64[104] sym_disk = [40, 152, 69, 59, 69, 59, 72, 53, 72, 53, 77, 49, 77, 49, 84, 48, 84, 48, 172, 48, 172, 48, 179, 49,
+                     179, 49, 184, 53, 184, 53, 187, 59, 187, 59, 216, 152, 200, 152, 208, 154, 208, 154, 214, 160,
+                     214, 160, 216, 168, 216, 168, 216, 192, 216, 192, 214, 200, 214, 200, 208, 206, 208, 206, 200, 208,
+                     200, 208, 56, 208, 56, 208, 48, 206, 48, 206, 42, 200, 42, 200, 40, 192, 40, 192, 40, 168,
+                     40, 168, 42, 160, 42, 160, 48, 154, 48, 154, 56, 152, 56, 152, 200, 152, 176, 180, 176, 180];
+I64[160] sym_net = [148, 32, 156, 36, 156, 36, 160, 44, 160, 44, 160, 76, 160, 76, 156, 84, 156, 84, 148, 88, 148, 88,
+                    108, 88, 108, 88, 100, 84, 100, 84, 96, 76, 96, 76, 96, 44, 96, 44, 100, 36, 100, 36, 108, 32,
+                    108, 32, 148, 32, 84, 168, 92, 172, 92, 172, 96, 180, 96, 180, 96, 212, 96, 212, 92, 220, 92, 220,
+                    84, 224, 84, 224, 44, 224, 44, 224, 36, 220, 36, 220, 32, 212, 32, 212, 32, 180, 32, 180, 36, 172,
+                    36, 172, 44, 168, 44, 168, 84, 168, 212, 168, 220, 172, 220, 172, 224, 180, 224, 180, 224, 212,
+                    224, 212, 220, 220, 220, 220, 212, 224, 212, 224, 172, 224, 172, 224, 164, 220, 164, 220, 160,
+                    212, 160, 212, 160, 180, 160, 180, 164, 172, 164, 172, 172, 168, 172, 168, 212, 168, 128, 88, 128,
+                    128, 64, 168, 64, 128, 64, 128, 192, 128, 192, 128, 192, 168];
+I64[72] sym_gpu = [200, 48, 212, 51, 212, 51, 221, 60, 221, 60, 224, 72, 224, 72, 224, 152, 224, 152, 221, 164,
+                   221, 164, 212, 173, 212, 173, 200, 176, 200, 176, 56, 176, 56, 176, 44, 173, 44, 173, 35, 164,
+                   35, 164, 32, 152, 32, 152, 32, 72, 32, 72, 35, 60, 35, 60, 44, 51, 44, 51, 56, 48, 56, 48, 200, 48,
+                   96, 216, 160, 216, 128, 176, 128, 216];
+I64[24] sym_gmem = [128, 40, 224, 88, 224, 88, 128, 136, 128, 136, 32, 88, 32, 88, 128, 40, 32, 140, 128, 188,
+                    128, 188, 224, 140];
+I64[64] sym_audio = [40, 104, 80, 104, 80, 104, 136, 56, 136, 56, 136, 200, 136, 200, 80, 152, 80, 152, 40, 152,
+                     40, 152, 40, 104, 176, 96, 185, 111, 185, 111, 188, 128, 188, 128, 185, 145, 185, 145, 176, 160,
+                     204, 64, 219, 83, 219, 83, 228, 104, 228, 104, 232, 128, 232, 128, 228, 152, 228, 152, 219, 173,
+                     219, 173, 204, 192];
+// the narrow form's sidebar button: a panel with its left column
+I64[20] sym_side = [32, 48, 224, 48, 224, 48, 224, 208, 224, 208, 32, 208, 32, 208, 32, 48, 96, 48, 96, 208];
+// the list's chevrons in a 10 unit box: open (pointing down) and folded (pointing right)
+I64[8] chev_down = [32, 56, 80, 104, 80, 104, 128, 56];
+I64[8] chev_right = [56, 32, 104, 80, 104, 80, 56, 128];
+
+// --- the box, and what the parts read ---
+I64 bw = W;
+I64 bh = H;
+I64 sel = CPU;
+Bool folded = false;
+Bool side_open = false;                // the narrow form's sidebar, laid over the page
+I64 scroll = 0;
+I64 pick = -1;                         // the chosen process's pid
+I64 me_pid = -1;                       // Monitor's own
+
+I64[6] usable;                         // 1: the part's call answers, so it can be chosen
+I64[366] hist;                         // HIST samples a part, oldest first
+I64[6] hn;                             // samples held
+I64[6] figure;                         // the last sample's figure, -1 none
+
+// the latest readings and the one before
+I64 busy = -1;
+I64 idle = -1;
+I64 busy0 = -1;
+I64 idle0 = -1;
+I64 now = -1;
+I64 now0 = -1;
+I64 total = 0;                         // memory, bytes
+I64 freem = 0;
+I64 procs = -1;                        // the process count (sysinfo)
+I64 up_s = -1;                         // seconds since boot
+I64 mhz = 0;
+U8[48] cpu_name;
+I64 cpu_n = 0;
+I64 cap = 0;                           // the volume, bytes
+I64 cap_free = -1;
+I64 rd = -1;                           // the disk's bytes since boot
+I64 wr = -1;
+I64 rd0 = -1;
+I64 wr0 = -1;
+I64 rd_rate = -1;
+I64 wr_rate = -1;
+U8[40] disk_name;
+I64 disk_n = 0;
+I64 rx = -1;                           // the network's
+I64 tx = -1;
+I64 rx0 = -1;
+I64 tx0 = -1;
+I64 rx_rate = -1;
+I64 tx_rate = -1;
+Bool link = false;
+U8[40] net_addr;
+I64 addr_n = 0;
+U8[16] net_kind;
+I64 kind_n = 0;
+I64 gw = 0;                            // the display
+I64 gh = 0;
+I64 gbits = 0;
+I64 gvendor = 0;
+I64 gdevice = 0;
+I64 gsource = 0;
+U8[48] gpu_name;
+I64 gpu_n = 0;
+
+// the processes: the reading being told, then the one shown, sorted
+I64 n_in = 0;
+I64[64] in_pid;
+I64[64] in_bytes;
+I64[64] in_cpu;
+I64[64] in_grants;
+U8[1024] in_comm;
+I64 n_p = 0;
+I64[64] p_pid;
+I64[64] p_bytes;
+I64[64] p_cpu;                         // the CPU time read, -1 unknown
+I64[64] p_share;                       // tenths of a percent of the machine since the last sample, -1 unknown
+I64[64] p_grants;
+U8[1024] p_comm;                       // 16 bytes each
+I64[64] order;                         // p's rows in the list's order
+
+U32[3840] scr;                         // a row drawn before it is laid in: 1920 pixels at 2x
+U32[3840] keep;
+U32[3840] mask;
+U8[64] tx_buf;
+I64[124] pts;                          // a graph's points, x and y in sixteenths
+
+// --- reading ---
+
+// The box Monitor has, in 1x pixels; everything below lays out from it. At W x H it draws frame 42.
+export void box(I64 w, I64 h) {
+    bw = w;
+    bh = h;
+    if (bw < MIN_W) { bw = MIN_W; }
+    if (bh < MIN_H) { bh = MIN_H; }
+    if (!narrow()) { side_open = false; }
+    laid = false;
+    keep_pick();
+}
+
+// The parts' calls that answer: Graphics Memory never does (no driver: KF spec section 2).
+export void parts_usable(Bool has_disk, Bool has_net) {
+    for p in 0..PARTS { usable[p] = 1; }
+    if (!has_disk) { usable[DISK] = 0; }
+    if (!has_net) { usable[NET] = 0; }
+    usable[GMEM] = 0;
+    if (usable[sel] == 0) { sel = CPU; }
+}
+
+export void me(I64 pid) { me_pid = pid; }
+
+// Kind 1: the processor's name, its base speed (0: not reported) and busy and idle time since boot, in the PIT's
+// ticks (KF-R1; -1 absent). Only their ratio is used, so any one unit serves.
+export void cpu(in U8[_] name, I64 base_mhz, I64 busy_t, I64 idle_t) {
+    laid = false;
+    cpu_n = keep_text(cpu_name, name);
+    mhz = base_mhz;
+    busy = busy_t;
+    idle = idle_t;
+}
+
+// sysinfo: memory in bytes, the process count, seconds since boot (-1 absent).
+export void memory(I64 total_b, I64 free_b) {
+    laid = false;
+    total = total_b;
+    freem = free_b;
+}
+
+export void counts(I64 n, I64 up) {
+    laid = false;
+    procs = n;
+    up_s = up;
+}
+
+// Kind 5 and statfs: the disk's name; the volume's capacity and free bytes, one statfs pair as Settings > Storage
+// reads it (-1 unknown; free held inside the capacity, as Storage holds it); bytes read and written since boot.
+export void disk(in U8[_] name, I64 cap_b, I64 free_b, I64 read_b, I64 written_b) {
+    laid = false;
+    disk_n = keep_text(disk_name, name);
+    cap = cap_b;
+    cap_free = -1;
+    if (cap_b > 0 && free_b >= 0) { cap_free = min(free_b, cap_b); }
+    rd = read_b;
+    wr = written_b;
+}
+
+// Kind 3: link, the address as text, the kind of link ("Wired"), bytes received and sent since boot.
+export void net(Bool up, in U8[_] addr, in U8[_] kind, I64 rx_b, I64 tx_b) {
+    laid = false;
+    link = up;
+    addr_n = keep_text(net_addr, addr);
+    kind_n = keep_text(net_kind, kind);
+    rx = rx_b;
+    tx = tx_b;
+}
+
+// Kind 4: the mode, bits a pixel, the adapter's PCI ids, the surface's source (1 firmware, 2 Bochs) and its name.
+export void display(I64 w, I64 h, I64 bits, I64 vendor, I64 device, I64 source, in U8[_] name) {
+    laid = false;
+    gw = w;
+    gh = h;
+    gbits = bits;
+    gvendor = vendor;
+    gdevice = device;
+    gsource = source;
+    gpu_n = keep_text(gpu_name, name);
+}
+
+I64 keep_text(inout U8[_] to, in U8[_] s) {
+    I64 n = 0;
+    while (n < len(s) && n < len(to) && s[n] != 0) {
+        to[n] = s[n];
+        n = n + 1;
+    }
+    while (n > 0 && to[n - 1] == ' ') { n = n - 1; }
+    return n;
+}
+
+export void procs_begin() { n_in = 0; }
+
+// Kind 2: one process the caller may see: pid, comm (16 bytes, NUL padded), bytes held, its CPU time in the unit
+// of busy and idle (-1 absent), its grant word.
+export void proc(I64 pid, in U8[_] comm, I64 bytes, I64 cpu_t, I64 grants) {
+    if (n_in >= PROCS) { return; }
+    in_pid[n_in] = pid;
+    in_bytes[n_in] = bytes;
+    in_cpu[n_in] = cpu_t;
+    in_grants[n_in] = grants;
+    for k in 0..16 {
+        U8 b = 0;
+        if (k < len(comm)) { b = comm[k]; }
+        in_comm[16 * n_in + k] = b;
+    }
+    n_in = n_in + 1;
+}
+
+// A reading ends at now_ns (the wall clock): shares and rates from the reading before, each part's figure pushed on
+// its history, the list sorted again.
+export void sample(I64 now_ns) {
+    I64 dt = 0;
+    if (now0 >= 0 && now_ns > now0) { dt = now_ns - now0; }
+    I64 dm = -1;                       // the machine's time since the last reading
+    if (busy >= 0 && idle >= 0 && busy0 >= 0 && idle0 >= 0 && busy + idle > busy0 + idle0) {
+        dm = busy + idle - busy0 - idle0;
+    }
+    figure[CPU] = -1;
+    if (dm > 0) { figure[CPU] = (busy - busy0) * 1000 / dm; }
+    figure[MEM] = -1;
+    if (total > 0) { figure[MEM] = (total - freem) * 1000 / total; }
+    rd_rate = rate(rd, rd0, dt);
+    wr_rate = rate(wr, wr0, dt);
+    figure[DISK] = -1;
+    if (rd_rate >= 0 && wr_rate >= 0) { figure[DISK] = rd_rate + wr_rate; }
+    rx_rate = rate(rx, rx0, dt);
+    tx_rate = rate(tx, tx0, dt);
+    figure[NET] = -1;
+    if (rx_rate >= 0 && tx_rate >= 0) { figure[NET] = rx_rate + tx_rate; }
+    figure[GPU] = -1;
+    figure[GMEM] = -1;
+    for p in 0..4 {
+        if (figure[p] >= 0 && usable[p] == 1) { push(p, figure[p]); }
+    }
+    // each process's share: its cpu time since the last reading over the machine's
+    for i in 0..n_in {
+        I64 sh = -1;
+        if (dm > 0 && in_cpu[i] >= 0) {
+            for j in 0..n_p {
+                if (p_pid[j] == in_pid[i] && p_cpu[j] >= 0 && in_cpu[i] >= p_cpu[j]) {
+                    sh = (in_cpu[i] - p_cpu[j]) * 1000 / dm;
+                }
+            }
+        }
+        p_share[i] = sh;
+    }
+    n_p = n_in;
+    for i in 0..n_p {
+        p_pid[i] = in_pid[i];
+        p_bytes[i] = in_bytes[i];
+        p_cpu[i] = in_cpu[i];
+        p_grants[i] = in_grants[i];
+        for k in 0..16 { p_comm[16 * i + k] = in_comm[16 * i + k]; }
+    }
+    busy0 = busy;
+    idle0 = idle;
+    rd0 = rd;
+    wr0 = wr;
+    rx0 = rx;
+    tx0 = tx;
+    now0 = now_ns;
+    laid = false;
+    sort();
+    keep_pick();
+}
+
+// A counter's bytes a second over dt ns, in milliseconds so no step overflows: -1 unknown; 0 when the counter went
+// back (its device replugged); a step past RATE_MAX a second is shown at RATE_MAX.
+I64 rate(I64 v, I64 v0, I64 dt) {
+    I64 ms = dt / 1000000;
+    if (v < 0 || v0 < 0 || ms <= 0) { return -1; }
+    if (v < v0) { return 0; }
+    I64 d = v - v0;
+    if (d / ms > RATE_MAX / 1000) { return RATE_MAX; }
+    return min(d / ms * 1000 + d % ms * 1000 / ms, RATE_MAX);
+}
+
+void push(I64 p, I64 v) {
+    if (hn[p] == HIST) {
+        for i in 1..HIST { hist[p * HIST + i - 1] = hist[p * HIST + i]; }
+        hn[p] = HIST - 1;
+    }
+    hist[p * HIST + hn[p]] = v;
+    hn[p] = hn[p] + 1;
+}
+
+// The list's order for the chosen part: Processor by share, Memory by bytes, the larger first, then by pid.
+Bool before(I64 a, I64 b) {
+    I64 va = p_bytes[a];
+    I64 vb = p_bytes[b];
+    if (sel == CPU) {
+        va = p_share[a];
+        vb = p_share[b];
+    }
+    if (va != vb) { return va > vb; }
+    return p_pid[a] < p_pid[b];
+}
+
+void sort() {
+    for i in 0..n_p { order[i] = i; }
+    for i in 1..n_p {
+        I64 k = order[i];
+        I64 j = i;
+        while (j > 0 && before(k, order[j - 1])) {
+            order[j] = order[j - 1];
+            j = j - 1;
+        }
+        order[j] = k;
+    }
+}
+
+// --- what the host asks ---
+
+export I64 chosen() { return sel; }
+export Bool is_folded() { return folded; }
+
+// Esc closes the narrow form's sidebar first; whether it was open.
+export Bool close_side() {
+    if (!side_open) { return false; }
+    side_open = false;
+    return true;
+}
+// The process End Process would end: the pick while its list is shown and open, else -1.
+export I64 end_pid() {
+    if (!listed() || folded || !rows_seen()) { return -1; }
+    return pick;
+}
+export I64 rows() { return n_p; }
+export I64 row_pid(I64 i) { return p_pid[order[i]]; }
+export I64 row_share(I64 i) { return p_share[order[i]]; }
+export I64 part_figure(I64 p) { return figure[p]; }
+export I64 held(I64 p) { return hn[p]; }
+export Bool can_choose(I64 p) { return p >= 0 && p < PARTS && usable[p] == 1; }
+
+// The part takes the right side; false when it cannot be chosen or already has it.
+export Bool choose(I64 p) {
+    if (!can_choose(p) || p == sel) { return false; }
+    sel = p;
+    scroll = 0;
+    laid = false;
+    sort();
+    keep_pick();
+    return true;
+}
+
+Bool listed() { return sel == CPU || sel == MEM; }
+
+I64 at_of(I64 pid) {
+    for i in 0..n_p {
+        if (p_pid[order[i]] == pid) { return i; }
+    }
+    return -1;
+}
+
+I64 shown() {
+    I64 n = (bh - list_top() + PITCH - 1) / PITCH;
+    if (n < 0) { n = 0; }
+    return n;
+}
+
+I64 whole_rows() {
+    I64 n = (bh - list_top() + 2) / PITCH;
+    if (n < 1) { n = 1; }
+    return n;
+}
+
+// The pick stays on its process while it lives, and in view.
+void keep_pick() {
+    I64 i = at_of(pick);
+    if (i < 0) { pick = -1; }
+    I64 most = n_p - whole_rows();
+    if (most < 0) { most = 0; }
+    if (i >= 0 && i < scroll) { scroll = i; }
+    if (i >= 0 && i >= scroll + whole_rows()) { scroll = i - whole_rows() + 1; }
+    if (scroll > most) { scroll = most; }
+    if (scroll < 0) { scroll = 0; }
+}
+
+// Up (-1) or Down (1) moves the pick along the list.
+export Bool step(I64 d) {
+    if (!listed() || folded || n_p == 0 || !rows_seen()) { return false; }
+    I64 i = at_of(pick);
+    I64 j = i + d;
+    if (i < 0) { j = 0; }
+    if (j < 0) { j = 0; }
+    if (j >= n_p) { j = n_p - 1; }
+    if (j == i) { return false; }
+    pick = p_pid[order[j]];
+    keep_pick();
+    return true;
+}
+
+// Tab: the next part that can be chosen (d 1), or the one before (d -1).
+export Bool next_part(I64 d) {
+    I64 p = sel;
+    for k in 0..PARTS {
+        p = (p + d + PARTS) % PARTS;
+        if (usable[p] == 1) { return choose(p); }
+    }
+    return false;
+}
+
+// --- the layout, one function of the box (DN-63) ---
+
+Bool narrow() { return bw < NARROW; }
+I64 pane_x0() {
+    if (narrow()) { return 0; }
+    return SIDE;
+}
+// The right side's content: the pane less its padding (20 24), at most CONTENT_MAX wide and centered.
+I64 cx0() {
+    I64 x0 = pane_x0() + 24;
+    I64 wd = bw - 24 - x0;
+    if (wd > CONTENT_MAX) { x0 = x0 + (wd - CONTENT_MAX) / 2; }
+    return x0;
+}
+I64 cx1() {
+    I64 wd = bw - 24 - pane_x0() - 24;
+    if (wd > CONTENT_MAX) { return cx0() + CONTENT_MAX; }
+    return bw - 24;
+}
+I64 title_x() {
+    if (narrow()) { return cx0() + 40; }
+    return cx0();
+}
+// A listed part's graph gives way, down to GRAPH_MIN, so the box's foot holds one whole row of the list.
+I64 graph_h() {
+    if (listed()) {
+        lay();
+        I64 g = bh - 28 - (124 + 16 + 48 + 68) - 46 * (f_lines - 1);
+        if (g > GRAPH_H) { g = GRAPH_H; }
+        if (g < GRAPH_MIN) { g = GRAPH_MIN; }
+        return g;
+    }
+    I64 g = GRAPH_H + bh - H;
+    if (g < GRAPH_H) { g = GRAPH_H; }
+    if (g > GRAPH_MAX) { g = GRAPH_MAX; }
+    return g;
+}
+I64 facts_top() {
+    if (sel == GPU || sel == GMEM) { return 124; }
+    return 124 + graph_h() + 16;
+}
+
+// The facts row: each fact's x and line; a fact that does not fit starts the next line (row gap 12).
+Bool laid = false;
+I64[4] f_x;                            // -1: missing
+I64[4] f_line;
+I64 f_lines = 1;
+U8[64] f_buf;
+
+void lay() {
+    if (laid) { return; }
+    I64 x = cx0();
+    I64 line = 0;
+    U8[16] l;
+    for k in 0..4 {
+        f_x[k] = -1;
+        I64 n = fact(k, l, f_buf);
+        if (n > 0) {
+            I64 w = ctext.width(l, fact_ln, faces.LABEL, 1);
+            I64 vw = apptext.width(f_buf, n, appfaces.FACT, 1);
+            if (vw > w) { w = vw; }
+            if (x > cx0() && x + w > cx1()) {
+                line = line + 1;
+                x = cx0();
+            }
+            f_x[k] = x;
+            f_line[k] = line;
+            x = x + w + 40;
+        }
+    }
+    f_lines = line + 1;
+    laid = true;
+}
+
+I64 head_top() {
+    lay();
+    return facts_top() + 48 + 46 * (f_lines - 1);
+}
+I64 list_top() { return head_top() + 68; }
+// A whole row of the list is in the box: only then can the list be stepped or a process ended.
+Bool rows_seen() { return bh - list_top() >= 28; }
+
+// The list's columns' right edges: PID, PROCESSOR, MEMORY, GRANTS; NAME takes the slack. PID drops under 420.
+Bool pid_shown() { return cx1() - cx0() >= 420; }
+I64 col_r(I64 k) {
+    if (k == 0) { return cx1() - 264; }
+    if (k == 1) { return cx1() - 156; }
+    if (k == 2) { return cx1() - 64; }
+    return cx1();
+}
+I64 name_end() {
+    if (pid_shown()) { return col_r(0) - 48; }
+    return col_r(0);
+}
+I64 button_w() { return apptext.width(b"End Process", 11, appfaces.BUTTON, 1) + 24; }
+
+// A click at (x, y) in the body's 1x pixels: what it did (NONE, FOLD, END, PICK or a part's number).
+export I64 click(I64 x, I64 y) {
+    if (narrow() && side_open) {
+        side_open = false;
+        if (x >= SIDE) { return SIDE_FLIP; }
+        if (x >= 8 && x < SIDE - 8 && y >= 12) {
+            I64 q = (y - 12) / 50;
+            if (q < PARTS && y - 12 - 50 * q < 48 && choose(q)) { return q; }
+        }
+        return SIDE_FLIP;
+    }
+    if (narrow() && x >= cx0() && x < cx0() + 28 && y >= 20 && y < 48) {
+        side_open = true;
+        return SIDE_FLIP;
+    }
+    if (!narrow() && x >= 8 && x < SIDE - 8 && y >= 12) {
+        I64 p = (y - 12) / 50;
+        if (p < PARTS && y - 12 - 50 * p < 48) {
+            if (choose(p)) { return p; }
+            return NONE;
+        }
+        return NONE;
+    }
+    if (!listed()) { return NONE; }
+    I64 ht = head_top();
+    if (y >= ht && y < ht + 32) {
+        if (x >= cx1() - button_w() && x < cx1() && y >= ht + 2 && y < ht + 30) {
+            if (end_pid() >= 0) { return END; }
+            return NONE;
+        }
+        I64 tw = ctext.width(b"Processes", 9, faces.NAME_BOLD, 1);
+        if (x >= cx0() - 12 && x < cx0() + 18 + tw + 40) {
+            folded = !folded;
+            return FOLD;
+        }
+        return NONE;
+    }
+    I64 lt = list_top();
+    if (folded || y < lt || x < cx0() - 12 || x >= cx1() + 12) { return NONE; }
+    I64 i = scroll + (y - lt) / PITCH;
+    if ((y - lt) % PITCH >= 28 || i >= n_p) { return NONE; }
+    pick = p_pid[order[i]];
+    keep_pick();
+    return PICK;
+}
+
+// --- words ---
+
+I64 put_num(inout U8[_] b, I64 at, I64 v) {
+    I64 n = at;
+    if (v < 0) { return n; }
+    U8[20] d;
+    I64 k = 0;
+    I64 x = v;
+    while (k == 0 || x > 0) {
+        d[k] = (48 + x % 10) as U8;
+        x = x / 10;
+        k = k + 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        b[n] = d[k];
+        n = n + 1;
+    }
+    return n;
+}
+
+I64 put_s(inout U8[_] b, I64 at, in U8[_] s) {
+    for i in 0..len(s) { b[at + i] = s[i]; }
+    return at + len(s);
+}
+
+// A count of bytes in binary units: one decimal under 10 of a unit, whole from 10, a trailing ".0" dropped (the
+// Storage page's rule).
+export I64 size_text(inout U8[_] b, I64 v) {
+    if (v < 1024) {
+        I64 n = put_num(b, 0, v);
+        return put_s(b, n, b" B");
+    }
+    I64 u = 1024;
+    I64 k = 0;
+    while (k < 3 && v >= u * 1024) {
+        u = u * 1024;
+        k = k + 1;
+    }
+    I64 t = (v * 10 + u / 2) / u;      // tenths of the unit
+    I64 n = 0;
+    if (t >= 100) { n = put_num(b, 0, (t + 5) / 10); }
+    else {
+        n = put_num(b, 0, t / 10);
+        if (t % 10 != 0) {
+            b[n] = '.';
+            n = put_num(b, n + 1, t % 10);
+        }
+    }
+    if (k == 0) { return put_s(b, n, b" KiB"); }
+    if (k == 1) { return put_s(b, n, b" MiB"); }
+    if (k == 2) { return put_s(b, n, b" GiB"); }
+    return put_s(b, n, b" TiB");
+}
+
+I64 rate_text(inout U8[_] b, I64 v) {
+    I64 n = size_text(b, v);
+    return put_s(b, n, b"/s");
+}
+
+// Tenths of a percent: whole (23%) or with its tenth (14.2%).
+export I64 share_text(inout U8[_] b, I64 t, Bool tenth) {
+    I64 n = 0;
+    if (tenth) {
+        n = put_num(b, 0, t / 10);
+        b[n] = '.';
+        n = put_num(b, n + 1, t % 10);
+    } else {
+        n = put_num(b, 0, (t + 5) / 10);
+    }
+    b[n] = '%';
+    return n + 1;
+}
+
+I64 two(inout U8[_] b, I64 at, I64 v) {
+    b[at] = (48 + v / 10) as U8;
+    b[at + 1] = (48 + v % 10) as U8;
+    return at + 2;
+}
+
+I64 hex4(inout U8[_] b, I64 at, I64 v) {
+    for k in 0..4 {
+        I64 d = (v >> (4 * (3 - k))) & 15;
+        U8 c = (48 + d) as U8;
+        if (d >= 10) { c = (87 + d) as U8; }
+        b[at + k] = c;
+    }
+    return at + 4;
+}
+
+// The figure of part p, as the sidebar shows it; 0 when there is none.
+export I64 figure_text(inout U8[_] b, I64 p) {
+    if (usable[p] == 0) { return 0; }
+    if (p == CPU && figure[CPU] >= 0) { return share_text(b, figure[CPU], false); }
+    if (p == MEM && total > 0) { return size_text(b, total - freem); }
+    if ((p == DISK || p == NET) && figure[p] >= 0) { return rate_text(b, figure[p]); }
+    if (p == GPU && gw > 0 && gh > 0) {
+        I64 n = put_num(b, 0, gw);
+        n = put_s(b, n, b" x ");
+        return put_num(b, n, gh);
+    }
+    return 0;
+}
+
+// The chosen part's large figure, beside its wheel: Disk's is the space used, as its wheel (design note 68); the
+// others are as the sidebar's.
+export I64 large_text(inout U8[_] b) {
+    if (sel != DISK) { return figure_text(b, sel); }
+    if (cap > 0 && cap_free >= 0) { return size_text(b, cap - cap_free); }
+    return 0;
+}
+
+// An address of four bytes in network order as text (10.0.2.15); 0 for 0.0.0.0, no address.
+export I64 addr_text(inout U8[_] b, in U8[_] a) {
+    if (len(a) < 4 || (a[0] == 0 && a[1] == 0 && a[2] == 0 && a[3] == 0)) { return 0; }
+    I64 n = 0;
+    for k in 0..4 {
+        if (k > 0) {
+            b[n] = '.';
+            n = n + 1;
+        }
+        n = put_num(b, n, a[k] as I64);
+    }
+    return n;
+}
+
+// What the part is, at the right of its name; 0 when nothing is known.
+I64 what_text(inout U8[_] b, I64 p) {
+    if (p == CPU) { return put_s(b, 0, cpu_name[0..cpu_n]); }
+    if (p == MEM && total > 0) { return size_text(b, total); }
+    if (p == DISK) { return put_s(b, 0, disk_name[0..disk_n]); }
+    if (p == NET) { return put_s(b, 0, net_kind[0..kind_n]); }
+    if (p == GPU) { return put_s(b, 0, gpu_name[0..gpu_n]); }
+    return 0;
+}
+
+I64 fact_ln = 0;     // the label length of the last fact
+
+// Fact k of the chosen part: its label into l (its length in fact_ln), its value into b; the value's length, 0 for
+// a fact that is missing, -1 past the last.
+I64 fact(I64 k, inout U8[_] l, inout U8[_] b) {
+    fact_ln = 0;
+    if (sel == CPU) {
+        if (k == 0) {
+            fact_ln = put_s(l, 0, b"SPEED");
+            if (mhz <= 0) { return 0; }
+            if (mhz < 1000) { return put_s(b, put_num(b, 0, mhz), b" MHz"); }
+            I64 n = put_num(b, 0, mhz / 1000);
+            b[n] = '.';
+            n = two(b, n + 1, (mhz % 1000) / 10);
+            return put_s(b, n, b" GHz");
+        }
+        if (k == 1) { fact_ln = put_s(l, 0, b"PROCESSES"); return put_num(b, 0, procs); }
+        if (k == 2) {
+            fact_ln = put_s(l, 0, b"UP TIME");
+            if (up_s < 0) { return 0; }
+            I64 n = put_num(b, 0, up_s / 3600);
+            b[n] = ':';
+            n = two(b, n + 1, (up_s / 60) % 60);
+            b[n] = ':';
+            return two(b, n + 1, up_s % 60);
+        }
+        return -1;
+    }
+    if (sel == MEM) {
+        if (k == 0) {
+            fact_ln = put_s(l, 0, b"FREE");
+            if (total <= 0) { return 0; }
+            return size_text(b, freem);
+        }
+        if (k == 1) {
+            fact_ln = put_s(l, 0, b"SHARE");
+            if (figure[MEM] < 0) { return 0; }
+            return share_text(b, figure[MEM], false);
+        }
+        if (k == 2) { fact_ln = put_s(l, 0, b"PROCESSES"); return put_num(b, 0, procs); }
+        return -1;
+    }
+    if (sel == DISK) {
+        if (k == 0) { fact_ln = put_s(l, 0, b"CAPACITY"); if (cap <= 0) { return 0; } return size_text(b, cap); }
+        if (k == 1) { fact_ln = put_s(l, 0, b"FREE"); if (cap_free < 0) { return 0; } return size_text(b, cap_free); }
+        if (k == 2) { fact_ln = put_s(l, 0, b"READ"); if (rd_rate < 0) { return 0; } return rate_text(b, rd_rate); }
+        if (k == 3) { fact_ln = put_s(l, 0, b"WRITTEN"); if (wr_rate < 0) { return 0; } return rate_text(b, wr_rate); }
+        return -1;
+    }
+    if (sel == NET) {
+        if (k == 0) { fact_ln = put_s(l, 0, b"RECEIVED"); if (rx_rate < 0) { return 0; } return rate_text(b, rx_rate); }
+        if (k == 1) { fact_ln = put_s(l, 0, b"SENT"); if (tx_rate < 0) { return 0; } return rate_text(b, tx_rate); }
+        if (k == 2) { fact_ln = put_s(l, 0, b"ADDRESS"); return put_s(b, 0, net_addr[0..addr_n]); }
+        if (k == 3) {
+            fact_ln = put_s(l, 0, b"LINK");
+            if (link) { return put_s(b, 0, b"Connected"); }
+            return put_s(b, 0, b"Not connected");
+        }
+        return -1;
+    }
+    if (sel == GPU) {
+        if (k == 0) {
+            fact_ln = put_s(l, 0, b"COLOR");
+            if (gbits <= 0) { return 0; }
+            return put_s(b, put_num(b, 0, gbits), b" bit");
+        }
+        if (k == 1) {
+            fact_ln = put_s(l, 0, b"ADAPTER");
+            if (gvendor <= 0) { return 0; }
+            I64 n = hex4(b, 0, gvendor);
+            b[n] = ':';
+            return hex4(b, n + 1, gdevice);
+        }
+        if (k == 2) {
+            fact_ln = put_s(l, 0, b"SOURCE");
+            if (gsource == 1) { return put_s(b, 0, b"Firmware"); }
+            if (gsource == 2) { return put_s(b, 0, b"Bochs"); }
+            return 0;
+        }
+        return -1;
+    }
+    return -1;
+}
+
+// The process at list row i: its name (the app's, note 28, from the desk's table, else its command as the kernel
+// names it; Monitor's own row is Monitor, with its icon) into b, and its icon (the app's, else the Program icon)
+// into name_icon. The program is kit/winname.ci's: the comm's first word, a member path (bin/calc) or a name under
+// /bin, sh as cish.
+I64 name_icon = 0;
+
+I64 proc_name(inout U8[_] b, I64 i) {
+    I64 r = order[i];
+    name_icon = icons3.PROGRAM;
+    if (p_pid[r] == me_pid) {           // frame 42: Monitor's own row, with Monitor's icon
+        I64 m = apps.by_program(b"/bin/monitor");
+        if (m != apps.NONE) { name_icon = apps.icon(m); }
+        return put_s(b, 0, b"Monitor");
+    }
+    I64 n = 0;
+    while (n < 16 && p_comm[16 * r + n] != 0) { n = n + 1; }
+    U8[40] path;
+    I64 pn = winname.prog(p_comm[16 * r..16 * r + n], path);
+    I64 a = apps.by_program(path[0..pn]);
+    if (a != apps.NONE) {
+        name_icon = apps.icon(a);
+        return apps.field(a, 0, b);
+    }
+    for k in 0..n { b[k] = p_comm[16 * r + k]; }
+    return n;
+}
+
+// List row i's name and icon, as the list draws them.
+export I64 row_name(inout U8[_] b, I64 i) { return proc_name(b, i); }
+export I64 row_icon(I64 i) {
+    U8[40] t;
+    I64 n = proc_name(t, i);
+    return name_icon;
+}
+
+// --- drawing ---
+
+U32 tok(I64 t) { return tokens.word(t); }
+U32 color(I64 p) { return part_c[6 * tokens.theme() + p] as U32; }
+U32 dim(U32 c, U32 ground) { return blend.mix_px(ground, c, DIM); }
+
+// A graph's scale: 1000 (tenths of a percent) for a share; for a rate the least power of two of a unit at or past
+// the largest sample (1 KiB/s at the least).
+I64 scale(I64 p) {
+    if (p == CPU || p == MEM) { return 1000; }
+    I64 most = 0;
+    for i in 0..hn[p] {
+        if (hist[p * HIST + i] > most) { most = hist[p * HIST + i]; }
+    }
+    I64 s = 1024;
+    while (s < most) { s = s * 2; }
+    return s;
+}
+
+// The graph of part p's last n samples in a box w x h (1x) at device (x0, y0): the wash under the line, then the
+// line, w16 wide.
+void graph(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 w, I64 h, I64 p, I64 n, I64 z, U32 c, I64 wash) {
+    I64 k = hn[p];
+    if (n < k) { k = n; }
+    if (k < 1) { return; }
+    I64 sc = scale(p);
+    I64 steps = n - 1;
+    if (steps < 1) { steps = 1; }
+    for i in 0..k {
+        I64 v = hist[p * HIST + hn[p] - k + i];
+        if (v > sc) { v = sc; }
+        pts[2 * i] = 16 * w - (k - 1 - i) * 16 * w / steps;
+        pts[2 * i + 1] = 16 * h - v * 16 * h / sc;
+    }
+    if (k == 1) {                      // one sample: a dot at the right
+        pts[2] = pts[0];
+        pts[3] = pts[1];
+        pts[0] = pts[0] - 1;
+    }
+    I64 m = k;
+    if (m < 2) { m = 2; }
+    stroke.area_row(row, y, x0, y0, z, 1, pts, m, 16 * h, c, wash);
+    I64[244] seg;
+    for i in 0..m - 1 {
+        seg[4 * i] = pts[2 * i];
+        seg[4 * i + 1] = pts[2 * i + 1];
+        seg[4 * i + 2] = pts[2 * i + 2];
+        seg[4 * i + 3] = pts[2 * i + 3];
+    }
+    stroke.path_row(row, y, x0, y0, z, 1, seg, m - 1, 24, c);
+}
+
+void symbol(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 p, I64 z, U32 c) {
+    if (p == CPU) { stroke.path_row(row, y, x0, y0, z, 1, sym_cpu, 24, 24, c); }
+    if (p == MEM) { stroke.path_row(row, y, x0, y0, z, 1, sym_mem, 18, 24, c); }
+    if (p == DISK) { stroke.path_row(row, y, x0, y0, z, 1, sym_disk, 26, 24, c); }
+    if (p == NET) { stroke.path_row(row, y, x0, y0, z, 1, sym_net, 40, 24, c); }
+    if (p == GPU) { stroke.path_row(row, y, x0, y0, z, 1, sym_gpu, 18, 24, c); }
+    if (p == GMEM) { stroke.path_row(row, y, x0, y0, z, 1, sym_gmem, 6, 24, c); }
+}
+
+I64 text_r(inout U32[_] row, I64 y, I64 xr, I64 base, in U8[_] s, I64 n, U32 c, I64 f, I64 z) {
+    I64 w = ctext.width(s, n, f, z);
+    return ctext.text(row, y, xr - w, base, len(row), s, n, c, f, z);
+}
+
+// Row y (device) of the sidebar at zoom z.
+void side_row(inout U32[_] row, I64 y, I64 z) {
+    U32 g = tok(tokens.SURF2);
+    for x in 0..SIDE * z { row[x] = g; }
+    I64 p = (y / z - 12) / 50;
+    if (y / z < 12 || p >= PARTS) { return; }
+    I64 t = 12 + 50 * p;
+    if (y >= (t + 48) * z) { return; }
+    Bool on = p == sel;
+    U32 ground = g;
+    if (on) {
+        ground = tok(tokens.FILL);
+        shape.rounded(row, y, 8 * z, t * z, (SIDE - 8) * z, (t + 48) * z, 12 * z, ground);
+    }
+    U32 ink = tok(tokens.INK);
+    U32 sub = tok(tokens.INK_DIM);
+    U32 sc = color(p);
+    if (on) {
+        ink = tok(tokens.ON_FILL);
+        sub = ink;
+        sc = ink;
+    }
+    if (usable[p] == 0) {
+        ink = dim(ink, ground);
+        sc = dim(sc, ground);
+    }
+    symbol(row, y, 20 * z, (t + 16) * z, p, z, sc);
+    I64 fn = figure_text(tx_buf, p);
+    I64 f = faces.BODY;
+    if (on) { f = faces.NAME_BOLD; }
+    words();
+    I64 a = part_at[p];
+    I64 nl = part_at[p + 1] - a;
+    Bool spark = p <= NET && usable[p] == 1;
+    I64 tx1 = (SIDE - 16) * z;         // a row with no graph gives its words the width
+    if (spark) { tx1 = 138 * z; }
+    if (fn == 0) {
+        _ = ctext.text(row, y, 46 * z, (t + 29) * z, tx1, part_words[a..a + nl], nl, ink, f, z);
+    } else {
+        _ = ctext.text(row, y, 46 * z, (t + 20) * z, tx1, part_words[a..a + nl], nl, ink, f, z);
+        _ = ctext.text(row, y, 46 * z, (t + 37) * z, tx1, tx_buf, fn, sub, faces.SHORTCUT, z);
+    }
+    if (spark) {
+        graph(row, y, 140 * z, (t + 13) * z, 56, 22, p, SPARK, z, sc, SPARK_WASH);
+    }
+}
+
+// Row y (device) of the right side's head: the name, what it is, the wheel and the figure.
+void head_row(inout U32[_] row, I64 y, I64 z) {
+    words();
+    I64 a = part_at[sel];
+    I64 nl = part_at[sel + 1] - a;
+    U32 ink = tok(tokens.INK);
+    if (narrow()) {
+        shape.rounded(row, y, cx0() * z, 20 * z, (cx0() + 28) * z, 48 * z, 6 * z, tok(tokens.SURF1));
+        stroke.path_row(row, y, (cx0() + 6) * z, 26 * z, z, 1, sym_side, 5, 24, ink);
+    }
+    _ = ctext.text(row, y, title_x() * z, 39 * z, cx1() * z, part_words[a..a + nl], nl, ink, faces.TITLE, z);
+    I64 wn = what_text(tx_buf, sel);
+    if (wn > 0) { _ = text_r(row, y, cx1() * z, 37 * z, tx_buf, wn, tok(tokens.INK_DIM), faces.BODY, z); }
+    I64 share = -1;
+    if (sel == CPU) { share = figure[CPU]; }
+    if (sel == MEM) { share = figure[MEM]; }
+    if (sel == DISK && cap > 0 && cap_free >= 0) { share = (cap - cap_free) * 1000 / cap; }
+    I64 fx = cx0();
+    if (share >= 0) {
+        wheel.part_row(row, y, cx0() * z, 60 * z, 192, z, tokens.theme(), (share + 5) / 10, color(sel));
+        fx = cx0() + 62;
+    }
+    I64 fn = large_text(tx_buf);
+    if (fn > 0) { _ = apptext.text(row, y, fx * z, 95 * z, cx1() * z, tx_buf, fn, ink, appfaces.FIGURE_LARGE, z); }
+}
+
+// Row y (device) of the minute's graph, its labels on top, laid inside its rounded box.
+void graph_row(inout U32[_] row, I64 y, I64 z) {
+    I64 gx0 = cx0() * z;
+    I64 gx1 = cx1() * z;
+    I64 gh_ = graph_h();
+    I64 gy0 = 124 * z;
+    I64 gy1 = (124 + gh_) * z;
+    if (y < gy0 || y >= gy1) { return; }
+    for x in gx0..gx1 {
+        keep[x] = row[x];
+        scr[x] = tok(tokens.MANTLE);
+        mask[x] = 0;
+    }
+    for k in 1..4 {
+        if (y == gy0 + gh_ * k / 4 * z) {
+            for x in gx0..gx1 { scr[x] = tok(tokens.SURF1); }
+        }
+    }
+    I64 grw = cx1() - cx0();
+    graph(scr[0..gx1], y, gx0, gy0, grw, gh_, sel, HIST, z, color(sel), WASH);
+    U32 sub = tok(tokens.INK_DIM);
+    if (sel == CPU || sel == MEM) {
+        _ = ctext.text(scr[0..gx1], y, gx0 + 10 * z, gy0 + 17 * z, gx1, b"100%", 4, sub, faces.SHORTCUT, z);
+    } else {
+        I64 n = rate_text(tx_buf, scale(sel));
+        _ = ctext.text(scr[0..gx1], y, gx0 + 10 * z, gy0 + 17 * z, gx1, tx_buf, n, sub, faces.SHORTCUT, z);
+    }
+    _ = ctext.text(scr[0..gx1], y, gx0 + 10 * z, gy0 + (gh_ - 10) * z, gx1, b"60 s", 4, sub, faces.SHORTCUT, z);
+    shape.rounded(mask, y, gx0, gy0, gx1, gy1, 8 * z, 0x0000ff00 as U32);
+    for x in gx0..gx1 {
+        I64 cov = ((mask[x] >> 8) & 255) as I64;
+        row[x] = blend.mix_px(keep[x], scr[x], cov * 256 / 255);
+    }
+}
+
+// Row y (device) of the facts: each a label over its value, 40 apart, a missing one closed up, wrapping by lay().
+void facts_row(inout U32[_] row, I64 y, I64 z) {
+    lay();
+    I64 t0 = facts_top();
+    if (y < t0 * z || y >= (t0 + 46 * f_lines) * z) { return; }
+    U8[16] l;
+    for k in 0..4 {
+        if (f_x[k] >= 0) {
+            I64 t = t0 + 46 * f_line[k];
+            if (y >= t * z && y < (t + 34) * z) {
+                I64 n = fact(k, l, tx_buf);
+                I64 x = f_x[k];
+                _ = ctext.text(row, y, x * z, (t + 9) * z, cx1() * z, l, fact_ln, tok(tokens.INK_DIM), faces.LABEL, z);
+                _ = apptext.text(row, y, x * z, (t + 30) * z, cx1() * z, tx_buf, n, tok(tokens.INK), appfaces.FACT, z);
+            }
+        }
+    }
+}
+
+void chevron(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 px, I64 z, Bool down, U32 c) {
+    if (down) { stroke.path_row(row, y, x0, y0, px * z, 10, chev_down, 2, 24, c); }
+    else { stroke.path_row(row, y, x0, y0, px * z, 10, chev_right, 2, 24, c); }
+}
+
+// Row y (device) of the list's line, its button, the columns' heads and the rows.
+void list_row(inout U32[_] row, I64 y, I64 z) {
+    I64 ht = head_top();
+    U32 ink = tok(tokens.INK);
+    U32 sub = tok(tokens.INK_DIM);
+    if (y >= ht * z && y < (ht + 32) * z) {
+        chevron(row, y, cx0() * z, (ht + 11) * z, 10, z, !folded, ink);
+        _ = ctext.text(row, y, (cx0() + 18) * z, (ht + 21) * z, cx1() * z, b"Processes", 9, ink, faces.NAME_BOLD, z);
+        I64 bx = cx1() - button_w();
+        U32 bg = tok(tokens.SURF1);
+        U32 bc = ink;
+        if (end_pid() < 0) { bc = dim(ink, bg); }
+        shape.rounded(row, y, bx * z, (ht + 2) * z, cx1() * z, (ht + 30) * z, 6 * z, bg);
+        _ = apptext.text(row, y, (bx + 12) * z, (ht + 20) * z, cx1() * z, b"End Process", 11, bc, appfaces.BUTTON, z);
+        return;
+    }
+    if (folded) { return; }
+    I64 ct = ht + 38;                  // the columns' heads
+    if (y >= ct * z && y < (ct + 24) * z) {
+        I64 base = (ct + 16) * z;
+        _ = ctext.text(row, y, cx0() * z, base, cx1() * z, b"NAME", 4, sub, faces.LABEL, z);
+        if (pid_shown()) { _ = text_r(row, y, col_r(0) * z, base, b"PID", 3, sub, faces.LABEL, z); }
+        for c in 1..3 {
+            I64 p = CPU;
+            if (c == 2) { p = MEM; }
+            I64 r = col_r(c);
+            U32 lc = sub;
+            if (p == sel) {
+                lc = ink;
+                chevron(row, y, (r - 8) * z, (ct + 8) * z, 8, z, true, ink);
+                r = r - 14;
+            }
+            I64 lx = 0;
+            if (c == 1) { lx = text_r(row, y, r * z, base, b"PROCESSOR", 9, lc, faces.LABEL, z); }
+            else { lx = text_r(row, y, r * z, base, b"MEMORY", 6, lc, faces.LABEL, z); }
+            I64 lw = ctext.width(b"PROCESSOR", 9, faces.LABEL, z);
+            if (c == 2) { lw = ctext.width(b"MEMORY", 6, faces.LABEL, z); }
+            I64 sx = r * z - lw - 12 * z;
+            if (y >= (ct + 9) * z && y < (ct + 15) * z) {
+                for x in sx..sx + 6 * z { row[x] = color(p); }
+            }
+        }
+        _ = text_r(row, y, col_r(3) * z, base, b"GRANTS", 6, sub, faces.LABEL, z);
+        return;
+    }
+    I64 lt = list_top();
+    if (y < lt * z) { return; }
+    I64 i = scroll + (y / z - lt) / PITCH;
+    I64 t = lt + (i - scroll) * PITCH;
+    if (i >= n_p || y >= (t + 28) * z) { return; }
+    I64 r = order[i];
+    Bool on = p_pid[r] == pick;
+    U32 ground = tok(tokens.PAPER);
+    U32 c = ink;
+    U32 cs = sub;
+    if (on) {
+        ground = tok(tokens.FILL);
+        c = tok(tokens.ON_FILL);
+        cs = c;
+        shape.rounded(row, y, (cx0() - 12) * z, t * z, (cx1() + 12) * z, (t + 28) * z, 14 * z, ground);
+    }
+    I64 nn = proc_name(tx_buf, i);
+    icons3.icon_at(row, y, cx0() * z, (t + 6) * z, name_icon, 16, z, ground);
+    _ = ctext.text(row, y, (cx0() + 26) * z, (t + 19) * z, name_end() * z, tx_buf, nn, c, faces.BODY, z);
+    I64 n = 0;
+    if (pid_shown()) {
+        n = put_num(tx_buf, 0, p_pid[r]);
+        _ = text_r(row, y, col_r(0) * z, (t + 18) * z, tx_buf, n, cs, faces.PATH, z);
+    }
+    if (p_share[r] >= 0) {
+        n = share_text(tx_buf, p_share[r], true);
+        _ = text_r(row, y, col_r(1) * z, (t + 18) * z, tx_buf, n, c, faces.PATH, z);
+    }
+    n = size_text(tx_buf, p_bytes[r]);
+    _ = text_r(row, y, col_r(2) * z, (t + 18) * z, tx_buf, n, c, faces.PATH, z);
+    I64 gx = col_r(3);
+    I64 gr = p_grants[r];
+    for k in 0..3 {
+        I64 bit = GRANT_AUDIO;             // drawn from the right: audio, network, disk
+        if (k == 1) { bit = GRANT_NET; }
+        if (k == 2) { bit = GRANT_DISK; }
+        if ((gr & bit) != 0) {
+            gx = gx - 16;
+            if (bit == GRANT_DISK) { stroke.path_row(row, y, gx * z, (t + 6) * z, z, 1, sym_disk, 26, 24, cs); }
+            if (bit == GRANT_NET) { stroke.path_row(row, y, gx * z, (t + 6) * z, z, 1, sym_net, 40, 24, cs); }
+            if (bit == GRANT_AUDIO) { stroke.path_row(row, y, gx * z, (t + 6) * z, z, 1, sym_audio, 16, 24, cs); }
+            gx = gx - 8;
+        }
+    }
+}
+
+// The list's scroll thumb, when it holds more than it shows.
+void thumb_row(inout U32[_] row, I64 y, I64 z) {
+    I64 vis = whole_rows();
+    if (folded || n_p <= vis || !rows_seen()) { return; }
+    I64 t0 = list_top() + 4;
+    I64 th = bh - 4 - t0;
+    I64 hh = th * vis / n_p;
+    if (hh < 24) { hh = 24; }
+    I64 most = n_p - vis;
+    I64 top = t0 + (th - hh) * scroll / most;
+    if (y < top * z || y >= (top + hh) * z) { return; }
+    I64 x0 = (bw - 8) * z;
+    I64 x1 = (bw - 4) * z;
+    for x in x0..x1 { scr[x] = row[x]; }
+    shape.rounded(scr, y, x0, top * z, x1, (top + hh) * z, 2 * z, tok(tokens.INK_DIM));
+    for x in x0..x1 { row[x] = blend.mix_px(row[x], scr[x], THUMB); }
+}
+
+// Row y (device) of the body at zoom z: (bw * z) pixels. The narrow form's open sidebar lies over the page.
+export void row_at(inout U32[_] row, I64 y, I64 z) {
+    I64 n = bw * z;
+    if (n > len(row)) { return; }
+    U32 g = tok(tokens.PAPER);
+    for x in pane_x0() * z..n { row[x] = g; }
+    if (!narrow()) { side_row(row, y, z); }
+    if (y >= 20 * z && y < bh * z) {
+        if (y < 108 * z) {
+            head_row(row, y, z);
+        } else {
+            if (sel <= NET) { graph_row(row, y, z); }
+            facts_row(row, y, z);
+            if (listed()) {
+                list_row(row, y, z);
+                thumb_row(row, y, z);
+            }
+        }
+    }
+    if (narrow() && side_open) {
+        I64 th = tokens.theme();
+        I64 sd = shade.reach_side(SHADOW, th, z);
+        shade.shade_row(row, 0, min(SIDE * z + sd, n), y, 0, 0 - 64 * z, SIDE * z, (bh + 64) * z, 1, SHADOW, th, z);
+        side_row(row, y, z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

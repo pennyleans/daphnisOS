@@ -1,0 +1,89 @@
+// user/ci/ccalc.ci: ccalc [EXPR...] (docs/specs/2026-11-07-bp-basics.md section 3, BP-1): the calculator. Integers
+// are checked; decimals are fixed point (user/ci/core/calc.ci over core/dec.ci, the arithmetic Calc's window shares,
+// RS-CALC) and shown as what they are: a result cut to `scale`
+// digits is printed with a leading `~`. With operands, they are one expression, joined by spaces; without, each line
+// of descriptor 0 is one, after a `> ` prompt on a terminal. `NAME = EXPR` and `scale = N` hold and print nothing;
+// `hex EXPR` prints an integer in hex. Errors are lines of their own; the status is 1 if any line failed.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.kit.appmenu;   // AM-3: the app menu's About
+import user.ci.kit.ondesk;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.line;
+import user.ci.core.calc;
+
+U8[65536] src;
+I64 n = 0;
+Bool bad = false;     // a line failed
+U8[64] said;
+
+// One expression, statement or assignment in src[0..n), through core/calc.ci: a value or a hex value on descriptor 1,
+// a failure's words on descriptor 2.
+void run() {
+    I64 r = calc.line(src, n);
+    I64 k = 0;
+    if (r == calc.VALUE) {
+        k = calc.value_text(calc.m(), calc.s(), calc.marked(), said);
+    } else if (r == calc.HEX) {
+        k = calc.hex_text(calc.hex_value(), said);
+    } else if (r < 0) {
+        bad = true;
+        put.flush();
+        msg.begin();
+        if (r == calc.E_NAME) {
+            msg.text(b"unknown name ");
+            msg.text(src[calc.name_from()..calc.name_to()]);
+        } else {
+            msg.text(said[0..calc.error_text(r, said)]);
+        }
+        msg.send();
+        return;
+    }
+    if (k > 0) {
+        put.bytes(said[0..k]);
+        put.byte('\n');
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"ccalc");
+    if (ondesk.on_desk()) {            // AM-3: About in the app menu (OSC 7770 on descriptor 2), only in a desk terminal
+        U8[200] am_o;
+        I64 am_n = appmenu.osc_about(am_o, b"Calc", b"0.1.0", b"A calculator for the terminal: exact integers and decimals, one expression a line.");
+        I64 am_w = shctl.fd_write(2, am_o[0..am_n]);
+    }
+    if (len(a) > 0) {
+        n = 0;
+        for i in 0..len(a) - 1 {      // the last NUL ends the last operand; the others join them with spaces
+            if (n == len(src)) { msg.limit(b"LINE_MAX"); }
+            if (a[i] == 0) { src[n] = ' '; } else { src[n] = a[i]; }
+            n = n + 1;
+        }
+        run();
+        if (bad) { msg.status_one(); }
+        msg.finish();
+    }
+    U8[64] tio;
+    Bool tty = shctl.sh_tcget(0, tio) > 0;
+    line.begin(0);
+    Bool more = true;
+    while (more) {
+        if (tty) {
+            put.bytes(b"> ");
+            put.flush();
+        }
+        I64 k = line.next(src);
+        if (k < 0) {
+            more = false;
+        } else {
+            n = k;
+            run();
+            put.flush();
+        }
+    }
+    if (tty) { put.byte('\n'); }
+    if (bad) { msg.status_one(); }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

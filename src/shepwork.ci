@@ -1,0 +1,73 @@
+// src/shepwork.ci: the pure part of the K4.5 network, so that the kernel and the hosted twin
+// (tests/shep_twin.ci) run the same code. No externs.
+//
+// The network: task 1 and task 2 each send ROUNDS values, one SHA-256 round apiece, on their
+// own channel; task 3 receives them and folds them into a number. Every task logs what it did
+// as events (kind, value); the root is the SHA-256 of the events of the three logs in the order
+// (task, sequence number). Nothing in an event or in the root depends on when a turn ended.
+
+import src.sha256;
+import src.taskwork;
+
+export const I64 ROUNDS = 24;
+export const I64 KIND_SENT = 1;
+export const I64 KIND_RECV = 2;
+export const I64 KIND_TOTAL = 3;
+
+// The fold of the receiver: depends on the order of the values.
+export I64 fold(I64 acc, I64 v) {
+    return (acc * 31 + v) % 1000003;
+}
+
+// Writes v (v >= 0) little endian in `width` bytes at buf[off ..].
+export void put_le[n](inout U8[n] buf, I64 off, I64 v, I64 width) {
+    I64 x = v;
+    for k in 0..width {
+        buf[off + k] = (x % 256) as U8;
+        x = x / 256;
+    }
+}
+
+// Adds one event to a root: task (1 byte), sequence number (2), kind (1), value (8).
+export void root_event(inout sha256.Sha256[_] s, I64 task, I64 seq, I64 kind, I64 v) {
+    U8[12] b;
+    put_le(b, 0, task, 1);
+    put_le(b, 1, seq, 2);
+    put_le(b, 3, kind, 1);
+    put_le(b, 4, v, 8);
+    sha256.sha_update(s, b, 0, 12);
+}
+
+// The root of the network run one task after the other, with no scheduler: the value every
+// schedule of the kernel's network 0 must give. Task numbers in events are 0 based.
+export void reference_root(inout U8[32] d) {
+    sha256.Sha256[1] s;
+    U8[64] block;
+    U8[32] h;
+    I64[ROUNDS] v1;
+    I64[ROUNDS] v2;
+    I64 acc = 0;
+    I64 seq = 0;
+    sha256.sha_init(s);
+    taskwork.init_block(1, block);
+    for r in 0..ROUNDS {
+        v1[r] = taskwork.round(block, h);
+        root_event(s, 0, r, KIND_SENT, v1[r]);
+    }
+    taskwork.init_block(2, block);
+    for r in 0..ROUNDS {
+        v2[r] = taskwork.round(block, h);
+        root_event(s, 1, r, KIND_SENT, v2[r]);
+    }
+    for r in 0..ROUNDS {
+        acc = fold(acc, v1[r]);
+        root_event(s, 2, seq, KIND_RECV, v1[r]);
+        seq += 1;
+        acc = fold(acc, v2[r]);
+        root_event(s, 2, seq, KIND_RECV, v2[r]);
+        seq += 1;
+    }
+    root_event(s, 2, seq, KIND_TOTAL, acc);
+    sha256.sha_final(s, d);
+}
+// SPDX-License-Identifier: Apache-2.0

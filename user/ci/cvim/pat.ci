@@ -1,0 +1,899 @@
+// user/ci/cvim/pat.ci: Vim's patterns for :s, :g and :v (CV-4b), the 'magic' syntax of Vim 9.1 on one line of code
+// points, matched in linear time: parsed into a tree, compiled to a Thompson program and run as a Pike VM, so the
+// leftmost match wins and, among its alternatives, the one Vim's backtracking engine prefers (greedy multis first,
+// \{-} last), with \( \) groups 1 to 9 for the replacement. The core set's re.ci (CT-3) is the same machine for grep;
+// it keeps no positions or groups and ends the tool on an error, so cvim keeps its own, and an error here is a code.
+//
+// The syntax taken: literal characters; . [] [^] with ranges, [:class:] and \e \t \r \b \\ \] \^ \- inside; * \+ \=
+// \? \{n,m} \{n} \{n,} \{,m} \{} and \{-...}; \( \) \%( \) \|; ^ at a branch's start, $ at its end; \< \>; \s \S \d
+// \D \w \W \a \A \l \L \u \U \x \X \o \O \h \H \k \K \i \I; \e \t \r \b; ~ (the last replacement); \c \C. Anything
+// else is refused by name (`not in cvim: \v`), multi-line matching (\n, \_x) among them. Case folding is ASCII and
+// Latin-1. Pure: every table is the caller's pt (TABLE words).
+
+export const I64 TABLE = 368640;
+
+export const I64 OK = 0;
+export const I64 E_PAREN_OPEN = -1;    // E54: Unmatched \(
+export const I64 E_PAREN_CLOSE = -2;   // E55: Unmatched \)
+export const I64 E_NOTHING = -3;       // E64: \+ follows nothing (and \= \? \{)
+export const I64 E_NESTED = -4;        // E61: Nested *
+export const I64 E_BRACE = -5;         // E554: Syntax error in \{...}
+export const I64 E_TOO_BIG = -6;       // the pattern's program is past the table
+export const I64 E_NOT_CVIM = -7;      // not in cvim: the two characters at err_at
+export const I64 E_TILDE = -8;         // E33: No previous substitute regular expression
+export const I64 E_GROUPS = -9;        // E51: Too many \(
+
+// the header
+const I64 H_NODES = 0;
+const I64 H_PROG = 1;
+const I64 H_ICASE = 2;
+const I64 H_GROUPS = 3;
+const I64 H_LINE_N = 4;
+const I64 H_AT = 5;
+const I64 H_PN = 6;
+const I64 H_CLS = 7;
+const I64 H_ERR_AT = 8;
+const I64 H_TILDE_N = 9;
+const I64 H_GEN = 10;
+const I64 H_FORCE = 11;      // \c: 1, \C: 2
+const I64 H_CSTART = 14;     // the class being parsed starts here
+export const I64 CAP = 64;   // the match: CAP + 2k and CAP + 2k + 1, group k's start and end (code point indexes)
+const I64 CAPS = 20;
+
+const I64 N0 = 128;          // nodes, 6 words: kind, a, b, min, max, greedy
+const I64 NODES = 2048;
+const I64 C0 = 12416;        // classes: negated, ranges, then lo, hi a range
+const I64 C_MAX = 8192;
+const I64 PR0 = 20608;       // the program, 3 words: op, x, y
+export const I64 PROG = 4096;
+const I64 L0 = 32896;        // the line's code points
+export const I64 LMAX = 65536;
+const I64 LB0 = 98432;       // the byte offset of each code point, and the line's length after them
+const I64 LA = 164096;       // the two thread lists, 21 words a thread: pc, then the captures
+const I64 LB = 250112;
+const I64 MK = 336128;       // the generation a pc was last added to a list in
+const I64 ST = 340224;       // the closure's stack, 3 words an entry
+const I64 CW = 364800;       // the captures of the path the closure is on
+const I64 PP0 = 364832;      // the pattern's code points
+const I64 PMAX = 1024;
+const I64 TL0 = 365856;      // ~: the last replacement's code points
+const I64 TMAX = 1024;
+const I64 TW = 21;
+
+const I64 N_LIT = 1;
+const I64 N_ANY = 2;
+const I64 N_CLS = 3;
+const I64 N_BOL = 4;
+const I64 N_EOL = 5;
+const I64 N_BOW = 6;
+const I64 N_EOW = 7;
+const I64 N_CAT = 8;
+const I64 N_ALT = 9;
+const I64 N_REP = 10;
+const I64 N_GROUP = 11;
+const I64 N_EMPTY = 12;
+
+const I64 I_CHAR = 1;
+const I64 I_ANY = 2;
+const I64 I_CLS = 3;
+const I64 I_ASSERT = 4;      // x: N_BOL, N_EOL, N_BOW or N_EOW
+const I64 I_SPLIT = 5;       // x first, then y
+const I64 I_JMP = 6;
+const I64 I_SAVE = 7;
+const I64 I_MATCH = 8;
+
+// --- characters ---
+
+export I64 fold(I64 c) {
+    if (c >= 'A' && c <= 'Z') { return c + 32; }
+    if (c >= 192 && c <= 222 && c != 215) { return c + 32; }
+    return c;
+}
+
+I64 upper_of(I64 c) {
+    if (c >= 'a' && c <= 'z') { return c - 32; }
+    if (c >= 224 && c <= 254 && c != 247) { return c - 32; }
+    return c;
+}
+
+export Bool is_upper(I64 c) { return (c >= 'A' && c <= 'Z') || (c >= 192 && c <= 222 && c != 215); }
+
+// Vim's 'iskeyword' default, @,48-57,_,192-255, and a multibyte character a word character unless it is
+// punctuation or space.
+export Bool word_char(I64 c) {
+    if (c < 0) { return false; }
+    if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') { return true; }
+    if (c < 192) { return false; }
+    if (c == 215 || c == 247) { return false; }
+    if (c >= 0x2000 && c <= 0x206F) { return false; }
+    if (c >= 0x3000 && c <= 0x303F) { return false; }
+    return true;
+}
+
+// The named classes \s \d \w \a \l \u \x \o \h \k \i as a test of c (their upper-case forms negate).
+Bool named(I64 k, I64 c) {
+    if (k == 's') { return c == ' ' || c == 9; }
+    if (k == 'd') { return c >= '0' && c <= '9'; }
+    if (k == 'w') { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+    if (k == 'a') { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+    if (k == 'l') { return c >= 'a' && c <= 'z'; }
+    if (k == 'u') { return c >= 'A' && c <= 'Z'; }
+    if (k == 'x') { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+    if (k == 'o') { return c >= '0' && c <= '7'; }
+    if (k == 'h') { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+    if (k == 'k' || k == 'i') { return word_char(c); }
+    return false;
+}
+
+// --- the line ---
+
+// The line's bytes s decoded into code points (a bad byte is itself); false when it is longer than LMAX.
+export Bool load_line(inout I64[_] pt, in U8[_] s) {
+    I64 n = 0;
+    I64 i = 0;
+    while (i < len(s)) {
+        if (n >= LMAX) { return false; }
+        I64 b = s[i] as I64;
+        I64 c = b;
+        I64 k = 1;
+        if (b >= 0xC2 && b <= 0xDF) { k = 2; c = b & 31; }
+        else if (b >= 0xE0 && b <= 0xEF) { k = 3; c = b & 15; }
+        else if (b >= 0xF0 && b <= 0xF4) { k = 4; c = b & 7; }
+        if (i + k > len(s)) { k = 1; c = b; }
+        Bool good = true;
+        for j in 1..k {
+            if (((s[i + j] as I64) & 192) != 128) { good = false; }
+        }
+        if (!good) { k = 1; c = b; }
+        if (k > 1) {
+            for j in 1..k { c = c * 64 + ((s[i + j] as I64) & 63); }
+        }
+        pt[L0 + n] = c;
+        pt[LB0 + n] = i;
+        n += 1;
+        i += k;
+    }
+    pt[LB0 + n] = len(s);
+    pt[H_LINE_N] = n;
+    return true;
+}
+
+export I64 line_n(in I64[_] pt) { return pt[H_LINE_N]; }
+export I64 cp_at(in I64[_] pt, I64 i) { return pt[L0 + i]; }
+// The byte offset of code point i of the line (i == line_n: its length).
+export I64 byte_at(in I64[_] pt, I64 i) { return pt[LB0 + i]; }
+export I64 err_at(in I64[_] pt) { return pt[H_ERR_AT]; }
+
+// ~'s text: the last replacement's bytes, or none.
+export void set_tilde(inout I64[_] pt, in U8[_] s, Bool have) {
+    I64 n = 0;
+    if (have) {
+        for i in 0..min(len(s), TMAX) {
+            pt[TL0 + n] = s[i] as I64;
+            n += 1;
+        }
+    } else {
+        n = -1;
+    }
+    pt[H_TILDE_N] = n;
+}
+
+// --- the parser ---
+
+I64 node(inout I64[_] pt, I64 k, I64 a, I64 b) {
+    I64 n = pt[H_NODES];
+    if (n >= NODES) { return E_TOO_BIG; }
+    I64 o = N0 + 6 * n;
+    pt[o] = k;
+    pt[o + 1] = a;
+    pt[o + 2] = b;
+    pt[o + 3] = 0;
+    pt[o + 4] = 0;
+    pt[o + 5] = 1;
+    pt[H_NODES] = n + 1;
+    return n;
+}
+
+I64 peek(in I64[_] pt, I64 d) {
+    I64 at = pt[H_AT] + d;
+    if (at >= pt[H_PN]) { return -1; }
+    return pt[PP0 + at];
+}
+
+void skip(inout I64[_] pt, I64 d) { pt[H_AT] += d; }
+
+// "\x" next, as two code points.
+Bool esc_is(in I64[_] pt, I64 c) { return peek(pt, 0) == '\\' && peek(pt, 1) == c; }
+
+I64 not_cvim(inout I64[_] pt) {
+    pt[H_ERR_AT] = pt[H_AT];
+    return E_NOT_CVIM;
+}
+
+// A class's range lo to hi.
+Bool cls_range(inout I64[_] pt, I64 lo, I64 hi) {
+    I64 c = pt[H_CLS];
+    I64 o = C0 + c;
+    if (c + 2 >= C_MAX) { return false; }
+    I64 start = pt[H_CSTART];
+    pt[o] = lo;
+    pt[o + 1] = hi;
+    pt[H_CLS] = c + 2;
+    pt[C0 + start + 1] += 1;
+    return true;
+}
+
+Bool cls_named(inout I64[_] pt, I64 k) {
+    if (k == 'd') { return cls_range(pt, '0', '9'); }
+    if (k == 'l') { return cls_range(pt, 'a', 'z'); }
+    if (k == 'u') { return cls_range(pt, 'A', 'Z'); }
+    if (k == 'a') { return cls_range(pt, 'a', 'z') && cls_range(pt, 'A', 'Z'); }
+    if (k == 'w') { return cls_range(pt, 'a', 'z') && cls_range(pt, 'A', 'Z') && cls_range(pt, '0', '9'); }
+    if (k == 's') { return cls_range(pt, ' ', ' ') && cls_range(pt, 9, 9); }
+    if (k == 'x') { return cls_range(pt, '0', '9') && cls_range(pt, 'a', 'f') && cls_range(pt, 'A', 'F'); }
+    return false;
+}
+
+// [ at H_AT: the class node, or -1 when it has no closing ] (the [ is then a literal), or an error.
+I64 bracket(inout I64[_] pt) {
+    I64 at0 = pt[H_AT];
+    I64 e = at0 + 1;
+    if (e < pt[H_PN] && pt[PP0 + e] == '^') { e += 1; }
+    if (e < pt[H_PN] && pt[PP0 + e] == ']') { e += 1; }
+    Bool closed = false;
+    while (e < pt[H_PN] && !closed) {
+        I64 c = pt[PP0 + e];
+        if (c == ']') {
+            closed = true;
+        } else if (c == '\\' && e + 1 < pt[H_PN]) {
+            e += 2;
+        } else if (c == '[' && e + 1 < pt[H_PN] && pt[PP0 + e + 1] == ':') {
+            I64 q = e + 2;
+            while (q + 1 < pt[H_PN] && !(pt[PP0 + q] == ':' && pt[PP0 + q + 1] == ']')) { q += 1; }
+            if (q + 1 < pt[H_PN]) { e = q + 2; } else { e += 1; }
+        } else {
+            e += 1;
+        }
+    }
+    if (!closed) { return -1; }
+    I64 start = pt[H_CLS];
+    if (start + 2 >= C_MAX) { return E_TOO_BIG; }
+    pt[C0 + start] = 0;
+    pt[C0 + start + 1] = 0;
+    pt[H_CLS] = start + 2;
+    pt[H_CSTART] = start;
+    skip(pt, 1);
+    if (peek(pt, 0) == '^') {
+        pt[C0 + start] = 1;
+        skip(pt, 1);
+    }
+    Bool first = true;
+    while (pt[H_AT] < e) {
+        I64 c = peek(pt, 0);
+        I64 lo = c;
+        I64 used = 1;
+        if (c == '[' && peek(pt, 1) == ':') {
+            I64 q = pt[H_AT] + 2;
+            I64 nm = 0;
+            U8[12] w;
+            while (q < e && pt[PP0 + q] != ':' && nm < 12) {
+                w[nm] = pt[PP0 + q] as U8;
+                nm += 1;
+                q += 1;
+            }
+            if (q + 1 <= e && pt[PP0 + q] == ':' && pt[PP0 + q + 1] == ']') {
+                Bool ok = true;
+                if (same(w[0..nm], b"alpha")) { ok = cls_named(pt, 'a'); }
+                else if (same(w[0..nm], b"digit")) { ok = cls_named(pt, 'd'); }
+                else if (same(w[0..nm], b"alnum")) { ok = cls_named(pt, 'a') && cls_range(pt, '0', '9'); }
+                else if (same(w[0..nm], b"lower")) { ok = cls_named(pt, 'l'); }
+                else if (same(w[0..nm], b"upper")) { ok = cls_named(pt, 'u'); }
+                else if (same(w[0..nm], b"space")) { ok = cls_range(pt, 9, 13) && cls_range(pt, ' ', ' '); }
+                else if (same(w[0..nm], b"blank")) { ok = cls_named(pt, 's'); }
+                else if (same(w[0..nm], b"xdigit")) { ok = cls_named(pt, 'x'); }
+                else if (same(w[0..nm], b"punct")) {
+                    ok = cls_range(pt, 33, 47) && cls_range(pt, 58, 64) && cls_range(pt, 91, 96) && cls_range(pt, 123, 126);
+                }
+                else if (same(w[0..nm], b"cntrl")) { ok = cls_range(pt, 1, 31) && cls_range(pt, 127, 127); }
+                else if (same(w[0..nm], b"print")) { ok = cls_range(pt, 32, 126); }
+                else if (same(w[0..nm], b"graph")) { ok = cls_range(pt, 33, 126); }
+                else { return not_cvim(pt); }
+                if (!ok) { return E_TOO_BIG; }
+                pt[H_AT] = q + 2;
+                first = false;
+                continue;
+            }
+        }
+        if (c == '\\' && pt[H_AT] + 1 < e) {
+            I64 d = peek(pt, 1);
+            used = 2;
+            if (d == 'e') { lo = 27; }
+            else if (d == 't') { lo = 9; }
+            else if (d == 'r') { lo = 13; }
+            else if (d == 'b') { lo = 8; }
+            else if (d == '\\' || d == ']' || d == '^' || d == '-') { lo = d; }
+            else if (d == 'n') { return not_cvim(pt); }
+            else { lo = '\\'; used = 1; }   // Vim: a backslash before another character is itself
+        }
+        skip(pt, used);
+        I64 hi = lo;
+        if (peek(pt, 0) == '-' && pt[H_AT] + 1 < e) {
+            skip(pt, 1);
+            hi = peek(pt, 0);
+            I64 u2 = 1;
+            if (hi == '\\' && pt[H_AT] + 1 < e) {
+                I64 d = peek(pt, 1);
+                u2 = 2;
+                if (d == 'e') { hi = 27; } else if (d == 't') { hi = 9; } else if (d == 'r') { hi = 13; }
+                else if (d == 'b') { hi = 8; } else { hi = d; }
+            }
+            skip(pt, u2);
+            if (hi < lo) {
+                pt[H_ERR_AT] = pt[H_AT];
+                return E_NOT_CVIM;      // Vim's E944: Reverse range in character class
+            }
+        }
+        if (!cls_range(pt, lo, hi)) { return E_TOO_BIG; }
+        first = false;
+    }
+    skip(pt, 1);                       // the ]
+    return node(pt, N_CLS, start, 0);
+}
+
+Bool same(in U8[_] a, in U8[_] b) {
+    if (len(a) != len(b)) { return false; }
+    for i in 0..len(a) {
+        if (a[i] != b[i]) { return false; }
+    }
+    return true;
+}
+
+// A class made of a named test: \s and its kin as classes (negated for the upper-case form).
+I64 named_class(inout I64[_] pt, I64 k) {
+    I64 lk = k;
+    Bool neg = false;
+    if (k >= 'A' && k <= 'Z') {
+        lk = k + 32;
+        neg = true;
+    }
+    I64 start = pt[H_CLS];
+    if (start + 2 >= C_MAX) { return E_TOO_BIG; }
+    pt[C0 + start] = 2 + lk;        // 2 + the letter: a named test, its negation by the low bit of [start]'s sign
+    if (neg) { pt[C0 + start] = 0 - (2 + lk); }
+    pt[C0 + start + 1] = 0;
+    pt[H_CLS] = start + 2;
+    return node(pt, N_CLS, start, 0);
+}
+
+// One atom at H_AT; first: at a branch's start (^ and * are special there). -2 - k for a lone \c or \C dropped.
+I64 atom(inout I64[_] pt, Bool first) {
+    I64 c = peek(pt, 0);
+    if (c == '\\') {
+        I64 d = peek(pt, 1);
+        if (d == '(') {
+            skip(pt, 2);
+            I64 g = pt[H_GROUPS] + 1;
+            if (g > 9) { return E_GROUPS; }
+            pt[H_GROUPS] = g;
+            I64 in1 = alt(pt);
+            if (in1 < 0) { return in1; }
+            if (!esc_is(pt, ')')) { return E_PAREN_OPEN; }
+            skip(pt, 2);
+            return node(pt, N_GROUP, in1, g);
+        }
+        if (d == '%' && peek(pt, 2) == '(') {
+            skip(pt, 3);
+            I64 in2 = alt(pt);
+            if (in2 < 0) { return in2; }
+            if (!esc_is(pt, ')')) { return E_PAREN_OPEN; }
+            skip(pt, 2);
+            return in2;
+        }
+        if (d == '<' || d == '>') {
+            skip(pt, 2);
+            if (d == '<') { return node(pt, N_BOW, 0, 0); }
+            return node(pt, N_EOW, 0, 0);
+        }
+        if (d == 's' || d == 'S' || d == 'd' || d == 'D' || d == 'w' || d == 'W' || d == 'a' || d == 'A' ||
+            d == 'l' || d == 'L' || d == 'u' || d == 'U' || d == 'x' || d == 'X' || d == 'o' || d == 'O' ||
+            d == 'h' || d == 'H' || d == 'k' || d == 'K' || d == 'i' || d == 'I') {
+            skip(pt, 2);
+            return named_class(pt, d);
+        }
+        I64 lit = -1;
+        if (d == 'e') { lit = 27; }
+        else if (d == 't') { lit = 9; }
+        else if (d == 'r') { lit = 13; }
+        else if (d == 'b') { lit = 8; }
+        else if (d == '.' || d == '*' || d == '[' || d == ']' || d == '~' || d == '/' || d == '\\' || d == '^' ||
+                 d == '$' || d == '?' || d == '-') { lit = d; }
+        if (lit >= 0) {
+            skip(pt, 2);
+            return node(pt, N_LIT, lit, 0);
+        }
+        if (d == '+' || d == '=' || d == '{') { return E_NOTHING; }
+        if (d == -1) {
+            skip(pt, 1);
+            return node(pt, N_LIT, '\\', 0);      // a trailing backslash is itself (Vim's E10 aside)
+        }
+        return not_cvim(pt);
+    }
+    if (c == '.') {
+        skip(pt, 1);
+        return node(pt, N_ANY, 0, 0);
+    }
+    if (c == '[') {
+        I64 b = bracket(pt);
+        if (b != -1) { return b; }
+        skip(pt, 1);
+        return node(pt, N_LIT, '[', 0);
+    }
+    if (c == '~') {
+        skip(pt, 1);
+        I64 n = pt[H_TILDE_N];
+        if (n < 0) { return E_TILDE; }
+        I64 t = node(pt, N_EMPTY, 0, 0);
+        for i in 0..n {
+            I64 l = node(pt, N_LIT, pt[TL0 + i], 0);
+            if (l < 0) { return l; }
+            t = node(pt, N_CAT, t, l);
+            if (t < 0) { return t; }
+        }
+        return t;
+    }
+    if (c == '^' && first) {
+        skip(pt, 1);
+        return node(pt, N_BOL, 0, 0);
+    }
+    if (c == '$') {
+        I64 nx = peek(pt, 1);
+        Bool last = nx == -1 || (nx == '\\' && (peek(pt, 2) == '|' || peek(pt, 2) == ')'));
+        skip(pt, 1);
+        if (last) { return node(pt, N_EOL, 0, 0); }
+        return node(pt, N_LIT, '$', 0);
+    }
+    skip(pt, 1);
+    return node(pt, N_LIT, c, 0);
+}
+
+// A multi after atom a, if one follows.
+I64 multi(inout I64[_] pt, I64 a) {
+    I64 mn = -1;
+    I64 mx = -1;
+    Bool greedy = true;
+    if (peek(pt, 0) == '*') {
+        skip(pt, 1);
+        mn = 0;
+    } else if (esc_is(pt, '+')) {
+        skip(pt, 2);
+        mn = 1;
+    } else if (esc_is(pt, '=') || esc_is(pt, '?')) {
+        skip(pt, 2);
+        mn = 0;
+        mx = 1;
+    } else if (esc_is(pt, '{')) {
+        skip(pt, 2);
+        if (peek(pt, 0) == '-') {
+            greedy = false;
+            skip(pt, 1);
+        }
+        I64 lo = -1;
+        I64 hi = -1;
+        Bool comma = false;
+        while (peek(pt, 0) >= '0' && peek(pt, 0) <= '9') {
+            if (lo < 0) { lo = 0; }
+            lo = min(lo * 10 + peek(pt, 0) - '0', 100000);
+            skip(pt, 1);
+        }
+        if (peek(pt, 0) == ',') {
+            comma = true;
+            skip(pt, 1);
+            while (peek(pt, 0) >= '0' && peek(pt, 0) <= '9') {
+                if (hi < 0) { hi = 0; }
+                hi = min(hi * 10 + peek(pt, 0) - '0', 100000);
+                skip(pt, 1);
+            }
+        }
+        if (peek(pt, 0) == '\\') { skip(pt, 1); }
+        if (peek(pt, 0) != '}') { return E_BRACE; }
+        skip(pt, 1);
+        if (!comma) {
+            if (lo < 0) {
+                mn = 0;
+                mx = -1;
+            } else {
+                mn = lo;
+                mx = lo;
+            }
+        } else {
+            mn = max(lo, 0);
+            mx = hi;
+        }
+        if (mx >= 0 && mx < mn) {          // Vim swaps \{5,2}
+            I64 t = mn;
+            mn = mx;
+            mx = t;
+        }
+        if (mn > 255 || mx > 255) { return E_TOO_BIG; }
+    } else {
+        return a;
+    }
+    if (peek(pt, 0) == '*' || esc_is(pt, '+') || esc_is(pt, '=') || esc_is(pt, '?') || esc_is(pt, '{')) {
+        return E_NESTED;
+    }
+    I64 r = node(pt, N_REP, a, 0);
+    if (r < 0) { return r; }
+    pt[N0 + 6 * r + 3] = mn;
+    pt[N0 + 6 * r + 4] = mx;
+    pt[N0 + 6 * r + 5] = 0;
+    if (greedy) { pt[N0 + 6 * r + 5] = 1; }
+    return r;
+}
+
+// A branch: pieces up to \| or \) or the end.
+I64 branch(inout I64[_] pt) {
+    I64 t = node(pt, N_EMPTY, 0, 0);
+    Bool first = true;
+    while (pt[H_AT] < pt[H_PN] && !esc_is(pt, '|') && !esc_is(pt, ')')) {
+        if (esc_is(pt, 'c') || esc_is(pt, 'C')) {
+            if (peek(pt, 1) == 'c') { pt[H_FORCE] = 1; } else { pt[H_FORCE] = 2; }
+            skip(pt, 2);
+            continue;
+        }
+        if (first && peek(pt, 0) == '*') {         // * at a branch's start is itself
+            skip(pt, 1);
+            I64 l0 = node(pt, N_LIT, '*', 0);
+            if (l0 < 0) { return l0; }
+            I64 m0 = multi(pt, l0);
+            if (m0 < 0) { return m0; }
+            t = node(pt, N_CAT, t, m0);
+            if (t < 0) { return t; }
+            first = false;
+            continue;
+        }
+        Bool caret = first && peek(pt, 0) == '^';
+        I64 a = atom(pt, first);
+        if (a < 0) { return a; }
+        if (caret && peek(pt, 0) == '*') {         // ^* : the * is a literal
+            skip(pt, 1);
+            I64 l1 = node(pt, N_LIT, '*', 0);
+            if (l1 < 0) { return l1; }
+            t = node(pt, N_CAT, t, a);
+            if (t < 0) { return t; }
+            I64 m1 = multi(pt, l1);
+            if (m1 < 0) { return m1; }
+            t = node(pt, N_CAT, t, m1);
+            if (t < 0) { return t; }
+            first = false;
+            continue;
+        }
+        I64 m = a;
+        if (!caret) { m = multi(pt, a); }
+        if (m < 0) { return m; }
+        t = node(pt, N_CAT, t, m);
+        if (t < 0) { return t; }
+        first = false;
+    }
+    return t;
+}
+
+I64 alt(inout I64[_] pt) {
+    I64 t = branch(pt);
+    if (t < 0) { return t; }
+    while (esc_is(pt, '|')) {
+        skip(pt, 2);
+        I64 b = branch(pt);
+        if (b < 0) { return b; }
+        t = node(pt, N_ALT, t, b);
+        if (t < 0) { return t; }
+    }
+    return t;
+}
+
+// --- the program ---
+
+I64 emit(inout I64[_] pt, I64 op, I64 x, I64 y) {
+    I64 n = pt[H_PROG];
+    if (n >= PROG) { return -1; }
+    pt[PR0 + 3 * n] = op;
+    pt[PR0 + 3 * n + 1] = x;
+    pt[PR0 + 3 * n + 2] = y;
+    pt[H_PROG] = n + 1;
+    return n;
+}
+
+Bool gen(inout I64[_] pt, I64 nd) {
+    I64 o = N0 + 6 * nd;
+    I64 k = pt[o];
+    if (k == N_EMPTY) { return true; }
+    if (k == N_LIT) { return emit(pt, I_CHAR, pt[o + 1], 0) >= 0; }
+    if (k == N_ANY) { return emit(pt, I_ANY, 0, 0) >= 0; }
+    if (k == N_CLS) { return emit(pt, I_CLS, pt[o + 1], 0) >= 0; }
+    if (k == N_BOL || k == N_EOL || k == N_BOW || k == N_EOW) { return emit(pt, I_ASSERT, k, 0) >= 0; }
+    if (k == N_CAT) { return gen(pt, pt[o + 1]) && gen(pt, pt[o + 2]); }
+    if (k == N_GROUP) {
+        I64 g = pt[o + 2];
+        return emit(pt, I_SAVE, 2 * g, 0) >= 0 && gen(pt, pt[o + 1]) && emit(pt, I_SAVE, 2 * g + 1, 0) >= 0;
+    }
+    if (k == N_ALT) {
+        I64 s = emit(pt, I_SPLIT, 0, 0);
+        if (s < 0) { return false; }
+        pt[PR0 + 3 * s + 1] = s + 1;
+        if (!gen(pt, pt[o + 1])) { return false; }
+        I64 j = emit(pt, I_JMP, 0, 0);
+        if (j < 0) { return false; }
+        pt[PR0 + 3 * s + 2] = pt[H_PROG];
+        if (!gen(pt, pt[o + 2])) { return false; }
+        pt[PR0 + 3 * j + 1] = pt[H_PROG];
+        return true;
+    }
+    if (k == N_REP) {
+        I64 a = pt[o + 1];
+        I64 mn = pt[o + 3];
+        I64 mx = pt[o + 4];
+        Bool greedy = pt[o + 5] != 0;
+        for i in 0..mn {
+            if (!gen(pt, a)) { return false; }
+        }
+        if (mx < 0) {
+            I64 s = emit(pt, I_SPLIT, 0, 0);
+            if (s < 0) { return false; }
+            if (!gen(pt, a)) { return false; }
+            if (emit(pt, I_JMP, s, 0) < 0) { return false; }
+            I64 to_out = pt[H_PROG];
+            if (greedy) {
+                pt[PR0 + 3 * s + 1] = s + 1;
+                pt[PR0 + 3 * s + 2] = to_out;
+            } else {
+                pt[PR0 + 3 * s + 1] = to_out;
+                pt[PR0 + 3 * s + 2] = s + 1;
+            }
+            return true;
+        }
+        I64 first_split = pt[H_PROG];
+        I64 opt = mx - mn;
+        I64[256] splits;
+        for i in 0..opt {
+            I64 s = emit(pt, I_SPLIT, 0, 0);
+            if (s < 0) { return false; }
+            splits[i] = s;
+            if (!gen(pt, a)) { return false; }
+        }
+        I64 to_out = pt[H_PROG];
+        for i in 0..opt {
+            I64 s = splits[i];
+            if (greedy) {
+                pt[PR0 + 3 * s + 1] = s + 1;
+                pt[PR0 + 3 * s + 2] = to_out;
+            } else {
+                pt[PR0 + 3 * s + 1] = to_out;
+                pt[PR0 + 3 * s + 2] = s + 1;
+            }
+        }
+        return first_split >= 0;
+    }
+    return false;
+}
+
+// Pattern p (bytes) compiled; ignorecase and smartcase as the options say (smartcase: an upper-case letter in the
+// pattern makes it match case), force: 1 for :s's i flag, 2 for I, 0 for neither. OK or an error.
+export I64 compile(inout I64[_] pt, in U8[_] p, Bool ignorecase, Bool smartcase, I64 force) {
+    pt[H_NODES] = 0;
+    pt[H_PROG] = 0;
+    pt[H_GROUPS] = 0;
+    pt[H_CLS] = 0;
+    pt[H_AT] = 0;
+    pt[H_ERR_AT] = 0;
+    pt[H_FORCE] = 0;
+    I64 n = 0;
+    I64 i = 0;
+    while (i < len(p)) {
+        if (n >= PMAX) { return E_TOO_BIG; }
+        I64 b = p[i] as I64;
+        I64 c = b;
+        I64 k = 1;
+        if (b >= 0xC2 && b <= 0xDF) { k = 2; c = b & 31; }
+        else if (b >= 0xE0 && b <= 0xEF) { k = 3; c = b & 15; }
+        else if (b >= 0xF0 && b <= 0xF4) { k = 4; c = b & 7; }
+        if (i + k > len(p)) { k = 1; c = b; }
+        if (k > 1) {
+            for j in 1..k { c = c * 64 + ((p[i + j] as I64) & 63); }
+        }
+        pt[PP0 + n] = c;
+        n += 1;
+        i += k;
+    }
+    pt[H_PN] = n;
+    I64 t = alt(pt);
+    if (t < 0) { return t; }
+    if (pt[H_AT] < n) { return E_PAREN_CLOSE; }   // a \) with no \(
+    Bool ic = ignorecase;
+    if (ic && smartcase) {
+        I64 q = 0;
+        while (q < n) {
+            if (pt[PP0 + q] == '\\') {
+                q += 2;
+            } else {
+                if (is_upper(pt[PP0 + q])) { ic = false; }
+                q += 1;
+            }
+        }
+    }
+    if (force == 1) { ic = true; }
+    if (force == 2) { ic = false; }
+    if (pt[H_FORCE] == 1) { ic = true; }
+    if (pt[H_FORCE] == 2) { ic = false; }
+    pt[H_ICASE] = 0;
+    if (ic) { pt[H_ICASE] = 1; }
+    if (emit(pt, I_SAVE, 0, 0) < 0) { return E_TOO_BIG; }
+    if (!gen(pt, t)) { return E_TOO_BIG; }
+    if (emit(pt, I_SAVE, 1, 0) < 0 || emit(pt, I_MATCH, 0, 0) < 0) { return E_TOO_BIG; }
+    for k in 0..pt[H_PROG] { pt[MK + k] = -1; }
+    pt[H_GEN] = 0;
+    return OK;
+}
+
+export I64 groups(in I64[_] pt) { return pt[H_GROUPS]; }
+export Bool icase(in I64[_] pt) { return pt[H_ICASE] != 0; }
+
+// --- the machine ---
+
+Bool cls_has(in I64[_] pt, I64 off, I64 c) {
+    I64 h = pt[C0 + off];
+    if (h >= 2 || h <= -2) {
+        I64 k = h;
+        Bool neg = false;
+        if (k < 0) {
+            k = 0 - k;
+            neg = true;
+        }
+        return named(k - 2, c) != neg;
+    }
+    Bool in1 = false;
+    I64 n = pt[C0 + off + 1];
+    for i in 0..n {
+        I64 lo = pt[C0 + off + 2 + 2 * i];
+        I64 hi = pt[C0 + off + 3 + 2 * i];
+        if (c >= lo && c <= hi) { in1 = true; }
+        if (pt[H_ICASE] != 0) {
+            I64 f = fold(c);
+            I64 u2 = upper_of(c);
+            if ((f >= lo && f <= hi) || (u2 >= lo && u2 <= hi)) { in1 = true; }
+        }
+    }
+    return in1 != (h == 1);
+}
+
+Bool assert_at(in I64[_] pt, I64 k, I64 pos) {
+    I64 n = pt[H_LINE_N];
+    if (k == N_BOL) { return pos == 0; }
+    if (k == N_EOL) { return pos == n; }
+    I64 before = -1;
+    if (pos > 0) { before = pt[L0 + pos - 1]; }
+    I64 here = -1;
+    if (pos < n) { here = pt[L0 + pos]; }
+    if (k == N_BOW) { return word_char(here) && !word_char(before); }
+    return word_char(before) && !word_char(here);
+}
+
+// The closure of pc at pos into list l (base lb, count at the header slot hc), carrying the captures in CW.
+void add(inout I64[_] pt, I64 lb, I64 hc, I64 pc0, I64 pos, I64 g) {
+    I64 sp = 0;
+    pt[ST] = 0;
+    pt[ST + 1] = pc0;
+    pt[ST + 2] = 0;
+    sp = 1;
+    while (sp > 0) {
+        sp -= 1;
+        I64 kind = pt[ST + 3 * sp];
+        I64 a = pt[ST + 3 * sp + 1];
+        I64 b = pt[ST + 3 * sp + 2];
+        if (kind == 1) {
+            pt[CW + a] = b;            // a capture given back
+            continue;
+        }
+        I64 pc = a;
+        if (pt[MK + pc] == g) { continue; }
+        pt[MK + pc] = g;
+        I64 op = pt[PR0 + 3 * pc];
+        if (op == I_JMP) {
+            pt[ST + 3 * sp] = 0;
+            pt[ST + 3 * sp + 1] = pt[PR0 + 3 * pc + 1];
+            sp += 1;
+        } else if (op == I_SPLIT) {
+            pt[ST + 3 * sp] = 0;
+            pt[ST + 3 * sp + 1] = pt[PR0 + 3 * pc + 2];
+            pt[ST + 3 * sp + 3] = 0;
+            pt[ST + 3 * sp + 4] = pt[PR0 + 3 * pc + 1];
+            sp += 2;
+        } else if (op == I_SAVE) {
+            I64 slot = pt[PR0 + 3 * pc + 1];
+            pt[ST + 3 * sp] = 1;
+            pt[ST + 3 * sp + 1] = slot;
+            pt[ST + 3 * sp + 2] = pt[CW + slot];
+            pt[CW + slot] = pos;
+            pt[ST + 3 * sp + 3] = 0;
+            pt[ST + 3 * sp + 4] = pc + 1;
+            sp += 2;
+        } else if (op == I_ASSERT) {
+            if (assert_at(pt, pt[PR0 + 3 * pc + 1], pos)) {
+                pt[ST + 3 * sp] = 0;
+                pt[ST + 3 * sp + 1] = pc + 1;
+                sp += 1;
+            }
+        } else {
+            I64 t = pt[hc];
+            I64 o = lb + TW * t;
+            pt[o] = pc;
+            for k in 0..CAPS { pt[o + 1 + k] = pt[CW + k]; }
+            pt[hc] = t + 1;
+        }
+    }
+}
+
+Bool takes(in I64[_] pt, I64 pc, I64 c) {
+    I64 op = pt[PR0 + 3 * pc];
+    if (op == I_ANY) { return true; }
+    if (op == I_CHAR) {
+        I64 w = pt[PR0 + 3 * pc + 1];
+        if (w == c) { return true; }
+        return pt[H_ICASE] != 0 && fold(w) == fold(c);
+    }
+    if (op == I_CLS) { return cls_has(pt, pt[PR0 + 3 * pc + 1], c); }
+    return false;
+}
+
+// The leftmost match in the loaded line starting at from or later: true, its groups at CAP (code point indexes,
+// -1 for a group that took no part).
+export Bool exec(inout I64[_] pt, I64 from) {
+    I64 n = pt[H_LINE_N];
+    I64 hca = 12;                        // the lists' counts live in header slots 12 and 13
+    I64 hcb = 13;
+    I64 cl = LA;
+    I64 ch = hca;
+    I64 nl = LB;
+    I64 nh = hcb;
+    pt[ch] = 0;
+    Bool found = false;
+    I64 g = pt[H_GEN] + 1;              // generations only grow, so no pc's mark is reset between runs
+    I64 pos = from;
+    while (pos <= n) {
+        if (!found) {
+            for k in 0..CAPS { pt[CW + k] = -1; }
+            add(pt, cl, ch, 0, pos, g);
+        }
+        if (pt[ch] == 0) {
+            if (found) { break; }
+            pos += 1;
+            g += 1;
+            continue;
+        }
+        I64 c = -1;
+        if (pos < n) { c = pt[L0 + pos]; }
+        g += 1;
+        pt[nh] = 0;
+        for t in 0..pt[ch] {
+            I64 o = cl + TW * t;
+            I64 pc = pt[o];
+            if (pt[PR0 + 3 * pc] == I_MATCH) {
+                for k in 0..CAPS { pt[CAP + k] = pt[o + 1 + k]; }
+                found = true;
+                break;
+            }
+            if (pos < n && takes(pt, pc, c)) {
+                for k in 0..CAPS { pt[CW + k] = pt[o + 1 + k]; }
+                add(pt, nl, nh, pc + 1, pos + 1, g);
+            }
+        }
+        I64 tl = cl;
+        cl = nl;
+        nl = tl;
+        I64 th = ch;
+        ch = nh;
+        nh = th;
+        pos += 1;
+    }
+    pt[H_GEN] = g + 1;
+    return found;
+}
+// SPDX-License-Identifier: Apache-2.0

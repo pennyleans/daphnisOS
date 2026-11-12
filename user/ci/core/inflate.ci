@@ -1,0 +1,316 @@
+// user/ci/core/inflate.ci: inflate (RFC 1951) and the zlib wrapper (RFC 1950), for cview's PNG (BP-3,
+// docs/specs/2026-11-07-bp-basics.md section 4) and C-4's gzip. Canonical Huffman codes decoded a bit at a time
+// from their counts, as zlib's puff does: no tables beyond the counts and the symbols. inflate(src, dst) returns
+// the bytes written, or a failure below 0 (E_ names); nothing is written past len(dst).
+
+export const I64 E_INPUT = -1;      // the input ended inside a block
+export const I64 E_ROOM = -2;       // dst is full
+export const I64 E_BLOCK = -3;      // a block type 3, or a stored length that does not match its complement
+export const I64 E_CODE = -4;       // a code that is not complete, or a symbol past the table
+export const I64 E_DISTANCE = -5;   // a distance before the start of the output
+export const I64 E_HEADER = -6;     // zlib: a header that is not deflate with a valid check, or a dictionary
+export const I64 E_ADLER = -7;      // zlib: the Adler-32 at the end differs
+
+I64 at = 0;           // the next input byte
+I64 stop_at = 0;
+I64 bitbuf = 0;
+I64 bitcnt = 0;
+I64 written = 0;      // bytes written
+I64 fail = 0;
+
+I64[16] lcount;       // the literal and length code
+I64[288] lsym;
+I64[16] dcount;       // the distance code
+I64[32] dsym;
+I64[320] lens;        // code lengths while a dynamic block's codes are built
+
+I64[29] lbase = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+                 163, 195, 227, 258];
+I64[29] lextra = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+I64[30] dbase = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049,
+                 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+I64[30] dextra = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+I64[19] order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+
+// need bits of the input, the first in the low bit; 0 and the failure once it ends.
+I64 bits(in U8[_] src, I64 need) {
+    while (bitcnt < need) {
+        if (at == stop_at) {
+            if (fail == 0) { fail = E_INPUT; }
+            return 0;
+        }
+        bitbuf = bitbuf | ((src[at] as I64) << (bitcnt as I64));
+        at = at + 1;
+        bitcnt = bitcnt + 8;
+    }
+    I64 v = bitbuf & ((1 << need) - 1);
+    bitbuf = bitbuf >> need;
+    bitcnt = bitcnt - need;
+    return v;
+}
+
+// Builds a code's counts and symbols from lens[from .. from + n); false when it is over-subscribed.
+Bool build(Bool lit, I64 from, I64 n) {
+    I64[16] offs;
+    for k in 0..16 {
+        if (lit) { lcount[k] = 0; } else { dcount[k] = 0; }
+    }
+    for s in 0..n {
+        I64 l = lens[from + s];
+        if (lit) { lcount[l] = lcount[l] + 1; } else { dcount[l] = dcount[l] + 1; }
+    }
+    I64 left = 1;
+    for k in 1..16 {
+        left = left * 2;
+        if (lit) { left = left - lcount[k]; } else { left = left - dcount[k]; }
+        if (left < 0) { return false; }
+    }
+    offs[1] = 0;
+    for k in 1..15 {
+        if (lit) { offs[k + 1] = offs[k] + lcount[k]; } else { offs[k + 1] = offs[k] + dcount[k]; }
+    }
+    for s in 0..n {
+        I64 l = lens[from + s];
+        if (l != 0) {
+            if (lit) { lsym[offs[l]] = s; } else { dsym[offs[l]] = s; }
+            offs[l] = offs[l] + 1;
+        }
+    }
+    return true;
+}
+
+// The next symbol of a code, or -1 (the failure set).
+I64 decode(in U8[_] src, Bool lit) {
+    I64 code = 0;
+    I64 first = 0;
+    I64 index = 0;
+    for l in 1..16 {
+        code = code | bits(src, 1);
+        if (fail != 0) { return -1; }
+        I64 c = dcount[l];
+        if (lit) { c = lcount[l]; }
+        if (code - c < first) {
+            if (lit) { return lsym[index + code - first]; }
+            return dsym[index + code - first];
+        }
+        index = index + c;
+        first = (first + c) * 2;
+        code = code * 2;
+    }
+    fail = E_CODE;
+    return -1;
+}
+
+void emit[n](inout U8[n] dst, I64 b) {
+    if (written == n) {
+        if (fail == 0) { fail = E_ROOM; }
+        return;
+    }
+    dst[written] = b as U8;
+    written = written + 1;
+}
+
+// The symbols of one Huffman block until its end code.
+void codes[n](in U8[_] src, inout U8[n] dst) {
+    Bool going = true;
+    while (going && fail == 0) {
+        I64 s = decode(src, true);
+        if (s < 0) {
+            going = false;
+        } else if (s < 256) {
+            emit(dst, s);
+        } else if (s == 256) {
+            going = false;
+        } else {
+            I64 i = s - 257;
+            if (i >= 29) {
+                fail = E_CODE;
+                return;
+            }
+            I64 l = lbase[i] + bits(src, lextra[i]);
+            I64 d = decode(src, false);
+            if (d < 0 || d >= 30) {
+                if (fail == 0) { fail = E_CODE; }
+                return;
+            }
+            I64 dist = dbase[d] + bits(src, dextra[d]);
+            if (fail != 0) { return; }
+            if (dist > written) {
+                fail = E_DISTANCE;
+                return;
+            }
+            for k in 0..l {
+                if (fail == 0) {
+                    I64 b = dst[written - dist] as I64;
+                    emit(dst, b);
+                }
+            }
+        }
+    }
+}
+
+void stored[n](in U8[_] src, inout U8[n] dst) {
+    bitbuf = 0;
+    bitcnt = 0;
+    if (stop_at - at < 4) {
+        fail = E_INPUT;
+        return;
+    }
+    I64 l = (src[at] as I64) | ((src[at + 1] as I64) << 8);
+    I64 c = (src[at + 2] as I64) | ((src[at + 3] as I64) << 8);
+    at = at + 4;
+    if (l != (c ^ 65535)) {
+        fail = E_BLOCK;
+        return;
+    }
+    if (stop_at - at < l) {
+        fail = E_INPUT;
+        return;
+    }
+    for k in 0..l {
+        emit(dst, src[at + k] as I64);
+    }
+    at = at + l;
+}
+
+void fixed() {
+    for s in 0..288 {
+        I64 l = 8;
+        if (s >= 144 && s < 256) { l = 9; }
+        if (s >= 256 && s < 280) { l = 7; }
+        lens[s] = l;
+    }
+    _ = build(true, 0, 288);
+    for s in 0..30 {
+        lens[s] = 5;
+    }
+    _ = build(false, 0, 30);
+}
+
+void dynamic(in U8[_] src) {
+    I64 nlen = bits(src, 5) + 257;
+    I64 ndist = bits(src, 5) + 1;
+    I64 ncode = bits(src, 4) + 4;
+    if (fail != 0) { return; }
+    if (nlen > 286 || ndist > 30) {
+        fail = E_CODE;
+        return;
+    }
+    for k in 0..19 {
+        lens[k] = 0;
+    }
+    for k in 0..ncode {
+        lens[order[k]] = bits(src, 3);
+    }
+    if (fail != 0 || !build(true, 0, 19)) {
+        if (fail == 0) { fail = E_CODE; }
+        return;
+    }
+    // the code-length code now sits in lcount/lsym; the lengths it gives go to lens[19 ..)
+    I64[320] got;
+    I64 k = 0;
+    while (k < nlen + ndist) {
+        I64 s = decode(src, true);
+        if (s < 0) { return; }
+        if (s < 16) {
+            got[k] = s;
+            k = k + 1;
+        } else {
+            I64 v = 0;
+            I64 rep = 0;
+            if (s == 16) {
+                if (k == 0) {
+                    fail = E_CODE;
+                    return;
+                }
+                v = got[k - 1];
+                rep = 3 + bits(src, 2);
+            } else if (s == 17) {
+                rep = 3 + bits(src, 3);
+            } else {
+                rep = 11 + bits(src, 7);
+            }
+            if (fail != 0) { return; }
+            if (k + rep > nlen + ndist) {
+                fail = E_CODE;
+                return;
+            }
+            for i in 0..rep {
+                got[k] = v;
+                k = k + 1;
+            }
+        }
+    }
+    if (got[256] == 0) {
+        fail = E_CODE;
+        return;
+    }
+    for i in 0..nlen + ndist {
+        lens[i] = got[i];
+    }
+    if (!build(true, 0, nlen)) {
+        fail = E_CODE;
+        return;
+    }
+    for i in 0..ndist {
+        lens[i] = got[nlen + i];
+    }
+    if (!build(false, 0, ndist)) {
+        fail = E_CODE;
+    }
+}
+
+// Raw deflate from src[from .. stop) into dst: the bytes written, or a failure; used() gives where it ended.
+export I64 inflate[n](in U8[_] src, I64 from, I64 stop, inout U8[n] dst) {
+    at = from;
+    stop_at = stop;
+    bitbuf = 0;
+    bitcnt = 0;
+    written = 0;
+    fail = 0;
+    Bool last = false;
+    while (!last && fail == 0) {
+        last = bits(src, 1) == 1;
+        I64 t = bits(src, 2);
+        if (fail != 0) { return fail; }
+        if (t == 0) {
+            stored(src, dst);
+        } else if (t == 1) {
+            fixed();
+            codes(src, dst);
+        } else if (t == 2) {
+            dynamic(src);
+            if (fail == 0) { codes(src, dst); }
+        } else {
+            fail = E_BLOCK;
+        }
+    }
+    if (fail != 0) { return fail; }
+    return written;
+}
+
+export I64 used() {
+    return at;
+}
+
+// A zlib stream in src[from .. stop): its inflated bytes in dst, or a failure; the Adler-32 checked.
+export I64 unzlib[n](in U8[_] src, I64 from, I64 stop, inout U8[n] dst) {
+    if (stop - from < 6) { return E_INPUT; }
+    I64 cmf = src[from] as I64;
+    I64 flg = src[from + 1] as I64;
+    if ((cmf & 15) != 8 || (cmf >> 4) > 7 || (cmf * 256 + flg) % 31 != 0 || (flg & 32) != 0) { return E_HEADER; }
+    I64 r = inflate(src, from + 2, stop, dst);
+    if (r < 0) { return r; }
+    I64 e = at;
+    if (stop - e < 4) { return E_INPUT; }
+    I64 a = 1;
+    I64 b = 0;
+    for k in 0..r {
+        a = (a + (dst[k] as I64)) % 65521;
+        b = (b + a) % 65521;
+    }
+    I64 want = ((src[e] as I64) << 24) | ((src[e + 1] as I64) << 16) | ((src[e + 2] as I64) << 8) | (src[e + 3] as I64);
+    if (want != b * 65536 + a) { return E_ADLER; }
+    return r;
+}
+// SPDX-License-Identifier: Apache-2.0

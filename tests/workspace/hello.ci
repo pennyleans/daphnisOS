@@ -1,0 +1,5 @@
+void main() {
+    I64 n = 6 * 7;
+    "workspace result: {n} ok\n";
+}
+// SPDX-License-Identifier: Apache-2.0

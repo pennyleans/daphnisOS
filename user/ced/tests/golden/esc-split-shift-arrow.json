@@ -1,0 +1,28 @@
+{
+  "id": "esc-split-shift-arrow",
+  "rules": [
+    "KEY-2",
+    "KEY-3",
+    "OPEN-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b",
+    "5b313b3243"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      0,
+      1
+    ]
+  }
+}

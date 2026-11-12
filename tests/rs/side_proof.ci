@@ -1,0 +1,40 @@
+// tests/rs/side_proof.ci: RS-SET0's proof and frame 48's: the Settings window with the sidebar in DN-58's order and
+// the Keyboard page; in a narrow window (N) the sidebar folds behind the button before the title, and with a fourth
+// argument L the button has laid it over the page. Theme TH (0 dark, 1 light) at zoom Z (1 or 2). Prints `frame W H`
+// and each row's runs (tools/proofpng.py).
+// Run: cint run --root . tests/rs/side_proof.ci -- TH Z - [N|W|-] [L]
+import user.ci.kit.tokens;
+import user.ci.kit.stside;
+import user.ci.kit.stpage;
+import user.ci.kit.stkeys;
+import user.ci.kit.stbox;
+import tests.rs.stwin;
+
+U32[2048] row;
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    I64 z = 1;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    if (len(a) > 2 && a[2] == '2') { z = 2; }
+    tokens.set_theme(th);
+    U8 sz = '-';
+    if (len(a) > 6) { sz = a[6]; }
+    stwin.size_of(sz);
+    stbox.show(stside.KEYBOARD);
+    stkeys.open();
+    stkeys.set_delay(stkeys.DELAY_DEFAULT);
+    stkeys.set_rate(stkeys.RATE_DEFAULT);
+    stbox.set_tall(stkeys.tall());
+    if (len(a) > 8 && a[8] == 'L') { I64 c = stbox.click(stwin.cx() + 4, stwin.y0() + stpage.TOP); }
+    "frame {stwin.fw() * z} {stwin.fh() * z}\n";
+    for dy in 0..stwin.fh() * z {
+        I64 y = dy / z;
+        stwin.frame_row(row, dy, z);
+        if (stwin.in_body(dy, z)) { stkeys.row_at(row, stwin.cx(), stbox.y0_at(y), stwin.cr(), stbox.yb_at(y), y); }
+        stwin.over_row(row, dy, z);
+        stwin.corners_row(row, dy, z);
+        stwin.emit(row, stwin.fw() * z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,68 @@
+// user/ci/tee.ci: tee [-ai] [FILE...] (docs/specs/2026-11-06-c-core.md, CT-2): descriptor 0 to descriptor 1 and to
+// each FILE, block by block. -a appends instead of truncating. -i ignores SIGINT (user/ci/corectl.ci co_ignore_int).
+// A FILE named `-` is a file of that name (POSIX XCU; busybox writes descriptor 1 again: tests/core/DIFFS.md). A FILE
+// that cannot be opened or written is said, the others go on, and the status is 1.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 FILES = 64;
+const I64 O_WRONLY = 0x1;
+const I64 O_CREAT = 0x40;
+const I64 O_TRUNC = 0x200;
+const I64 O_APPEND = 0x400;
+
+U8[4096] buf;
+I64[64] fds;     // FILE i's descriptor, -1 when it could not be opened or a write failed
+
+void main(in U8[_] a) {
+    msg.name(b"tee");
+    args.parse(a, b"ai", b"");
+    if (args.has('i')) { _ = corectl.co_ignore_int(); }
+    I64 how = O_WRONLY | O_CREAT | O_TRUNC;
+    if (args.has('a')) { how = O_WRONLY | O_CREAT | O_APPEND; }
+    I64 n = args.operands();
+    if (n > FILES) { msg.limit(b"FILES"); }
+    for i in 0..n {
+        I64 fd = shctl.sh_open(a[args.op_start(i)..args.op_stop(a, i)], how, 0x1B6);
+        if (fd < 0) { msg.file(a[args.op_start(i)..args.op_stop(a, i)], 0 - fd); }
+        fds[i] = fd;
+    }
+    Bool going = true;
+    while (going) {
+        I64 r = get.read(0, buf);
+        if (r < 0) {
+            msg.file(b"-", 0 - r);
+            going = false;
+        } else if (r == 0) {
+            going = false;
+        } else {
+            if (!put.failed()) {
+                put.bytes(buf[0..r]);
+                put.flush();
+            }
+            for i in 0..n {
+                if (fds[i] >= 0) {
+                    I64 w = shctl.fd_write(fds[i], buf[0..r]);
+                    if (w < 0) {
+                        msg.file(a[args.op_start(i)..args.op_stop(a, i)], 0 - w);
+                        _ = shctl.fd_close(fds[i]);
+                        fds[i] = -1;
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..n {
+        if (fds[i] >= 0) {
+            I64 c = shctl.fd_close(fds[i]);
+            if (c < 0) { msg.file(a[args.op_start(i)..args.op_stop(a, i)], 0 - c); }
+        }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

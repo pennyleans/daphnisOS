@@ -1,0 +1,135 @@
+// tests/hosted/index/index_test.ci: the desk's index (user/ci/kit/index.ci) over tests/hosted/index's memfs, which
+// stamps a directory's time whenever a name is added, removed or moved in it, as FS-4 does: after each ring entry
+// the kept table digests the same as a fresh walk (ix's `ix: equal`), folders' times included. Run by check.sh.
+import user.ci.kit.index;
+import user.ci.memfs;
+
+const I64 CREATE = 1;                 // src/fsidx.ci's ops
+const I64 UNLINK = 2;
+const I64 FROM = 3;
+const I64 TO = 4;
+
+U8[64] e;
+I64 seq = 0;
+
+// One ring entry, src/fsidx.ci's 64 bytes: the sequence number, the op, the name's length, the inode, the
+// directory's inode and the name.
+void ring(I64 op, I64 n, I64 par, in U8[_] nm) {
+    seq = seq + 1;
+    for k in 0..64 { e[k] = 0; }
+    for k in 0..8 {
+        e[k] = ((seq >> (8 * k)) & 255) as U8;
+        e[16 + k] = ((n >> (8 * k)) & 255) as U8;
+        e[24 + k] = ((par >> (8 * k)) & 255) as U8;
+    }
+    e[8] = op as U8;
+    e[9] = len(nm) as U8;
+    for k in 0..len(nm) { e[32 + k] = nm[k]; }
+    index.apply(e);
+}
+
+// The kept table against a fresh walk of the volume, entry for entry (the walk is then the table).
+Bool agrees() {
+    U8[32] a;
+    U8[32] b;
+    index.digest(a);
+    I64 n = index.entries();
+    assert(index.build(b"/v"));
+    index.digest(b);
+    if (n != index.entries()) { return false; }
+    for k in 0..32 {
+        if (a[k] != b[k]) { return false; }
+    }
+    return true;
+}
+
+// /v holding a/f (10 bytes) and m/g (20 bytes), all made at 100; the table built from its walk.
+void tree() {
+    memfs.reset();
+    seq = 0;
+    memfs.set_clock(100);
+    _ = memfs.make(b"/v", true, 0);
+    _ = memfs.make(b"/v/a", true, 0);
+    _ = memfs.make(b"/v/a/f", false, 10);
+    _ = memfs.make(b"/v/m", true, 0);
+    _ = memfs.make(b"/v/m/g", false, 20);
+    assert(index.build(b"/v") && index.entries() == 4);
+}
+
+test "a file added, removed or moved: its folder's time is read again, so the kept index is the walk's" {
+    tree();
+    I64 a = memfs.ino_at(b"/v/a");
+    I64 m = memfs.ino_at(b"/v/m");
+    memfs.set_clock(200);
+    I64 n = memfs.make(b"/v/a/new", false, 7);
+    ring(CREATE, n, a, b"new");
+    assert(agrees());
+    memfs.set_clock(300);
+    n = memfs.remove(b"/v/m/g");
+    ring(UNLINK, n, m, b"g");
+    assert(agrees());
+    memfs.set_clock(400);
+    n = memfs.rename(b"/v/a/f", b"/v/m/f2");            // across folders: both are read again
+    ring(FROM, n, a, b"f");
+    ring(TO, n, m, b"f2");
+    assert(agrees());
+    memfs.set_clock(500);
+    n = memfs.rename(b"/v/m/f2", b"/v/m/f3");           // within one folder
+    ring(FROM, n, m, b"f2");
+    ring(TO, n, m, b"f3");
+    assert(agrees());
+    memfs.set_clock(600);
+    n = memfs.make(b"/v/top", false, 1);                // in the root, which has no entry of its own
+    ring(CREATE, n, memfs.ino_at(b"/v"), b"top");
+    assert(agrees() && index.entries() == 5);
+}
+
+test "a folder made, moved and removed, and changes read after the volume moved on, match the walk too" {
+    tree();
+    I64 a = memfs.ino_at(b"/v/a");
+    I64 m = memfs.ino_at(b"/v/m");
+    memfs.set_clock(200);
+    I64 d = memfs.make(b"/v/a/d", true, 0);
+    ring(CREATE, d, a, b"d");
+    memfs.set_clock(210);
+    I64 x = memfs.make(b"/v/a/d/x", false, 3);
+    ring(CREATE, x, d, b"x");
+    assert(agrees());
+    memfs.set_clock(300);
+    _ = memfs.rename(b"/v/a/d", b"/v/m/d");             // a folder with a file in it
+    ring(FROM, d, a, b"d");
+    ring(TO, d, m, b"d");
+    assert(agrees());
+    memfs.set_clock(400);                               // three changes made before any is read
+    I64 y = memfs.make(b"/v/m/d/y", false, 4);
+    _ = memfs.rename(b"/v/m/d/y", b"/v/a/y");
+    I64 g = memfs.remove(b"/v/m/g");
+    ring(CREATE, y, d, b"y");
+    ring(FROM, y, d, b"y");
+    ring(TO, y, a, b"y");
+    ring(UNLINK, g, m, b"g");
+    assert(agrees());
+    memfs.set_clock(500);
+    _ = memfs.remove(b"/v/m/d/x");
+    _ = memfs.remove(b"/v/m/d");
+    ring(UNLINK, x, d, b"x");
+    ring(UNLINK, d, m, b"d");
+    assert(agrees() && memfs.ino_at(b"/v/m/d") < 0);
+}
+
+test "a folder's own entry takes the time the volume stamped on it, and keeps its sequence number" {
+    tree();
+    I64[16] r0;
+    I64[16] r1;
+    assert(memfs.stat(b"/v/a", r0) == 0 && r0[12] == 100);
+    memfs.set_clock(200);
+    I64 n = memfs.make(b"/v/a/new", false, 7);
+    assert(memfs.stat(b"/v/a", r1) == 0 && r1[12] == 200);
+    ring(CREATE, n, memfs.ino_at(b"/v/a"), b"new");
+    I64 j = 0 - 1;
+    for i in 0..index.used() {
+        if (index.ino_of(i) == memfs.ino_at(b"/v/a")) { j = i; }
+    }
+    assert(j >= 0 && index.mtime_of(j) == 200 && index.seq_of(j) == 0);
+}
+// SPDX-License-Identifier: Apache-2.0

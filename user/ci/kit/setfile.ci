@@ -1,0 +1,150 @@
+// user/ci/kit/setfile.ci: U-SET's file (docs/specs/2026-11-11-u-set.md): HOME/.config/daphnis/settings, the
+// account's own, mode 0600 in folders of 0700. kit/settings.ci's text is read from it and written back whole:
+// settings.new.PID first, made new by this process, then the rename, so a reader sees the old file or the new one,
+// never a part.
+//   path(home, p): the file's path in p, its length; -1 when p cannot hold it.
+//   load(home, uid): the store from the file; the settings kept, 0 for a missing file. A failure (-errno) leaves the
+//     store empty, so the caller runs on its defaults. uid >= 0 is a reader for that account (the desk): the file must
+//     then belong to uid. Anything but a regular file is refused (-ELOOP for a link, -EINVAL else); past
+//     settings.SIZE bytes only the whole lines before it are read. FS-5: the name is opened without following a
+//     link (O_NOFOLLOW) and the descriptor is asked the kind and owner (fdctl.fd_stat), so what is checked is the
+//     file that is read; O_NONBLOCK, so opening a pipe put in its place never waits.
+//   save(home): the store written; 0, or -errno with the file as it was. The new file is the calling process's own
+//     (O_CREAT | O_EXCL: no link is followed and no file already there is opened), so two saves never write one file.
+//     Two saves of one account at the same instant each leave a whole file; the last rename wins.
+//   put(home, key, val), put_num(home, key, v): load, set, save in one step for the account's own processes; 0, or
+//     the failure of the step that failed (a file that cannot be read is never written over).
+// Only the account's own processes save: the folders and the file are made as the caller, so a uid 0 writer would
+// leave them uid 0's. user/ci/build.sh picks host.c's call rows from a program's whole import closure, so a program
+// that imports this module gets the shctl, corectl and fdctl rows it calls without importing them itself.
+import user.ci.kit.settings;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.fdctl;
+
+const I64 ENOENT = 2;
+const I64 EPERM = 1;
+const I64 EEXIST = 17;
+const I64 EINVAL = 22;
+const I64 O_READ = 0x20800;          // O_RDONLY | O_NONBLOCK | O_NOFOLLOW (fdctl.O_NOFOLLOW)
+const I64 O_NEW = 0xC1;              // O_WRONLY | O_CREAT | O_EXCL
+
+U8[8192] buf;                        // the file's bytes in transit (settings.SIZE)
+U8[512] blk;
+
+// home + tail into p; the length, or -1.
+I64 join(in U8[_] home, in U8[_] tail, inout U8[_] p) {
+    I64 n = len(home);
+    while (n > 1 && home[n - 1] == '/') { n = n - 1; }
+    if (n + len(tail) > len(p)) { return -1; }
+    for i in 0..n { p[i] = home[i]; }
+    for i in 0..len(tail) { p[n + i] = tail[i]; }
+    return n + len(tail);
+}
+
+export I64 path(in U8[_] home, inout U8[_] p) {
+    return join(home, b"/.config/daphnis/settings", p);
+}
+
+// HOME/.config/daphnis/settings.new.PID into q, PID this process's; the length, or -1.
+I64 temp(in U8[_] home, inout U8[_] q) {
+    I64 n = join(home, b"/.config/daphnis/settings.new.", q);
+    if (n < 0) { return -1; }
+    U8[20] d;
+    I64 k = 0;
+    I64 v = shctl.sh_getpid();
+    if (v < 0) { v = 0; }
+    while (k == 0 || v > 0) {
+        d[k] = 48 + (v % 10) as U8;
+        v = v / 10;
+        k = k + 1;
+    }
+    if (n + k > len(q)) { return -1; }
+    for i in 0..k { q[n + i] = d[k - 1 - i]; }
+    return n + k;
+}
+
+export I64 load(in U8[_] home, I64 uid) {
+    settings.clear();
+    U8[4200] p;
+    I64 pn = path(home, p);
+    if (pn < 0) { return 0 - EINVAL; }
+    I64 fd = shctl.sh_open(p[0..pn], O_READ, 0);
+    if (fd == 0 - ENOENT) { return 0; }
+    if (fd < 0) { return fd; }                      // -ELOOP for a link
+    I64[16] st;
+    I64 s = fdctl.fd_stat(fd, st);
+    if (s >= 0 && (st[corectl.ST_MODE] & corectl.S_IFMT) != corectl.S_IFREG) { s = 0 - EINVAL; }
+    if (s >= 0 && uid >= 0 && st[corectl.ST_UID] != uid) { s = 0 - EPERM; }
+    if (s < 0) {
+        _ = shctl.fd_close(fd);
+        return s;
+    }
+    I64 n = 0;
+    Bool more = false;
+    I64 got = shctl.fd_read(fd, blk);
+    while (got > 0 && !more) {
+        for k in 0..got {
+            if (n < settings.SIZE) {
+                buf[n] = blk[k];
+                n = n + 1;
+            } else {
+                more = true;
+            }
+        }
+        if (!more) { got = shctl.fd_read(fd, blk); }
+    }
+    _ = shctl.fd_close(fd);
+    if (got < 0) { return got; }
+    if (more) {                                     // a cut line is not a setting
+        while (n > 0 && buf[n - 1] != '\n') { n = n - 1; }
+    }
+    return settings.read(buf[0..n]);
+}
+
+export I64 save(in U8[_] home) {
+    U8[4200] p;
+    I64 n = join(home, b"/.config", p);
+    if (n < 0) { return 0 - EINVAL; }
+    I64 m = corectl.co_mkdir(p[0..n], 448);         // 0700
+    if (m < 0 && m != 0 - EEXIST) { return m; }
+    n = join(home, b"/.config/daphnis", p);
+    if (n < 0) { return 0 - EINVAL; }
+    m = corectl.co_mkdir(p[0..n], 448);
+    if (m < 0 && m != 0 - EEXIST) { return m; }
+    U8[4200] q;
+    I64 qn = temp(home, q);
+    I64 pn = path(home, p);
+    if (qn < 0 || pn < 0) { return 0 - EINVAL; }
+    I64 tn = settings.text(buf);
+    I64 fd = shctl.sh_open(q[0..qn], O_NEW, 384);   // 0600
+    if (fd == 0 - EEXIST) {                         // left by an ended process of this PID: its name goes, not
+        _ = corectl.co_unlink(q[0..qn]);            // what a link there names
+        fd = shctl.sh_open(q[0..qn], O_NEW, 384);
+    }
+    if (fd < 0) { return fd; }
+    I64 w = shctl.fd_write(fd, buf[0..tn]);
+    I64 c = shctl.fd_close(fd);
+    I64 r = 0;
+    if (w < 0) { r = w; } else if (w != tn) { r = -5; } else if (c < 0) { r = c; }
+    if (r == 0) { r = corectl.co_rename(q[0..qn], p[0..pn]); }
+    if (r < 0) { _ = corectl.co_unlink(q[0..qn]); }
+    return r;
+}
+
+export I64 put(in U8[_] home, in U8[_] key, in U8[_] val) {
+    I64 l = load(home, -1);
+    if (l < 0) { return l; }
+    I64 s = settings.set(key, val);
+    if (s < 0) { return s; }
+    return save(home);
+}
+
+export I64 put_num(in U8[_] home, in U8[_] key, I64 v) {
+    I64 l = load(home, -1);
+    if (l < 0) { return l; }
+    I64 s = settings.set_num(key, v);
+    if (s < 0) { return s; }
+    return save(home);
+}
+// SPDX-License-Identifier: Apache-2.0

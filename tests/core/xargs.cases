@@ -1,0 +1,53 @@
+# tests/core/xargs.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). The default UTILITY is
+# echo, found on PATH; under the case runner's empty environment that is /bin/echo of the host (busybox runs its own).
+ | text.txt | -
+ | empty | -
+-r | empty | -
+echo X | text.txt | -
+-n 2 | text.txt | -
+-n2 echo Y | text.txt | -
+-n 1 | x/quote.txt | -
+ | x/quote.txt | -
+-s 20 | text.txt | -
+-s 12 echo | text.txt | -
+-s 9 echo | text.txt | -
+-s 5 echo | text.txt | -
+-s 3000 | long.txt | -
+-n 3 -s 30 | long.txt | -
+-0 | x/nul.dat | -
+-0 -n 1 | x/nul.dat | -
+-E END | x/eof.txt | -
+-E '' | x/eof.txt | -
+-n 1 -E b | x/eof.txt | -
+ | x/unq.txt | -
+-I {} echo [{}] | x/repl.txt | -
+-I % echo %-% x | x/repl.txt | -
+-I {} | x/repl.txt | -
+-0 -I _ echo <_> | x/nul.dat | -
+-t echo | text.txt | -
+-t -n 4 | text.txt | -
+-n 1 sh -c 'exit $0' | x/codes.txt | -
+false | text.txt | -
+sh -c 'kill -9 $$' | text.txt | -
+nosuch | text.txt | -
+./x | text.txt | -
+-x -n 2 | text.txt | -
+-r -n 1 | ws.txt | -
+ | ws.txt | -
+ | utf8.txt | -
+ | bin.dat | -
+-n 0 | text.txt | D-3
+-s 0 | text.txt | D-3
+-n x | text.txt | D-3
+-n | text.txt | D-3
+-s 4 echo | text.txt | -
+-x -s 15 -n 3 | text.txt | D-40
+-L 1 | x/lines.txt | D-40
+-L 2 echo Z | x/lines.txt | D-40
+-p echo | text.txt | -
+-o | text.txt | D-1
+-P 2 | text.txt | D-1
+-a text.txt | - | D-1
+-i | text.txt | D-1
+-e END | x/eof.txt | D-1
+-s 70000 | text.txt | D-40

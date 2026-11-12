@@ -1,0 +1,74 @@
+$ -u
+/tmp/tmp.XXXXXX
+status 0
+$ -p .
+./tmp.XXXXXX
+-- tree
++ tmp.XXXXXX f 0600 0 e3b0c44298fc1c14
+status 0
+$ -d -p .
+./tmp.XXXXXX
+-- tree
++ tmp.XXXXXX d 0700
+status 0
+$ -p . x.XXXXXX
+./x.XXXXXX
+-- tree
++ x.XXXXXX f 0600 0 e3b0c44298fc1c14
+status 0
+$ -d -p box y.XXXXXX
+box/y.XXXXXX
+-- tree
++ box/y.XXXXXX d 0700
+status 0
+$ abXXXXXX
+abXXXXXX
+-- tree
++ abXXXXXX f 0600 0 e3b0c44298fc1c14
+status 0
+$ -d abXXXXXXXXX
+abXXXXXXXXX
+-- tree
++ abXXXXXXXXX d 0700
+status 0
+$ -u -p box z.XXXXXX
+box/z.XXXXXX
+status 0
+$ -t -p . t.XXXXXX
+./t.XXXXXX
+-- tree
++ t.XXXXXX f 0600 0 e3b0c44298fc1c14
+status 0
+$ box/q.XXXXXX
+box/q.XXXXXX
+-- tree
++ box/q.XXXXXX f 0600 0 e3b0c44298fc1c14
+status 0
+$ x.XXX
+-- stderr
+mktemp: x.XXX: Invalid argument
+status 1
+$ ab
+-- stderr
+mktemp: ab: Invalid argument
+status 1
+$ -q ab
+status 1
+$ -p nodir
+-- stderr
+mktemp: nodir/tmp.XXXXXX: No such file or directory
+status 1
+$ -q -p nodir
+status 1
+$ -d box/in/deep/c.txt/XXXXXX
+-- stderr
+XXXXXX: box/in/deep/c.txt/XXXXXX: Not a XXXXXXory
+status 1
+$ -x
+-- stderr
+mktemp: not supported: -x
+status 2
+$ a.XXXXXX b.XXXXXX
+-- stderr
+mktemp: too many operands
+status 2

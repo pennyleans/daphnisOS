@@ -1,0 +1,514 @@
+import state;
+import buf;
+import cur;
+import undo;
+import keys;
+import edit;
+
+Bool match_at(in I64[_] r, in U8[_] t, in U8[_] f, I64 n, I64 p) {
+    if (p + n > buf.length(r, t)) {
+        return false;
+    }
+    for i in 0..n {
+        if (buf.at(r, t, p + i) != f[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+I64 scan(in I64[_] r, in U8[_] t, in U8[_] f, I64 from, I64 stop) {
+    I64 n = r[state.R_FIND_LEN];
+    I64 last = stop - n + 1;
+    I64 p = from;
+    while (p < last) {
+        p = buf.find_byte(r, t, f[0], p, last);
+        if (p < 0) {
+            return -1;
+        }
+        if (match_at(r, t, f, n, p)) {
+            return p;
+        }
+        p += 1;
+    }
+    return -1;
+}
+
+export I64 forward(inout I64[_] r, in U8[_] t, in U8[_] f, I64 from) {
+    I64 n = r[state.R_FIND_LEN];
+    I64 total = buf.length(r, t);
+    if (n == 0) {
+        return -1;
+    }
+    I64 p = scan(r, t, f, from, total);
+    if (p < 0) {
+        p = scan(r, t, f, 0, min(from + n - 1, total));
+        if (p >= 0) {
+            r[state.R_MSG] = state.MSG_WRAPPED;
+        }
+    }
+    return p;
+}
+
+export I64 backward(inout I64[_] r, in U8[_] t, in U8[_] f, I64 before) {
+    I64 n = r[state.R_FIND_LEN];
+    I64 total = buf.length(r, t);
+    if (n == 0) {
+        return -1;
+    }
+    I64 p = before - 1;
+    while (p >= 0) {
+        if (match_at(r, t, f, n, p)) {
+            return p;
+        }
+        p -= 1;
+    }
+    p = total - n;
+    while (p >= before && p >= 0) {
+        if (match_at(r, t, f, n, p)) {
+            r[state.R_MSG] = state.MSG_WRAPPED;
+            return p;
+        }
+        p -= 1;
+    }
+    return -1;
+}
+
+void show(inout I64[_] r, I64 p) {
+    if (p < 0) {
+        r[state.R_MSG] = state.MSG_NOT_FOUND;
+        return;
+    }
+    r[state.R_ANCHOR] = p;
+    r[state.R_HEAD] = p + r[state.R_FIND_LEN];
+}
+
+export void open_find(inout I64[_] r) {
+    r[state.R_MODE] = state.MODE_FIND;
+    r[state.R_ORIGIN] = min(r[state.R_ANCHOR], r[state.R_HEAD]);
+    r[state.R_FIND_TYPED] = 0;
+    r[state.R_BEFORE_ANCHOR] = r[state.R_ANCHOR];
+    r[state.R_BEFORE_HEAD] = r[state.R_HEAD];
+}
+
+export void open_replace(inout I64[_] r) {
+    open_find(r);
+    r[state.R_MODE] = state.MODE_REPLACE_FIND;
+}
+
+// save as: keeps the name typed before
+export void open_save_as(inout I64[_] r) {
+    r[state.R_MODE] = state.MODE_SAVE_AS;
+}
+
+// a byte of one logical segment
+Bool name_byte(I64 k) {
+    return (k >= 'a' && k <= 'z') || (k >= 'A' && k <= 'Z') || (k >= '0' && k <= '9') || k == '_' || k == '-' || k == '.';
+}
+
+void ask_key(inout I64[_] r, inout U8[_] f, I64 k) {
+    I64 n = r[state.R_ASK_LEN];
+    if (k == keys.K_ESC) {
+        r[state.R_MODE] = state.MODE_EDIT;
+    } else if (k == keys.K_ENTER && n > 0) {
+        r[state.R_MODE] = state.MODE_EDIT;
+        r[state.R_REQ] = r[state.R_REQ] | state.REQ_SAVE;
+    } else if (k == keys.K_BACKSPACE && n > 0) {
+        r[state.R_ASK_LEN] = n - 1;
+    } else if (name_byte(k) && n < state.ASK_MAX && state.ASK_AT + n < len(f)) {
+        f[state.ASK_AT + n] = k as U8;
+        r[state.R_ASK_LEN] = n + 1;
+    } else {
+        r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+    }
+}
+
+export void open_line(inout I64[_] r) {
+    r[state.R_MODE] = state.MODE_LINE;
+    r[state.R_LINE_NUM] = 0;
+}
+
+export void again(inout I64[_] r, in U8[_] t, in U8[_] f, Bool back) {
+    I64 lo = min(r[state.R_ANCHOR], r[state.R_HEAD]);
+    if (back) {
+        show(r, backward(r, t, f, lo));
+    } else if (r[state.R_ANCHOR] == r[state.R_HEAD]) {
+        show(r, forward(r, t, f, lo));
+    } else {
+        show(r, forward(r, t, f, lo + 1));
+    }
+}
+
+export void go_line(inout I64[_] r, in U8[_] t, I64 target) {
+    I64 n = max(target, 1);
+    I64 p = cur.line_start(r, t, r[state.R_LF_AT]);
+    I64 k = r[state.R_LF_COUNT] + 1;
+    if (n * 2 < k) {
+        p = 0;
+        k = 1;
+    }
+    while (k > n) {
+        p = cur.line_start(r, t, p - 1);
+        k -= 1;
+    }
+    while (k < n) {
+        I64 e = cur.line_end(r, t, p);
+        if (e == buf.length(r, t)) {
+            break;
+        }
+        p = e + 1;
+        k += 1;
+    }
+    cur.go(r, p, false);
+    r[state.R_GOAL] = -1;
+    r[state.R_LF_AT] = p;
+    r[state.R_LF_COUNT] = k - 1;
+}
+
+export void key(inout I64[_] r, in U8[_] t, inout U8[_] f, I64 k) {
+    if (r[state.R_MODE] == state.MODE_SAVE_AS) {
+        ask_key(r, f, k);
+        return;
+    }
+    if (r[state.R_MODE] == state.MODE_LINE) {
+        if (k >= '0' && k <= '9' && r[state.R_LINE_NUM] < 100000000) {
+            r[state.R_LINE_NUM] = r[state.R_LINE_NUM] * 10 + k - '0';
+        } else if (k == keys.K_BACKSPACE) {
+            r[state.R_LINE_NUM] = r[state.R_LINE_NUM] / 10;
+        } else if (k == keys.K_ENTER) {
+            go_line(r, t, r[state.R_LINE_NUM]);
+            r[state.R_MODE] = state.MODE_EDIT;
+        } else if (k == keys.K_ESC) {
+            r[state.R_MODE] = state.MODE_EDIT;
+        } else {
+            r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+        }
+        return;
+    }
+    I64 n = r[state.R_FIND_LEN];
+    if (k == keys.K_ESC) {
+        r[state.R_MODE] = state.MODE_EDIT;
+        return;
+    }
+    if (k == keys.K_ENTER && r[state.R_MODE] == state.MODE_REPLACE_FIND) {
+        if (n == 0) {
+            r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+            return;
+        }
+        r[state.R_WITH_LEN] = 0;
+        r[state.R_MODE] = state.MODE_REPLACE_WITH;
+        return;
+    }
+    if (k == keys.K_ENTER && r[state.R_FIND_TYPED] == 1) {
+        r[state.R_MODE] = state.MODE_EDIT;
+        return;
+    }
+    if (k == keys.K_ENTER || k == keys.K_F3) {
+        again(r, t, f, false);
+        return;
+    }
+    if (k == keys.K_F3 + keys.M_SHIFT) {
+        again(r, t, f, true);
+        return;
+    }
+    if (k == keys.K_BACKSPACE) {
+        if (n > 0) {
+            I64 m = 0;
+            if (r[state.R_FIND_TYPED] == 1) {
+                m = n - 1;
+                while (m > 0 && f[m] >= 128 && f[m] < 192) {
+                    m -= 1;
+                }
+            }
+            r[state.R_FIND_LEN] = m;
+            r[state.R_FIND_TYPED] = 1;
+            if (m == 0) {
+                r[state.R_ANCHOR] = r[state.R_BEFORE_ANCHOR];
+                r[state.R_HEAD] = r[state.R_BEFORE_HEAD];
+            } else {
+                show(r, forward(r, t, f, r[state.R_ORIGIN]));
+            }
+        }
+        return;
+    }
+    if (k >= 32 && k < keys.K_UP) {
+        U8[4] s;
+        I64 w = keys.encode(k, s);
+        I64 at = n;
+        if (r[state.R_FIND_TYPED] == 0) {
+            at = 0;
+        }
+        if (at + w > min(len(f), state.FIND_MAX)) {
+            r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+            return;
+        }
+        for i in 0..w {
+            f[at + i] = s[i];
+        }
+        r[state.R_FIND_LEN] = at + w;
+        r[state.R_FIND_TYPED] = 1;
+        show(r, forward(r, t, f, r[state.R_ORIGIN]));
+        return;
+    }
+    r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+}
+
+void finish_replace(inout I64[_] r) {
+    r[state.R_MODE] = state.MODE_EDIT;
+    I64 g = r[state.R_REPLACE_GROUP];
+    if (g != 0 && g == r[state.R_U_LOST]) {
+        r[state.R_MSG] = state.MSG_HISTORY_CLEARED;
+    } else if (r[state.R_REPLACE_SEEN] == 0) {
+        r[state.R_MSG] = state.MSG_NOT_FOUND;
+    } else {
+        r[state.R_MSG] = state.MSG_REPLACED;
+    }
+}
+
+void next_match(inout I64[_] r, in U8[_] t, in U8[_] f) {
+    I64 p = -1;
+    if (r[state.R_REPLACE_WRAPPED] == 0) {
+        p = scan(r, t, f, r[state.R_REPLACE_AT], buf.length(r, t));
+        if (p < 0) {
+            r[state.R_REPLACE_WRAPPED] = 1;
+            r[state.R_REPLACE_AT] = 0;
+        }
+    }
+    if (p < 0) {
+        p = scan(r, t, f, r[state.R_REPLACE_AT], r[state.R_REPLACE_STOP]);
+    }
+    if (p < 0) {
+        finish_replace(r);
+        return;
+    }
+    r[state.R_REPLACE_SEEN] = r[state.R_REPLACE_SEEN] + 1;
+    r[state.R_ANCHOR] = p;
+    r[state.R_HEAD] = p + r[state.R_FIND_LEN];
+}
+
+void start_replace(inout I64[_] r, in U8[_] t, in U8[_] f) {
+    r[state.R_MODE] = state.MODE_REPLACE_ASK;
+    r[state.R_REPLACE_AT] = r[state.R_ORIGIN];
+    r[state.R_REPLACE_STOP] = r[state.R_ORIGIN];
+    r[state.R_REPLACE_WRAPPED] = 0;
+    r[state.R_REPLACE_DONE] = 0;
+    r[state.R_REPLACE_SEEN] = 0;
+    r[state.R_REPLACE_GROUP] = 0;
+    next_match(r, t, f);
+}
+
+Bool replace_match(inout I64[_] r, inout U8[_] t, inout I64[_] u, inout U8[_] ub, in U8[_] f) {
+    I64 w = r[state.R_WITH_LEN];
+    I64 n = r[state.R_FIND_LEN];
+    if (r[state.R_REPLACE_GROUP] == 0) {
+        r[state.R_REPLACE_GROUP] = undo.new_group(r);
+    }
+    I64 a = r[state.R_ANCHOR];
+    if (!edit.replace(r, t, u, ub, r[state.R_REPLACE_GROUP], a, a + n, f[state.FIND_MAX..state.FIND_MAX + w])) {
+        r[state.R_MODE] = state.MODE_EDIT;
+        return false;
+    }
+    if (r[state.R_REPLACE_WRAPPED] == 1) {
+        r[state.R_REPLACE_STOP] = r[state.R_REPLACE_STOP] + w - n;
+    }
+    r[state.R_REPLACE_AT] = a + w;
+    r[state.R_REPLACE_DONE] = r[state.R_REPLACE_DONE] + 1;
+    return true;
+}
+
+void with_key(inout I64[_] r, in U8[_] t, inout U8[_] f, I64 k) {
+    I64 n = r[state.R_WITH_LEN];
+    if (k == keys.K_ESC) {
+        r[state.R_MODE] = state.MODE_EDIT;
+    } else if (k == keys.K_ENTER) {
+        start_replace(r, t, f);
+    } else if (k == keys.K_BACKSPACE) {
+        if (n > 0) {
+            I64 m = n - 1;
+            while (m > 0 && f[state.FIND_MAX + m] >= 128 && f[state.FIND_MAX + m] < 192) {
+                m -= 1;
+            }
+            r[state.R_WITH_LEN] = m;
+        }
+    } else if (k >= 32 && k < keys.K_UP && n + 4 <= state.FIND_MAX) {
+        U8[4] s;
+        I64 w = keys.encode(k, s);
+        for i in 0..w {
+            f[state.FIND_MAX + n + i] = s[i];
+        }
+        r[state.R_WITH_LEN] = n + w;
+    } else {
+        r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+    }
+}
+
+export void replace_key(inout I64[_] r, inout U8[_] t, inout I64[_] u, inout U8[_] ub,
+                        inout U8[_] f, I64 k) {
+    if (r[state.R_MODE] == state.MODE_REPLACE_WITH) {
+        with_key(r, t, f, k);
+        return;
+    }
+    if (k == 'y') {
+        if (replace_match(r, t, u, ub, f)) {
+            next_match(r, t, f);
+        }
+    } else if (k == 'n') {
+        r[state.R_REPLACE_AT] = r[state.R_HEAD];
+        next_match(r, t, f);
+    } else if (k == 'a') {
+        while (r[state.R_MODE] == state.MODE_REPLACE_ASK) {
+            if (replace_match(r, t, u, ub, f)) {
+                next_match(r, t, f);
+            }
+        }
+    } else if (k == keys.K_ESC) {
+        finish_replace(r);
+    } else {
+        r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+    }
+}
+
+void load(inout I64[_] r, inout U8[_] t) {
+    U8[11] s = b"one two one";
+    buf.reset(r, t);
+    assert(buf.insert(r, t, 0, s));
+    cur.go(r, 0, false);
+    r[state.R_FIND_LEN] = 0;
+    r[state.R_MSG] = 0;
+}
+
+test "typing at the prompt searches as it goes" {
+    I64[64] r;
+    U8[32] t;
+    U8[16] f;
+    load(r, t);
+    cur.go(r, 2, false);
+    open_find(r);
+    key(r, t, f, 't');
+    assert(r[state.R_ANCHOR] == 4 && r[state.R_HEAD] == 5);
+    key(r, t, f, 'w');
+    assert(r[state.R_ANCHOR] == 4 && r[state.R_HEAD] == 6);
+    key(r, t, f, keys.K_ESC);
+    assert(r[state.R_MODE] == state.MODE_EDIT);
+    assert(r[state.R_HEAD] == 6);
+}
+
+test "next wraps around and says so" {
+    I64[64] r;
+    U8[32] t;
+    U8[16] f;
+    load(r, t);
+    open_find(r);
+    key(r, t, f, 'o');
+    key(r, t, f, 'n');
+    key(r, t, f, 'e');
+    assert(r[state.R_ANCHOR] == 0);
+    key(r, t, f, keys.K_F3);
+    assert(r[state.R_ANCHOR] == 8);
+    key(r, t, f, keys.K_F3);
+    assert(r[state.R_ANCHOR] == 0);
+    assert(r[state.R_MSG] == state.MSG_WRAPPED);
+    key(r, t, f, keys.K_F3 + keys.M_SHIFT);
+    assert(r[state.R_ANCHOR] == 8);
+}
+
+test "the first enter after typing accepts the match" {
+    I64[64] r;
+    U8[32] t;
+    U8[16] f;
+    load(r, t);
+    open_find(r);
+    key(r, t, f, 'o');
+    key(r, t, f, keys.K_ENTER);
+    assert(r[state.R_MODE] == state.MODE_EDIT);
+    assert(r[state.R_ANCHOR] == 0 && r[state.R_HEAD] == 1);
+}
+
+test "enter on the seed goes to the next match" {
+    I64[64] r;
+    U8[32] t;
+    U8[16] f;
+    load(r, t);
+    open_find(r);
+    key(r, t, f, 'o');
+    key(r, t, f, 'n');
+    key(r, t, f, keys.K_ENTER);
+    open_find(r);
+    key(r, t, f, keys.K_ENTER);
+    assert(r[state.R_MODE] == state.MODE_FIND);
+    assert(r[state.R_ANCHOR] == 8);
+}
+
+test "a typed key replaces the seed" {
+    I64[64] r;
+    U8[32] t;
+    U8[16] f;
+    load(r, t);
+    open_find(r);
+    key(r, t, f, 'o');
+    key(r, t, f, keys.K_ENTER);
+    open_find(r);
+    key(r, t, f, 't');
+    assert(r[state.R_FIND_LEN] == 1 && f[0] == 't');
+    assert(r[state.R_ANCHOR] == 4);
+}
+
+test "an empty query restores the selection" {
+    I64[64] r;
+    U8[32] t;
+    U8[16] f;
+    load(r, t);
+    r[state.R_ANCHOR] = 1;
+    r[state.R_HEAD] = 2;
+    open_find(r);
+    key(r, t, f, 'o');
+    assert(r[state.R_ANCHOR] == 6);
+    key(r, t, f, keys.K_BACKSPACE);
+    assert(r[state.R_ANCHOR] == 1 && r[state.R_HEAD] == 2);
+}
+
+test "no match leaves the selection and says not found" {
+    I64[64] r;
+    U8[32] t;
+    U8[16] f;
+    load(r, t);
+    cur.go(r, 3, false);
+    open_find(r);
+    key(r, t, f, 'z');
+    assert(r[state.R_MSG] == state.MSG_NOT_FOUND);
+    assert(r[state.R_HEAD] == 3);
+}
+
+test "go to line from the line count's position" {
+    I64[64] r;
+    U8[32] t;
+    buf.reset(r, t);
+    U8[12] s = b"a\nb\nc\nd\ne\nf\n";
+    assert(buf.insert(r, t, 0, s));
+    go_line(r, t, 5);
+    assert(r[state.R_HEAD] == 8);
+    assert(buf.lines_before(r, t, r[state.R_HEAD]) == 4);
+    go_line(r, t, 4);
+    assert(r[state.R_HEAD] == 6);
+    go_line(r, t, 1);
+    assert(r[state.R_HEAD] == 0);
+    go_line(r, t, 6);
+    assert(r[state.R_HEAD] == 10);
+    assert(buf.lines_before(r, t, 12) == 6);
+    go_line(r, t, 2);
+    assert(r[state.R_HEAD] == 2);
+}
+
+test "go to line, clamped to the file" {
+    I64[64] r;
+    U8[32] t;
+    buf.reset(r, t);
+    U8[5] s = b"a\nb\nc";
+    assert(buf.insert(r, t, 0, s));
+    go_line(r, t, 2);
+    assert(r[state.R_HEAD] == 2);
+    go_line(r, t, 99);
+    assert(r[state.R_HEAD] == 4);
+    go_line(r, t, 0);
+    assert(r[state.R_HEAD] == 0);
+}

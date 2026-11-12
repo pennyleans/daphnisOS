@@ -1,0 +1,91 @@
+// user/ci/kit/pen.ci: the chrome's pen (FONT-2 A, l 2026-11-10 04:20Z; docs/specs/2026-11-07-k-kit2.md section 3i).
+// The desk's chrome keeps its 1x geometry and draws it at a zoom z (1 or 2) on draw.ci's row contract: after at(ox,
+// oy, z, dy), the 1x point (ox, oy) is the device point (ox, oy), a 1x length is z device pixels, the row being drawn
+// is device row dy, and text is kit/ctext.ci's at z (the 2x tables at 2). Rectangles, frames and spans cover exactly
+// the device pixels a 1x drawing spread by z covers; text and widths are measured at z, so a centered or right
+// aligned text sits by its own width at that zoom. At z 1 every call is the 1x call it replaces.
+// tools/check-hdesk.py's pen_at, p_rect, p_frame, p_text, p_mid and p_right are its twin.
+import user.ci.kit.draw;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;   // FF 3g: the corners
+
+I64 pz = 1;
+I64 pox = 0;
+I64 poy = 0;
+I64 pdy = 0;
+
+// From now on 1x point (ox, oy) is device point (ox, oy), at zoom z, on device row dy.
+export void at(I64 ox, I64 oy, I64 z, I64 dy) {
+    pox = ox;
+    poy = oy;
+    pz = z;
+    pdy = dy;
+}
+
+export I64 zoom() { return pz; }
+export I64 row_y() { return pdy; }
+
+// A 1x coordinate as a device one.
+export I64 x(I64 v) { return pox + (v - pox) * pz; }
+export I64 y(I64 v) { return poy + (v - poy) * pz; }
+
+// The 1x span [x0, x1) on the row, whatever the row.
+export void paint(inout U32[_] row, I64 x0, I64 x1, U32 c) { draw.paint(row, x(x0), x(x1), c); }
+
+// The 1x rectangle [x0, x1) x [y0, y1) where it crosses the row.
+export void rect(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1, U32 c) {
+    draw.rect(row, pdy, x(x0), y(y0), x(x1), y(y1), c);
+}
+
+// The 1x frame [x0, x1) x [y0, y1), its band t 1x pixels, where it crosses the row.
+export void frame(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1, I64 t, U32 c) {
+    draw.frame(row, pdy, x(x0), y(y0), x(x1), y(y1), t * pz, c);
+}
+
+// The width of s[0..n] in role f at the zoom, in device pixels.
+export I64 width(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, pz); }
+
+// s[0..n] in role f from the 1x pen x0 on the 1x baseline base, no glyph past 1x x1; the device pen after.
+export I64 text(inout U32[_] row, I64 x0, I64 base, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return ctext.text(row, pdy, x(x0), y(base), x(x1), s, n, c, f, pz);
+}
+
+// The same from the device pen xd, no glyph past its own width at the zoom.
+export I64 text_dev(inout U32[_] row, I64 xd, I64 base, in U8[_] s, I64 n, U32 c, I64 f) {
+    return ctext.text(row, pdy, xd, y(base), xd + width(s, n, f), s, n, c, f, pz);
+}
+
+// The same centered in the 1x span from x0 by its width at the zoom, no glyph past 1x x1.
+export I64 text_mid(inout U32[_] row, I64 x0, I64 span, I64 base, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    I64 xd = x(x0) + (span * pz - width(s, n, f)) / 2;
+    return ctext.text(row, pdy, xd, y(base), x(x1), s, n, c, f, pz);
+}
+
+// The same ending at the 1x x, by its width at the zoom.
+export I64 text_right(inout U32[_] row, I64 xr, I64 base, in U8[_] s, I64 n, U32 c, I64 f) {
+    I64 xd = x(xr) - width(s, n, f);
+    return ctext.text(row, pdy, xd, y(base), x(xr), s, n, c, f, pz);
+}
+
+// FF 3g (the corners): the 1x rectangle [x0, x1) x [y0, y1) with corners of 1x radius r, where it crosses the row
+// (kit/shape.ci's edge samples at the zoom).
+export void round(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1, I64 r, U32 c) {
+    shape.rounded(row, pdy, x(x0), y(y0), x(x1), y(y1), r * pz, c);
+}
+
+// DN-36: the 1x rectangle with square top corners and bottom corners of 1x radius r (shape.lower_rounded at the
+// zoom).
+export void lower_round(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1, I64 r, U32 c) {
+    shape.lower_rounded(row, pdy, x(x0), y(y0), x(x1), y(y1), r * pz, c);
+}
+
+// DN-40: the focus ring of a FILL control, the 1x rectangle with corners of 1x radius r (shape.focus_ring at the zoom).
+export void focus_ring(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1, I64 r, U32 ground, U32 rc) {
+    shape.focus_ring(row, pdy, x(x0), y(y0), x(x1), y(y1), r * pz, pz, ground, rc);
+}
+
+// Its outline t 1x pixels thick, inside it.
+export void ring(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1, I64 r, I64 t, U32 c) {
+    shape.ring(row, pdy, x(x0), y(y0), x(x1), y(y1), r * pz, t * pz, c);
+}
+// SPDX-License-Identifier: Apache-2.0

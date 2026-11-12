@@ -1,0 +1,48 @@
+// user/ci/kit/blend.ci: MS-1 (docs/specs/2026-11-10-ms-motion-shadows.md, law 1), the desk's one blend. A pixel
+// p moves toward a color c by an alpha a in 256ths, 0 to 256, channel by channel, as law 1 writes it:
+// p - ((p - c) * a >> 8), the shift rounding toward minus infinity, so a = 0 leaves p and a = 256 gives c.
+// Coverage text (FONT-1, F4), rounded corners (AA-4) and shadows (MS-3) call it; tools/check-hdesk.py's mix and
+// mix_px are its twin.
+
+// One channel v toward w by a / 256.
+I64 step(I64 v, I64 w, I64 a) {
+    return v - (((v - w) * a) >> 8);
+}
+
+// Pixel p (0x00RRGGBB) toward c by a / 256; a is clamped to 0..256.
+export U32 mix_px(U32 p, U32 c, I64 a) {
+    if (a <= 0) { return p & 0xFFFFFF; }
+    if (a >= 256) { return c & 0xFFFFFF; }
+    I64 pv = (p & 0xFFFFFF) as I64;
+    I64 cv = (c & 0xFFFFFF) as I64;
+    I64 r = step((pv >> 16) & 255, (cv >> 16) & 255, a);
+    I64 g = step((pv >> 8) & 255, (cv >> 8) & 255, a);
+    I64 b = step(pv & 255, cv & 255, a);
+    return ((r << 16) | (g << 8) | b) as U32;
+}
+
+// The span [x0, x1) of row moved toward c by a / 256, cut to the row.
+export void mix(inout U32[_] row, I64 x0, I64 x1, U32 c, I64 a) {
+    I64 lo = x0;
+    I64 hi = x1;
+    if (lo < 0) { lo = 0; }
+    if (hi > len(row)) { hi = len(row); }
+    if (lo >= hi || a <= 0) { return; }
+    U32 cc = c & 0xFFFFFF;
+    if (a >= 256) {
+        for x in lo..hi { row[x] = cc; }
+        return;
+    }
+    I64 cv = cc as I64;
+    I64 cr = (cv >> 16) & 255;
+    I64 cg = (cv >> 8) & 255;
+    I64 cb = cv & 255;
+    for x in lo..hi {
+        I64 pv = (row[x] & 0xFFFFFF) as I64;
+        I64 r = step((pv >> 16) & 255, cr, a);
+        I64 g = step((pv >> 8) & 255, cg, a);
+        I64 b = step(pv & 255, cb, a);
+        row[x] = ((r << 16) | (g << 8) | b) as U32;
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

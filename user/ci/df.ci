@@ -1,0 +1,107 @@
+// user/ci/df.ci: df [-k] [FILE...] (docs/specs/2026-11-11-kf-facts.md, KF-1; POSIX XCU df): for the file system each
+// FILE is in (none: `/`, then `/home` when it is on another device), one row: the file system's kind, its size, used
+// and available space in units of 1,024 bytes, the share in use, and the FILE. -k names that unit, the only one.
+// Daphnis keeps no mount table and names no devices, so the first column is the kind statfs gives (`ext2`, `ramfs`,
+// `tmpfs`, else its magic number in hex) and the last the FILE as named, not a mount point (tests/core/DIFFS.md
+// D-64). The share is busybox's: used over used plus available, rounded to nearest.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.factsctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+
+I64[8] rec;
+I64[16] st;
+
+void spaces(I64 n) {
+    for k in 0..n { put.byte(' '); }
+}
+
+// The kind's name, left in 20 columns.
+void kind_name(I64 t) {
+    I64 n = 0;
+    if (t == factsctl.EXT) {
+        put.bytes(b"ext2");
+        n = 4;
+    } else if (t == factsctl.RAMFS) {
+        put.bytes(b"ramfs");
+        n = 5;
+    } else if (t == factsctl.TMPFS) {
+        put.bytes(b"tmpfs");
+        n = 5;
+    } else {
+        put.bytes(b"0x");
+        n = 2;
+        Bool any = false;
+        for i in 0..16 {
+            I64 nib = (t >> (4 * (15 - i))) & 15;
+            if (nib != 0 || any || i == 15) {
+                U8 c = (nib + 48) as U8;
+                if (nib > 9) { c = (nib + 87) as U8; }
+                put.byte(c);
+                n = n + 1;
+                any = true;
+            }
+        }
+    }
+    spaces(20 - n);
+}
+
+// Blocks of bsize bytes as units of 1,024 bytes, rounded down.
+I64 kib(I64 blocks, I64 bsize) {
+    return blocks * (bsize / 1024) + blocks * (bsize % 1024) / 1024;
+}
+
+// One row for path; false (and the reason on stderr) when statfs refuses it.
+Bool row(in U8[_] path) {
+    I64 r = factsctl.co_statfs(path, rec);
+    if (r < 0) {
+        msg.file(path, 0 - r);
+        return false;
+    }
+    I64 bs = rec[factsctl.SF_BSIZE];
+    I64 total = kib(rec[factsctl.SF_BLOCKS], bs);
+    I64 used = kib(rec[factsctl.SF_BLOCKS] - rec[factsctl.SF_BFREE], bs);
+    I64 avail = kib(rec[factsctl.SF_BAVAIL], bs);
+    I64 share = 0;
+    if (used + avail > 0) {
+        share = (used * 100 + (used + avail) / 2) / (used + avail);
+    }
+    kind_name(rec[factsctl.SF_TYPE]);
+    put.byte(' ');
+    put.num(total, 9);
+    put.byte(' ');
+    put.num(used, 9);
+    put.byte(' ');
+    put.num(avail, 9);
+    put.byte(' ');
+    put.num(share, 3);
+    put.bytes(b"% ");
+    put.bytes(path);
+    put.byte('\n');
+    return true;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"df");
+    args.parse(a, b"k", b"");
+    put.bytes(b"Filesystem           1K-blocks      Used Available Use% File\n");
+    I64 n = args.operands();
+    if (n == 0) {
+        _ = row(b"/");
+        I64 root_dev = -1;
+        if (corectl.co_stat(b"/", 1, st) == 0) {
+            root_dev = st[corectl.ST_DEV];
+        }
+        if (corectl.co_stat(b"/home", 1, st) == 0 && st[corectl.ST_DEV] != root_dev) {
+            _ = row(b"/home");
+        }
+    }
+    for i in 0..n {
+        _ = row(a[args.op_start(i)..args.op_stop(a, i)]);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

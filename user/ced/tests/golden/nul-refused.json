@@ -1,0 +1,19 @@
+{
+  "id": "nul-refused",
+  "rules": [
+    "TEXT-1"
+  ],
+  "text": "a\u0000b",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [],
+  "expect": {
+    "refused": 2
+  }
+}

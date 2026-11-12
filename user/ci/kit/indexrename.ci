@@ -1,0 +1,420 @@
+// user/ci/kit/indexrename.ci: rename in place (frame 32, design note 52; DN-58): the name field over a Grid cell or a
+// List row, and the line editor under it that Properties' name field shares (kit/indexprops.ci). F2 or a slow second
+// click begins it; the stem is selected, the ending is not (a folder's whole name is). It keeps what the program tells
+// it, reads no file and no device, so tests/ix/indexrename_test.ci runs it hosted.
+//
+// The field (frame 32, RENAME IN PLACE): 20 high, radius 4, MANTLE, a 2 px ULTRAMARINE ring outside it, 6 in on each
+// side; the text INK, the selection FILL behind ON_FILL text (design note 62), the caret 1 px INK. In a Grid cell it
+// is centered on the name's line (the cell's 74 to 89, so the icon does not move) in SMALL, at most the cell's 100;
+// in a List row it starts 6 before the name in BODY, centered in the row, and ends at the NAME column's end. It is as
+// wide as its text and 12 (at least MIN_W); a longer text scrolls so the caret shows.
+//
+// Keys: a printable byte replaces the selection; Backspace and Delete; Left, Right, Home, End move (Shift extends);
+// Ctrl+A selects all; Enter commits; Esc cancels. '/' and a byte under 32 are never taken. A name that is empty, "."
+// or "..", or begins with a dot (DN-57 would hide it, and Index has no way back to it) is refused: Enter keeps the
+// field open with all selected, nothing renamed. The same when the program finds the name taken (refuse()). A click
+// in the field moves the caret; a click outside commits a good name and cancels a refused one.
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.shape;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+
+export const I64 NAME = 255;         // a name's bytes at most
+export const I64 FIELD_H = 20;
+export const I64 PAD = 6;            // the text's inset in the field
+export const I64 RING = 2;
+export const I64 MIN_W = 24;
+export const I64 CELL_W = 112;       // kit/indexbody.ci's cell, whose name line the field covers
+export const I64 CELL_H = 104;
+export const I64 CELL_NAME = 100;    // a cell's name at most
+const I64 LINE_Y = 74;               // the cell's name line: 15 high (SMALL) from 74
+const I64 ROW_H = 28;                // a List row
+
+// What key and click answer.
+export const I64 STAY = 0;           // taken; the field stays
+export const I64 COMMIT = 1;         // the program renames to text() (verdict() is NEW) or closes (SAME)
+export const I64 CANCEL = 2;         // the old name stays
+export const I64 PASS = 3;           // not the field's: the program's
+
+// verdict()
+export const I64 SAME = 0;
+export const I64 NEW = 1;
+export const I64 BAD = 2;
+
+// Where the field is drawn.
+export const I64 GRID = 0;
+export const I64 LIST = 1;
+
+// What a second click on the one chosen entry does (second()).
+export const I64 NOTHING = 0;
+export const I64 OPEN = 1;
+export const I64 RENAME = 2;
+export const I64 DOUBLE_MS = 400;    // a second click sooner opens; later, on the name, renames
+
+const I64 K_ESC = 1;
+const I64 K_BACKSPACE = 14;
+const I64 K_ENTER = 28;
+const I64 K_A = 30;
+const I64 K_HOME = 102;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+const I64 K_END = 107;
+const I64 K_DELETE = 111;
+
+Bool on = false;
+U8[255] t;
+I64 tn = 0;
+U8[255] was;
+I64 wn = 0;
+I64 car = 0;                         // the caret, a byte offset on a code point's start
+I64 anc = 0;                         // the selection's other end; anc == car: none
+I64 sx = 0;                          // the text scrolled left by sx pixels
+I64 place = GRID;
+I64 fx0 = 0;                         // GRID: the cell's top left; LIST: the name's pen, the column's end, the row's top
+I64 fy0 = 0;
+I64 fx1 = 0;
+U32[3840] scr;                       // a row drawn before the field's inside is copied back (left clip)
+
+U32 tok(I64 k) { return tokens.word(k); }
+
+// --- the line ---
+
+Bool cont(U8 b) { return (b & 0xC0) == 0x80; }
+
+// The code point start before (after) byte offset i.
+I64 back(I64 i) {
+    I64 k = i;
+    if (k > 0) { k = k - 1; }
+    while (k > 0 && cont(t[k])) { k = k - 1; }
+    return k;
+}
+
+I64 fore(I64 i) {
+    I64 k = i;
+    if (k < tn) { k = k + 1; }
+    while (k < tn && cont(t[k])) { k = k + 1; }
+    return k;
+}
+
+I64 lo() {
+    if (anc < car) { return anc; }
+    return car;
+}
+
+I64 hi() {
+    if (anc > car) { return anc; }
+    return car;
+}
+
+// The stem: up to the last '.' past the first byte, the whole name for a folder or a name with no ending.
+I64 stem(Bool dir) {
+    if (dir) { return tn; }
+    I64 e = tn;
+    for i in 1..tn {
+        if (t[i] == '.') { e = i; }
+    }
+    return e;
+}
+
+// Begins editing name s, the stem selected (frame 32): the caret at the stem's end.
+export void begin(in U8[_] s, Bool dir) {
+    I64 n = len(s);
+    if (n > NAME) { n = NAME; }
+    for k in 0..n {
+        t[k] = s[k];
+        was[k] = s[k];
+    }
+    tn = n;
+    wn = n;
+    anc = 0;
+    car = stem(dir);
+    sx = 0;
+    on = true;
+}
+
+export void end() { on = false; }
+export Bool active() { return on; }
+
+// The text now into dst; its length.
+export I64 text(inout U8[_] dst) {
+    for k in 0..tn { dst[k] = t[k]; }
+    return tn;
+}
+
+export I64 caret() { return car; }
+export I64 sel_lo() { return lo(); }
+export I64 sel_hi() { return hi(); }
+
+// SAME: the old name; BAD: empty, ".", "..", or a leading dot; NEW: a name to rename to.
+export I64 verdict() {
+    if (tn == wn) {
+        Bool same = true;
+        for k in 0..tn {
+            if (t[k] != was[k]) { same = false; }
+        }
+        if (same) { return SAME; }
+    }
+    if (tn == 0 || t[0] == '.') { return BAD; }
+    return NEW;
+}
+
+// The program found the name taken (or the rename refused): the field stays, all selected.
+export void refuse() {
+    anc = 0;
+    car = tn;
+}
+
+void cut_sel() {
+    I64 a = lo();
+    I64 b = hi();
+    if (a == b) { return; }
+    for k in b..tn { t[a + k - b] = t[k]; }
+    tn = tn - (b - a);
+    car = a;
+    anc = a;
+}
+
+// Byte c typed: it replaces the selection. False, and nothing changed, for '/', a control byte, or past NAME.
+export Bool typed(U8 c) {
+    if (!on || c < 32 || c == 127 || c == '/') { return false; }
+    if (tn - (hi() - lo()) + 1 > NAME) { return false; }
+    cut_sel();
+    I64 k = tn;
+    while (k > car) {
+        t[k] = t[k - 1];
+        k = k - 1;
+    }
+    t[car] = c;
+    tn = tn + 1;
+    car = car + 1;
+    anc = car;
+    return true;
+}
+
+I64 commit() {
+    if (verdict() == BAD) {
+        refuse();
+        return STAY;
+    }
+    return COMMIT;
+}
+
+// Key code c (Linux input codes) with Shift and Ctrl as held.
+export I64 key(I64 c, Bool shift, Bool ctrl) {
+    if (!on) { return PASS; }
+    if (c == K_ESC) { return CANCEL; }
+    if (c == K_ENTER) { return commit(); }
+    if (ctrl && c == K_A) {
+        anc = 0;
+        car = tn;
+        return STAY;
+    }
+    if (c == K_BACKSPACE || c == K_DELETE) {
+        if (lo() == hi()) {
+            if (c == K_BACKSPACE) { anc = back(car); } else { anc = fore(car); }
+        }
+        cut_sel();
+        return STAY;
+    }
+    I64 to = -1;
+    if (c == K_LEFT) {
+        to = back(car);
+        if (!shift && lo() != hi()) { to = lo(); }
+    }
+    if (c == K_RIGHT) {
+        to = fore(car);
+        if (!shift && lo() != hi()) { to = hi(); }
+    }
+    if (c == K_HOME) { to = 0; }
+    if (c == K_END) { to = tn; }
+    if (to < 0) { return STAY; }       // the field keeps every other key while it is up
+    car = to;
+    if (!shift) { anc = car; }
+    return STAY;
+}
+
+// --- place the field is ---
+
+// Over the Grid cell whose top left is (cx, cy), as kit/indexbody.ci draws it.
+export void at_grid(I64 cx, I64 cy) {
+    place = GRID;
+    fx0 = cx;
+    fy0 = cy;
+}
+
+// Over a List row: the name's pen at x0 (kit/indexbody.ci's name_x() + 26), the NAME column's end x1, the row's top
+// ry.
+export void at_list(I64 x0, I64 x1, I64 ry) {
+    place = LIST;
+    fx0 = x0;
+    fx1 = x1;
+    fy0 = ry;
+}
+
+I64 face() {
+    if (place == LIST) { return faces.BODY; }
+    return faces.SMALL;
+}
+
+I64 tw() { return ctext.width(t, tn, face(), 1); }
+
+// The field's box [bx0, bx1) x [by0, by0 + FIELD_H).
+export I64 box_x0() {
+    if (place == LIST) { return fx0 - PAD; }
+    return fx0 + (CELL_W - box_w()) / 2;
+}
+
+export I64 box_x1() { return box_x0() + box_w(); }
+
+export I64 box_y0() {
+    if (place == LIST) { return fy0 + (ROW_H - FIELD_H) / 2; }
+    return fy0 + LINE_Y - 2;
+}
+
+I64 box_w() {
+    I64 most = CELL_NAME;
+    if (place == LIST) { most = fx1 - (fx0 - PAD); }
+    I64 w = tw() + 2 * PAD;
+    if (w < MIN_W) { w = MIN_W; }
+    if (w > most) { w = most; }
+    return w;
+}
+
+// The editor's text on row y, clipped to [x0, x1) and scrolled to keep the caret in it: its pen from x0 on baseline
+// base in face f; the selection FILL from sy0 to sy1 behind ON_FILL text, else the caret. kit/indexprops.ci draws its
+// name field by it.
+export void line(inout U32[_] row, I64 y, I64 x0, I64 x1, I64 base, I64 sy0, I64 sy1, I64 f) {
+    I64 room = x1 - x0 - 1;
+    I64 c = ctext.width(t, car, f, 1);
+    if (c - sx > room) { sx = c - room; }
+    if (c - sx < 0) { sx = c; }
+    I64 w = ctext.width(t, tn, f, 1);
+    if (w - sx < room && sx > 0) {
+        sx = w - room;
+        if (sx < 0) { sx = 0; }
+    }
+    I64 n = len(row);
+    if (n > 3840) { n = 3840; }
+    for x in 0..n { scr[x] = row[x]; }
+    I64 px = x0 - sx;
+    I64 a = lo();
+    I64 b = hi();
+    if (a != b && y >= sy0 && y < sy1) {
+        I64 l = px + ctext.width(t, a, f, 1);
+        I64 r = px + ctext.width(t, b, f, 1);
+        draw.paint(scr, l, r, tok(tokens.FILL));
+    }
+    I64 e = px;
+    if (a > 0) { e = ctext.text(scr, y, e, base, 1 << 20, t[0..a], a, tok(tokens.INK), f, 1); }
+    if (b > a) { e = ctext.text(scr, y, e, base, 1 << 20, t[a..b], b - a, tok(tokens.ON_FILL), f, 1); }
+    if (tn > b) { e = ctext.text(scr, y, e, base, 1 << 20, t[b..tn], tn - b, tok(tokens.INK), f, 1); }
+    if (a == b && y >= sy0 && y < sy1) {
+        I64 cx = px + c;
+        if (cx >= x1) { cx = x1 - 1; }
+        draw.paint(scr, cx, cx + 1, tok(tokens.INK));
+    }
+    I64 lx = x0;
+    I64 rx = x1;
+    if (lx < 0) { lx = 0; }
+    if (rx > n) { rx = n; }
+    for x in lx..rx { row[x] = scr[x]; }
+}
+
+// The field on row y, over the body after kit/indexbody.ci drew it: the name's line cleared to the chosen cell's or
+// row's FILL, then the ring, the field and the line.
+export void row_at(inout U32[_] row, I64 y) {
+    if (!on) { return; }
+    I64 bx0 = box_x0();
+    I64 bx1 = box_x1();
+    I64 by0 = box_y0();
+    I64 by1 = by0 + FIELD_H;
+    if (y < by0 - RING || y >= by1 + RING) { return; }
+    if (place == GRID) {
+        draw.paint(row, fx0 + 4, fx0 + CELL_W - 4, tok(tokens.FILL));
+    } else {
+        draw.paint(row, bx0 - RING, fx1, tok(tokens.FILL));
+    }
+    shape.rounded(row, y, bx0 - RING, by0 - RING, bx1 + RING, by1 + RING, 4 + RING, tok(tokens.ULTRAMARINE));
+    shape.rounded(row, y, bx0, by0, bx1, by1, 4, tok(tokens.MANTLE));
+    if (y < by0 || y >= by1) { return; }
+    I64 f = face();
+    I64 a = ctext.ascent(f, 1);
+    I64 d = ctext.descent(f, 1);
+    I64 base = by0 + (FIELD_H - a - d) / 2 + a;
+    line(row, y, bx0 + PAD, bx1 - PAD, base, by0 + 3, by1 - 3, f);
+}
+
+// --- the pointer ---
+
+// The caret for a click at x in a line drawn from x0 (before the scroll): the nearest code point boundary.
+I64 caret_at(I64 x, I64 x0, I64 f) {
+    I64 best = 0;
+    I64 bd = 1 << 30;
+    I64 i = 0;
+    while (true) {
+        I64 d = x0 - sx + ctext.width(t, i, f, 1) - x;
+        if (d < 0) { d = 0 - d; }
+        if (d < bd) {
+            bd = d;
+            best = i;
+        }
+        if (i >= tn) { return best; }
+        i = fore(i);
+    }
+    return best;
+}
+
+// A press at (x, y): inside the field the caret moves there (Shift extends); outside a good name commits and a
+// refused one cancels.
+export I64 click(I64 x, I64 y, Bool shift) {
+    if (!on) { return PASS; }
+    I64 by0 = box_y0();
+    if (x >= box_x0() && x < box_x1() && y >= by0 && y < by0 + FIELD_H) {
+        car = caret_at(x, box_x0() + PAD, face());
+        if (!shift) { anc = car; }
+        return STAY;
+    }
+    return leave();
+}
+
+// The field loses the keyboard (a click elsewhere, the window's focus): COMMIT for a good name, else CANCEL.
+export I64 leave() {
+    if (!on) { return PASS; }
+    if (verdict() == BAD) { return CANCEL; }
+    return COMMIT;
+}
+
+// A Properties field (kit/indexprops.ci): a press at x in its line drawn from x0 moves the caret.
+export void click_line(I64 x, I64 x0, I64 f, Bool shift) {
+    car = caret_at(x, x0, f);
+    if (!shift) { anc = car; }
+}
+
+// --- when renaming begins ---
+
+// A second press on the one chosen entry, dt_ms after the first: sooner than DOUBLE_MS opens it, later on its name
+// renames it (frame 32: "a slow second click"), later elsewhere does nothing.
+export I64 second(I64 dt_ms, Bool on_name) {
+    if (dt_ms >= 0 && dt_ms < DOUBLE_MS) { return OPEN; }
+    if (on_name) { return RENAME; }
+    return NOTHING;
+}
+
+// Whether (x, y) is on name s's line in the Grid cell at (cx, cy): the field's band, the name's width and 6 a side.
+export Bool on_name_grid(I64 x, I64 y, I64 cx, I64 cy, in U8[_] s) {
+    I64 w = ctext.width(s, len(s), faces.SMALL, 1);
+    if (w > CELL_NAME) { w = CELL_NAME; }
+    I64 nx = cx + (CELL_W - w) / 2;
+    return x >= nx - PAD && x < nx + w + PAD && y >= cy + LINE_Y - 2 && y < cy + LINE_Y - 2 + FIELD_H;
+}
+
+// Whether (x, y) is on name s in the List row at ry, its pen at x0 and its column ending at x1 (the chosen row's
+// NAME_BOLD).
+export Bool on_name_list(I64 x, I64 y, I64 x0, I64 x1, I64 ry, in U8[_] s) {
+    I64 w = ctext.width(s, len(s), faces.NAME_BOLD, 1);
+    I64 e = x0 + w;
+    if (e > x1) { e = x1; }
+    return x >= x0 && x < e && y >= ry && y < ry + ROW_H;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,477 @@
+$ a-z A-Z < words.txt
+APPLE 3
+BANANA 10
+CHERRY 2
+APPLE 3
+APPLE 3
+BANANA 1
+DATE 7
+  ELDER 12
+FIG 0.5
+FIG -4
+GRAPE 3
+
+HELLO, WORLD.
+FOO(BAR) = [BAZ]
+X*Y+Z?
+END$ ^START
+AAA
+AB
+ABAB
+123-456-7890
+COLOR COLOUR
+TAB	HERE
+status 0
+$ '[:lower:]' '[:upper:]' < words.txt
+APPLE 3
+BANANA 10
+CHERRY 2
+APPLE 3
+APPLE 3
+BANANA 1
+DATE 7
+  ELDER 12
+FIG 0.5
+FIG -4
+GRAPE 3
+
+HELLO, WORLD.
+FOO(BAR) = [BAZ]
+X*Y+Z?
+END$ ^START
+AAA
+AB
+ABAB
+123-456-7890
+COLOR COLOUR
+TAB	HERE
+status 0
+$ '[:upper:]' '[:lower:]' < words.txt
+apple 3
+banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -d '[:digit:]' < words.txt
+apple 
+Banana 
+cherry 
+apple 
+apple 
+banana 
+Date 
+  elder 
+fig .
+fig -
+grape 
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+--
+color colour
+tab	here
+status 0
+$ -d a-c < words.txt
+pple 3
+Bnn 10
+herry 2
+pple 3
+pple 3
+nn 1
+Dte 7
+  elder 12
+fig 0.5
+fig -4
+grpe 3
+
+Hello, world.
+foo(r) = [z]
+x*y+z?
+end$ ^strt
+
+
+
+123-456-7890
+olor olour
+t	here
+status 0
+$ -s ' ' < text.txt
+one two three
+four five
+
+six	seven eight
+nine
+status 0
+$ -s a-z < words.txt
+aple 3
+Banana 10
+chery 2
+aple 3
+aple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Helo, world.
+fo(bar) = [baz]
+x*y+z?
+end$ ^start
+a
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -cd '[:alnum:]\n' < words.txt
+apple3
+Banana10
+cherry2
+apple3
+apple3
+banana1
+Date7
+elder12
+fig05
+fig4
+grape3
+
+Helloworld
+foobarbaz
+xyz
+endstart
+aaa
+ab
+abab
+1234567890
+colorcolour
+tabhere
+status 0
+$ -c a-z _ < words.txt
+apple____anana____cherry___apple___apple___banana____ate_____elder____fig_____fig____grape_____ello__world__foo_bar_____baz__x_y_z__end___start_aaa_ab_abab______________color_colour_tab_here_status 0
+$ abc x < words.txt
+xpple 3
+Bxnxnx 10
+xherry 2
+xpple 3
+xpple 3
+xxnxnx 1
+Dxte 7
+  elder 12
+fig 0.5
+fig -4
+grxpe 3
+
+Hello, world.
+foo(xxr) = [xxz]
+x*y+z?
+end$ ^stxrt
+xxx
+xx
+xxxx
+123-456-7890
+xolor xolour
+txx	here
+status 0
+$ abc xy < words.txt
+xpple 3
+Bxnxnx 10
+yherry 2
+xpple 3
+xpple 3
+yxnxnx 1
+Dxte 7
+  elder 12
+fig 0.5
+fig -4
+grxpe 3
+
+Hello, world.
+foo(yxr) = [yxz]
+x*y+z?
+end$ ^stxrt
+xxx
+xy
+xyxy
+123-456-7890
+yolor yolour
+txy	here
+status 0
+$ -ds a p < words.txt
+ple 3
+Bnn 10
+cherry 2
+ple 3
+ple 3
+bnn 1
+Dte 7
+  elder 12
+fig 0.5
+fig -4
+grpe 3
+
+Hello, world.
+foo(br) = [bz]
+x*y+z?
+end$ ^strt
+
+b
+bb
+123-456-7890
+color colour
+tb	here
+status 0
+$ -s a-z A-Z < words.txt
+APLE 3
+BANANA 10
+CHERY 2
+APLE 3
+APLE 3
+BANANA 1
+DATE 7
+  ELDER 12
+FIG 0.5
+FIG -4
+GRAPE 3
+
+HELO, WORLD.
+FO(BAR) = [BAZ]
+X*Y+Z?
+END$ ^START
+A
+AB
+ABAB
+123-456-7890
+COLOR COLOUR
+TAB	HERE
+status 0
+$ '\n\t' 'NT' < text.txt
+one two threeNfour  fiveNNsixTseven eightNnineNstatus 0
+$ '\101\142' qr < words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+ranana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(rar) = [raz]
+x*y+z?
+end$ ^start
+aaa
+ar
+arar
+123-456-7890
+color colour
+tar	here
+status 0
+$ '[=a=]' Q < words.txt
+Qpple 3
+BQnQnQ 10
+cherry 2
+Qpple 3
+Qpple 3
+bQnQnQ 1
+DQte 7
+  elder 12
+fig 0.5
+fig -4
+grQpe 3
+
+Hello, world.
+foo(bQr) = [bQz]
+x*y+z?
+end$ ^stQrt
+QQQ
+Qb
+QbQb
+123-456-7890
+color colour
+tQb	here
+status 0
+$ '\\' / < words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ a- xy < words.txt
+xpple 3
+Bxnxnx 10
+cherry 2
+xpple 3
+xpple 3
+bxnxnx 1
+Dxte 7
+  elder 12
+fig 0.5
+fig y4
+grxpe 3
+
+Hello, world.
+foo(bxr) = [bxz]
+x*y+z?
+end$ ^stxrt
+xxx
+xb
+xbxb
+123y456y7890
+color colour
+txb	here
+status 0
+$ -- -a xy < words.txt
+ypple 3
+Bynyny 10
+cherry 2
+ypple 3
+ypple 3
+bynyny 1
+Dyte 7
+  elder 12
+fig 0.5
+fig x4
+grype 3
+
+Hello, world.
+foo(byr) = [byz]
+x*y+z?
+end$ ^styrt
+yyy
+yb
+ybyb
+123x456x7890
+color colour
+tyb	here
+status 0
+$ '\200-\377' '?' < utf8.txt
+h??llo w??rld
+??
+??? 5
+status 0
+$ -d '\000-\037' < long.txt
+line 0 of long.txt line 1 of long.txt xline 2 of long.txt xxline 3 of long.txt xxxline 4 of long.txt xxxxline 5 of long.txt xxxxxline 6 of long.txt xxxxxxline 7 of long.txt xxxxxxxline 8 of long.txt xxxxxxxxline 9 of long.txt xxxxxxxxxline 10 of long.txt xxxxxxxxxxline 11 of long.txt xxxxxxxxxxxline 12 of long.txt xxxxxxxxxxxxline 13 of long.txt xxxxxxxxxxxxxline 14 of long.txt xxxxxxxxxxxxxxline 15 of long.txt xxxxxxxxxxxxxxxline 16 of long.txt xxxxxxxxxxxxxxxxline 17 of long.txt xxxxxxxxxxxxxxxxxline 18 of long.txt xxxxxxxxxxxxxxxxxxline 19 of long.txt xxxxxxxxxxxxxxxxxxxline 20 of long.txt xxxxxxxxxxxxxxxxxxxxline 21 of long.txt xxxxxxxxxxxxxxxxxxxxxline 22 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 23 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 24 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 25 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 26 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 27 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 28 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 29 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 30 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 31 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 32 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 33 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 34 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 35 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 36 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 37 of long.txt line 38 of long.txt xline 39 of long.txt xxline 40 of long.txt xxxline 41 of long.txt xxxxline 42 of long.txt xxxxxline 43 of long.txt xxxxxxline 44 of long.txt xxxxxxxline 45 of long.txt xxxxxxxxline 46 of long.txt xxxxxxxxxline 47 of long.txt xxxxxxxxxxline 48 of long.txt xxxxxxxxxxxline 49 of long.txt xxxxxxxxxxxxline 50 of long.txt xxxxxxxxxxxxxline 51 of long.txt xxxxxxxxxxxxxxline 52 of long.txt xxxxxxxxxxxxxxxline 53 of long.txt xxxxxxxxxxxxxxxxline 54 of long.txt xxxxxxxxxxxxxxxxxline 55 of long.txt xxxxxxxxxxxxxxxxxxline 56 of long.txt xxxxxxxxxxxxxxxxxxxline 57 of long.txt xxxxxxxxxxxxxxxxxxxxline 58 of long.txt xxxxxxxxxxxxxxxxxxxxxline 59 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 60 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 61 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 62 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 63 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 64 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 65 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 66 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 67 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 68 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 69 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 70 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 71 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 72 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 73 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 74 of long.txt line 75 of long.txt xline 76 of long.txt xxline 77 of long.txt xxxline 78 of long.txt xxxxline 79 of long.txt xxxxxline 80 of long.txt xxxxxxline 81 of long.txt xxxxxxxline 82 of long.txt xxxxxxxxline 83 of long.txt xxxxxxxxxline 84 of long.txt xxxxxxxxxxline 85 of long.txt xxxxxxxxxxxline 86 of long.txt xxxxxxxxxxxxline 87 of long.txt xxxxxxxxxxxxxline 88 of long.txt xxxxxxxxxxxxxxline 89 of long.txt xxxxxxxxxxxxxxxline 90 of long.txt xxxxxxxxxxxxxxxxline 91 of long.txt xxxxxxxxxxxxxxxxxline 92 of long.txt xxxxxxxxxxxxxxxxxxline 93 of long.txt xxxxxxxxxxxxxxxxxxxline 94 of long.txt xxxxxxxxxxxxxxxxxxxxline 95 of long.txt xxxxxxxxxxxxxxxxxxxxxline 96 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 97 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 98 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 99 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 100 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 101 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 102 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 103 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 104 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 105 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 106 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 107 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 108 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 109 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 110 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 111 of long.txt line 112 of long.txt xline 113 of long.txt xxline 114 of long.txt xxxline 115 of long.txt xxxxline 116 of long.txt xxxxxline 117 of long.txt xxxxxxline 118 of long.txt xxxxxxxline 119 of long.txt xxxxxxxxline 120 of long.txt xxxxxxxxxline 121 of long.txt xxxxxxxxxxline 122 of long.txt xxxxxxxxxxxline 123 of long.txt xxxxxxxxxxxxline 124 of long.txt xxxxxxxxxxxxxline 125 of long.txt xxxxxxxxxxxxxxline 126 of long.txt xxxxxxxxxxxxxxxline 127 of long.txt xxxxxxxxxxxxxxxxline 128 of long.txt xxxxxxxxxxxxxxxxxline 129 of long.txt xxxxxxxxxxxxxxxxxxline 130 of long.txt xxxxxxxxxxxxxxxxxxxline 131 of long.txt xxxxxxxxxxxxxxxxxxxxline 132 of long.txt xxxxxxxxxxxxxxxxxxxxxline 133 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 134 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 135 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 136 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 137 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 138 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 139 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 140 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 141 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 142 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 143 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 144 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 145 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 146 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 147 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 148 of long.txt line 149 of long.txt xline 150 of long.txt xxline 151 of long.txt xxxline 152 of long.txt xxxxline 153 of long.txt xxxxxline 154 of long.txt xxxxxxline 155 of long.txt xxxxxxxline 156 of long.txt xxxxxxxxline 157 of long.txt xxxxxxxxxline 158 of long.txt xxxxxxxxxxline 159 of long.txt xxxxxxxxxxxline 160 of long.txt xxxxxxxxxxxxline 161 of long.txt xxxxxxxxxxxxxline 162 of long.txt xxxxxxxxxxxxxxline 163 of long.txt xxxxxxxxxxxxxxxline 164 of long.txt xxxxxxxxxxxxxxxxline 165 of long.txt xxxxxxxxxxxxxxxxxline 166 of long.txt xxxxxxxxxxxxxxxxxxline 167 of long.txt xxxxxxxxxxxxxxxxxxxline 168 of long.txt xxxxxxxxxxxxxxxxxxxxline 169 of long.txt xxxxxxxxxxxxxxxxxxxxxline 170 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 171 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 172 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 173 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 174 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 175 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 176 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 177 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 178 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 179 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 180 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 181 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 182 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 183 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 184 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 185 of long.txt line 186 of long.txt xline 187 of long.txt xxline 188 of long.txt xxxline 189 of long.txt xxxxline 190 of long.txt xxxxxline 191 of long.txt xxxxxxline 192 of long.txt xxxxxxxline 193 of long.txt xxxxxxxxline 194 of long.txt xxxxxxxxxline 195 of long.txt xxxxxxxxxxline 196 of long.txt xxxxxxxxxxxline 197 of long.txt xxxxxxxxxxxxline 198 of long.txt xxxxxxxxxxxxxline 199 of long.txt xxxxxxxxxxxxxxline 200 of long.txt xxxxxxxxxxxxxxxline 201 of long.txt xxxxxxxxxxxxxxxxline 202 of long.txt xxxxxxxxxxxxxxxxxline 203 of long.txt xxxxxxxxxxxxxxxxxxline 204 of long.txt xxxxxxxxxxxxxxxxxxxline 205 of long.txt xxxxxxxxxxxxxxxxxxxxline 206 of long.txt xxxxxxxxxxxxxxxxxxxxxline 207 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 208 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 209 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 210 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 211 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 212 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 213 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 214 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 215 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 216 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 217 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 218 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 219 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 220 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 221 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 222 of long.txt line 223 of long.txt xline 224 of long.txt xxline 225 of long.txt xxxline 226 of long.txt xxxxline 227 of long.txt xxxxxline 228 of long.txt xxxxxxline 229 of long.txt xxxxxxxline 230 of long.txt xxxxxxxxline 231 of long.txt xxxxxxxxxline 232 of long.txt xxxxxxxxxxline 233 of long.txt xxxxxxxxxxxline 234 of long.txt xxxxxxxxxxxxline 235 of long.txt xxxxxxxxxxxxxline 236 of long.txt xxxxxxxxxxxxxxline 237 of long.txt xxxxxxxxxxxxxxxline 238 of long.txt xxxxxxxxxxxxxxxxline 239 of long.txt xxxxxxxxxxxxxxxxxline 240 of long.txt xxxxxxxxxxxxxxxxxxline 241 of long.txt xxxxxxxxxxxxxxxxxxxline 242 of long.txt xxxxxxxxxxxxxxxxxxxxline 243 of long.txt xxxxxxxxxxxxxxxxxxxxxline 244 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 245 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 246 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 247 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 248 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 249 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 250 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 251 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 252 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 253 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 254 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 255 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 256 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 257 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 258 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 259 of long.txt line 260 of long.txt xline 261 of long.txt xxline 262 of long.txt xxxline 263 of long.txt xxxxline 264 of long.txt xxxxxline 265 of long.txt xxxxxxline 266 of long.txt xxxxxxxline 267 of long.txt xxxxxxxxline 268 of long.txt xxxxxxxxxline 269 of long.txt xxxxxxxxxxline 270 of long.txt xxxxxxxxxxxline 271 of long.txt xxxxxxxxxxxxline 272 of long.txt xxxxxxxxxxxxxline 273 of long.txt xxxxxxxxxxxxxxline 274 of long.txt xxxxxxxxxxxxxxxline 275 of long.txt xxxxxxxxxxxxxxxxline 276 of long.txt xxxxxxxxxxxxxxxxxline 277 of long.txt xxxxxxxxxxxxxxxxxxline 278 of long.txt xxxxxxxxxxxxxxxxxxxline 279 of long.txt xxxxxxxxxxxxxxxxxxxxline 280 of long.txt xxxxxxxxxxxxxxxxxxxxxline 281 of long.txt xxxxxxxxxxxxxxxxxxxxxxline 282 of long.txt xxxxxxxxxxxxxxxxxxxxxxxline 283 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxline 284 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxline 285 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxline 286 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxline 287 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxline 288 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 289 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 290 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 291 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 292 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 293 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 294 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 295 of long.txt xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxline 296 of long.txt line 297 of long.txt xline 298 of long.txt xxline 299 of long.txt xxxyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyystatus 0
+$ -c a-z '[_*]' < words.txt
+apple____anana____cherry___apple___apple___banana____ate_____elder____fig_____fig____grape_____ello__world__foo_bar_____baz__x_y_z__end___start_aaa_ab_abab______________color_colour_tab_here_status 0
+$ a-z '[x*]' < words.txt
+xxxxx 3
+Bxxxxx 10
+xxxxxx 2
+xxxxx 3
+xxxxx 3
+xxxxxx 1
+Dxxx 7
+  xxxxx 12
+xxx 0.5
+xxx -4
+xxxxx 3
+
+Hxxxx, xxxxx.
+xxx(xxx) = [xxx]
+x*x+x?
+xxx$ ^xxxxx
+xxx
+xx
+xxxx
+123-456-7890
+xxxxx xxxxxx
+xxx	xxxx
+status 0
+$ a-z 'A[-*3]B' < words.txt
+ABBBB 3
+BABABA 10
+-BBBBB 2
+ABBBB 3
+ABBBB 3
+-ABABA 1
+DABB 7
+  BB-BB 12
+BBB 0.5
+BBB -4
+BBABB 3
+
+HBBBB, BBBB-.
+BBB(-AB) = [-AB]
+B*B+B?
+BB-$ ^BBABB
+AAA
+A-
+A-A-
+123-456-7890
+-BBBB -BBBBB
+BA-	BBBB
+status 0
+$ -C '[:print:]\n' '?' < utf8.txt
+h??llo w??rld
+??
+??? 5
+status 0
+$ a '' < words.txt
+-- stderr
+tr: SET2 is empty
+status 2
+$ z-a x < words.txt
+-- stderr
+tr: range-endpoints out of order
+status 2
+$ a < words.txt
+-- stderr
+tr: missing operand after SET1
+status 2
+$  < words.txt
+-- stderr
+tr: missing operand
+status 2
+$ '[:nope:]' x < words.txt
+-- stderr
+tr: invalid character class
+status 2

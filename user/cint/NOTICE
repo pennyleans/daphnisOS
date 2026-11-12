@@ -1,0 +1,39 @@
+user/cint/opt is the SW-2 toolchain the image build writes to /home/opt/cint (docs/specs/2026-11-07-bu4-toolchain.md
+section 4.6; ruling DU-2 A): user/cint/build.sh and user/qbe/build.sh build every file again.
+
+cint, lib/, compiler.cisrc, src/compiler/, libcli.a, as and ld are the public cint v0.2.18
+(https://github.com/pennyleans/cint-public-build, tag v0.2.18, commit a14a03f3, compiler source identity
+baa6d80a...), under the Apache License, Version 2.0, the license of that repository: cint is its compiler
+and command line built static with musl, as and ld are its toolchain/as and link/ld.ci built through QBE, cint-as
+and cint ld by user/ci/cib.ci. libci.a holds cint's runtime (rt/cint_rt.c, the same license) and this repository's
+user/ci/runner.c, main.c and host.c. cint, as, ld and every program linked against libci.a contain musl.
+
+musl/crt1.o, crti.o, crtn.o and libc.a are musl 1.2.6 (https://musl.libc.org/), under the MIT license of musl
+that user/bin/NOTICE reproduces.
+
+make is pdpmake 2.0.4 (https://frippery.org/make/), tag 2.0.4 of https://github.com/rmyorston/pdpmake, built static
+with musl by user/pdpmake/build.sh from the release tarball named there, with no change. pdpmake is released into the
+public domain (its LICENSE: "This is free and unencumbered software released into the public domain.").
+
+qbe is QBE 1.3 (https://c9x.me/compile/), tag v1.3, commit c0818978acec60ebb6167fade60fb7012cbf20ca, built static
+with musl by user/qbe/build.sh from the release tarball named there, with no change. QBE is licensed as follows:
+
+© 2015-2026 Quentin Carbonneaux <quentin@c9x.me>
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.

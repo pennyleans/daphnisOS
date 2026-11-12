@@ -1,0 +1,102 @@
+import src.capture_api;
+import src.capture_format;
+import src.capture;
+
+extern unrestricted I64 fixture_slot(I64 writer, I64 variant);
+extern unrestricted void fixture_report(in U8[_] bytes);
+
+U8[64] header;
+U8[32] revision;
+U8[16] stream;
+U8[4096] plain;
+U8[4144] frame;
+
+void report_frame(I64 n) {
+    fixture_report(frame[0..32]);
+    fixture_report(frame[32..32 + n]);
+    fixture_report(frame[32 + n..48 + n]);
+}
+
+void envelope(I64 total, Bool lines) {
+    capture.Stream[1] writer;
+    writer[0] = capture.empty();
+    assert(capture.begin(writer, fixture_slot(1, 0), header, revision, true));
+    fixture_report(header);
+    for i in 0..8 { plain[i] = b"DAPHEVT1"[i]; }
+    assert(capture.seal(writer, plain[0..8], false, frame) == 56);
+    report_frame(8);
+    I64 n = 0;
+    for i in 0..total {
+        U8 byte = ((i % 251) + 1) as U8;
+        // Accidental newlines are excluded except in the explicit line fixture.
+        if (byte == 10) { byte = 254; }
+        if (lines && (i == 0 || i == 1 || i == 4095 || i == total - 1)) {
+            byte = 10;
+        }
+        plain[3 + n] = byte;
+        n = n + 1;
+        if (n == 4093 || byte == 10) {
+            plain[0] = 0;
+            plain[1] = (n & 255) as U8;
+            plain[2] = ((n >> 8) & 255) as U8;
+            assert(capture.seal(writer, plain[0..n + 3], false, frame) == n + 51);
+            report_frame(n + 3);
+            n = 0;
+        }
+    }
+    if (n > 0) {
+        plain[0] = 0;
+        plain[1] = (n & 255) as U8;
+        plain[2] = ((n >> 8) & 255) as U8;
+        assert(capture.seal(writer, plain[0..n + 3], false, frame) == n + 51);
+        report_frame(n + 3);
+    }
+    assert(capture.seal(writer, plain[0..0], true, frame) == 48);
+    report_frame(0);
+    assert(capture.finish(writer));
+}
+
+void typed_frame(inout capture.Stream[1] writer, U8 kind, in U8[_] body) {
+    I64 n = len(body);
+    plain[0] = kind;
+    plain[1] = (n & 255) as U8;
+    plain[2] = ((n >> 8) & 255) as U8;
+    for i in 0..n { plain[3 + i] = body[i]; }
+    assert(capture.seal(writer, plain[0..n + 3], false, frame) == n + 51);
+    report_frame(n + 3);
+}
+
+void mixed_envelope() {
+    capture.Stream[1] writer;
+    writer[0] = capture.empty();
+    assert(capture.begin(writer, fixture_slot(1, 0), header, revision, true));
+    fixture_report(header);
+    for i in 0..8 { plain[i] = b"DAPHEVT1"[i]; }
+    assert(capture.seal(writer, plain[0..8], false, frame) == 56);
+    report_frame(8);
+    typed_frame(writer, 0, b"net:fake\n");
+    typed_frame(writer, 0, b"rng:fake\n");
+    typed_frame(writer, 0, b"pending");
+    typed_frame(writer, 1, b"net:real\n");
+    typed_frame(writer, 0, b"console");
+    typed_frame(writer, 2, b"rng:real\n");
+    assert(capture.seal(writer, plain[0..0], true, frame) == 48);
+    report_frame(0);
+    assert(capture.finish(writer));
+}
+
+void main() {
+    for i in 0..16 { stream[i] = i as U8; }
+    for i in 0..32 { revision[i] = (32 + i) as U8; }
+    assert(capture_format.header(stream, revision, header) == 64);
+    envelope(0, false);
+    envelope(1, false);
+    envelope(4092, false);
+    envelope(4093, false);
+    envelope(4094, false);
+    envelope(4096, false);
+    envelope(9000, false);
+    envelope(9000, true);
+    mixed_envelope();
+}
+// SPDX-License-Identifier: Apache-2.0

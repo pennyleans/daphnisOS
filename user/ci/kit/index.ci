@@ -1,0 +1,420 @@
+// user/ci/kit/index.ci: the desk's index of the home volume (FF-1, docs/specs/2026-11-07-ff-super-plane.md section
+// 4). build(root) walks the volume (user/ci/core/path.ci) into the table: per entry its inode, its directory's
+// inode, its name, size, mode, modification time and the sequence number of its last change through the ring
+// (0: none seen). apply(e) applies one entry of /dev/fsidx (src/fsidx.ci, 64 bytes), reading the volume again for what
+// the entry does not carry; a LOST entry, a full table or a full name pool rebuild by the walk. A name added, removed
+// or moved also reads its directory again (both directories for a move), whose times the volume stamps then (FS-4); the
+// directory keeps its sequence number, since the change is its entry's. An entry is found by its inode (a table of
+// SLOTS, linear probing on the inode's low bits) and, for a name of a hard link, its directory and name. Paths are not
+// kept: path_of(i) climbs the directories.
+//
+// Bounds: CAP entries and NAME_POOL bytes of names (2 MiB with the slots). Nothing here polls: the desk calls
+// apply when it reads the ring, and the table is in the desk's pages, so the canonical digest holds it (FF-R3 A).
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.path;
+import src.sha256;
+
+export const I64 CAP = 16384;
+const I64 SLOTS = 32768;
+const I64 NAME_POOL = 524288;
+const I64 TOMB = -1;
+
+I64[16384] e_ino;     // 0: a dead entry
+I64[16384] e_par;
+I64[16384] e_size;
+I64[16384] e_mode;
+I64[16384] e_mtime;
+I64[16384] e_seq;
+I64[16384] e_noff;
+I64[16384] e_nlen;
+I64[32768] slot;      // 0 empty, TOMB, else an entry + 1
+U64[65536] names;     // NAME_POOL bytes, eight to a word: a module array holds 65,536 elements at most (cint 0.2.12)
+I64 ntop = 0;
+I64 top = 0;          // entries used, dead ones included
+I64 live = 0;
+U8[4096] rootp;
+I64 rootl = 0;
+I64 root_ino = 0;
+I64 builds = 0;
+I64 moved_ino = 0;    // a rename's FROM, for its TO: the sequence number it carried
+I64 moved_seq = 0;
+
+U8 nb(I64 off) {
+    return ((names[off >> 3] >> ((8 * (off & 7)) as U64)) & 0xFF) as U8;
+}
+
+void set_nb(I64 off, U8 v) {
+    U64 sh = (8 * (off & 7)) as U64;
+    U64 m = 0xFF;
+    names[off >> 3] = (names[off >> 3] & ~(m << sh)) | ((v as U64) << sh);
+}
+
+export I64 entries() {
+    return live;
+}
+
+// Times the table was built by the walk.
+export I64 walks() {
+    return builds;
+}
+
+export I64 ino_of(I64 i) { return e_ino[i]; }
+export I64 size_of(I64 i) { return e_size[i]; }
+export I64 mode_of(I64 i) { return e_mode[i]; }
+export I64 mtime_of(I64 i) { return e_mtime[i]; }
+export I64 seq_of(I64 i) { return e_seq[i]; }
+
+// Entries are 0 to used() - 1; a dead one has ino 0.
+export I64 used() {
+    return top;
+}
+
+export I64 name_of(I64 i, inout U8[_] buf) {
+    for k in 0..e_nlen[i] { buf[k] = nb(e_noff[i] + k); }
+    return e_nlen[i];
+}
+
+Bool same_name(I64 i, in U8[_] nm) {
+    if (e_nlen[i] != len(nm)) { return false; }
+    for k in 0..len(nm) {
+        if (nb(e_noff[i] + k) != nm[k]) { return false; }
+    }
+    return true;
+}
+
+// The entry of inode n (with par >= 0: in directory par under nm), or -1.
+I64 find(I64 n, I64 par, in U8[_] nm) {
+    I64 h = n & (SLOTS - 1);
+    for step in 0..SLOTS {
+        I64 s = slot[h];
+        if (s == 0) { return -1; }
+        if (s != TOMB) {
+            I64 j = s - 1;
+            if (e_ino[j] == n && (par < 0 || (e_par[j] == par && same_name(j, nm)))) { return j; }
+        }
+        h = (h + 1) & (SLOTS - 1);
+    }
+    return -1;
+}
+
+void unslot(I64 j) {
+    I64 h = e_ino[j] & (SLOTS - 1);
+    while (slot[h] != j + 1) { h = (h + 1) & (SLOTS - 1); }
+    slot[h] = TOMB;
+}
+
+void drop(I64 j) {
+    unslot(j);
+    e_ino[j] = 0;
+    live = live - 1;
+}
+
+// A new entry from a stat record r: its index, or -1 when the table or the pool is full.
+I64 add(I64 par, in U8[_] nm, in I64[_] r, I64 sq) {
+    if (top == CAP || ntop + len(nm) > NAME_POOL || live * 2 >= SLOTS) { return -1; }
+    I64 j = top;
+    top = top + 1;
+    e_ino[j] = r[corectl.ST_INO];
+    e_par[j] = par;
+    e_size[j] = r[corectl.ST_SIZE];
+    e_mode[j] = r[corectl.ST_MODE];
+    e_mtime[j] = r[corectl.ST_MTIME];
+    e_seq[j] = sq;
+    e_noff[j] = ntop;
+    e_nlen[j] = len(nm);
+    for k in 0..len(nm) { set_nb(ntop + k, nm[k]); }
+    ntop = ntop + len(nm);
+    I64 h = e_ino[j] & (SLOTS - 1);
+    while (slot[h] > 0) { h = (h + 1) & (SLOTS - 1); }
+    slot[h] = j + 1;
+    live = live + 1;
+    return j;
+}
+
+void clear() {
+    for h in 0..SLOTS { slot[h] = 0; }
+    top = 0;
+    ntop = 0;
+    live = 0;
+    moved_ino = 0;
+}
+
+// The path of directory inode d into buf (the root's path, then each name): its length, or -1 when d is not held.
+I64 dir_path(I64 d, inout U8[_] buf) {
+    I64[256] chain;
+    I64 n = 0;
+    I64 at = d;
+    while (at != root_ino) {
+        if (n == 256) { return -1; }
+        I64 j = find(at, -1, rootp[0..0]);
+        if (j < 0) { return -1; }
+        chain[n] = j;
+        n = n + 1;
+        at = e_par[j];
+    }
+    for k in 0..rootl { buf[k] = rootp[k]; }
+    I64 l = rootl;
+    I64 m = n - 1;
+    while (m >= 0) {
+        I64 j = chain[m];
+        if (l + 1 + e_nlen[j] > len(buf)) { return -1; }
+        buf[l] = '/';
+        for k in 0..e_nlen[j] { buf[l + 1 + k] = nb(e_noff[j] + k); }
+        l = l + 1 + e_nlen[j];
+        m = m - 1;
+    }
+    return l;
+}
+
+// The path of entry i into buf: its length, or -1.
+export I64 path_of(I64 i, inout U8[_] buf) {
+    I64 l = dir_path(e_par[i], buf);
+    if (l < 0 || l + 1 + e_nlen[i] > len(buf)) { return -1; }
+    buf[l] = '/';
+    for k in 0..e_nlen[i] { buf[l + 1 + k] = nb(e_noff[i] + k); }
+    return l + 1 + e_nlen[i];
+}
+
+// The table from the walk of root (a path; the volume's mount): true, or false when root cannot be read or the
+// walk does not fit (the table is then empty).
+export Bool build(in U8[_] root) {
+    if (len(root) >= 4096) { return false; }
+    for k in 0..len(root) { rootp[k] = root[k]; }
+    rootl = len(root);
+    return rebuild();
+}
+
+// The table again from the walk of the root build named.
+Bool rebuild() {
+    clear();
+    builds = builds + 1;
+    I64[16] r;
+    if (corectl.co_stat(rootp[0..rootl], 1, r) < 0) { return false; }
+    root_ino = r[corectl.ST_INO];
+    I64[256] dirs;     // the inode of each open directory
+    I64 depth = 0;
+    U8[4096] p;
+    path.walk_order(path.BY_NAME, false);
+    path.walk_start(rootp[0..rootl], true, false, false);
+    I64 w = path.walk_next();
+    if (w != path.W_PRE) { return false; }
+    dirs[0] = root_ino;
+    depth = 1;
+    Bool ok = true;
+    w = path.walk_next();
+    while (w != path.W_END) {
+        if (w == path.W_POST) {
+            depth = depth - 1;
+        } else if (w == path.W_PRE || w == path.W_FILE) {
+            I64 pl = path.walk_path(p);
+            path.walk_rec(r);
+            I64 b = path.base_start(p[0..pl]);
+            if (add(dirs[depth - 1], p[b..pl], r, 0) < 0) {
+                ok = false;
+            }
+            if (w == path.W_PRE) {
+                if (depth == 256) {
+                    ok = false;
+                    path.walk_skip();
+                } else {
+                    dirs[depth] = r[corectl.ST_INO];
+                    depth = depth + 1;
+                }
+            }
+        }
+        w = path.walk_next();
+    }
+    if (!ok) { clear(); }
+    return ok;
+}
+
+U64 u64_at(in U8[64] e, I64 at) {
+    U64 v = 0;
+    for k in 0..8 { v = v | ((e[at + k] as U64) << ((8 * k) as U64)); }
+    return v;
+}
+
+// Entry nm in directory par (an inode) read from the volume into r: 0, or -errno (-2 when par is not held).
+I64 stat_in(I64 par, in U8[_] nm, inout I64[16] r) {
+    U8[4096] p;
+    I64 l = dir_path(par, p);
+    if (l < 0 || l + 1 + len(nm) > 4096) { return -2; }
+    p[l] = '/';
+    for k in 0..len(nm) { p[l + 1 + k] = nm[k]; }
+    return corectl.co_stat(p[0..l + 1 + len(nm)], 0, r);
+}
+
+// Inode n named nm in directory par is on the volume now: its entry, added or refreshed.
+void upsert(I64 n, I64 par, in U8[_] nm, I64 sq) {
+    I64[16] r;
+    if (stat_in(par, nm, r) < 0 || r[corectl.ST_INO] != n) { return; }   // gone again: a later entry says so
+    I64 j = find(n, par, nm);
+    if (j < 0) {
+        if (add(par, nm, r, sq) < 0) { _ = rebuild(); }
+        return;
+    }
+    e_size[j] = r[corectl.ST_SIZE];
+    e_mode[j] = r[corectl.ST_MODE];
+    e_mtime[j] = r[corectl.ST_MTIME];
+    e_seq[j] = sq;
+}
+
+// Directory inode d's own entry read again from the volume, its sequence number kept. The root has no entry, and a
+// directory gone again is left for a later entry.
+void restat_dir(I64 d) {
+    if (d == root_ino) { return; }
+    I64 j = find(d, -1, rootp[0..0]);
+    if (j < 0) { return; }
+    I64[16] r;
+    U8[256] own;
+    I64 ol = name_of(j, own);
+    if (stat_in(e_par[j], own[0..ol], r) < 0 || r[corectl.ST_INO] != d) { return; }
+    e_size[j] = r[corectl.ST_SIZE];
+    e_mode[j] = r[corectl.ST_MODE];
+    e_mtime[j] = r[corectl.ST_MTIME];
+}
+
+// Applies one ring entry e (src/fsidx.ci's layout).
+export void apply(in U8[64] e) {
+    I64 sq = u64_at(e, 0) as I64;
+    I64 op = e[8] as I64;
+    I64 nl = e[9] as I64;
+    I64 n = u64_at(e, 16) as I64;
+    I64 par = u64_at(e, 24) as I64;
+    U8[32] nm;
+    for k in 0..32 { nm[k] = e[32 + k]; }
+    if (op == 0) {                                 // LOST: changes were dropped
+        _ = rebuild();
+    } else if (op == 1) {                          // CREATE
+        upsert(n, par, nm[0..nl], sq);
+        restat_dir(par);
+    } else if (op == 2 || op == 3) {               // UNLINK, rename FROM
+        I64 j = find(n, par, nm[0..nl]);
+        if (op == 3) {
+            moved_ino = n;
+            moved_seq = 0;
+            if (j >= 0) { moved_seq = e_seq[j]; }
+        }
+        if (j >= 0) { drop(j); }
+        restat_dir(par);
+    } else if (op == 4) {                          // rename TO: the sequence number it carried
+        I64 keep = sq;
+        if (moved_ino == n) { keep = moved_seq; }
+        moved_ino = 0;
+        upsert(n, par, nm[0..nl], keep);
+        restat_dir(par);
+    } else if (op == 5) {                          // CHANGE: every name of the inode
+        if (par > 0 && find(n, par, nm[0..nl]) < 0) {
+            upsert(n, par, nm[0..nl], sq);
+        }
+        for j in 0..top {
+            if (e_ino[j] == n) {
+                I64[16] r;
+                U8[256] own;
+                I64 ol = name_of(j, own);
+                if (stat_in(e_par[j], own[0..ol], r) == 0 && r[corectl.ST_INO] == n) {
+                    e_size[j] = r[corectl.ST_SIZE];
+                    e_mode[j] = r[corectl.ST_MODE];
+                    e_mtime[j] = r[corectl.ST_MTIME];
+                    e_seq[j] = sq;
+                }
+            }
+        }
+    }
+}
+
+// Entry a sorts before entry b: by directory inode, then name bytes (an order that does not depend on the
+// order the table was filled in).
+Bool before(I64 a, I64 b) {
+    if (e_par[a] != e_par[b]) { return e_par[a] < e_par[b]; }
+    I64 m = e_nlen[a];
+    if (e_nlen[b] < m) { m = e_nlen[b]; }
+    for k in 0..m {
+        U8 x = nb(e_noff[a] + k);
+        U8 y = nb(e_noff[b] + k);
+        if (x != y) { return x < y; }
+    }
+    return e_nlen[a] < e_nlen[b];
+}
+
+I64[16384] ord;
+
+void sift(I64 r, I64 n) {
+    I64 at = r;
+    Bool going = true;
+    while (going) {
+        I64 c = 2 * at + 1;
+        if (c >= n) {
+            going = false;
+        } else {
+            if (c + 1 < n && before(ord[c], ord[c + 1])) { c = c + 1; }
+            if (before(ord[at], ord[c])) {
+                I64 t = ord[at];
+                ord[at] = ord[c];
+                ord[c] = t;
+                at = c;
+            } else {
+                going = false;
+            }
+        }
+    }
+}
+
+// The live entries in canonical order into ord: their count.
+export I64 sorted() {
+    I64 n = 0;
+    for j in 0..top {
+        if (e_ino[j] != 0) {
+            ord[n] = j;
+            n = n + 1;
+        }
+    }
+    I64 r = n / 2 - 1;
+    while (r >= 0) {
+        sift(r, n);
+        r = r - 1;
+    }
+    I64 m = n - 1;
+    while (m > 0) {
+        I64 t = ord[0];
+        ord[0] = ord[m];
+        ord[m] = t;
+        sift(0, m);
+        m = m - 1;
+    }
+    return n;
+}
+
+export I64 sorted_at(I64 k) {
+    return ord[k];
+}
+
+void put_u64(inout U8[64] b, I64 at, U64 v) {
+    for k in 0..8 { b[at + k] = ((v >> ((8 * k) as U64)) & 0xFF) as U8; }
+}
+
+// SHA-256 of the table in canonical order, per entry its inode, directory, size, mode and modification time (u64
+// each, little endian), the name's length (u8) and the name; the sequence numbers are left out, so the table the
+// ring kept and the table of a fresh walk compare.
+export void digest(inout U8[32] d) {
+    I64 n = sorted();
+    sha256.Sha256[1] st;
+    sha256.sha_init(st);
+    U8[64] b;
+    for k in 0..n {
+        I64 j = ord[k];
+        put_u64(b, 0, e_ino[j] as U64);
+        put_u64(b, 8, e_par[j] as U64);
+        put_u64(b, 16, e_size[j] as U64);
+        put_u64(b, 24, e_mode[j] as U64);
+        put_u64(b, 32, e_mtime[j] as U64);
+        b[40] = e_nlen[j] as U8;
+        sha256.sha_update(st, b, 0, 41);
+        U8[256] nm;
+        I64 l = name_of(j, nm);
+        sha256.sha_update(st, nm, 0, l);
+    }
+    sha256.sha_final(st, d);
+}
+// SPDX-License-Identifier: Apache-2.0

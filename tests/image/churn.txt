@@ -1,0 +1,15 @@
+echo churn: the shell, then mchurn
+./mchurn
+for i in 1 2 3 4 5 6; do echo $i > s$i; done
+rm s2 s4
+seq 1 400 | sort -r | head -2
+cat lines.txt | grep -c line | tr 0-9 a-j
+ls | wc -l
+./grant disk sh -c 'cp lines.txt home/churn.txt; mkdir home/c; cp home/big home/c/big; cp home/c/big home/c/big2; rm home/c/big home/churn.txt'
+ls -R home | wc -l
+./fetch -o - http://10.0.2.2:8080/f; echo fetch without the net grant: $?
+exec 3<hello.txt 4<lines.txt 5<hello.txt
+echo churn: done, three descriptors left open
+./doom --sealed
+exit 0
+

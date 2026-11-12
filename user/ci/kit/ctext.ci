@@ -1,0 +1,199 @@
+// user/ci/kit/ctext.ci: the chrome's text in Inter and JetBrains Mono (FONT-1, F4; docs/specs/2026-11-07-k-kit2.md
+// section 3e) on draw.ci's row contract: the caller holds row y and each call paints what of the text falls on it.
+// A string is UTF-8 (kit/ucode.ci); a face is a role of kit/faces.ci at scale z (1 or 2). Each glyph is its
+// coverage, 0 to 15 a pixel, laid over the row toward the text's color by the one blend (MS-1, kit/blend.ci):
+// alpha (coverage * 256 + 7) / 15, so 0 leaves the pixel and 15 is the color. Advances are whole pixels; no
+// kerning (section 3e).
+import user.ci.kit.faces;
+import user.ci.kit.ucode;
+import user.ci.kit.blend;
+
+I64[16] alpha15 = [0, 17, 34, 51, 68, 85, 102, 119, 137, 154, 171, 188, 205, 222, 239, 256];
+Bool[2 * faces.FACES] slot_ok;            // a slot per face and scale (2 * f + (z == 2)): its ASCII glyphs packed
+U64[256 * faces.FACES] ascii_pack;
+I64[2 * faces.FACES] ascii_ymin;
+I64[2 * faces.FACES] ascii_ymax;
+
+I64 prep_slot(I64 f, I64 z) {
+    if (f < 0 || f >= faces.FACES) { return -1; }
+    I64 zi = 0;
+    if (z == 2) { zi = 1; }
+    I64 sl = 2 * f + zi;
+    if (!slot_ok[sl]) {
+        I64 base = 128 * sl;
+        I64 ymin = 1000;
+        I64 ymax = -1000;
+        for cp in 0..128 {
+            I64 g = faces.index(f, z, cp);
+            I64 a = faces.advance(f, z, g);
+            I64 lx = faces.left(f, z, g) + 128;
+            I64 ty = faces.top(f, z, g);
+            I64 w = faces.width(f, z, g);
+            I64 h = faces.height(f, z, g);
+            if (h > 0) {
+                if (ty < ymin) { ymin = ty; }
+                if (ty + h > ymax) { ymax = ty + h; }
+            }
+            U64 u = (g as U64) | ((a as U64) << 16) | (((lx & 255) as U64) << 24) |
+                    ((((ty + 128) & 255) as U64) << 32) | ((w as U64) << 40) | ((h as U64) << 48);
+            ascii_pack[base + cp] = u;
+        }
+        ascii_ymin[sl] = ymin;
+        ascii_ymax[sl] = ymax;
+        slot_ok[sl] = true;
+    }
+    return sl;
+}
+
+// The blend's alpha in 256ths for coverage v, 0 to 15.
+export I64 alpha(I64 v) {
+    if (v >= 0 && v < 16) { return alpha15[v]; }
+    return (v * 256 + 7) / 15;
+}
+
+// The next code point of s[0..n] at at, as ucode.decode gives it.
+I64 next_at(in U8[_] s, I64 n, I64 at) {
+    I64 b0 = s[at] as I64;
+    if (b0 < 0x80) { return b0 * 8 + 1; }
+    I64 b1 = 0;
+    I64 b2 = 0;
+    I64 b3 = 0;
+    if (at + 1 < n) { b1 = s[at + 1] as I64; }
+    if (at + 2 < n) { b2 = s[at + 2] as I64; }
+    if (at + 3 < n) { b3 = s[at + 3] as I64; }
+    I64 avail = n - at;
+    if (avail > 4) { avail = 4; }
+    return ucode.decode(b0, b1, b2, b3, avail);
+}
+
+// The width in pixels of s[0..n] in face f at scale z: the sum of its advances.
+export I64 width(in U8[_] s, I64 n, I64 f, I64 z) {
+    I64 sl = prep_slot(f, z);
+    I64 w = 0;
+    I64 at = 0;
+    if (sl >= 0) {
+        I64 sb = 128 * sl;
+        while (at < n) {
+            I64 b0 = s[at] as I64;
+            if (b0 < 0x80) {
+                w = w + (((ascii_pack[sb + b0] >> 16) & 255) as I64);
+                at = at + 1;
+            } else {
+                I64 d = next_at(s, n, at);
+                w = w + faces.advance(f, z, faces.index(f, z, d / 8));
+                at = at + d % 8;
+            }
+        }
+        return w;
+    }
+    while (at < n) {
+        I64 d = next_at(s, n, at);
+        w = w + faces.advance(f, z, faces.index(f, z, d / 8));
+        at = at + d % 8;
+    }
+    return w;
+}
+
+// The face's line box: pixels above and below the baseline.
+export I64 ascent(I64 f, I64 z) { return faces.ascent(f, z); }
+export I64 descent(I64 f, I64 z) { return faces.descent(f, z); }
+
+// Row y of s[0..n] in face f at scale z and color c, the pen from x0 on the baseline at row base; the pen past the
+// last glyph drawn. A glyph whose advance would end past x1 is not drawn, and nor is any after it.
+export I64 text(inout U32[_] row, I64 y, I64 x0, I64 base, I64 x1, in U8[_] s, I64 n, U32 c, I64 f, I64 z) {
+    I64 sl = prep_slot(f, z);
+    I64 x = x0;
+    I64 at = 0;
+    U32 cc = c & 0xFFFFFF;
+    if (sl >= 0) {
+        I64 sb = 128 * sl;
+        I64 dy = y - base;
+        Bool in_band = dy >= ascii_ymin[sl] && dy < ascii_ymax[sl];
+        while (at < n) {
+            I64 b0 = s[at] as I64;
+            if (b0 < 0x80) {
+                U64 u = ascii_pack[sb + b0];
+                I64 a = ((u >> 16) & 255) as I64;
+                if (x + a > x1) { return x; }
+                at = at + 1;
+                if (in_band) {
+                    I64 h = ((u >> 48) & 255) as I64;
+                    I64 gy = dy - (((u >> 32) & 255) as I64 - 128);
+                    if (gy >= 0 && gy < h) {
+                        I64 g = (u & 0xFFFF) as I64;
+                        I64 gx = x + (((u >> 24) & 255) as I64 - 128);
+                        I64 w = ((u >> 40) & 255) as I64;
+                        I64 i0 = 0;
+                        I64 i1 = w;
+                        if (gx < 0) { i0 = 0 - gx; }
+                        if (gx + i1 > len(row)) { i1 = len(row) - gx; }
+                        for i in i0..i1 {
+                            I64 px = gx + i;
+                            I64 v = faces.at(f, z, g, i, gy);
+                            if (v >= 15) {
+                                row[px] = cc;
+                            } else if (v > 0) {
+                                row[px] = blend.mix_px(row[px], cc, alpha15[v]);
+                            }
+                        }
+                    }
+                }
+                x = x + a;
+            } else {
+                I64 d = next_at(s, n, at);
+                at = at + d % 8;
+                I64 g = faces.index(f, z, d / 8);
+                I64 a = faces.advance(f, z, g);
+                if (x + a > x1) { return x; }
+                I64 gy = dy - faces.top(f, z, g);
+                if (gy >= 0 && gy < faces.height(f, z, g)) {
+                    I64 gx = x + faces.left(f, z, g);
+                    I64 w = faces.width(f, z, g);
+                    I64 i0 = 0;
+                    I64 i1 = w;
+                    if (gx < 0) { i0 = 0 - gx; }
+                    if (gx + i1 > len(row)) { i1 = len(row) - gx; }
+                    for i in i0..i1 {
+                        I64 px = gx + i;
+                        I64 v = faces.at(f, z, g, i, gy);
+                        if (v >= 15) {
+                            row[px] = cc;
+                        } else if (v > 0) {
+                            row[px] = blend.mix_px(row[px], cc, alpha15[v]);
+                        }
+                    }
+                }
+                x = x + a;
+            }
+        }
+        return x;
+    }
+    while (at < n) {
+        I64 d = next_at(s, n, at);
+        at = at + d % 8;
+        I64 g = faces.index(f, z, d / 8);
+        I64 a = faces.advance(f, z, g);
+        if (x + a > x1) { return x; }
+        I64 gy = y - base - faces.top(f, z, g);
+        if (gy >= 0 && gy < faces.height(f, z, g)) {
+            I64 gx = x + faces.left(f, z, g);
+            I64 w = faces.width(f, z, g);
+            I64 i0 = 0;
+            I64 i1 = w;
+            if (gx < 0) { i0 = 0 - gx; }
+            if (gx + i1 > len(row)) { i1 = len(row) - gx; }
+            for i in i0..i1 {
+                I64 px = gx + i;
+                I64 v = faces.at(f, z, g, i, gy);
+                if (v >= 15) {
+                    row[px] = cc;
+                } else if (v > 0) {
+                    row[px] = blend.mix_px(row[px], cc, alpha15[v]);
+                }
+            }
+        }
+        x = x + a;
+    }
+    return x;
+}
+// SPDX-License-Identifier: Apache-2.0

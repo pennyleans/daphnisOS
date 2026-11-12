@@ -1,0 +1,76 @@
+// src/main_tile.ci: W-2, tiles in the kernel (docs/specs/2026-11-05-w-tiler.md sections 2 and 5, ruling WT-1 A).
+// The user flavor's kernel with another main and an image of two programs: `mcifb` fullscreen (its surface
+// is F-1's pin), then `tiler --start mcifb`: the tiler draws the 2 x 2 grid and mcifb draws in a private
+// surface of tile 0,0's client area, which the kernel copies into the tile. tools/check-tiler.py --boot checks
+// the client's surface digest against its pattern at that size and the screen's against the tiler's frame
+// with the pattern in the tile. W-3: `tiler --start mkeys` three times in a 2 x 2 grid, keys and chords typed
+// through the QEMU monitor (check-tiler.sh): the first a, b, c go to client 0 in the focused tile 0,0 and to no
+// other; after Super+Right, a, b, c go to client 1 in tile 1,0; after Super+Left and Super+Down, a goes to
+// client 2 in tile 0,1 and Super+q ends it. No client sees Super or a key pressed with it.
+
+import src.serial;
+import src.trap;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.pool;
+import src.surface;
+import src.input;
+import src.tile;
+
+void main() {
+    serial.serial_write("Daphnis W: the tiler\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    user.user_init();
+    fs.init();
+    if (user.fb_init() > 0) {
+        fs.set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        serial.serial_write("daphnis: framebuffer ");
+        proc.put_dec(user.fb_word(0) as I64);
+        serial.serial_write("x");
+        proc.put_dec(user.fb_word(1) as I64);
+        serial.serial_write(" stride ");
+        proc.put_dec(user.fb_word(2) as I64);
+        serial.serial_write("\n");
+    } else {
+        serial.serial_write("daphnis: no framebuffer\n");
+    }
+    pit.pic_remap();
+    pit.pit_start(11932);
+    if (input.devices_on()) {
+        serial.serial_write("daphnis: keyboard and mouse on\n");
+    } else {
+        serial.serial_write("daphnis: keyboard on, no mouse\n");
+    }
+    fs.set_input(true);
+    serial.serial_write("daphnis: image ");
+    proc.put_dec(user.initrd_size());
+    serial.serial_write(" bytes from the loader module\n");
+    proc.run_device(1, "mcifb");
+    surface.print();
+    proc.report_pool();
+    proc.push_arg("--start");
+    proc.push_arg("mcifb");
+    proc.run_device(2, "tiler");
+    surface.print();
+    proc.report_pool();
+    proc.push_arg("--start");
+    proc.push_arg("mkeys");
+    proc.push_arg("--start");
+    proc.push_arg("mkeys");
+    proc.push_arg("--start");
+    proc.push_arg("mkeys");
+    proc.run_device(3, "tiler");
+    surface.print();
+    if (input.dropped() != 0 || tile.dropped() != 0) {
+        serial.serial_write("daphnis: input dropped\n");
+        input.say_dropped(tile.dropped());
+    }
+    proc.report_pool();
+    serial.serial_write("daphnis: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

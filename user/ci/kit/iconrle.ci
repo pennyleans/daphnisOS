@@ -1,0 +1,71 @@
+// user/ci/kit/iconrle.ci: the drawing of the icon tables tools/svgicons.py writes (user/ci/kit/icons3.ci and
+// fileicons.ci; DN-5, DN-9). A raster row is 16-bit tokens packed four to a U64 word, the first in the high bits,
+// from the row's start to the next row's start (32-bit offsets packed two to a word): a token t below 0x8000 is one
+// pixel of palette color t; t from 0x8000 is a run of t - 0x8000 pixels of the color of the next token. Color 0 is
+// clear; any other is ((a - 1) << 24) | rgb, a the alpha in 256ths, and moves the pixel under it toward rgb by a
+// through MS-1's mix_px, the one blend. A row's trailing clear pixels are not written. tools/iconwin.py is the twin.
+import user.ci.kit.blend;
+
+// Entry i of 32-bit values packed two to a word.
+I64 u32_at(in U64[_] w, I64 i) {
+    U64 sh = (32 - 32 * (i & 1)) as U64;
+    return ((w[i >> 1] >> sh) & 0xFFFFFFFF) as I64;
+}
+
+// Token i of 16-bit values packed four to a word, the words in w and then w2 (DN-46 (d): one array would pass
+// cint's limit).
+I64 tok(in U64[_] w, in U64[_] w2, I64 i) {
+    U64 sh = (48 - 16 * (i & 3)) as U64;
+    I64 k = i >> 2;
+    if (k >= len(w)) { return ((w2[k - len(w)] >> sh) & 0xFFFF) as I64; }
+    return ((w[k] >> sh) & 0xFFFF) as I64;
+}
+
+// Whether a ground is light: its luma, 0.299 R + 0.587 G + 0.114 B, is 128 or more.
+export Bool light(U32 ground) {
+    I64 g = (ground & 0xFFFFFF) as I64;
+    return 299 * ((g >> 16) & 255) + 587 * ((g >> 8) & 255) + 114 * (g & 255) >= 128000;
+}
+
+// Device row y of a d x d raster whose first row is entry r0 of rows, its top left at (x0, y0), laid over row
+// (cut to the row; nothing if y is not one of its rows).
+export void lay_row(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 d, I64 r0, in U64[_] rows, in U64[_] toks,
+                    in U64[_] toks2, in U32[_] pal) {
+    if (y < y0 || y >= y0 + d) { return; }
+    I64 n = len(row);
+    I64 t = u32_at(rows, r0 + y - y0);
+    I64 t1 = u32_at(rows, r0 + y - y0 + 1);
+    I64 x = x0;
+    while (t < t1 && x < n) {
+        I64 v = tok(toks, toks2, t);
+        I64 k = 1;
+        if (v >= 0x8000) {
+            k = v - 0x8000;
+            t = t + 1;
+            v = tok(toks, toks2, t);
+        }
+        t = t + 1;
+        if (v != 0) {
+            U32 e = pal[v];
+            I64 a = ((e >> 24) as I64) + 1;
+            U32 c = e & 0xFFFFFF;
+            I64 lo = x;
+            I64 hi = x + k;
+            if (lo < 0) { lo = 0; }
+            if (hi > n) { hi = n; }
+            if (a >= 256) {
+                while (lo < hi) {
+                    row[lo] = c;
+                    lo = lo + 1;
+                }
+            } else {
+                while (lo < hi) {
+                    row[lo] = blend.mix_px(row[lo], c, a);
+                    lo = lo + 1;
+                }
+            }
+        }
+        x = x + k;
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,16 @@
+# RS-ROLE and RS-R4 (ops/store.ops) from ada's second terminal: the session's request, then `kern true` (one
+# approval, the hold on window 1; no other ask until the terminal ends), then the rest; every answer and status as
+# the table says, so the terminal ends with status 0. No passphrase reaches the transcript.
+hdesk: accounts 2
+hdesk: login ada uid 1000
+hdesk: terminal 1 slot 1
+hdesk: approval ask want 8 uid 1000
+hdesk: approved by ada
+hdesk: kern 1 pid
+-hdesk: approval ask
+=hdesk: terminal 1 ended, status 0
+hdesk: logout ada
+!sevenhorsesrun
+!sam-pass
+!sam-long-passphrase
+!ivy-pass

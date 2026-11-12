@@ -1,0 +1,176 @@
+// user/ci/kit/runq.ci: the desk's queue of runs as the account (user/ci/runas.h's jobs), one at a time. Reads (du,
+// the Trash count, the picture) are queued once each; Empty Trash once; the account's settings each keep their own
+// pending value, the newest choice per key winning, so no choice is lost: one made while setkey runs waits and goes
+// after it, and a choice of one key never replaces another key's (the Read and Edit lane's read of PR 412, P2).
+// An open the desk cannot make with its own rights (RG-1: a file in a 0700 home, from Index or the plane) is peeked as
+// the account and goes first: someone waits on it. The account's settings read as the account (RG-1, PREFS) go after
+// the pending settings, so the read holds them. Closing Settings drops the queued reads and stops a running read; a
+// setkey run, Empty Trash, a peek, the settings read and every pending setting still go. Only the session's end
+// (clear) drops a write.
+// Pure: hdesk.ci makes the calls and the runs; tests/rs/runq_test.ci runs this hosted.
+
+export const I64 DU = 0;               // runas.h's RUN_DU .. RUN_PREFS
+export const I64 COUNT = 1;
+export const I64 EMPTY = 2;
+export const I64 SET = 3;
+export const I64 PICTURE = 4;
+export const I64 PEEK = 5;
+export const I64 PREFS = 6;
+export const I64 JOBS = 7;
+export const I64 KEYS = 8;             // settings with a pending value at once
+export const I64 KEY_MAX = 48;
+export const I64 VALUE_MAX = 4096;
+
+I64 run = -1;                          // the job running, or -1
+Bool[7] want_;                         // a job queued (SET: any pending value)
+U8[384] key;                           // KEYS keys, KEY_MAX bytes each
+I64[8] kn;                             // a key's length, 0 for a free slot
+U8[32768] val;                         // their pending values, VALUE_MAX bytes each
+I64[8] vn;
+Bool[8] pend;                          // a value waits for the key
+I64[8] since;                          // when it began to wait (the oldest goes first)
+I64 tick = 0;
+
+// Whether job j only reads (a running one is stopped when Settings closes).
+export Bool is_read(I64 j) { return j == DU || j == COUNT || j == PICTURE; }
+
+export I64 running() { return run; }
+
+// Job j queued once (not SET: settings go by set()); false for a job outside the table.
+export Bool want(I64 j) {
+    if (j < 0 || j >= JOBS || j == SET) { return false; }
+    want_[j] = true;
+    return true;
+}
+
+// Key k's value v waits to be written, replacing an older value of k; false (nothing queued) for a key or a value
+// past its size, or with KEYS other keys already waiting.
+export Bool set(in U8[_] k, in U8[_] v) {
+    if (len(k) < 1 || len(k) > KEY_MAX || len(v) > VALUE_MAX) { return false; }
+    I64 s = slot_of(k);
+    if (s < 0) { s = free_slot(); }
+    if (s < 0) { return false; }
+    for q in 0..len(k) { key[KEY_MAX * s + q] = k[q]; }
+    kn[s] = len(k);
+    for q in 0..len(v) { val[VALUE_MAX * s + q] = v[q]; }
+    vn[s] = len(v);
+    if (!pend[s]) {
+        tick = tick + 1;
+        since[s] = tick;
+    }
+    pend[s] = true;
+    want_[SET] = true;
+    return true;
+}
+
+I64 slot_of(in U8[_] k) {
+    for s in 0..KEYS {
+        if (kn[s] == len(k)) {
+            Bool same = true;
+            for q in 0..len(k) {
+                if (key[KEY_MAX * s + q] != k[q]) { same = false; }
+            }
+            if (same) { return s; }
+        }
+    }
+    return -1;
+}
+
+I64 free_slot() {
+    for s in 0..KEYS {
+        if (!pend[s]) { return s; }
+    }
+    return -1;
+}
+
+// The pending values waiting, all keys.
+export I64 pending() {
+    I64 c = 0;
+    for s in 0..KEYS {
+        if (pend[s]) { c = c + 1; }
+    }
+    return c;
+}
+
+// The job to start now, or -1: none while one runs; a peek first, then a pending setting, then the settings read, then
+// Empty Trash, then the reads.
+export I64 next() {
+    if (run >= 0) { return -1; }
+    if (want_[PEEK]) { return PEEK; }
+    if (want_[SET] && pending() > 0) { return SET; }
+    want_[SET] = false;
+    if (want_[PREFS]) { return PREFS; }
+    if (want_[EMPTY]) { return EMPTY; }
+    if (want_[DU]) { return DU; }
+    if (want_[COUNT]) { return COUNT; }
+    if (want_[PICTURE]) { return PICTURE; }
+    return -1;
+}
+
+// SET's argument for the oldest waiting key, "KEY\0VALUE", into dst; its length, or -1 with none waiting or no room.
+export I64 arg(inout U8[_] dst) {
+    I64 s = oldest();
+    if (s < 0 || kn[s] + 1 + vn[s] > len(dst)) { return -1; }
+    for q in 0..kn[s] { dst[q] = key[KEY_MAX * s + q]; }
+    dst[kn[s]] = 0;
+    for q in 0..vn[s] { dst[kn[s] + 1 + q] = val[VALUE_MAX * s + q]; }
+    return kn[s] + 1 + vn[s];
+}
+
+I64 oldest() {
+    I64 b = -1;
+    for s in 0..KEYS {
+        if (pend[s] && (b < 0 || since[s] < since[b])) { b = s; }
+    }
+    return b;
+}
+
+// Job j started (after arg() for SET): it runs; its queue mark is taken, and SET's oldest value is the one in flight
+// (a choice made from now on waits again).
+export void started(I64 j) {
+    run = j;
+    if (j == SET) {
+        I64 s = oldest();
+        if (s >= 0) { pend[s] = false; }
+        want_[SET] = pending() > 0;
+    } else if (j >= 0 && j < JOBS) {
+        want_[j] = false;
+    }
+}
+
+// Job j could not start (run_start refused it): its queue mark is taken, as if it ran; a SET's value is dropped.
+export void refused(I64 j) {
+    if (j == SET) {
+        I64 s = oldest();
+        if (s >= 0) { pend[s] = false; }
+        want_[SET] = pending() > 0;
+    } else if (j >= 0 && j < JOBS) {
+        want_[j] = false;
+    }
+}
+
+// The running job ended; settings still waiting go next (next() answers SET while any waits).
+export void ended() {
+    run = -1;
+    if (pending() > 0) { want_[SET] = true; }
+}
+
+// Settings closed: the queued reads dropped; whether the running job is a read the desk must stop (then ended()).
+// A setkey run, Empty Trash and the waiting settings go on.
+export Bool close() {
+    want_[DU] = false;
+    want_[COUNT] = false;
+    want_[PICTURE] = false;
+    return run >= 0 && is_read(run);
+}
+
+// The session ended: nothing more runs, nothing waits.
+export void clear() {
+    run = -1;
+    for j in 0..JOBS { want_[j] = false; }
+    for s in 0..KEYS {
+        pend[s] = false;
+        kn[s] = 0;
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,34 @@
+{
+  "id": "wrap-on-breaks-after-spaces",
+  "rules": [
+    "KEY-10",
+    "VIEW-2"
+  ],
+  "text": "the quick brown fox jumps over\nend",
+  "size": [
+    6,
+    16
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "17"
+  ],
+  "expect": {
+    "text": "the quick brown fox jumps over\nend",
+    "sel": [
+      0,
+      0
+    ],
+    "screen": [
+      "the quick brown",
+      "fox jumps over",
+      "end",
+      "",
+      " x  wrap on 1:1",
+      "^S save  ^Q quit"
+    ]
+  }
+}

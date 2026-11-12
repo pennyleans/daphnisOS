@@ -1,0 +1,230 @@
+// tests/hosted/trash/trash_test.ci: the Trash store (user/ci/trash.ci over the real user/ci/trashfs.ci, FF spec
+// section 3h, design note 52's rules) on an in-memory volume: tests/hosted/trash's shctl, corectl and dirctl stand in
+// for the externs over memfs, with the real calls' contracts (sh_dirents all or -E2BIG, dir_names what fits).
+// check.sh runs it from a copy of user/ci/trash.ci and trashfs.ci beside the stand-ins.
+import user.ci.trash;
+import user.ci.trashfs;
+import user.ci.memfs;
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for k in 0..n {
+        if (a[k] != b[k]) { return false; }
+    }
+    return true;
+}
+
+// A volume with ci's home holding notes/ and two files, HOME /home/ci, the clock at 1794409639.
+void volume() {
+    memfs.reset();
+    memfs.add(b"/home", 1, b"");
+    memfs.add(b"/home/ci", 1, b"");
+    memfs.add(b"/home/ci/notes", 1, b"");
+    memfs.add(b"/home/ci/notes/a.txt", 2, b"one");
+    memfs.add(b"/home/ci/b.txt", 2, b"two");
+    memfs.add(b"/etc", 1, b"");
+    memfs.add(b"/etc/motd", 2, b"hi");
+    memfs.set_home(b"/home/ci");
+    memfs.set_clock(1794409639);
+}
+
+test "Move to Trash renames the entry into the trash and writes its record; the time is the clock's" {
+    volume();
+    assert(trash.put(b"/home/ci/notes/a.txt", 20) == 0);
+    assert(trashfs.kind(b"/home/ci/notes/a.txt") == 0 && trashfs.kind(b"/home/ci/.trash/items/a.txt") == 2);
+    U8[64] c;
+    I64 cn = memfs.content(b"/home/ci/.trash/items/a.txt", c);
+    assert(same(c, cn, b"one"));                              // the same entry, by rename: its bytes
+    cn = memfs.content(b"/home/ci/.trash/records/a.txt", c);
+    assert(same(c, cn, b"daphnis-trash 1\npath 20\n/home/ci/notes/a.txt\ndeleted 1794409639\n"));
+    U8[4096] p;
+    I64 pn = trash.info(b"a.txt", 5, p);
+    assert(same(p, pn, b"/home/ci/notes/a.txt") && trash.deleted_s() == 1794409639);
+    assert(trash.items() == 1);
+}
+
+test "a name taken in the trash, or by a stale record, gives NAME 2 and NAME 3, the extension kept" {
+    volume();
+    memfs.add(b"/home/ci/a.txt", 2, b"other");
+    assert(trash.put(b"/home/ci/notes/a.txt", 20) == 0);
+    assert(trash.put(b"/home/ci/a.txt", 14) == 0);
+    U8[256] n;
+    I64 nn = trash.last_name(n);
+    assert(same(n, nn, b"a 2.txt") && trashfs.kind(b"/home/ci/.trash/items/a 2.txt") == 2);
+    memfs.add(b"/home/ci/.trash/records/b.txt", 2, b"daphnis-trash 1\npath 99\n");   // an orphan record
+    assert(trash.put(b"/home/ci/b.txt", 14) == 0);
+    nn = trash.last_name(n);
+    assert(same(n, nn, b"b 2.txt"));                        // never adopted by the stale record
+    memfs.add(b"/home/ci/.bashrc", 2, b"x");
+    memfs.add(b"/home/ci/.trash/items/.bashrc", 2, b"y");
+    assert(trash.put(b"/home/ci/.bashrc", 16) == 0);
+    nn = trash.last_name(n);
+    assert(same(n, nn, b".bashrc 2"));                      // a leading dot is no extension
+}
+
+test "Restore renames the item back; a name taken there brings it back as NAME 2; a missing folder is made" {
+    volume();
+    assert(trash.put(b"/home/ci/notes/a.txt", 20) == 0);
+    memfs.add(b"/home/ci/notes/a.txt", 2, b"new");          // the name taken again meanwhile
+    assert(trash.restore(b"a.txt", 5) == 0);
+    U8[4096] n;
+    I64 nn = trash.last_name(n);
+    assert(same(n, nn, b"/home/ci/notes/a 2.txt"));
+    U8[64] c;
+    I64 cn = memfs.content(b"/home/ci/notes/a.txt", c);
+    assert(same(c, cn, b"new"));                             // never overwritten
+    cn = memfs.content(b"/home/ci/notes/a 2.txt", c);
+    assert(same(c, cn, b"one"));
+    assert(trashfs.kind(b"/home/ci/.trash/records/a.txt") == 0 && trash.items() == 0);
+    assert(trash.put(b"/home/ci/notes/a 2.txt", 22) == 0);
+    assert(trash.put(b"/home/ci/notes/a.txt", 20) == 0);
+    assert(trashfs.rmdir(b"/home/ci/notes") == 0);           // the folder gone
+    assert(trash.restore(b"a.txt", 5) == 0 && trashfs.kind(b"/home/ci/notes") == 1);
+    nn = trash.last_name(n);
+    assert(same(n, nn, b"/home/ci/notes/a.txt"));
+}
+
+test "a folder goes whole, comes back whole, and Delete Forever frees it with a link inside, never followed" {
+    volume();
+    memfs.add(b"/home/ci/notes/deep", 1, b"");
+    memfs.add(b"/home/ci/notes/deep/c.txt", 2, b"three");
+    memfs.add(b"/home/ci/notes/deep/to-etc", 3, b"");        // a link to /etc
+    assert(trash.put(b"/home/ci/notes", 14) == 0);
+    assert(trashfs.kind(b"/home/ci/.trash/items/notes/deep/c.txt") == 2 && trashfs.kind(b"/home/ci/notes") == 0);
+    assert(trash.restore(b"notes", 5) == 0 && trashfs.kind(b"/home/ci/notes/deep/c.txt") == 2);
+    assert(trash.put(b"/home/ci/notes", 14) == 0);
+    assert(trash.delete_forever(b"notes", 5) == 0);
+    assert(trashfs.kind(b"/home/ci/.trash/items/notes") == 0 && trashfs.kind(b"/home/ci/.trash/records/notes") == 0);
+    assert(trashfs.kind(b"/etc/motd") == 2 && trash.items() == 0);
+}
+
+test "a missing or damaged record: the item still lists and can be deleted, Restore is unavailable" {
+    volume();
+    assert(trash.put(b"/home/ci/b.txt", 14) == 0);
+    assert(trash.put(b"/home/ci/notes/a.txt", 20) == 0);
+    assert(trashfs.unlink(b"/home/ci/.trash/records/b.txt") == 0);
+    assert(trashfs.write_file(b"/home/ci/.trash/records/a.txt", b"daphnis-trash 1\npath 9\n/home/../x\ndeleted 1\n", 43) == 0);
+    U8[4096] p;
+    assert(trash.info(b"b.txt", 5, p) == 0 - trash.EINVAL && trash.info(b"a.txt", 5, p) == 0 - trash.EINVAL);
+    assert(trash.restore(b"b.txt", 5) == 0 - trash.EINVAL && trashfs.kind(b"/home/ci/.trash/items/b.txt") == 2);
+    assert(trash.items() == 2);
+    assert(trash.delete_forever(b"b.txt", 5) == 0 && trash.delete_forever(b"a.txt", 5) == 0 && trash.items() == 0);
+}
+
+test "a name with a line feed round-trips through its record" {
+    volume();
+    memfs.add(b"/home/ci/x\ny", 2, b"z");
+    assert(trash.put(b"/home/ci/x\ny", 12) == 0);
+    U8[4096] p;
+    I64 pn = trash.info(b"x\ny", 3, p);
+    assert(same(p, pn, b"/home/ci/x\ny"));
+    assert(trash.restore(b"x\ny", 3) == 0 && trashfs.kind(b"/home/ci/x\ny") == 2);
+}
+
+test "Empty Trash frees everything, more names than one listing holds, and orphan records" {
+    volume();
+    U8[54] f = b"/home/ci/a-long-name-to-fill-the-listing-buffer-00.txt";
+    for k in 0..90 {
+        f[48] = ('0' as I64 + k / 10) as U8;
+        f[49] = ('0' as I64 + k % 10) as U8;
+        memfs.add(f[0..54], 2, b"");
+        assert(trash.put(f[0..54], 54) == 0);
+    }
+    memfs.add(b"/home/ci/.trash/records/orphan", 2, b"x");
+    assert(trash.items() == 90);
+    assert(trash.empty() == 90 && trash.items() == 0);
+    U8[4096] b;
+    assert(trashfs.names(b"/home/ci/.trash/records", b) == 0);
+}
+
+test "refusals: the trash, in it, above it, off the volume, no volume, nothing there, a failed rename" {
+    volume();
+    assert(trash.put(b"/home/ci/b.txt", 14) == 0);
+    assert(trash.put(b"/home/ci/.trash", 15) == 0 - trash.EINVAL);
+    assert(trash.put(b"/home/ci/.trash/items/b.txt", 27) == 0 - trash.EINVAL);
+    assert(trash.put(b"/home/ci", 8) == 0 - trash.EINVAL && trash.put(b"/home", 5) == 0 - trash.EINVAL);
+    assert(trash.put(b"/etc/motd", 9) == 0 - trash.EXDEV && trashfs.kind(b"/etc/motd") == 2);
+    assert(trash.put(b"/home/ci/none", 13) == 0 - trash.ENOENT);
+    assert(trash.put(b"home/ci/b.txt", 13) == 0 - trash.EINVAL && trash.put(b"/home/ci/../ci/b.txt", 20) == 0 - trash.EINVAL);
+    memfs.add(b"/home/ci/c.txt", 2, b"");
+    memfs.set_fail_rename(true);
+    assert(trash.put(b"/home/ci/c.txt", 14) == 0 - trash.EACCES);
+    assert(trashfs.kind(b"/home/ci/.trash/records/c.txt") == 0 && trashfs.kind(b"/home/ci/c.txt") == 2);
+    memfs.set_fail_rename(false);
+    memfs.set_home(b"/");
+    assert(trash.put(b"/home/ci/c.txt", 14) == 0 - trash.EROFS && trash.items() == 0 - 0);
+}
+// Name k of 240 bytes, "/home/ci/big/" and "n" then k's three digits then x's, into t; the path's length.
+I64 big_name(I64 k, inout U8[256] t) {
+    for q in 0..13 { t[q] = b"/home/ci/big/"[q]; }
+    t[13] = 'n';
+    t[14] = ('0' as I64 + k / 100) as U8;
+    t[15] = ('0' as I64 + k / 10 % 10) as U8;
+    t[16] = ('0' as I64 + k % 10) as U8;
+    for q in 17..253 { t[q] = 'x'; }
+    return 253;
+}
+
+test "a folder past one listing (16 KB of names) is freed whole, and a trash past one listing reads full" {
+    volume();
+    memfs.add(b"/home/ci/big", 1, b"");
+    U8[256] t;
+    for k in 0..70 {                                         // 70 names of 240 bytes: 16,870 bytes, past 16,384
+        I64 n = big_name(k, t);
+        memfs.add(t[0..n], 2, b"");
+    }
+    assert(trash.put(b"/home/ci/big", 12) == 0);
+    assert(trash.delete_forever(b"big", 3) == 0);           // sh_dirents would answer -E2BIG here
+    assert(trashfs.kind(b"/home/ci/.trash/items/big") == 0 && trash.items() == 0);
+    memfs.add(b"/home/ci/big", 1, b"");
+    for k in 0..70 {
+        I64 n = big_name(k, t);
+        memfs.add(t[0..n], 2, b"");
+        assert(trash.put(t[0..n], n) == 0);                  // the trash itself past one listing
+    }
+    assert(trash.items() > 0);                               // full, never empty
+    assert(trash.empty() == 70 && trash.items() == 0);
+}
+
+test "a 255-byte name trashed twice, and restored beside a taken name, answers -ENAMETOOLONG, never past a buffer" {
+    volume();
+    U8[264] p;
+    for q in 0..9 { p[q] = b"/home/ci/"[q]; }
+    for q in 9..264 { p[q] = 'n'; }
+    memfs.add(p, 2, b"one");
+    assert(trash.put(p, 264) == 0);
+    memfs.add(p, 2, b"two");
+    assert(trash.put(p, 264) == 0 - trash.ENAMETOOLONG);   // "NAME 2" would be 257 bytes
+    assert(trash.restore(p[9..264], 255) == 0 - trash.ENAMETOOLONG);   // the name is taken there
+    U8[64] c;
+    I64 cn = memfs.content(p, c);
+    assert(same(c, cn, b"two") && trash.items() == 1);
+}
+
+test "Restore follows a link to a folder on the original path, as Move to Trash did; a link to a file stays in the way" {
+    volume();
+    memfs.add(b"/home/ci/real", 1, b"");
+    memfs.add(b"/home/ci/alias", 3, b"/home/ci/real");      // a link to a folder
+    memfs.add(b"/home/ci/alias/c.txt", 2, b"three");        // reached through it, as the kernel resolves a path
+    assert(trash.put(b"/home/ci/alias/c.txt", 20) == 0);
+    assert(trashfs.kind(b"/home/ci/alias") == 2 && trashfs.kind_through(b"/home/ci/alias") == 1);
+    assert(trash.restore(b"c.txt", 5) == 0);                   // -ENOTDIR before: the link read as a file
+    assert(trashfs.kind(b"/home/ci/alias/c.txt") == 2);
+    memfs.add(b"/home/ci/file-link", 3, b"/home/ci/b.txt");  // a link to a file on the way stays in the way
+    memfs.add(b"/home/ci/file-link/d.txt", 2, b"four");
+    assert(trash.put(b"/home/ci/file-link/d.txt", 24) == 0);
+    assert(trash.restore(b"d.txt", 5) == -20);                 // -ENOTDIR
+}
+
+test "a stored name is checked: never . or .., a slash or nothing; a record off the volume restores nowhere" {
+    volume();
+    assert(trash.put(b"/home/ci/b.txt", 14) == 0);
+    assert(trash.delete_forever(b"..", 2) == 0 - trash.EINVAL && trash.delete_forever(b".", 1) == 0 - trash.EINVAL);
+    assert(trash.items() == 1 && trashfs.kind(b"/home/ci/.trash/items") == 1);
+    U8[4096] p;
+    assert(trash.info(b"a/b", 3, p) == 0 - trash.EINVAL && trash.restore(b"", 0) == 0 - trash.EINVAL);
+    assert(trashfs.write_file(b"/home/ci/.trash/records/b.txt", b"daphnis-trash 1\npath 10\n/etc/x/b.t\ndeleted 1\n", 45) == 0);
+    assert(trash.restore(b"b.txt", 5) == 0 - trash.EINVAL);
+    assert(trashfs.kind(b"/etc/x") == 0 && trashfs.kind(b"/home/ci/.trash/items/b.txt") == 2);
+}
+// SPDX-License-Identifier: Apache-2.0

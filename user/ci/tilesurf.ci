@@ -1,0 +1,9 @@
+// user/ci/tilesurf.ci: RS-SURF (docs/specs/2026-11-05-h-hybrid.md section 5a), a placed pixel window's surface taken
+// to a new size after its first map; rows of user/ci/host.c built only into a program that imports this file and
+// tilewin.ci (CI_ROWS_SURF), so no other program's bytes change:
+//   fb_resize(w, h): munmap of the surface, FBIO_TILE_WANT {w, h}, mmap again; dev.fb_word reads the size after.
+//     WANT's answer: 0, or -EINVAL while the desk has not placed the window again since the last ask (the surface
+//     then comes back at the size it had, so draw it and ask again later); or the open's or the map's -errno, with
+//     no surface.
+export extern unrestricted I64 fb_resize(I64 w, I64 h);
+// SPDX-License-Identifier: Apache-2.0

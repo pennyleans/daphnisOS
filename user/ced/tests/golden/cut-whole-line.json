@@ -1,0 +1,25 @@
+{
+  "id": "cut-whole-line",
+  "rules": [
+    "KEY-5"
+  ],
+  "text": "one\ntwo\n",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "18"
+  ],
+  "expect": {
+    "text": "two\n",
+    "sel": [
+      0,
+      0
+    ]
+  }
+}

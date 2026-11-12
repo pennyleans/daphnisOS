@@ -1,0 +1,249 @@
+// tests/ac/acctform_test.ci: frame 49 (design notes 66 and 67), the Add Account and Change Password forms
+// (user/ci/kit/acctform.ci) over user/ci/acctask.ci: the focus and its stops, the keys, the presses, the line under
+// the fields, Create or Change at 40 percent until every entry passes, and the plate's cells at 1x and 2x on both
+// themes. Run by check.sh: cint test --root . tests/ac/acctform_test.ci
+import user.ci.acct;
+import user.ci.authreq;
+import user.ci.acctask;
+import user.ci.kit.acctform;
+import user.ci.kit.tokens;
+import user.ci.kit.blend;
+
+const I64 ADD = 16;                    // kit/stacct.ci's actions
+const I64 PASSWORD = 18;
+const I64 K_ESC = 1;
+const I64 K_BACKSPACE = 14;
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+
+U8[640] o;
+U8[40] t;
+
+// ci a parent (0), sam a child (1).
+void two() {
+    acct.clear();
+    I64 a = acct.add("ci", 2, acct.PARENT, 1000, 1000, 65536, 3, "000102030405060708090a0b0c0d0e0f",
+                     "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386", 7,
+                     "000102030405060708090a0b0c0d0e0f");
+    I64 b = acct.add("sam", 3, acct.CHILD, 1001, 1001, 65536, 3, "f0e0d0c0b0a090807060504030201000",
+                     "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 5,
+                     "f0e0d0c0b0a090807060504030201000");
+    assert(a == 0 && b == 1);
+    acct.pass_len(0, 14);
+    acct.pass_len(1, 4);
+    acctask.cancel();
+    acctform.close();
+}
+
+// Each byte of s as a key that types it (the code does not matter to a printable byte).
+void keys(in U8[_] s) {
+    for k in 0..len(s) { assert(acctform.key(30, s[k] as I64, false) == acctform.STAY); }
+}
+
+I64 press(I64 code) { return acctform.key(code, -1, false); }
+
+test "Add Account: Name has the focus, Role starts on Child, Tab walks Name, Role, Password, again and wraps" {
+    two();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    assert(acctform.is_up() && acctform.height() == acctform.H_ADD);
+    assert(acctform.focus() == acctform.S_NAME && acctask.form_role() == acct.CHILD);
+    keys("Sa m!");                                             // a capital folds, a dropped key shows nothing
+    assert(acctask.name_len() == 3 && acctask.name_byte(0) == 115);
+    assert(press(K_TAB) == acctform.STAY && acctform.focus() == acctform.S_ROLE);
+    keys("x");                                                 // Role takes no byte
+    assert(acctask.name_len() == 3);
+    assert(press(K_LEFT) == acctform.STAY && acctask.form_role() == acct.PARENT);
+    assert(press(K_RIGHT) == acctform.STAY && acctask.form_role() == acct.CHILD);
+    assert(press(K_TAB) == acctform.STAY && acctform.focus() == acctform.S_NEW);
+    assert(acctask.field() == acctask.F_NEW);
+    assert(press(K_TAB) == acctform.STAY && acctform.focus() == acctform.S_AGAIN);
+    assert(press(K_TAB) == acctform.STAY && acctform.focus() == acctform.S_NAME);
+    assert(acctform.key(K_TAB, -1, true) == acctform.STAY && acctform.focus() == acctform.S_AGAIN);
+    assert(press(K_BACKSPACE) == acctform.STAY && acctask.again_len() == 0);
+    assert(press(K_ESC) == acctform.CANCEL && !acctform.is_up() && acctask.phase() == acctask.IDLE);
+}
+
+test "Enter: on to the next field until the form is ready, then DONE and the prompt; Create dimmed until then" {
+    two();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    keys("pat");
+    assert(press(K_ENTER) == acctform.STAY && acctform.focus() == acctform.S_ROLE);
+    assert(press(K_ENTER) == acctform.STAY && acctform.focus() == acctform.S_NEW);
+    keys("abcd");
+    assert(press(K_ENTER) == acctform.STAY && acctform.focus() == acctform.S_AGAIN);
+    keys("abce");
+    assert(!acctask.form_ready());
+    assert(press(K_ENTER) == acctform.STAY && acctform.is_up());              // not ready: every fault shows
+    assert(acctform.shown(acctform.S_AGAIN) == acctask.DIFFER);
+    assert(press(K_BACKSPACE) == acctform.STAY);
+    keys("d");
+    assert(acctask.form_ready());
+    assert(press(K_ENTER) == acctform.DONE && !acctform.is_up() && acctask.phase() == acctask.PROMPT);
+    assert(acctask.request(o, "parentpass12", 12) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE);
+}
+
+test "the line: a fault shows once the focus leaves its field, in the order of the fields; a parent's minimum" {
+    two();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    keys("ci");
+    assert(acctform.shown(acctform.S_NAME) == 0);                            // still in Name: nothing yet
+    assert(acctform.line(t) == 0);
+    assert(press(K_TAB) == acctform.STAY);
+    assert(acctform.shown(acctform.S_NAME) == acctask.NAME_TAKEN);
+    assert(said(acctform.line(t), "That name is taken.") && acctform.warns());
+    assert(press(K_LEFT) == acctform.STAY);                       // Parent: the minimum stands from the start
+    acctform.close();
+    acctask.cancel();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    keys("-");
+    assert(press(K_TAB) == acctform.STAY);
+    assert(said(acctform.line(t), "That name cannot be used."));
+    assert(press(K_LEFT) == acctform.STAY && press(K_TAB) == acctform.STAY);
+    keys("x");
+    assert(press(K_TAB) == acctform.STAY);
+    assert(said(acctform.line(t), "That name cannot be used."));            // the first field's fact first
+    assert(acctform.click(acctform.PAD + 10, acctform.row_y(acctform.S_NAME) + 10) == acctform.STAY);
+    assert(press(K_BACKSPACE) == acctform.STAY);
+    keys("ada");
+    assert(acctform.shown(acctform.S_NEW) == acctask.SHORT);
+    assert(least(acctform.line(t), acct.PARENT_MIN) && acctform.warns());
+    acctform.close();
+    acctask.cancel();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    assert(press(K_TAB) == acctform.STAY && press(K_LEFT) == acctform.STAY);
+    assert(acctform.shown(acctform.S_NAME) == 0);                            // an empty field left: nothing
+    assert(least(acctform.line(t), acct.PARENT_MIN) && !acctform.warns());   // a parent's, in INK_DIM
+    acctform.close();
+    acctask.cancel();
+}
+
+// Whether the line is `N characters or more.` with N a parent's minimum (AC-D3, acct.PARENT_MIN) or a child's.
+Bool least(I64 n, I64 m) {
+    U8[24] w;
+    I64 k = 0;
+    if (m >= 10) {
+        w[0] = (48 + m / 10) as U8;
+        k = 1;
+    }
+    w[k] = (48 + m % 10) as U8;
+    U8[20] tail = b" characters or more.";
+    for q in 0..20 { w[k + 1 + q] = tail[q]; }
+    return said(n, w[0..k + 21]);
+}
+
+Bool said(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (t[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "Change Password: the account's own form, Password first; authd's refusal reopens it at Password" {
+    two();
+    assert(acctask.begin(PASSWORD, 1, 0, 1) == acctask.FORM);
+    acctform.open();
+    assert(acctform.height() == acctform.H_CHANGE && acctform.focus() == acctform.S_NEW);
+    assert(press(K_TAB) == acctform.STAY && acctform.focus() == acctform.S_AGAIN);
+    assert(press(K_TAB) == acctform.STAY && acctform.focus() == acctform.S_NEW);
+    keys("wxyz");
+    assert(press(K_TAB) == acctform.STAY);
+    keys("wxyz");
+    assert(press(K_ENTER) == acctform.DONE && acctask.phase() == acctask.PROMPT);
+    assert(acctask.request(o, "samp", 4) > 0);
+    assert(acctask.answer(authreq.R_PASS) == acctask.O_FORM);
+    acctform.reopen();
+    assert(acctform.is_up() && acctform.focus() == acctform.S_NEW && acctask.new_len() == 0);
+    assert(least(acctform.line(t), acct.CHILD_MIN) && acctform.warns());
+    assert(press(K_ESC) == acctform.CANCEL && acctask.phase() == acctask.IDLE);
+}
+
+test "presses: a field takes the focus, Role's halves choose, Create only when ready, Cancel ends it" {
+    two();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    I64 bt = acctform.btn_y();
+    assert(acctform.click(acctform.PAD + 4, acctform.row_y(acctform.S_NEW) + 4) == acctform.STAY);
+    assert(acctform.focus() == acctform.S_NEW && acctask.field() == acctask.F_NEW);
+    I64 sx = acctform.W - acctform.PAD - acctform.SEG_W;
+    assert(acctform.click(sx + 10, acctform.row_y(acctform.S_ROLE) + 10) == acctform.STAY);
+    assert(acctform.focus() == acctform.S_ROLE && acctask.form_role() == acct.PARENT);
+    assert(acctform.click(sx + acctform.SEG_W - 10, acctform.row_y(acctform.S_ROLE) + 10) == acctform.STAY);
+    assert(acctask.form_role() == acct.CHILD);
+    assert(acctform.click(acctform.PAD + 4, bt + 4) == acctform.STAY && acctform.is_up());   // not ready
+    assert(acctform.click(acctform.PAD + 4, acctform.row_y(acctform.S_NAME) + 4) == acctform.STAY);
+    keys("lee");
+    assert(acctform.click(acctform.PAD + 4, acctform.row_y(acctform.S_NEW) + 4) == acctform.STAY);
+    keys("abcd");
+    assert(acctform.click(acctform.PAD + 4, acctform.row_y(acctform.S_AGAIN) + 4) == acctform.STAY);
+    keys("abcd");
+    assert(acctform.click(2, bt + 4) == acctform.STAY);                      // the margin: nothing
+    assert(acctform.click(acctform.PAD + 4, bt + 4) == acctform.DONE);
+    acctask.cancel();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    assert(acctform.click(acctform.W - acctform.PAD - 4, bt + 4) == acctform.CANCEL);
+    assert(acctask.phase() == acctask.IDLE && !acctform.is_up());
+}
+
+// The plate's cells at zoom z on theme th: FILL header, PAPER body, the focused field ringed ULTRAMARINE, a left
+// field at fault ringed CADMIUM, Create dimmed until ready and FILL once ready, Cancel SURF1.
+Bool cells(I64 z, I64 th) {
+    tokens.set_theme(th);
+    two();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    acctform.open();
+    U32[1000] row;
+    U32 paper = tokens.word(tokens.PAPER);
+    for x in 0..1000 { row[x] = 0; }
+    acctform.row_at(row, 10 * z, 0, 0, z);
+    Bool ok = row[30 * z] == tokens.word(tokens.FILL);
+    I64 ny = acctform.row_y(acctform.S_NAME);
+    for x in 0..1000 { row[x] = 0; }
+    acctform.row_at(row, (ny - 1) * z, 0, 0, z);
+    ok = ok && row[100 * z] == tokens.word(tokens.ULTRAMARINE);              // the focus ring above Name
+    for x in 0..1000 { row[x] = 0; }
+    acctform.row_at(row, (ny + 2) * z, 0, 0, z);
+    ok = ok && row[(acctform.PAD - 6) * z] == paper && row[200 * z] == tokens.word(tokens.MANTLE);
+    I64 bt = acctform.btn_y();
+    for x in 0..1000 { row[x] = 0; }
+    acctform.row_at(row, (bt + 2) * z, 0, 0, z);
+    U32 dim = blend.mix_px(paper, tokens.word(tokens.FILL), 102);
+    ok = ok && row[(acctform.PAD + 4) * z] == dim;
+    ok = ok && row[(acctform.W - acctform.PAD - 4) * z] == tokens.word(tokens.SURF1);
+    keys("ci");
+    I64 k = press(K_TAB);
+    for x in 0..1000 { row[x] = 0; }
+    acctform.row_at(row, (ny - 1) * z, 0, 0, z);
+    ok = ok && row[100 * z] == tokens.word(tokens.CADMIUM);                  // Name, left and taken
+    assert(acctform.click(acctform.PAD + 4, ny + 4) == acctform.STAY && press(K_BACKSPACE) == acctform.STAY);
+    keys("x");
+    assert(press(K_TAB) == acctform.STAY && press(K_TAB) == acctform.STAY);
+    keys("abcd");
+    assert(press(K_TAB) == acctform.STAY);
+    keys("abcd");
+    for x in 0..1000 { row[x] = 0; }
+    acctform.row_at(row, (bt + 2) * z, 0, 0, z);
+    ok = ok && row[(acctform.PAD + 4) * z] == tokens.word(tokens.FILL);     // ready: Create at full strength
+    for x in 0..1000 { row[x] = 0; }
+    acctform.row_at(row, (acctform.height() + 8) * z, 0, 0, z);
+    for x in 0..1000 { ok = ok && row[x] == 0; }                              // below the plate: nothing
+    acctform.close();
+    acctask.cancel();
+    tokens.set_theme(tokens.DARK);
+    return ok;
+}
+
+test "the plate's cells at 1x and 2x, both themes" {
+    assert(cells(1, tokens.DARK) && cells(2, tokens.DARK));
+    assert(cells(1, tokens.LIGHT) && cells(2, tokens.LIGHT));
+}
+// SPDX-License-Identifier: Apache-2.0

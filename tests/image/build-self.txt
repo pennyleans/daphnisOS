@@ -1,0 +1,25 @@
+./grant disk ./sh <<'EOF'
+echo quota KiB: $(ulimit -v)
+cd home/out
+mkdir s t
+/home/opt/cint/cib --self s/cint
+echo cib self: $?
+for f in s/cint s/cint.toolchain s/cint.cib/e/MANIFEST.ref s/cint.cib/e.stage-0/* s/cint.cib/*.s s/cint.cib/*.o s/cint.cib/m.a; do
+    if [ -f $f ]; then /sha256sum $f; fi
+done
+/home/out/s/cint emit-qbe --toolchain /home/out/s/cint.toolchain --root /home/opt/cint/src/compiler --out t/comp main.ci
+echo emit comp: $?
+cd ../src
+for p in msha mci; do
+    /home/out/s/cint emit-qbe --toolchain /home/out/s/cint.toolchain --root . --out ../out/t/$p user/ci/$p.ci
+    echo emit $p: $?
+done
+cd ../out
+for f in t/*/MANIFEST.ref t/*.stage-0/* t/*.stage-0/*/* t/*.stage-0/*/*/*; do
+    if [ -f $f ]; then /sha256sum $f; fi
+done
+sync
+EOF
+echo grant: $?
+exit 0
+

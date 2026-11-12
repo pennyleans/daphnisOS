@@ -1,0 +1,260 @@
+// user/ci/authop.ci: authd's operations on the account store. RS-ROLE (docs/specs/2026-11-11-rs-role.md): an
+// account's role set, a child's grant ceiling set, an account removed. RS-R4 and RS-R3
+// (docs/specs/2026-11-11-rs-accounts-ops.md): an account added, a passphrase set, and a removed account's home set
+// aside. user/ci/authreq.ci has the request's words and the answer's codes. authd reads the store itself, so the
+// salt and verifier are the store's and never the caller's. The order: the request, the store, who approves (a
+// parent, or for `passwd` the account itself), the approver's passphrase, then the change, checked by
+// user/ci/acct.ci (the last parent stays a parent and stays; a promotion needs a passphrase accepted under a
+// parent's rule; a new passphrase meets its role's rule), then the store written whole (user/ci/acctput.ci).
+// Anything but DONE leaves the store reading as it did. A `role` or `ceil` that asks what already holds is DONE and
+// writes nothing.
+import user.ci.acct;
+import user.ci.acctio;
+import user.ci.acctput;
+import user.ci.argon2;
+import user.ci.authreq;
+import user.ci.authver;
+import user.ci.homeaside;
+
+const I64 OP_ROLE = 1;
+const I64 OP_CEIL = 2;
+const I64 OP_REMOVE = 3;
+const I64 OP_ADD = 4;
+const I64 OP_PASSWD = 5;
+const I64 EEXIST = 17;
+
+U8[4096] sbuf;
+
+Bool is(in U8[_] req, I64 a, I64 b, in U8[_] w) {
+    if (b - a != len(w)) { return false; }
+    for k in 0..len(w) {
+        if (req[a + k] != w[k]) { return false; }
+    }
+    return true;
+}
+
+// The word of req[0..n) from at: its end, at a space or an LF; n with neither.
+I64 word_end(in U8[_] req, I64 n, I64 at) {
+    I64 e = at;
+    while (e < n && req[e] != 32 && req[e] != 10) { e = e + 1; }
+    return e;
+}
+
+I64 op_of(in U8[_] req, I64 n) {
+    I64 e = word_end(req, n, 0);
+    if (e >= n || req[e] != 32) { return 0; }
+    if (is(req, 0, e, "role")) { return OP_ROLE; }
+    if (is(req, 0, e, "ceil")) { return OP_CEIL; }
+    if (is(req, 0, e, "remove")) { return OP_REMOVE; }
+    if (is(req, 0, e, "add")) { return OP_ADD; }
+    if (is(req, 0, e, "passwd")) { return OP_PASSWD; }
+    return 0;
+}
+
+// Whether req[0..n) asks one of these operations: its first word, a space after it.
+export Bool is_op(in U8[_] req, I64 n) { return n <= len(req) && op_of(req, n) != 0; }
+
+// Whether req[0..n) asks an operation that sets a passphrase, for which run takes 16 fresh bytes of salt.
+export Bool wants_salt(in U8[_] req, I64 n) {
+    if (n > len(req)) { return false; }
+    I64 op = op_of(req, n);
+    return op == OP_ADD || op == OP_PASSWD;
+}
+
+// The count req[a..b): decimal, 1 to 256, no leading 0; -1 for anything else.
+I64 count_of(in U8[_] req, I64 a, I64 b) {
+    if (b - a < 1 || b - a > 3 || req[a] == 48) { return -1; }
+    I64 v = 0;
+    for k in a..b {
+        if (req[k] < 48 || req[k] > 57) { return -1; }
+        v = v * 10 + (req[k] - 48) as I64;
+    }
+    if (v > acct.PASS_MAX) { return -1; }
+    return v;
+}
+
+I64 nib(U8 c) {
+    if (c >= 97) { return (c - 87) as I64; }
+    return (c - 48) as I64;
+}
+
+// Whether pass[0..n) is account i's passphrase (AC-D9), all 32 bytes of the verifier compared.
+Bool pass_is(I64 i, in U8[_] pass, I64 n, inout U64[_] mem) {
+    U8[16] salt;
+    U8[32] ver;
+    for k in 0..16 { salt[k] = (nib(acct.salt_byte(i, 2 * k)) * 16 + nib(acct.salt_byte(i, 2 * k + 1))) as U8; }
+    authver.verifier(pass, n, acct.m_of(i), acct.t_of(i), salt, mem, ver);
+    U8 diff = 0;
+    for k in 0..32 {
+        U8 want = (nib(acct.ver_byte(i, 2 * k)) * 16 + nib(acct.ver_byte(i, 2 * k + 1))) as U8;
+        diff = diff | (ver[k] ^ want);
+        ver[k] = 0;
+    }
+    return diff == 0;
+}
+
+// The salt's hex and the verifier's hex (AC-D9) for the new passphrase req[at..at + fl), at m KiB and t passes.
+// DONE, or E_RANDOM without 16 bytes of salt, or E_REQUEST for parameters authd does not hold memory for.
+I64 enroll(in U8[_] req, I64 at, I64 fl, in U8[_] salt, I64 sn, I64 m, I64 t, inout U64[_] mem, inout U8[_] shex,
+           inout U8[_] vhex) {
+    if (sn != 16 || len(salt) < 16) { return authreq.E_RANDOM; }
+    if (m < 8 || m > 65536 || t < 1 || t > 16 || len(mem) < argon2.words_needed(m, 1)) { return authreq.E_REQUEST; }
+    U8[256] pass;
+    U8[16] raw;
+    U8[32] ver;
+    for k in 0..fl { pass[k] = req[at + k]; }
+    for k in 0..16 { raw[k] = salt[k]; }
+    authver.verifier(pass, fl, m, t, raw, mem, ver);
+    for k in 0..256 { pass[k] = 0; }
+    for k in 0..16 {
+        shex[2 * k] = b"0123456789abcdef"[(raw[k] / 16) as I64];
+        shex[2 * k + 1] = b"0123456789abcdef"[(raw[k] % 16) as I64];
+    }
+    for k in 0..32 {
+        vhex[2 * k] = b"0123456789abcdef"[(ver[k] / 16) as I64];
+        vhex[2 * k + 1] = b"0123456789abcdef"[(ver[k] % 16) as I64];
+        ver[k] = 0;
+    }
+    return authreq.DONE;
+}
+
+I64 decide(in U8[_] req, I64 n, inout U64[_] mem, in U8[_] salt, I64 sn, I64 m, I64 t) {
+    I64 op = op_of(req, n);
+    if (op == 0) { return authreq.E_REQUEST; }
+    U8[32] who;
+    U8[32] name;
+    I64 a = word_end(req, n, 0) + 1;
+    I64 e = word_end(req, n, a);
+    I64 bl = e - a;
+    if (e >= n || req[e] != 32 || bl < 1 || bl > acct.NAME_MAX) { return authreq.E_REQUEST; }
+    for k in 0..bl { who[k] = req[a + k]; }
+    a = e + 1;
+    e = word_end(req, n, a);
+    I64 nl = e - a;
+    if (e >= n || nl < 1 || nl > acct.NAME_MAX) { return authreq.E_REQUEST; }
+    for k in 0..nl { name[k] = req[a + k]; }
+    if (!acct.name_ok(who, bl) || !acct.name_ok(name, nl)) { return authreq.E_REQUEST; }
+    I64 role = 0;
+    I64 ceil = 0;
+    I64 first = 0;                     // `add`, `passwd`: the length of the approver's passphrase, N
+    if (op == OP_ROLE || op == OP_ADD) {
+        if (req[e] != 32) { return authreq.E_REQUEST; }
+        a = e + 1;
+        e = word_end(req, n, a);
+        if (e >= n) { return authreq.E_REQUEST; }
+        if (is(req, a, e, "parent")) { role = acct.PARENT; }
+        if (is(req, a, e, "child")) { role = acct.CHILD; }
+        if (role == 0) { return authreq.E_REQUEST; }
+    }
+    if (op == OP_CEIL) {
+        if (req[e] != 32) { return authreq.E_REQUEST; }
+        a = e + 1;
+        e = word_end(req, n, a);
+        if (e >= n || e - a != 1 || req[a] < 48 || req[a] > 55) { return authreq.E_REQUEST; }
+        ceil = (req[a] - 48) as I64;
+    }
+    if (op == OP_ADD || op == OP_PASSWD) {
+        if (req[e] != 32) { return authreq.E_REQUEST; }
+        a = e + 1;
+        e = word_end(req, n, a);
+        if (e >= n) { return authreq.E_REQUEST; }
+        first = count_of(req, a, e);
+        if (first < 1) { return authreq.E_REQUEST; }
+    }
+    if (req[e] != 10) { return authreq.E_REQUEST; }
+    I64 at = e + 1;
+    I64 pl = n - at;                   // the approver's passphrase, req[at..at + pl)
+    I64 fat = 0;                       // the new passphrase, req[fat..fat + fl)
+    I64 fl = 0;
+    if (first > 0) {
+        pl = first;
+        fat = at + first;
+        fl = n - fat;
+        if (fl < 1 || fl > acct.PASS_MAX) { return authreq.E_REQUEST; }
+    }
+    if (pl < 1 || pl > acct.PASS_MAX) { return authreq.E_REQUEST; }
+
+    if (acctio.load(sbuf) < 1) {
+        acct.clear();
+        return authreq.E_STORE;
+    }
+    I64 bi = acct.find(who, bl);
+    Bool own = op == OP_PASSWD && bl == nl;                    // `passwd`: the account approves for itself
+    for k in 0..bl {
+        if (own && who[k] != name[k]) { own = false; }
+    }
+    if (bi < 0 || (acct.role_of(bi) != acct.PARENT && !own)) { return authreq.R_APPROVER; }
+    if (len(mem) < argon2.words_needed(acct.m_of(bi), 1)) { return authreq.E_STORE; }
+    U8[256] pass;
+    for k in 0..pl { pass[k] = req[at + k]; }
+    Bool yes = pass_is(bi, pass, pl, mem);
+    for k in 0..256 { pass[k] = 0; }
+    if (!yes) { return authreq.WRONG; }
+
+    I64 i = acct.find(name, nl);
+    U8[32] shex;
+    U8[64] vhex;
+    Bool aside = false;                // RS-R3: the home was set aside, and comes back if the store is not written
+    I64 uid = 0;
+    if (op == OP_ADD) {
+        if (i >= 0) { return authreq.R_TAKEN; }
+        uid = acct.next_uid();
+        if (acct.accounts() >= acct.MAX || uid > 65535) { return authreq.R_FULL; }
+        if (!acct.pass_ok(role, fl) || !acct.pass_typeable(req[fat..fat + fl], fl)) { return authreq.R_PASS; }
+        I64 en = enroll(req, fat, fl, salt, sn, m, t, mem, shex, vhex);
+        if (en != authreq.DONE) { return en; }
+        U64 c = 0;                     // a new child holds no grant until `ceil` gives one
+        if (role == acct.PARENT) { c = 7; }
+        I64 ni = acct.add(name, nl, role, uid, uid, m, t, shex, vhex, c, shex);
+        if (ni < 0) { return authreq.R_FULL; }
+        acct.pass_len(ni, fl);
+    } else if (i < 0) {
+        return authreq.R_ACCOUNT;
+    } else if (op == OP_PASSWD) {
+        if (!acct.pass_ok(acct.role_of(i), fl) || !acct.pass_typeable(req[fat..fat + fl], fl)) {
+            return authreq.R_PASS;
+        }
+        I64 en = enroll(req, fat, fl, salt, sn, m, t, mem, shex, vhex);
+        if (en != authreq.DONE) { return en; }
+        if (!acct.set_pass(i, m, t, shex, vhex)) { return authreq.E_REQUEST; }
+        acct.pass_len(i, fl);
+    } else if (op == OP_ROLE) {
+        if (acct.role_of(i) == role) { return authreq.DONE; }
+        I64 r = acct.set_role(i, role);
+        if (r == acct.LAST_PARENT) { return authreq.R_LAST; }
+        if (r == acct.SHORT_PASS) { return authreq.R_PASS; }
+        if (r != 0) { return authreq.E_REQUEST; }
+    } else if (op == OP_CEIL) {
+        if (acct.role_of(i) == acct.PARENT) { return authreq.R_PARENT; }
+        if (acct.ceil_of(i) == ceil as U64) { return authreq.DONE; }
+        if (acct.set_ceil(i, ceil as U64) != 0) { return authreq.E_REQUEST; }
+    } else {
+        uid = acct.uid_of(i);
+        if (!acct.remove(i)) { return authreq.R_LAST; }
+        // RS-R3: the home is set aside before the store is written. A name already where it would go refuses the
+        // remove whole; no home is no failure.
+        I64 hs = homeaside.aside(name, nl, uid);
+        if (hs == 0 - EEXIST) { return authreq.R_HOME; }
+        if (hs < 0) { return authreq.E_WRITE; }
+        aside = hs == 1;
+    }
+    I64 tn = acct.write_text(sbuf);
+    if (acctput.save(sbuf, tn, acctio.from_primary()) < 0) {
+        if (aside) { I64 back = homeaside.back(name, nl, uid); }
+        return authreq.E_WRITE;
+    }
+    return authreq.DONE;
+}
+
+// The operation req[0..n) asks, done or not; its code. req, which holds the passphrases, is wiped. mem is
+// Argon2id's memory: argon2.words_needed words or more for the approver's m, and for m when a passphrase is set.
+// salt[0..sn) is 16 fresh bytes for an operation that sets a passphrase (wants_salt), which is enrolled at m KiB and
+// t passes; any other sn answers E_RANDOM there.
+export I64 run(inout U8[_] req, I64 n, inout U64[_] mem, in U8[_] salt, I64 sn, I64 m, I64 t) {
+    I64 code = authreq.E_REQUEST;
+    if (n >= 0 && n <= len(req)) { code = decide(req, n, mem, salt, sn, m, t); }
+    for k in 0..len(req) { req[k] = 0; }
+    for k in 0..4096 { sbuf[k] = 0; }
+    return code;
+}
+// SPDX-License-Identifier: Apache-2.0

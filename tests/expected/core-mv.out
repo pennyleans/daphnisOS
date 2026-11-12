@@ -1,0 +1,131 @@
+$ text.txt t2
+-- tree
++ t2 f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ text.txt box
+-- tree
++ box/text.txt f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ text.txt nonl.txt box/in
+-- tree
++ box/in/nonl.txt f 0644 21 e421985de8560d2d
++ box/in/text.txt f 0644 47 4eb69a7d087144a6
+- nonl.txt
+- text.txt
+status 0
+$ text.txt nonl.txt empty
+-- stderr
+mv: empty: Not a directory
+status 1
+$ text.txt text.txt
+status 0
+$ text.txt ./text.txt
+status 0
+$ text.txt box/in/deep/c.txt
+-- tree
+~ box/in/deep/c.txt f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ box/a.txt .
+-- tree
++ a.txt f 0644 2 87428fc522803d31
+- box/a.txt
+status 0
+$ missing t2
+-- stderr
+mv: missing: No such file or directory
+status 1
+$ text.txt nodir/t2
+-- stderr
+mv: text.txt: No such file or directory
+status 1
+$ box b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+- box
+- box/a.txt
+- box/in
+- box/in/b.txt
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ box/ b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+- box
+- box/a.txt
+- box/in
+- box/in/b.txt
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ box box/in
+-- stderr
+mv: box: Invalid argument
+status 1
+$ box/in/deep box/a.txt
+-- stderr
+mv: box/in/deep: Not a directory
+status 1
+$ box/in/deep box/in
+status 0
+$ -i text.txt nonl.txt < yes.txt
+-- stderr
+mv: nonl.txt: overwrite? -- tree
+~ nonl.txt f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ -i text.txt nonl.txt < empty
+-- stderr
+mv: nonl.txt: overwrite? status 0
+$ -i text.txt t2 < empty
+-- tree
++ t2 f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ -fi text.txt nonl.txt < empty
+-- stderr
+mv: nonl.txt: overwrite? status 0
+$ -if text.txt nonl.txt < empty
+-- tree
+~ nonl.txt f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ -f text.txt nonl.txt
+-- tree
+~ nonl.txt f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ -- text.txt t2
+-- tree
++ t2 f 0644 47 4eb69a7d087144a6
+- text.txt
+status 0
+$ -n text.txt t2
+-- stderr
+mv: not supported: -n
+status 2
+$ -v text.txt t2
+-- stderr
+mv: not supported: -v
+status 2
+$ 
+-- stderr
+mv: missing operand
+status 2
+$ text.txt
+-- stderr
+mv: missing operand
+status 2

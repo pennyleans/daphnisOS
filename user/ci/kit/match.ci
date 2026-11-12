@@ -1,0 +1,192 @@
+// user/ci/kit/match.ci: the fuzzy matcher of the Super plane (FF-2, docs/specs/2026-11-07-ff-super-plane.md section
+// 5), one module for the plane, cvim's picker (CV-5) and cish's completion (K-9). A query matches a candidate when
+// each of its bytes appears in the candidate in order, ASCII letters folded. A matched byte scores 8 at a boundary
+// (the candidate's start, after '/', '.', '_', '-' or ' ', or a capital after a lowercase letter), else 4 when it
+// follows the byte matched before it, else 1; the candidate's bytes skipped between the first and the last matched
+// byte count 1 each against it. The score is the best over every way the query lies in the candidate (a dynamic
+// program over the query and the candidate, checked integers throughout), and marks() gives that way's bytes for
+// the focus color. Ties: the shorter candidate first, then the larger tick (the more recent open).
+//
+// begin(query), then offer(id, candidate, tick) for each candidate, keeps the best TOP; kept(), kept_id(k) and
+// kept_score(k) read them best first. Bounds: QMAX query bytes, CMAX candidate bytes (a longer candidate is matched
+// on its last CMAX bytes, where the name is). Nothing here reads a file or a clock.
+
+export const I64 TOP = 32;
+export const I64 QMAX = 32;
+export const I64 CMAX = 512;
+export const I64 NONE = -1;
+const I64 LOW = -1000000;      // no way: below any score a query of QMAX bytes can reach
+
+U8[32] q;
+I64 qn = 0;
+I64[16384] dp;     // QMAX x CMAX: the best score with query byte i matched at candidate byte j, LOW for none
+I64[16384] from;   // the candidate byte query byte i - 1 was matched at in that best, for marks()
+I64[32] t_id;
+I64[32] t_score;
+I64[32] t_len;
+I64[32] t_tick;
+I64 tn = 0;
+
+U8 fold(U8 c) {
+    if (c >= 65 && c <= 90) { return c + 32; }
+    return c;
+}
+
+Bool boundary(in U8[_] c, I64 j) {
+    if (j == 0) { return true; }
+    U8 p = c[j - 1];
+    if (p == '/' || p == '.' || p == '_' || p == '-' || p == ' ') { return true; }
+    return c[j] >= 65 && c[j] <= 90 && p >= 97 && p <= 122;
+}
+
+// Sets the query (its first QMAX bytes) and forgets what was kept.
+export void begin(in U8[_] query) {
+    qn = len(query);
+    if (qn > QMAX) { qn = QMAX; }
+    for i in 0..qn { q[i] = fold(query[i]); }
+    tn = 0;
+}
+
+// The best score of the query in c (the empty query: 0), or NONE; fills dp and from for marks().
+I64 run(in U8[_] c) {
+    I64 n = len(c);
+    if (qn == 0) { return 0; }
+    if (n < qn) { return NONE; }
+    for i in 0..qn {
+        I64 best = LOW;     // max over p <= j - 2 of dp[i - 1][p] + p + 1, for a match after a gap
+        I64 bestp = -1;
+        for j in 0..n {
+            I64 at = i * CMAX + j;
+            dp[at] = LOW;
+            from[at] = -1;
+            if (i > 0 && j >= 2) {
+                I64 cand = dp[(i - 1) * CMAX + j - 2];
+                if (cand > LOW && cand + j - 1 > best) {
+                    best = cand + j - 1;
+                    bestp = j - 2;
+                }
+            }
+            if (fold(c[j]) == q[i]) {
+                I64 s = 1;
+                if (boundary(c, j)) { s = 8; }
+                if (i == 0) {
+                    dp[at] = s;
+                } else {
+                    if (j >= 1 && dp[(i - 1) * CMAX + j - 1] > LOW) {
+                        I64 adj = 4;
+                        if (s == 8) { adj = 8; }
+                        dp[at] = dp[(i - 1) * CMAX + j - 1] + adj;
+                        from[at] = j - 1;
+                    }
+                    if (best > LOW && best - j + s > dp[at]) {   // dp[p] - (j - p - 1) + s
+                        dp[at] = best - j + s;
+                        from[at] = bestp;
+                    }
+                }
+            }
+        }
+    }
+    I64 top = LOW;
+    for j in 0..n {
+        I64 v = dp[(qn - 1) * CMAX + j];
+        if (v > top) { top = v; }
+    }
+    if (top == LOW) { return NONE; }
+    return top;
+}
+
+// The tail of c the matcher reads: its last CMAX bytes.
+I64 tail_start(in U8[_] c) {
+    if (len(c) > CMAX) { return len(c) - CMAX; }
+    return 0;
+}
+
+// The score of the query in c, or NONE.
+export I64 score(in U8[_] c) {
+    return run(c[tail_start(c)..len(c)]);
+}
+
+// Marks the bytes of c the best way matched: mark[j] = 1 for each, 0 for the rest (mark holds len(c) bytes); the
+// score, or NONE (nothing marked).
+export I64 marks(in U8[_] c, inout U8[_] mark) {
+    for j in 0..len(c) { mark[j] = 0; }
+    I64 s0 = tail_start(c);
+    I64 n = len(c) - s0;
+    I64 s = run(c[s0..len(c)]);
+    if (s == NONE || qn == 0) { return s; }
+    I64 j = -1;
+    for k in 0..n {
+        if (j < 0 && dp[(qn - 1) * CMAX + k] == s) { j = k; }
+    }
+    I64 i = qn - 1;
+    while (i >= 0 && j >= 0) {
+        mark[s0 + j] = 1;
+        j = from[i * CMAX + j];
+        i = i - 1;
+    }
+    return s;
+}
+
+// Entry a (score sa, length la, tick ta) ranks before entry b.
+Bool ahead(I64 sa, I64 la, I64 ta, I64 sb, I64 lb, I64 tb) {
+    if (sa != sb) { return sa > sb; }
+    if (la != lb) { return la < lb; }
+    return ta > tb;
+}
+
+// Scores candidate id (its bytes c, its last open tick) and keeps it among the best TOP: its score, or NONE.
+export I64 offer(I64 id, in U8[_] c, I64 tick) {
+    I64 s = score(c);
+    if (s == NONE) { return NONE; }
+    I64 l = len(c);
+    if (tn == TOP && !ahead(s, l, tick, t_score[TOP - 1], t_len[TOP - 1], t_tick[TOP - 1])) { return s; }
+    I64 at = tn;
+    if (tn < TOP) { tn = tn + 1; } else { at = TOP - 1; }
+    while (at > 0 && ahead(s, l, tick, t_score[at - 1], t_len[at - 1], t_tick[at - 1])) {
+        t_id[at] = t_id[at - 1];
+        t_score[at] = t_score[at - 1];
+        t_len[at] = t_len[at - 1];
+        t_tick[at] = t_tick[at - 1];
+        at = at - 1;
+    }
+    t_id[at] = id;
+    t_score[at] = s;
+    t_len[at] = l;
+    t_tick[at] = tick;
+    return s;
+}
+
+// The same, ranked on ties as l bytes long (the Super plane offers an app by its best word, as long as its
+// friendly name, FF 3g). offer is left as it was, so its other callers' code does not move.
+export I64 offer_as(I64 id, in U8[_] c, I64 l, I64 tick) {
+    I64 s = score(c);
+    if (s == NONE) { return NONE; }
+    if (tn == TOP && !ahead(s, l, tick, t_score[TOP - 1], t_len[TOP - 1], t_tick[TOP - 1])) { return s; }
+    I64 at = tn;
+    if (tn < TOP) { tn = tn + 1; } else { at = TOP - 1; }
+    while (at > 0 && ahead(s, l, tick, t_score[at - 1], t_len[at - 1], t_tick[at - 1])) {
+        t_id[at] = t_id[at - 1];
+        t_score[at] = t_score[at - 1];
+        t_len[at] = t_len[at - 1];
+        t_tick[at] = t_tick[at - 1];
+        at = at - 1;
+    }
+    t_id[at] = id;
+    t_score[at] = s;
+    t_len[at] = l;
+    t_tick[at] = tick;
+    return s;
+}
+
+export I64 kept() {
+    return tn;
+}
+
+export I64 kept_id(I64 k) {
+    return t_id[k];
+}
+
+export I64 kept_score(I64 k) {
+    return t_score[k];
+}
+// SPDX-License-Identifier: Apache-2.0

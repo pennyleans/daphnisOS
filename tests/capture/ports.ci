@@ -1,0 +1,11 @@
+import src.portio;
+import src.serial;
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("capture: before private port refusal\n");
+    U8 value = portio.port_in8(0x511 as U16);
+    serial.serial_putc(value);
+    serial.serial_write("capture: unexpected private port access\n");
+}
+// SPDX-License-Identifier: Apache-2.0

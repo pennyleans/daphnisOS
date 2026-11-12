@@ -1,0 +1,174 @@
+// tests/kr/keyrep_test.ci: RS-KR (docs/specs/2026-11-11-rs-rel-s1-units.md section 2), hosted: src/keyrep.ci's key
+// repeat, from presses and releases at timer ticks (10.0002 ms each) to the repeats the input layer pushes.
+
+import src.keyrep;
+
+const I64 A = 30;          // KEY_A
+const I64 B = 48;          // KEY_B
+const I64 SHIFT = 42;      // KEY_LEFTSHIFT
+const I64 CAPS = 58;       // KEY_CAPSLOCK
+
+test "a press and a release go on; the hardware's own repeat and a release of a key not down are dropped" {
+    assert(keyrep.set(500, 33));
+    assert(keyrep.key(A, 1, 0));
+    assert(!keyrep.key(A, 1, 3));                 // PS/2 typematic: the same make code again
+    assert(!keyrep.key(A, 1, 60));
+    assert(keyrep.key(A, 0, 61));
+    assert(!keyrep.key(A, 0, 62));                // released twice
+    assert(!keyrep.key(B, 0, 63));                // held since before the boot
+    assert(keyrep.key(0x110, 1, 64));             // BTN_LEFT is not the keyboard's
+    assert(keyrep.key(0x110, 1, 65));
+}
+
+test "the first repeat comes at the delay, then one a period, at most one a call" {
+    assert(keyrep.set(500, 33));
+    assert(keyrep.key(A, 1, 1000));
+    assert(keyrep.due(1000) == 0);
+    assert(keyrep.due(1049) == 0);                // 49 ticks are 499.99 ms
+    assert(keyrep.due(1050) == A);                // 50 ticks are 500.0008 ms
+    assert(keyrep.due(1050) == 0);
+    assert(keyrep.due(1053) == 0);                // 530 ms: the second is due at 533
+    assert(keyrep.due(1054) == A);                // 540 ms
+    assert(keyrep.due(1057) == A);                // 570 ms: the third, due at 566
+    assert(keyrep.due(1060) == A);                // 600 ms: the fourth, due at 599
+    assert(keyrep.due(1062) == 0);                // 620 ms: the fifth is due at 632
+    assert(keyrep.key(A, 0, 1061));
+    assert(keyrep.due(1100) == 0);                // released: nothing more
+}
+
+test "a late caller gets one repeat, not those it missed" {
+    assert(keyrep.set(250, 25));
+    assert(keyrep.key(A, 1, 0));
+    assert(keyrep.due(1000) == A);                // ten seconds late
+    assert(keyrep.due(1000) == 0);
+    assert(keyrep.due(1001) == 0);                // 10 ms on: the next is 25 ms on
+    assert(keyrep.due(1003) == A);
+    assert(keyrep.key(A, 0, 1004));
+}
+
+test "a modifier never repeats, and pressing one neither starts nor stops the held key's repeat" {
+    assert(keyrep.set(500, 33));
+    assert(keyrep.key(SHIFT, 1, 0));
+    assert(!keyrep.key(SHIFT, 1, 3));             // its typematic dropped too
+    assert(keyrep.due(100) == 0);
+    assert(keyrep.key(A, 1, 100));
+    assert(keyrep.due(150) == A);
+    assert(keyrep.key(SHIFT, 0, 151));            // Shift let go: A goes on
+    assert(keyrep.due(154) == A);
+    assert(keyrep.key(CAPS, 1, 155));             // a lock key: no repeat of its own, no toggling
+    assert(keyrep.due(158) == A);
+    assert(keyrep.key(CAPS, 0, 159));
+    assert(keyrep.key(A, 0, 160));
+    assert(keyrep.due(400) == 0);
+    I64[11] mods = [29, 97, 42, 54, 56, 100, 125, 126, 58, 69, 70];
+    for k in 0..11 {
+        assert(keyrep.modifier(mods[k]));
+    }
+    assert(!keyrep.modifier(A) && !keyrep.modifier(28) && !keyrep.modifier(103));   // a letter, Enter, Up
+}
+
+test "the newest key repeats; letting go of an older one changes nothing, letting go of the newest ends it" {
+    assert(keyrep.set(500, 33));
+    assert(keyrep.key(A, 1, 0));
+    assert(keyrep.key(B, 1, 20));                 // B takes over, its own delay from its press
+    assert(keyrep.due(60) == 0);
+    assert(keyrep.due(70) == B);
+    assert(keyrep.key(A, 0, 71));
+    assert(keyrep.due(74) == B);
+    assert(keyrep.key(B, 0, 75));
+    assert(keyrep.due(200) == 0);
+}
+
+// What the desk reads, as src/input.ci makes it (RS-KR's input rows): each hardware event at its tick through key(),
+// and a pull at every tick through due(). seen holds code * 2 + value, in order; the count is returned.
+I64 desk_reads(in I64[8] hw_code, in I64[8] hw_value, in I64[8] hw_tick, I64 hw_n, I64 last_tick, inout I64[32] seen) {
+    I64 n = 0;
+    I64 next = 0;
+    for t in 0..last_tick + 1 {
+        while (next < hw_n && hw_tick[next] == t) {
+            if (keyrep.key(hw_code[next], hw_value[next], t) && n < 32) {
+                seen[n] = hw_code[next] * 2 + hw_value[next];
+                n += 1;
+            }
+            next += 1;
+        }
+        I64 r = keyrep.due(t);
+        if (r != 0 && n < 32) {
+            seen[n] = r * 2 + 1;
+            n += 1;
+        }
+    }
+    return n;
+}
+
+test "a held key's repeats and a real second press differ, for the desk, only by the release between them" {
+    assert(keyrep.set(500, 33));
+    I64[8] code = [A, A, A, A, A, 0, 0, 0];
+    I64[8] value = [1, 1, 1, 1, 0, 0, 0, 0];
+    I64[8] tick = [0, 50, 53, 57, 58, 0, 0, 0];        // held: the PS/2 keyboard's own repeats at 50, 53 and 57
+    I64[32] held;
+    I64 hn = desk_reads(code, value, tick, 5, 58, held);
+    assert(hn == 5);                                   // the press, the kernel's repeats at 50, 54 and 57, the release
+    for k in 0..4 {
+        assert(held[k] == A * 2 + 1);                  // every repeat a press, value 1, with no release between
+    }
+    assert(held[4] == A * 2);
+    I64[8] code2 = [A, A, A, A, 0, 0, 0, 0];
+    I64[8] value2 = [1, 0, 1, 0, 0, 0, 0, 0];
+    I64[8] tick2 = [0, 49, 50, 58, 0, 0, 0, 0];        // two presses, released between
+    I64[32] twice;
+    I64 tn = desk_reads(code2, value2, tick2, 4, 58, twice);
+    assert(tn == 4);
+    assert(twice[0] == A * 2 + 1 && twice[1] == A * 2 && twice[2] == A * 2 + 1 && twice[3] == A * 2);
+    I64[8] code3 = [A, A, A, 0, 0, 0, 0, 0];
+    I64[8] value3 = [1, 1, 0, 0, 0, 0, 0, 0];
+    I64[8] tick3 = [0, 30, 40, 0, 0, 0, 0, 0];         // a second press with no release first is the hardware's repeat
+    I64[32] none;
+    I64 nn = desk_reads(code3, value3, tick3, 3, 40, none);
+    assert(nn == 2 && none[0] == A * 2 + 1 && none[1] == A * 2);
+}
+
+test "a keyboard gone mid-hold: no repeat after it, and every key keeps its release" {
+    assert(keyrep.set(500, 33));
+    assert(keyrep.key(SHIFT, 1, 2000));           // Shift held on the built-in keyboard
+    assert(keyrep.key(A, 1, 2001));               // A held on the USB keyboard
+    assert(keyrep.due(2051) == A);                // repeating
+    assert(keyrep.key(A, 0, 2052));               // unplugged: its empty report releases A (src/xhci.ci gone(0))
+    keyrep.reset();
+    for t in 2052..2400 {
+        assert(keyrep.due(t) == 0);
+    }
+    assert(keyrep.key(SHIFT, 0, 2400));           // the built-in keyboard's Shift still reaches the desk up
+    assert(keyrep.key(A, 1, 2500));               // plugged in again: a press of A repeats from its own press
+    assert(keyrep.due(2549) == 0);
+    assert(keyrep.due(2550) == A);
+    keyrep.reset();                               // the repeat ends with the key still down
+    assert(keyrep.due(2600) == 0);
+    assert(!keyrep.key(A, 1, 2601));              // still down: the hardware's own repeat
+    assert(keyrep.key(A, 0, 2602));               // and its release goes on
+    keyrep.reset();                               // with nothing held: nothing changes
+    assert(keyrep.due(3000) == 0);
+    assert(keyrep.key(B, 1, 3000) && keyrep.key(B, 0, 3001));
+}
+
+test "the control: in range it takes, out of range nothing changes" {
+    assert(keyrep.set(250, 25));
+    assert(keyrep.delay() == 250 && keyrep.period() == 25);
+    assert(keyrep.set(1000, 200));
+    assert(!keyrep.set(99, 33) && !keyrep.set(2001, 33) && !keyrep.set(500, 9) && !keyrep.set(500, 1001));
+    assert(!keyrep.set(0, 0) && !keyrep.set(-1, 33));
+    assert(keyrep.delay() == 1000 && keyrep.period() == 200);
+    assert(keyrep.set(keyrep.DELAY_DEFAULT, keyrep.PERIOD_DEFAULT));
+    assert(keyrep.delay() == 500 && keyrep.period() == 33);
+    assert(keyrep.EVIOCGREP == 0x80084503 && keyrep.EVIOCSREP == 0x40084503);
+}
+
+test "the Keyboard page's every step is taken: delay 250 to 1000 by 50, rate 5 to 40 a second by 5" {
+    for d in 0..16 {
+        for r in 1..9 {
+            assert(keyrep.set(250 + 50 * d, 1000 / (5 * r)));
+        }
+    }
+    assert(keyrep.set(500, 33));
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,22 @@
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here

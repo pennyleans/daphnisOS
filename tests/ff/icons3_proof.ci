@@ -1,0 +1,111 @@
+// tests/ff/icons3_proof.ci: the icons of DN-5, DN-8, DN-9 and DN-12 (user/ci/kit/icons3.ci and fileicons.ci from
+// tools/svgicons.py) drawn by the kit on the host. First the proof sheet, every icon at every size, at 1x and 2x on
+// the dark ground #141413 and the light ground #ECEEF2: each frame `frame NAME W H`, then each row as runs `rgb
+// count` in hex and decimal, as tests/font/proof.ci does. Then one line `sum KIND ICON SIZE Z GROUND AT HASH` for
+// every icon, size, scale and ground, drawn cut by the left (AT 0) and the right (AT 1) edge of a 200 px row, over
+// rows y0 - 1 to y0 + side. `python3 tools/iconwin.py --proof OUTPUT [DIR]` draws the same with its twin, compares
+// pixel for pixel and sum for sum and, given DIR, writes the sheets as PNGs.
+// Run by check.sh: cint run --root . tests/ff/icons3_proof.ci > OUTPUT
+import user.ci.kit.icons3;
+import user.ci.kit.fileicons;
+
+const U32 DARK = 0x141413;
+const U32 LIGHT = 0xECEEF2;
+const I64 PAD = 16;
+const I64 GAP = 16;
+const I64 ROW = 96;
+
+U32[1024] row;
+U32[200] cut;
+I64[6] cols = [80, 72, 64, 56, 32, 16];
+
+// Prints row[0..w] as runs of one color.
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+// The sheet at scale z on ground g: a row an icon (the app icons, then the file icons), its sizes in the columns
+// 80, 72, 64, 56, 32 and 16 px, each standing on the row's foot.
+void sheet(I64 z, U32 g, I64 gi) {
+    I64 w = z * (2 * PAD + 6 * GAP);
+    for c in 0..6 { w = w + z * cols[c]; }
+    I64 n = icons3.N + fileicons.N;
+    I64 h = z * (2 * PAD + n * ROW);
+    if (gi == 0) { "frame sheet-dark-{z}x {w} {h}\n"; } else { "frame sheet-light-{z}x {w} {h}\n"; }
+    for y in 0..h {
+        for x in 0..w { row[x] = g; }
+        I64 r = (y / z - PAD) / ROW;
+        if (y >= z * PAD && r < n) {
+            I64 foot = z * (PAD + (r + 1) * ROW);
+            I64 x = z * PAD;
+            for c in 0..6 {
+                I64 s = cols[c];
+                I64 y0 = foot - z * s;
+                if (r < icons3.N) {
+                    icons3.icon_at(row, y, x, y0, r, s, z, g);
+                } else {
+                    fileicons.icon_at(row, y, x, y0, r - icons3.N, s, z);
+                }
+                x = x + z * (s + GAP);
+            }
+        }
+        emit(w);
+    }
+}
+
+I64 mix(I64 h, U32 c) {
+    return (h * 1000003 + (c as I64)) % 1000000007;
+}
+
+// The hash of icon k (app icons when f is 0, file icons when 1) at size s and scale z on ground g, its rows
+// y0 - 1 to y0 + side over a 200 px row, cut by the left edge (at 0) or the right (at 1).
+void sums(I64 f, I64 k, I64 s, I64 z, U32 g, I64 gi) {
+    I64 d = s * z;
+    for at in 0..2 {
+        I64 x0 = 0 - d / 2 - 3;
+        if (at == 1) { x0 = 200 - d / 2 + 5; }
+        I64 y0 = 7;
+        I64 h = 0;
+        for y in (y0 - 1)..(y0 + d + 1) {
+            for x in 0..200 { cut[x] = g; }
+            if (f == 0) {
+                icons3.icon_at(cut, y, x0, y0, k, s, z, g);
+            } else {
+                fileicons.icon_at(cut, y, x0, y0, k, s, z);
+            }
+            for x in 0..200 { h = mix(h, cut[x]); }
+        }
+        "sum {f} {k} {s} {z} {gi} {at} {h}\n";
+    }
+}
+
+void main() {
+    sheet(1, DARK, 0);
+    sheet(1, LIGHT, 1);
+    sheet(2, DARK, 0);
+    sheet(2, LIGHT, 1);
+    for gi in 0..2 {
+        U32 g = DARK;
+        if (gi == 1) { g = LIGHT; }
+        for z in 1..3 {
+            for k in 0..icons3.N {
+                for c in 0..6 { sums(0, k, cols[c], z, g, gi); }
+            }
+            for k in 0..fileicons.N {
+                for c in 0..6 {
+                    if (fileicons.has(k, cols[c], z)) { sums(1, k, cols[c], z, g, gi); }
+                }
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

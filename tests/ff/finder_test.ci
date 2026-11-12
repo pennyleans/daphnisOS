@@ -1,0 +1,257 @@
+// tests/ff/finder_test.ci: hosted tests of the Finder app's model (FF-6a, user/ci/kit/finder.ci; docs/specs/
+// 2026-11-07-ff-super-plane.md section 3f). Run by check.sh: cint test --root . tests/ff/finder_test.ci
+
+import user.ci.kit.finder;
+import user.ci.kit.opener;
+
+U8[4096] t;
+
+Bool text_is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (t[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+void kit() {
+    I64 r = opener.load_default();
+    assert(finder.go(b"/home/ci/kit"));
+    finder.begin();
+    assert(finder.add(b"tokens.ci", false, 4096, -1, opener.kind_of(b"tokens.ci", false, b""), false));
+    assert(finder.add(b"tests", true, 0, 4, opener.DIR, false));
+    assert(!finder.add(b"..", true, 0, 0, opener.DIR, false));
+    assert(finder.add(b"layout.ci", false, 6144, -1, opener.kind_of(b"layout.ci", false, b""), false));
+    assert(finder.add(b"assets", true, 0, 15, opener.DIR, false));
+    assert(finder.add(b"README.md", false, 5120, -1, opener.kind_of(b"README.md", false, b""), false));
+    assert(finder.add(b"hdesk", false, 4800000, -1, opener.NOTHING, true));
+    assert(finder.add(b"freedoom1.wad", false, 14889000, -1, opener.kind_of(b"freedoom1.wad", false, b""), false));
+    finder.end();
+}
+
+test "a path is kept absolute and clean: relative to the folder shown, no . or .., no empty name (review on PR 287)" {
+    assert(finder.go(b"/home/ci/./kit/../notes//"));
+    U8[64] p;
+    I64 n = finder.path_of(p);
+    assert(n == 14 && p[0] == '/' && p[9] == 'n' && p[13] == 's');   // /home/ci/notes
+    assert(finder.go(b"deep"));
+    n = finder.path_of(p);
+    assert(n == 19 && p[15] == 'd');                                  // /home/ci/notes/deep
+    assert(finder.go(b"../../.."));
+    n = finder.path_of(p);
+    assert(n == 5 && p[1] == 'h');                                    // /home
+    assert(finder.go(b"/../.."));
+    n = finder.path_of(p);
+    assert(n == 1 && p[0] == '/');
+    U8[6] small;
+    assert(finder.resolve(b"/home/ci", small) == -1);   // past what dst holds
+}
+
+U8[4096] lpath;
+U8[255] nm255;
+
+// A clean path of exactly n bytes (2 to 4096) in lpath: names of 255 bytes, then the last of what is left.
+I64 sized(I64 n) {
+    I64 w = 0;
+    I64 c = 0;
+    while (n - w > 256) {
+        lpath[w] = '/';
+        for q in 0..255 { lpath[w + 1 + q] = ('a' as I64 + c) as U8; }
+        w = w + 256;
+        c = c + 1;
+    }
+    lpath[w] = '/';
+    for q in 0..(n - w - 1) { lpath[w + 1 + q] = 'z'; }
+    return n;
+}
+
+// The folder lpath[0..n] shown, with one file of a 255-byte name: its path's length, or -1.
+I64 entry_below(I64 n) {
+    assert(finder.go(lpath[0..n]));
+    for q in 0..255 { nm255[q] = 'e'; }
+    finder.begin();
+    assert(finder.add(nm255[0..255], false, 1, -1, opener.NOTHING, false));
+    finder.end();
+    return finder.entry_path(finder.kept_at(0), t);
+}
+
+test "a path keeps room for its ending 0: a folder of 4095 bytes is shown, 4096 is not; an entry's path the same" {
+    I64 r = opener.load_default();
+    U8[4096] c;
+    assert(finder.resolve(lpath[0..sized(4095)], c) == 4095);
+    assert(finder.resolve(lpath[0..sized(4096)], c) == -1);
+    assert(finder.go(lpath[0..sized(4095)]) && finder.path_len() == 4095);
+    assert(!finder.go(lpath[0..sized(4096)]) && finder.path_len() == 4095);   // the folder shown stays
+    assert(finder.resolve(b"x", c) == -1);                                     // a name below it: 4097
+    assert(finder.resolve(b"..", c) == 3840);
+    assert(entry_below(3839) == 4095);                                         // 3839, a slash, 255
+    assert(entry_below(3840) == -1);
+}
+
+test "DN-57: a name that begins with a dot is hidden: not kept and not counted" {
+    I64 r = opener.load_default();
+    assert(finder.go(b"/home/ci"));
+    finder.begin();
+    assert(finder.add(b"notes.txt", false, 120, -1, opener.kind_of(b"notes.txt", false, b""), false));
+    assert(!finder.add(b".trash", true, 0, 2, opener.DIR, false));
+    assert(!finder.add(b".config", true, 0, 1, opener.DIR, false));
+    assert(!finder.add(b".profile", false, 40, -1, opener.NOTHING, false));
+    assert(!finder.add(b".", true, 0, 0, opener.DIR, false) && !finder.add(b"..", true, 0, 0, opener.DIR, false));
+    assert(finder.add(b"kit", true, 0, 5, opener.DIR, false));
+    finder.end();
+    assert(finder.entries() == 2 && finder.folders() == 1 && finder.files() == 1 && finder.kept() == 2);
+    assert(finder.hidden(b".x") && finder.hidden(b".") && !finder.hidden(b"x.") && !finder.hidden(b""));
+    for k in 0..finder.kept() {
+        I64 n = finder.name_of(finder.kept_at(k), t);
+        assert(n > 0 && t[0] != '.');
+    }
+}
+
+test "a size past 1 GiB is in GiB, so 100 GiB and more stays short (Index audit)" {
+    assert(text_is(finder.size_short(1073741824, t), b"1.0 GiB"));
+    assert(text_is(finder.size_short(107374182400, t), b"100.0 GiB"));
+    assert(text_is(finder.size_short(1073741823, t), b"1023.9 MiB"));
+    assert(text_is(finder.size_short(5368709120000, t), b"5000.0 GiB"));
+}
+
+test "folders first, then files, each by name in byte order" {
+    kit();
+    assert(finder.entries() == 7);
+    assert(finder.folders() == 2);
+    assert(finder.files() == 5);
+    assert(finder.kept_folders() == 2);
+    assert(text_is(finder.name_of(finder.kept_at(0), t), b"assets"));
+    assert(text_is(finder.name_of(finder.kept_at(1), t), b"tests"));
+    assert(text_is(finder.name_of(finder.kept_at(2), t), b"README.md"));
+    assert(text_is(finder.name_of(finder.kept_at(6), t), b"tokens.ci"));
+    assert(text_is(finder.kind_text(finder.kept_at(4), t), b"Program"));
+}
+
+test "DN-55: the List's texts: SIZE (a folder's items, a file's short size), the TYPE words, the path" {
+    kit();
+    assert(text_is(finder.size_text(finder.kept_at(0), t), b"15 items"));
+    I64 lay = finder.kept_at(5);
+    assert(text_is(finder.name_of(lay, t), b"layout.ci"));
+    assert(text_is(finder.size_text(lay, t), b"6 KiB"));
+    assert(text_is(finder.kind_text(lay, t), b"cint Source"));
+    assert(text_is(finder.open_text(lay, t), b"editor"));
+    I64 wad = finder.kept_at(3);
+    assert(text_is(finder.size_text(wad, t), b"14.1 MiB"));
+    assert(text_is(finder.kind_text(wad, t), b"Game Data"));
+    assert(text_is(finder.open_text(wad, t), b"/bin/doom"));
+    assert(text_is(finder.kind_text(finder.kept_at(2), t), b"Text"));   // README.md
+    assert(text_is(finder.kind_text(finder.kept_at(0), t), b"Folder"));
+    assert(text_is(finder.entry_path(lay, t), b"/home/ci/kit/layout.ci"));
+}
+
+test "DN-55: the selection: a click alone, Ctrl+click in and out, Shift+click a range from the anchor" {
+    kit();
+    assert(finder.picks() == 1 && finder.picked(0));     // a listing chooses its first entry
+    finder.select(2);
+    assert(finder.picks() == 1 && finder.picked(2) && finder.selected() == 2);
+    finder.toggle(4);
+    assert(finder.picks() == 2 && finder.picked(2) && finder.picked(4) && finder.selected() == 4);
+    finder.toggle(2);
+    assert(finder.picks() == 1 && !finder.picked(2));
+    finder.select(1);
+    finder.extend(4);
+    assert(finder.picks() == 4 && finder.picked(1) && finder.picked(4) && !finder.picked(5));
+    finder.extend(0);                                     // from the same anchor, the other way
+    assert(finder.picks() == 2 && finder.picked(0) && finder.picked(1) && finder.selected() == 0);
+    finder.sort_by(finder.BY_SIZE);                       // a sort keeps the chosen entries
+    assert(finder.picks() == 2);
+    finder.move(1);
+    assert(finder.picks() == 1);
+}
+
+test "DN-55: MODIFIED sorts newest first, folders first, a tie by name; no stamp is 0" {
+    I64 r = opener.load_default();
+    assert(finder.go(b"/home/ci"));
+    finder.begin();
+    assert(finder.add(b"b.txt", false, 1, -1, opener.TEXT, false));
+    finder.stamp(1700000300);
+    assert(finder.add(b"a.txt", false, 1, -1, opener.TEXT, false));
+    finder.stamp(1700000100);
+    assert(finder.add(b"c.txt", false, 1, -1, opener.TEXT, false));
+    finder.stamp(1700000300);
+    assert(finder.add(b"d", true, 0, 0, opener.DIR, false));
+    finder.sort_by(finder.BY_MODIFIED);
+    assert(text_is(finder.name_of(finder.kept_at(0), t), b"d"));
+    assert(text_is(finder.name_of(finder.kept_at(1), t), b"b.txt"));
+    assert(text_is(finder.name_of(finder.kept_at(2), t), b"c.txt"));
+    assert(text_is(finder.name_of(finder.kept_at(3), t), b"a.txt"));
+    assert(finder.mtime_of(finder.kept_at(3)) == 1700000100 && finder.mtime_of(finder.kept_at(0)) == 0);
+    finder.sort_by(finder.BY_NAME);
+}
+
+test "the filter keeps names holding it as a subsequence, the selection kept where it can be" {
+    kit();
+    finder.select(5);
+    assert(finder.typed('c'));
+    assert(finder.typed('i'));
+    assert(finder.kept() == 2);
+    assert(text_is(finder.name_of(finder.selected_entry(), t), b"layout.ci"));
+    assert(finder.erase());
+    assert(finder.clear_filter());
+    assert(finder.kept() == 7);
+    assert(!finder.clear_filter());
+    assert(finder.typed('x'));
+    assert(finder.up());
+    assert(finder.filter(t) == 0);
+}
+
+test "back, forward, up and the crumbs" {
+    kit();
+    assert(finder.crumbs() == 4);
+    assert(text_is(finder.crumb(0, t), b"/"));
+    assert(text_is(finder.crumb(2, t), b"ci"));
+    assert(text_is(finder.crumb_path(2, t), b"/home/ci"));
+    assert(finder.up());
+    assert(text_is(finder.path_of(t), b"/home/ci"));
+    assert(finder.step(-1));
+    assert(text_is(finder.path_of(t), b"/home/ci/kit"));
+    assert(finder.step(1));
+    assert(text_is(finder.path_of(t), b"/home/ci"));
+    assert(finder.up());
+    assert(finder.up());
+    assert(text_is(finder.path_of(t), b"/"));
+    assert(!finder.up());
+    assert(finder.crumbs() == 1);
+}
+
+test "DN-35: Sort By Type and Size, folders first, a tie by name; the selection stays on its entry" {
+    kit();
+    finder.select(5);                                  // layout.ci
+    finder.sort_by(finder.BY_TYPE);
+    assert(finder.sort_key() == finder.BY_TYPE);
+    assert(text_is(finder.name_of(finder.kept_at(0), t), b"assets"));
+    assert(text_is(finder.name_of(finder.kept_at(2), t), b"freedoom1.wad"));   // Game Data (DN-55's words, byte order)
+    assert(text_is(finder.name_of(finder.kept_at(3), t), b"hdesk"));           // Program
+    assert(text_is(finder.name_of(finder.kept_at(4), t), b"README.md"));       // Text
+    assert(text_is(finder.name_of(finder.kept_at(5), t), b"layout.ci"));       // cint Source
+    assert(text_is(finder.name_of(finder.kept_at(6), t), b"tokens.ci"));       // cint Source, by name
+    assert(text_is(finder.name_of(finder.selected_entry(), t), b"layout.ci"));
+    finder.sort_by(finder.BY_SIZE);
+    assert(text_is(finder.name_of(finder.kept_at(0), t), b"tests"));           // 4 items
+    assert(text_is(finder.name_of(finder.kept_at(1), t), b"assets"));          // 15 items
+    assert(text_is(finder.name_of(finder.kept_at(2), t), b"tokens.ci"));       // 4,096 B
+    assert(text_is(finder.name_of(finder.kept_at(3), t), b"README.md"));
+    assert(text_is(finder.name_of(finder.kept_at(4), t), b"layout.ci"));
+    assert(text_is(finder.name_of(finder.kept_at(6), t), b"freedoom1.wad"));
+    assert(text_is(finder.name_of(finder.selected_entry(), t), b"layout.ci"));
+    finder.sort_by(finder.BY_NAME);
+    assert(text_is(finder.name_of(finder.kept_at(2), t), b"README.md"));
+}
+
+test "frame 32's band: set_pick chooses or drops one kept entry, the focus where it was" {
+    kit();
+    finder.select(1);
+    finder.set_pick(3, true);
+    assert(finder.picked(1) && finder.picked(3) && finder.picks() == 2 && finder.selected() == 1);
+    finder.set_pick(1, false);
+    assert(!finder.picked(1) && finder.picks() == 1 && finder.selected() == 1);
+    finder.set_pick(-1, true);                             // past the kept entries: nothing
+    finder.set_pick(finder.kept(), true);
+    assert(finder.picks() == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,43 @@
+// tests/rs/surfask_test.ci: RS-SURF's client side (user/ci/kit/surfask.ci), hosted: the latest box only, the caps,
+// the same size asks nothing, a refused ask comes again after RETRY_NS and stops after TRIES.
+import user.ci.kit.surfask;
+
+test "a box unlike the surface is asked once the queue is empty; the size got ends it" {
+    surfask.told(1916, 1052, 1920, 1080, 880, 640);
+    assert(surfask.due(0) && surfask.want_w() == 1916 && surfask.want_h() == 1052);
+    surfask.answered(0, 1916, 1052, 0);
+    assert(!surfask.due(0) && !surfask.waiting());
+}
+
+test "the latest box wins and a box the surface already is asks nothing" {
+    surfask.told(500, 400, 1920, 1080, 880, 640);
+    surfask.told(600, 450, 1920, 1080, 880, 640);
+    assert(surfask.want_w() == 600 && surfask.want_h() == 450);
+    surfask.told(880, 640, 1920, 1080, 880, 640);
+    assert(!surfask.waiting());
+}
+
+test "a box past the client's rows is asked at the cap; a side under 1 at 1" {
+    surfask.told(3836, 2108, 1920, 1080, 880, 640);
+    assert(surfask.want_w() == 1920 && surfask.want_h() == 1080);
+    surfask.told(0, -4, 1920, 1080, 880, 640);
+    assert(surfask.want_w() == 1 && surfask.want_h() == 1);
+}
+
+test "a refused ask (-EINVAL, the old size back) is asked again 50 ms later, at most 40 times" {
+    surfask.told(700, 500, 1920, 1080, 880, 640);
+    surfask.answered(-22, 880, 640, 1000);
+    assert(!surfask.due(1000) && !surfask.due(1000 + surfask.RETRY_NS - 1));
+    assert(surfask.due(1000 + surfask.RETRY_NS));
+    for k in 1..surfask.TRIES - 1 { surfask.answered(-22, 880, 640, 0); }
+    assert(surfask.waiting());
+    surfask.answered(-22, 880, 640, 0);
+    assert(!surfask.waiting());
+}
+
+test "a map that failed (no surface, 0 x 0) is asked again" {
+    surfask.told(700, 500, 1920, 1080, 880, 640);
+    surfask.answered(-12, 0, 0, 0);
+    assert(surfask.waiting() && surfask.due(surfask.RETRY_NS));
+}
+// SPDX-License-Identifier: Apache-2.0

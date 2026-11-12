@@ -1,0 +1,7 @@
+# Every train's first boot: hdesk at 1920 x 1080 and 512 MiB, no volume; the desk's first shell; Super+Shift+Q
+# twice shuts down (FF-R6 B). A state pool fault ends the boot before the desk (guest.py pool reads it).
+hdesk: screen 1920x1080 plane 1920x
+hdesk: bar desktop 1 |Console| var |/|
+hdesk: ff armed 3
+daphnis: shut down
+daphnis: done

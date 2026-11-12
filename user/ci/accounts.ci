@@ -1,0 +1,326 @@
+// user/ci/accounts.ci: `accounts list | add NAME parent|child [GRANTS] | passwd NAME | idle NAME MINUTES |
+// remove NAME`, AC-1c
+// (docs/specs/2026-11-08-ac-accounts.md section 4): a parent's tool for the account store until Settings' accounts page
+// (AC-2). The store is uid 0's or ring 0's (src/fs.ci), so a parent runs it as `kern accounts ...`, which asks the
+// parent's own passphrase (L9). GRANTS is a child's ceiling, `disk`, `net`, `audio` joined by commas (none: no grant);
+// a parent's is every grant. A passphrase is read twice from the terminal with its echo off, checked by AC-D3 and
+// enrolled by /bin/authd at DS-6's parameters; it is never printed. `idle NAME MINUTES` sets the minutes without
+// input after which NAME's session locks (AC-D5, 1 to 1440; 10 until set). The desk reads the store again at each
+// log out. `remove` sets the account's home aside as /home/.removed.NAME.UID (RS-R3) and deletes nothing.
+// Status 0, 1 for a refusal, 2 for a usage error.
+
+import user.ci.acct;
+import user.ci.dev;
+import user.ci.grantcall;
+import user.ci.shctl;
+import user.ci.corectl;                // user/ci/acctput.ci's rows: user/ci/build.sh reads this file's imports
+import user.ci.acctio;
+import user.ci.acctput;
+import user.ci.homeaside;
+
+const I64 DS6_M = 65536;
+const I64 DS6_T = 3;
+U8[4096] sbuf;
+U8[512] req;
+U8[256] ans;
+U8[256] p1;
+U8[256] p2;
+
+void usage() {
+    "accounts: usage: accounts list | add NAME parent|child [disk,net,audio] | passwd NAME | idle NAME MINUTES | remove NAME\n";
+    dev.exit_now(2);
+}
+
+void refuse(in U8[_] why) {
+    "accounts: ";
+    I64 w = shctl.fd_write(1, why);
+    "\n";
+    dev.exit_now(1);
+}
+
+// Word k of args (NUL-separated) into its bounds; false past the last.
+Bool word(in U8[_] args, I64 k, inout I64[_] b) {
+    I64 at = 0;
+    for q in 0..k {
+        while (at < len(args) && args[at] != 0) { at = at + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return false; }
+    b[0] = at;
+    while (at < len(args) && args[at] != 0) { at = at + 1; }
+    b[1] = at;
+    return b[1] > b[0];
+}
+
+Bool is(in U8[_] args, in I64[_] b, in U8[_] w) {
+    if (b[1] - b[0] != len(w)) { return false; }
+    for k in 0..len(w) {
+        if (args[b[0] + k] != w[k]) { return false; }
+    }
+    return true;
+}
+
+void load() {
+    I64 n = acctio.read(b"/home/.daphnis/accounts", sbuf);
+    if (n < 0) { refuse(b"the store cannot be read: run it as `kern accounts ...`"); }
+    if (acctio.valid(sbuf, n) < 1) { refuse(b"the store does not read"); }
+}
+
+// The store written whole (user/ci/acctput.ci); a failure leaves it reading as it did.
+void save() {
+    I64 n = acct.write_text(sbuf);
+    if (acctput.save(sbuf, n, true) < 0) {     // true: load() above read the file in place whole
+        refuse(b"the store was not written: run it as `kern accounts ...`");
+    }
+}
+
+// A line from the terminal with its echo off, into dst; its length (the LF dropped).
+I64 secret_line(in U8[_] prompt, inout U8[_] dst) {
+    U8[64] t;
+    U8[64] q;
+    I64 tn = shctl.sh_tcget(0, t);
+    if (tn > 13) {
+        for k in 0..tn { q[k] = t[k]; }
+        q[12] = q[12] & 0xF7;                  // c_lflag's ECHO (8) off
+        I64 s = shctl.sh_tcset(0, q[0..tn]);
+    }
+    I64 w = shctl.fd_write(1, prompt);
+    I64 n = 0;
+    U8[1] c;
+    I64 got = shctl.fd_read(0, c);
+    while (got == 1 && c[0] != 10) {
+        if (n < len(dst)) {
+            dst[n] = c[0];
+            n = n + 1;
+        }
+        got = shctl.fd_read(0, c);
+    }
+    if (tn > 13) { I64 s = shctl.sh_tcset(0, t[0..tn]); }
+    "\n";
+    return n;
+}
+
+// Twice, the same, long enough for role (AC-D3); its length in p1.
+I64 new_pass(I64 role) {
+    I64 n1 = secret_line(b"new password: ", p1);
+    I64 n2 = secret_line(b"again: ", p2);
+    Bool same = n1 == n2;
+    for k in 0..n1 {
+        if (same && p1[k] != p2[k]) { same = false; }
+    }
+    for k in 0..256 { p2[k] = 0; }
+    if (!same) { refuse(b"the two passwords differ"); }
+    if (!acct.pass_typeable(p1, n1)) {
+        refuse(b"a password takes printable ASCII only (space to ~), as the desk types it");
+    }
+    if (!acct.pass_ok(role, n1)) {
+        if (role == acct.PARENT) { refuse(b"a parent's password has 8 characters at least"); }
+        refuse(b"a child's password has 4 characters at least");
+    }
+    return n1;
+}
+
+// authd's enrollment of p1[0..n): its salt and verifier, hex, into salt and ver (AC-D8, as the desk runs it).
+void enroll(I64 n, inout U8[_] salt, inout U8[_] ver) {
+    I64 at = 0;
+    for k in 0..7 { req[k] = b"enroll "[k]; }
+    at = 7;
+    for k in 0..5 { req[at + k] = b"65536"[k]; }
+    at = at + 5;
+    req[at] = 32;
+    req[at + 1] = 51;                          // DS-6: 65536 KiB, 3 passes
+    req[at + 2] = 10;
+    at = at + 3;
+    for k in 0..n { req[at + k] = p1[k]; }
+    at = at + n;
+    for k in 0..256 { p1[k] = 0; }
+    for k in 0..256 { ans[k] = 0; }
+    I64 pin = shctl.sh_pipe();
+    if (pin < 0) {
+        for k in 0..512 { req[k] = 0; }
+        refuse(b"no pipe for authd");
+    }
+    I64 in_r = pin >> 32;
+    I64 in_w = pin & 0xFFFFFFFF;
+    I64 put = shctl.fd_write(in_w, req[0..at]);
+    for k in 0..512 { req[k] = 0; }
+    I64 cw = shctl.fd_close(in_w);
+    if (put != at) {
+        I64 cr = shctl.fd_close(in_r);
+        refuse(b"authd did not enroll (no entropy source?)");
+    }
+    I64 pout = shctl.sh_pipe();
+    if (pout < 0) {
+        I64 cr = shctl.fd_close(in_r);
+        refuse(b"no pipe for authd");
+    }
+    I64 out_r = pout >> 32;
+    I64 out_w = pout & 0xFFFFFFFF;
+    I64 pid = shctl.sh_fork();
+    if (pid < 0) {
+        I64 c1 = shctl.fd_close(in_r);
+        I64 c2 = shctl.fd_close(out_r);
+        I64 c3 = shctl.fd_close(out_w);
+        refuse(b"authd did not enroll (no entropy source?)");
+    }
+    if (pid == 0) {
+        I64 c1 = shctl.fd_close(out_r);
+        I64 g = grantcall.grant_set(0);
+        if (g < 0 && g != -38) { dev.exit_now(127); }
+        if (out_w == 0) {
+            I64 moved = shctl.sh_dupfd(out_w, 2);
+            if (moved < 0) { dev.exit_now(127); }
+            I64 cm = shctl.fd_close(out_w);
+            out_w = moved;
+        }
+        if (in_r != 0) {
+            if (shctl.sh_dup2(in_r, 0) < 0) { dev.exit_now(127); }
+            I64 ci = shctl.fd_close(in_r);
+        }
+        if (out_w != 1) {
+            if (shctl.sh_dup2(out_w, 1) < 0) { dev.exit_now(127); }
+            I64 co = shctl.fd_close(out_w);
+        }
+        I64 x = shctl.sh_exec(b"/bin/authd", b"authd\x00", b"");
+        dev.exit_now(127);
+    }
+    I64 c3 = shctl.fd_close(in_r);
+    I64 c4 = shctl.fd_close(out_w);
+    I64 got = 0;
+    I64 r = shctl.fd_read(out_r, ans);
+    while (r > 0 && got < 256) {
+        got = got + r;
+        if (got < 256) { r = shctl.fd_read(out_r, ans[got..256]); }
+    }
+    I64 c6 = shctl.fd_close(out_r);
+    I64 st = shctl.sh_wait(pid, 0);
+    if (r < 0 || st != 0 || got < 5 + 32 + 1 + 9 + 64 || ans[0] != 115) {
+        for k in 0..256 { ans[k] = 0; }
+        refuse(b"authd did not enroll (no entropy source?)");
+    }
+    for k in 0..32 { salt[k] = ans[5 + k]; }
+    for k in 0..64 { ver[k] = ans[47 + k]; }
+    for k in 0..256 { ans[k] = 0; }
+}
+
+// A child's ceiling from `disk,net,audio`; -1 for a word it does not know.
+I64 ceiling(in U8[_] args, in I64[_] b) {
+    I64 c = 0;
+    I64 s = b[0];
+    for at in b[0]..b[1] + 1 {
+        if (at == b[1] || args[at] == 44) {
+            I64[2] w;
+            w[0] = s;
+            w[1] = at;
+            if (is(args, w, b"disk")) { c = c | 1; } else if (is(args, w, b"net")) { c = c | 2; }
+            else if (is(args, w, b"audio")) { c = c | 4; } else { return -1; }
+            s = at + 1;
+        }
+    }
+    return c;
+}
+
+void list() {
+    for i in 0..acct.accounts() {
+        U8[32] nm;
+        I64 n = acct.name_len(i);
+        for k in 0..n { nm[k] = acct.name_byte(i, k); }
+        I64 w = shctl.fd_write(1, nm[0..n]);
+        if (acct.role_of(i) == acct.PARENT) {
+            "  uid {acct.uid_of(i)}  parent\n";
+        } else {
+            "  uid {acct.uid_of(i)}  child  ceiling {acct.ceil_of(i)}\n";
+        }
+    }
+}
+
+void main(in U8[_] args) {
+    I64[2] b;
+    I64[2] nb;
+    if (!word(args, 0, b)) { usage(); }
+    load();
+    if (is(args, b, b"list")) {
+        list();
+        return;
+    }
+    if (!word(args, 1, nb)) { usage(); }
+    U8[32] name;
+    I64 nl = nb[1] - nb[0];
+    if (nl > 32) { refuse(b"a name has 32 characters at most"); }
+    for k in 0..nl { name[k] = args[nb[0] + k]; }
+    I64 i = acct.find(name, nl);
+    U8[32] salt;
+    U8[64] ver;
+    if (is(args, b, b"add")) {
+        if (!acct.name_ok(name, nl)) { refuse(b"a name: a-z, 0-9 and -, up to 32"); }
+        if (i >= 0) { refuse(b"that name is taken"); }
+        I64[2] rb;
+        if (!word(args, 2, rb)) { usage(); }
+        I64 role = 0;
+        if (is(args, rb, b"parent")) { role = acct.PARENT; }
+        if (is(args, rb, b"child")) { role = acct.CHILD; }
+        if (role == 0) { usage(); }
+        I64 c = 7;
+        if (role == acct.CHILD) {
+            c = 0;
+            I64[2] gb;
+            if (word(args, 3, gb)) { c = ceiling(args, gb); }
+            if (c < 0) { usage(); }
+        }
+        I64 n = new_pass(role);
+        enroll(n, salt, ver);
+        I64 u = acct.next_uid();
+        I64 a = acct.add(name, nl, role, u, u, DS6_M, DS6_T, salt, ver, c as U64, salt);
+        if (a < 0) { refuse(b"the store is full"); }
+        acct.pass_len(a, n);                   // RS-ROLE: a child whose passphrase is a parent's length can be promoted
+        save();
+        "accounts: added, uid {u}\n";
+        return;
+    }
+    if (i < 0) { refuse(b"no such account"); }
+    if (is(args, b, b"passwd")) {
+        I64 n = new_pass(acct.role_of(i));
+        enroll(n, salt, ver);
+        if (!acct.set_pass(i, DS6_M, DS6_T, salt, ver)) { refuse(b"the password was not set"); }
+        acct.pass_len(i, n);
+        save();
+        "accounts: password set\n";
+        return;
+    }
+    if (is(args, b, b"idle")) {
+        I64[2] mb;
+        if (!word(args, 2, mb)) { usage(); }
+        I64 m = 0;
+        for k in mb[0]..mb[1] {
+            if (args[k] < 48 || args[k] > 57 || m > acct.IDLE_MAX) { usage(); }
+            m = m * 10 + (args[k] - 48) as I64;
+        }
+        if (!acct.set_idle(i, m)) { refuse(b"idle minutes are 1 to 1440"); }
+        save();
+        "accounts: idle {m} minutes\n";
+        return;
+    }
+    if (is(args, b, b"remove")) {
+        I64 u = acct.uid_of(i);
+        if (!acct.remove(i)) { refuse(b"the last parent stays"); }
+        // RS-R3: the home is set aside before the store is written, and comes back if it is not
+        I64 hs = homeaside.aside(name, nl, u);
+        if (hs == -17) { refuse(b"a name is where its home would be set aside (/home/.removed.NAME.UID)"); }
+        if (hs < 0) { refuse(b"its home could not be set aside: run it as `kern accounts ...`"); }
+        I64 n = acct.write_text(sbuf);
+        if (acctput.save(sbuf, n, true) < 0) {
+            if (hs == 1) { I64 back = homeaside.back(name, nl, u); }
+            refuse(b"the store was not written: run it as `kern accounts ...`");
+        }
+        if (hs == 1) {
+            "accounts: removed; its home is /home/.removed.";
+            I64 w = shctl.fd_write(1, name[0..nl]);
+            ".{u}\n";
+        } else {
+            "accounts: removed (it had no home)\n";
+        }
+        return;
+    }
+    usage();
+}
+// SPDX-License-Identifier: Apache-2.0

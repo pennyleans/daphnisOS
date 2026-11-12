@@ -1,0 +1,34 @@
+{
+ "id": "desk-find-prompt-on-the-quiet-line",
+ "rules": [
+  "RUN-7",
+  "FIND-2"
+ ],
+ "desk": true,
+ "text": "ab\ncd",
+ "size": [
+  4,
+  16
+ ],
+ "sel": [
+  0,
+  0
+ ],
+ "chunks": [
+  "06",
+  "63"
+ ],
+ "expect": {
+  "text": "ab\ncd",
+  "sel": [
+   3,
+   4
+  ],
+  "screen": [
+   "ab",
+   "cd",
+   "",
+   "find: c     2:2"
+  ]
+ }
+}

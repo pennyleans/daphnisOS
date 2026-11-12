@@ -1,0 +1,48 @@
+// user/ci/kit/roundel.ci: AA-1 (docs/specs/2026-11-08-aa-smoothness.md), the bar's mark: the Albers d roundel
+// (l's ruling of 2026-11-08, Design IV, as the design's frames draw it). In unit
+// fractions of the n x n square, y down: the bowl cx 0.50, cy 0.56, outer r 0.38; its left half ultramarine around
+// an ink counter r 0.18; its right half and the ascender (u 0.50..0.88, v 0.08..0.56) cadmium around a paper
+// counter r 0.25; the ochre shepherd moon cx 0.24, cy 0.20, r 0.12 over all. Each pixel averages 8 x 8 samples, a
+// clear sample taking the ground: 64-ray supersampling in checked integers. A fraction f (thousandths) is the
+// sample coordinate f * 16 n against (16 x + 2 s + 1) * 1000, so every test is exact.
+import user.ci.kit.tokens;
+
+const U32 PAPER = 0x00f5f4f0;    // the warm paper, the light theme's paper
+
+I64 sq(I64 v) { return v * v; }
+
+Bool disk(I64 m, I64 u, I64 v, I64 cx, I64 cy, I64 r) {
+    return sq(u - cx * m) + sq(v - cy * m) <= sq(r * m);
+}
+
+// The word of sample (u, v) in units of 1 / (16000 n), or the ground.
+U32 sample(I64 m, I64 u, I64 v, U32 ground) {
+    U32 c = ground;
+    Bool bowl = disk(m, u, v, 500, 560, 380);
+    Bool left = u < 500 * m;
+    if (bowl && left) { c = tokens.lockup(tokens.ULTRAMARINE); }
+    if (!left && (bowl || (u < 880 * m && v >= 80 * m && v < 560 * m))) { c = tokens.lockup(tokens.CADMIUM); }
+    if (left && disk(m, u, v, 500, 560, 180)) { c = tokens.lockup(tokens.INK); }
+    if (!left && disk(m, u, v, 500, 560, 250)) { c = PAPER; }
+    if (disk(m, u, v, 240, 200, 120)) { c = tokens.lockup(tokens.OCHRE); }
+    return c;
+}
+
+// Pixel (x, y) of the n x n roundel over `ground`: the mean of its 64 samples, channel by channel.
+export U32 px(I64 n, I64 x, I64 y, U32 ground) {
+    I64 m = 16 * n;
+    I64 r = 0;
+    I64 g = 0;
+    I64 b = 0;
+    for j in 0..8 {
+        for i in 0..8 {
+            U32 c = sample(m, (16 * x + 2 * i + 1) * 1000, (16 * y + 2 * j + 1) * 1000, ground);
+            I64 w = c as I64;
+            r = r + ((w >> 16) & 255);
+            g = g + ((w >> 8) & 255);
+            b = b + (w & 255);
+        }
+    }
+    return (((r / 64) << 16) | ((g / 64) << 8) | (b / 64)) as U32;
+}
+// SPDX-License-Identifier: Apache-2.0

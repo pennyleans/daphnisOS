@@ -1,0 +1,616 @@
+// tests/dn32/ctxmenu_test.ci: hosted tests of the right-click menu kit, user/ci/kit/ctxmenu.ci (design notes 32 and
+// 33, l 2026-11-10 14:45Z and 14:51Z): the four lists and their section order, the 3-row cap and the one submenu
+// level refused past their limits, dimmed slots taking no click, hover or key, the keyboard open, the flip at all
+// four edges, the app menu's Window submenu (DN-58) and its own rows (AM-4, frame 41), and eleven frames at 1x and
+// 2x on both themes equal to tools/check-hdesk.py's twin (cm_frame_menu, --ctxmenu-sums). Run by check.sh.
+
+import user.ci.kit.tokens;
+import user.ci.kit.ctxmenu;
+import user.ci.kit.symbols;
+
+const I64 ESC = 1;
+const I64 ENTER = 28;
+const I64 UP = 103;
+const I64 LEFT = 105;
+const I64 RIGHT = 106;
+const I64 DOWN = 108;
+
+U32[1040] row;
+
+void open_with(I64 n) {
+    Bool a = ctxmenu.sub_row(ctxmenu.OPEN_WITH, b"Edit", 4, ctxmenu.SUB);
+    Bool b = ctxmenu.sub_row(ctxmenu.OPEN_WITH, b"View", 4, ctxmenu.SUB + 1);
+    Bool c = ctxmenu.sub_row(ctxmenu.OPEN_WITH, b"CVim", 4, ctxmenu.SUB + 2);
+}
+
+// AM-4: Edit's own rows as ced declares them (user/ced/desk.ci words and ROW_MARKS, Word Wrap's dot on): marks g 1,
+// o 2, d 4, as kit/appitems.ci's.
+void edit_rows() {
+    I64[10] mk = [5, 4, 4, 0, 4, 1, 0, 1, 0, 3];
+    U8[64] w = b"New WindowOpenOpen RecentSaveSave AsUndoRedoFindReplaceWord Wrap";
+    I64[10] wa = [0, 10, 14, 25, 29, 36, 40, 44, 48, 55];
+    I64[10] wn = [10, 4, 11, 4, 7, 4, 4, 4, 7, 9];
+    U8[42] kb = b"Ctrl+NCtrl+OCtrl+SCtrl+ZCtrl+YCtrl+FCtrl+R";
+    I64[10] ka = [0, 6, 0, 12, 0, 18, 24, 30, 36, 0];
+    I64[10] kn = [6, 6, 0, 6, 0, 6, 6, 6, 6, 0];
+    for k in 0..10 {
+        Bool a = ctxmenu.item_row(w[wa[k]..wa[k] + wn[k]], wn[k], kb[ka[k]..ka[k] + kn[k]], kn[k], ctxmenu.APP + k,
+                                  false, (mk[k] & 1) != 0, (mk[k] & 2) != 0, (mk[k] & 4) != 0);
+    }
+}
+
+// The twin's frames (tools/check-hdesk.py cm_frame_menu), the menu built by the kit's own calls; its openness.
+I64 build(I64 f, I64 w, I64 h) {
+    if (f == 0) {                                  // file
+        ctxmenu.begin(ctxmenu.FILE, false);
+        open_with(3);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, false);
+        Bool a = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(1) + 4);
+        Bool b = ctxmenu.hover(ctxmenu.sub_left() + 40, ctxmenu.sub_row_top(0) + 4);
+    } else if (f == 1) {                           // folder
+        ctxmenu.begin(ctxmenu.FOLDER, false);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, true);
+        I64 k = ctxmenu.key(UP);
+    } else if (f == 2) {                           // empty
+        ctxmenu.begin(ctxmenu.EMPTY, false);
+        ctxmenu.current(ctxmenu.VIEW_GRID);
+        ctxmenu.current(ctxmenu.SORT_NAME);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, true);
+        I64 k = ctxmenu.key(RIGHT);
+    } else if (f == 3) {                           // desk
+        ctxmenu.begin(ctxmenu.EMPTY, true);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, false);
+        Bool a = ctxmenu.hover(ctxmenu.slot_left(0) + 4, ctxmenu.top() + 10);
+    } else if (f == 4) {                           // text
+        ctxmenu.begin(ctxmenu.TEXT, false);
+        Bool a = ctxmenu.app_row(b"Fixture row 1", 13, ctxmenu.APP, false);
+        Bool b = ctxmenu.app_row(b"Fixture row 2", 13, ctxmenu.APP + 1, false);
+        Bool c = ctxmenu.app_row(b"Fixture row 3", 13, ctxmenu.APP + 2, false);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, false);
+        Bool d = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(0) + 4);
+    } else if (f == 5) {                           // flipped
+        ctxmenu.begin(ctxmenu.FILE, false);
+        open_with(3);
+        ctxmenu.slot_off(ctxmenu.TRASH);
+        ctxmenu.open_at(w - 20, h - 12, 0, 0, w, h, false);
+        Bool a = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(1) + 4);
+    } else if (f == 6) {                           // opening
+        ctxmenu.begin(ctxmenu.FILE, false);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, false);
+        return 500;
+    } else if (f == 7) {                           // sort
+        ctxmenu.begin(ctxmenu.EMPTY, false);
+        ctxmenu.current(ctxmenu.VIEW_TABLE);
+        ctxmenu.current(ctxmenu.SORT_TYPE);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, false);
+        Bool a = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(1) + 4);
+        Bool b = ctxmenu.hover(ctxmenu.sub_left() + 40, ctxmenu.sub_row_top(2) + 4);
+    } else if (f == 9) {                           // app (AM-1)
+        ctxmenu.begin(ctxmenu.APP_MENU, false);
+        ctxmenu.about(b"Edit", 4);
+        ctxmenu.current(ctxmenu.TILED);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, false);
+        Bool a = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(1) + 4);
+    } else if (f == 10) {                          // app-items (AM-4, frame 41): Settings dimmed, Edit's rows, Save hovered
+        ctxmenu.begin(ctxmenu.APP_MENU, false);
+        ctxmenu.about(b"Edit", 4);
+        ctxmenu.settings(true);
+        edit_rows();
+        ctxmenu.current(ctxmenu.TILED);
+        ctxmenu.open_at(16, 16, 0, 0, w, h, false);
+        Bool a = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(5) + 4);
+    } else {                                       // sort-flipped
+        ctxmenu.begin(ctxmenu.EMPTY, false);
+        ctxmenu.current(ctxmenu.SORT_NAME);
+        ctxmenu.open_at(w - 16, 16, 0, 0, w, h, false);
+        Bool a = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(1) + 4);
+    }
+    return 1000;
+}
+
+I64 frame_sum(I64 f, I64 w, I64 h, I64 z, I64 th) {
+    tokens.set_theme(th);
+    I64 v = build(f, w, h);
+    I64 s = 0;
+    for y in 0..h * z {
+        for x in 0..w * z { row[x] = tokens.word(tokens.PAPER); }
+        ctxmenu.row_at(row, y, z, th, v);
+        for x in 0..w * z { s = (s * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    tokens.set_theme(0);
+    return s;
+}
+
+test "FILE: the strip Cut, Copy, Rename, Share dimmed, Trash; Open, Open With; Open in Console, Copy as Path; Properties" {
+    ctxmenu.begin(ctxmenu.FILE, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.slots() == 5);
+    assert(ctxmenu.slot_act(0) == ctxmenu.CUT && ctxmenu.slot_act(1) == ctxmenu.COPY);
+    assert(ctxmenu.slot_act(2) == ctxmenu.RENAME && ctxmenu.slot_act(3) == ctxmenu.SHARE);
+    assert(ctxmenu.slot_act(4) == ctxmenu.TRASH);
+    assert(!ctxmenu.slot_live(3) && ctxmenu.slot_live(4));
+    assert(ctxmenu.rows() == 6);
+    assert(ctxmenu.row_act(0) == ctxmenu.OPEN && ctxmenu.row_act(1) == ctxmenu.OPEN_WITH && ctxmenu.row_has(1));
+    assert(ctxmenu.row_act(2) == ctxmenu.PIN_TASKBAR && ctxmenu.row_sec(2) == ctxmenu.SEC_OPEN);   // DN-46 (c)
+    assert(ctxmenu.row_act(3) == ctxmenu.OPEN_IN_CONSOLE && ctxmenu.row_act(4) == ctxmenu.COPY_PATH);
+    assert(ctxmenu.row_act(5) == ctxmenu.PROPERTIES);
+    for k in 0..5 { assert(ctxmenu.slot_left(k) == 8 + 43 * k); }
+    assert(ctxmenu.slot_left(4) + 36 == 224 - 8);  // five spread across, 2 px inside the padding
+}
+
+test "FOLDER, EMPTY and TEXT as DN-33 lists them; three slots stand left aligned at the same pitch" {
+    ctxmenu.begin(ctxmenu.FOLDER, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.slots() == 5 && !ctxmenu.slot_live(3));
+    assert(ctxmenu.row_act(1) == ctxmenu.OPEN_NEW_WINDOW && ctxmenu.row_act(2) == ctxmenu.PIN_TASKBAR);
+    assert(ctxmenu.row_act(3) == ctxmenu.CONSOLE_HERE);
+    assert(ctxmenu.rows() == 6 && ctxmenu.row_act(5) == ctxmenu.PROPERTIES);
+    ctxmenu.begin(ctxmenu.EMPTY, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.slots() == 3);
+    assert(ctxmenu.slot_act(0) == ctxmenu.PASTE && ctxmenu.slot_act(1) == ctxmenu.NEW_FOLDER);
+    assert(ctxmenu.slot_act(2) == ctxmenu.NEW_FILE);
+    for k in 0..3 { assert(ctxmenu.slot_left(k) == 8 + 43 * k && ctxmenu.slot_live(k)); }
+    assert(ctxmenu.row_act(0) == ctxmenu.VIEW && ctxmenu.row_has(0) && ctxmenu.row_has(1));
+    assert(ctxmenu.rows() == 5 && ctxmenu.row_act(4) == ctxmenu.PROPERTIES);
+    ctxmenu.begin(ctxmenu.EMPTY, true);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.rows() == 6 && ctxmenu.row_act(4) == ctxmenu.DISPLAY_SETTINGS);
+    assert(ctxmenu.row_sec(4) == ctxmenu.SEC_APP);
+    ctxmenu.begin(ctxmenu.TEXT, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.slots() == 3 && ctxmenu.slot_act(2) == ctxmenu.PASTE);
+    assert(ctxmenu.rows() == 1 && ctxmenu.row_act(0) == ctxmenu.SELECT_ALL);   // no developer rows, no Properties
+}
+
+test "DN-46 (c): an entry on the Taskbar reads Unpin from Taskbar, once; the words are the kit's one table" {
+    ctxmenu.taskbar(true);
+    ctxmenu.begin(ctxmenu.FOLDER, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.row_act(2) == ctxmenu.UNPIN_TASKBAR);
+    ctxmenu.begin(ctxmenu.FILE, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.row_act(2) == ctxmenu.PIN_TASKBAR);
+    U8[32] w;
+    I64 n = ctxmenu.words(ctxmenu.PIN_TASKBAR, w);
+    U8[14] p = b"Pin to Taskbar";
+    assert(n == 14);
+    for k in 0..14 { assert(w[k] == p[k]); }
+    n = ctxmenu.words(ctxmenu.UNPIN_TASKBAR, w);
+    U8[18] u = b"Unpin from Taskbar";
+    assert(n == 18);
+    for k in 0..18 { assert(w[k] == u[k]); }
+    assert(ctxmenu.slot_symbol(ctxmenu.NEW_FOLDER) == symbols.NEW_FOLDER);    // DN-46 (e)
+    assert(ctxmenu.slot_symbol(ctxmenu.NEW_FILE) == symbols.NEW_FILE);
+}
+
+test "DN-49: at 28 pins Pin to Taskbar dims: no key and no press take it; Unpin from Taskbar never dims" {
+    ctxmenu.taskbar_full(true);
+    ctxmenu.begin(ctxmenu.FILE, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.row_act(2) == ctxmenu.PIN_TASKBAR && ctxmenu.row_off(2) && !ctxmenu.row_off(0));
+    assert(ctxmenu.key(108) == ctxmenu.STAY && ctxmenu.key(108) == ctxmenu.STAY && ctxmenu.key(108) == ctxmenu.STAY);
+    assert(ctxmenu.selected() == 3 && ctxmenu.is_open());                  // AM-SET: Down steps over the dimmed row
+    for y in 0..600 { ctxmenu.row_at(row, y, 1, tokens.DARK, 1000); }
+    ctxmenu.close();
+    ctxmenu.taskbar(true);
+    ctxmenu.taskbar_full(true);
+    ctxmenu.begin(ctxmenu.FILE, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.row_act(2) == ctxmenu.UNPIN_TASKBAR && !ctxmenu.row_off(2));
+    ctxmenu.begin(ctxmenu.FILE, false);                                   // begin cleared it
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(!ctxmenu.row_off(2));
+    ctxmenu.close();
+}
+
+test "frame 32: a Trash item's menu: no strip; the app's Restore and Delete Forever, then Properties; row_dim" {
+    ctxmenu.begin(ctxmenu.TRASHED, false);
+    assert(ctxmenu.slots() == 0);
+    assert(ctxmenu.app_row(b"Restore", 7, ctxmenu.APP, false));
+    assert(ctxmenu.app_row(b"Delete Forever", 14, ctxmenu.APP + 1, false));
+    ctxmenu.row_dim(ctxmenu.APP);                                         // note 58: dimmed, never hidden
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.rows() == 3 && ctxmenu.row_act(0) == ctxmenu.APP && ctxmenu.row_act(1) == ctxmenu.APP + 1);
+    assert(ctxmenu.row_act(2) == ctxmenu.PROPERTIES && ctxmenu.row_off(0) && !ctxmenu.row_off(1));
+    assert(ctxmenu.key(28) == ctxmenu.STAY && ctxmenu.is_open());           // Enter on the dimmed first row: nothing
+    ctxmenu.close();
+    ctxmenu.begin(ctxmenu.FILE, false);                                   // note 58: Pin to Taskbar past 96 bytes
+    ctxmenu.row_dim(ctxmenu.PIN_TASKBAR);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.row_act(2) == ctxmenu.PIN_TASKBAR && ctxmenu.row_off(2) && ctxmenu.rows() == 6);
+    ctxmenu.close();
+}
+
+test "section order is fixed: app rows declared late still come before Properties" {
+    ctxmenu.begin(ctxmenu.FILE, false);
+    assert(ctxmenu.app_row(b"Fixture", 7, ctxmenu.APP, false));
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.rows() == 7);
+    I64 last = 0;
+    for i in 0..ctxmenu.rows() {
+        assert(ctxmenu.row_sec(i) >= last);
+        last = ctxmenu.row_sec(i);
+    }
+    assert(ctxmenu.row_act(5) == ctxmenu.APP && ctxmenu.row_act(6) == ctxmenu.PROPERTIES);
+    // dividers: the strip, then one between each two sections that have rows
+    assert(ctxmenu.height() == 12 + 32 + 4 * 11 + 7 * 28);
+}
+
+test "an app declares at most 3 rows: the fourth is refused; the desk's Display Settings is one of the 3" {
+    ctxmenu.begin(ctxmenu.TEXT, false);
+    for k in 0..3 { assert(ctxmenu.app_row(b"Row", 3, ctxmenu.APP + k, false)); }
+    assert(!ctxmenu.app_row(b"Row", 3, ctxmenu.APP + 3, false));
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.rows() == 4);
+    ctxmenu.begin(ctxmenu.EMPTY, true);
+    assert(ctxmenu.app_row(b"Row", 3, ctxmenu.APP, false));
+    assert(ctxmenu.app_row(b"Row", 3, ctxmenu.APP + 1, false));
+    assert(!ctxmenu.app_row(b"Row", 3, ctxmenu.APP + 2, false));
+    assert(!ctxmenu.app_row(b"Row", 3, ctxmenu.OPEN, false));    // an app's action is APP or more
+}
+
+test "one submenu level: a submenu row under a submenu row, or under a row without one, is refused" {
+    ctxmenu.begin(ctxmenu.FILE, false);
+    assert(ctxmenu.sub_row(ctxmenu.OPEN_WITH, b"Edit", 4, ctxmenu.SUB));
+    assert(!ctxmenu.sub_row(ctxmenu.SUB, b"Deeper", 6, ctxmenu.SUB + 1));
+    assert(!ctxmenu.sub_row(ctxmenu.OPEN, b"No", 2, ctxmenu.SUB + 2));
+    assert(ctxmenu.app_row(b"App menu", 8, ctxmenu.APP, true));
+    assert(ctxmenu.sub_row(ctxmenu.APP, b"One", 3, ctxmenu.SUB + 3));
+    assert(!ctxmenu.sub_row(ctxmenu.SUB + 3, b"Two", 3, ctxmenu.SUB + 4));
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    assert(ctxmenu.click(40, ctxmenu.row_top(1) + 4) == ctxmenu.STAY);   // Open With opens its submenu
+    assert(ctxmenu.sub_open() >= 0 && ctxmenu.sub_rows() == 1);
+    assert(ctxmenu.sub_left() == 224 - 4);                             // DN-35: 4 px over the menu
+    assert(ctxmenu.click(ctxmenu.sub_left() + 40, ctxmenu.sub_row_top(0) + 4) == ctxmenu.SUB);
+    assert(!ctxmenu.is_open());
+}
+
+test "a dimmed slot takes no click, no hover and no key; it keeps its place" {
+    ctxmenu.begin(ctxmenu.FILE, false);
+    ctxmenu.open_at(10, 10, 0, 0, 800, 600, false);
+    I64 sx = ctxmenu.slot_left(3);
+    assert(sx == 10 + 8 + 43 * 3);
+    assert(ctxmenu.click(sx + 10, ctxmenu.slot_top() + 10) == ctxmenu.STAY && ctxmenu.is_open());
+    Bool h = ctxmenu.hover(sx + 10, ctxmenu.slot_top() + 10);
+    assert(ctxmenu.hot_slot() == -1);
+    h = ctxmenu.hover(ctxmenu.slot_left(2) + 10, ctxmenu.slot_top() + 10);
+    assert(ctxmenu.hot_slot() == 2);
+    assert(ctxmenu.key(RIGHT) == ctxmenu.STAY && ctxmenu.hot_slot() == 4);   // past Share to Trash
+    assert(ctxmenu.key(LEFT) == ctxmenu.STAY && ctxmenu.hot_slot() == 2);
+    ctxmenu.slot_off(ctxmenu.TRASH);
+    assert(ctxmenu.key(RIGHT) == ctxmenu.STAY && ctxmenu.hot_slot() == 2);   // nothing live to the right
+    assert(ctxmenu.click(ctxmenu.slot_left(4) + 10, ctxmenu.slot_top() + 10) == ctxmenu.STAY);
+    assert(ctxmenu.click(ctxmenu.slot_left(1) + 10, ctxmenu.slot_top() + 10) == ctxmenu.COPY);
+    assert(!ctxmenu.is_open());
+}
+
+test "the keyboard open (Menu key, Shift+F10): at the selection, the first row selected; keys walk and choose" {
+    ctxmenu.begin(ctxmenu.FILE, false);
+    open_with(3);
+    ctxmenu.open_at(300, 200, 0, 0, 880, 640, true);
+    assert(ctxmenu.left() == 300 && ctxmenu.top() == 200);
+    assert(ctxmenu.selected() == 0 && ctxmenu.hot_slot() == -1);
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.selected() == 1);
+    assert(ctxmenu.key(RIGHT) == ctxmenu.STAY && ctxmenu.sub_selected() == 0);
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.sub_selected() == 1);
+    assert(ctxmenu.key(LEFT) == ctxmenu.STAY && ctxmenu.sub_open() == -1 && ctxmenu.selected() == 1);
+    assert(ctxmenu.key(UP) == ctxmenu.STAY && ctxmenu.selected() == 0);
+    assert(ctxmenu.key(UP) == ctxmenu.STAY && ctxmenu.hot_slot() == 0);      // up into the strip
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.selected() == 0);
+    assert(ctxmenu.key(ENTER) == ctxmenu.OPEN && !ctxmenu.is_open());
+    ctxmenu.open_at(300, 200, 0, 0, 880, 640, true);
+    assert(ctxmenu.key(ESC) == ctxmenu.CLOSE && !ctxmenu.is_open());
+    ctxmenu.open_at(300, 200, 0, 0, 880, 640, false);
+    assert(ctxmenu.selected() == -1);
+    assert(ctxmenu.click(5, 5) == ctxmenu.CLOSE);                              // a press outside closes
+}
+
+test "the flip at all four edges, and the submenu on the left when the right has no room" {
+    ctxmenu.begin(ctxmenu.FILE, false);
+    open_with(3);
+    I64 h = 6 + 32 + 11 + 84 + 11 + 56 + 11 + 28 + 6;
+    ctxmenu.open_at(700, 100, 0, 0, 880, 640, false);           // right: flips to end at the pointer
+    assert(ctxmenu.height() == h && ctxmenu.left() == 700 - 224 && ctxmenu.top() == 100);
+    ctxmenu.open_at(100, 600, 0, 0, 880, 640, false);           // bottom: flips up
+    assert(ctxmenu.left() == 100 && ctxmenu.top() == 600 - h);
+    ctxmenu.open_at(150, 100, 0, 0, 300, 640, false);           // left: flipped past the left edge, kept inside
+    assert(ctxmenu.left() == 0);
+    ctxmenu.open_at(150, 100, 100, 0, 300, 640, false);
+    assert(ctxmenu.left() == 100);
+    ctxmenu.open_at(100, 150, 0, 0, 880, 260, false);           // top: flipped past the top edge, kept inside
+    assert(ctxmenu.top() == 0);
+    ctxmenu.open_at(100, 150, 0, 100, 880, 260, false);
+    assert(ctxmenu.top() == 100);
+    ctxmenu.open_at(860, 630, 0, 0, 880, 640, false);           // the far corner: both
+    assert(ctxmenu.left() == 860 - 224 && ctxmenu.top() == 630 - h);
+    Bool o = ctxmenu.hover(ctxmenu.left() + 40, ctxmenu.row_top(1) + 4);
+    assert(ctxmenu.sub_open() >= 0 && ctxmenu.sub_left() == ctxmenu.left() - 160 + 4);   // DN-35: 160 wide, 4 over
+    assert(ctxmenu.sub_top() + ctxmenu.sub_height() <= 640);
+}
+
+test "the frames equal the twin's (tools/check-hdesk.py --ctxmenu-sums): 1x and 2x, dark and light" {
+    I64[11] fw = [520, 300, 440, 300, 300, 520, 300, 440, 440, 440, 300];
+    I64[11] fh = [300, 300, 260, 300, 260, 300, 300, 260, 260, 260, 480];
+    I64[44] want = [43055204, 737436698, 717898139, 178417999,
+                    236455085, 643278927, 770762051, 540841540,
+                    151850842, 271851973, 195939003, 578861978,
+                    99668210, 30285008, 136685957, 760245429,
+                    747225264, 873362537, 248879445, 380473993,
+                    397127330, 449689245, 372541796, 238986850,
+                    872808845, 297190473, 189403155, 309694835,
+                    934571334, 568422738, 865809571, 958556242,
+                    131732370, 884871760, 883522323, 660499633,
+                    226671423, 966481399, 376268641, 160778647,
+                    827993717, 108040376, 252098448, 369714862];
+    for f in 0..11 {
+        for th in 0..2 {
+            for z in 1..3 {
+                I64 got = frame_sum(f, fw[f], fh[f], z, th);
+                if (got != want[4 * f + 2 * th + z - 1]) { "frame {f} theme {th} z {z}: {got}\n"; }
+                assert(got == want[4 * f + 2 * th + z - 1]);
+            }
+        }
+    }
+}
+
+test "DN-35: View is Grid, Table and Sort By is Name, Kind, Size, from the one words table" {
+    ctxmenu.begin(ctxmenu.EMPTY, false);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    Bool h = ctxmenu.hover(40, ctxmenu.row_top(0) + 4);
+    assert(ctxmenu.sub_rows() == 2);
+    assert(ctxmenu.sub_act(0) == ctxmenu.VIEW_GRID && ctxmenu.sub_act(1) == ctxmenu.VIEW_TABLE);
+    h = ctxmenu.hover(40, ctxmenu.row_top(1) + 4);
+    assert(ctxmenu.sub_rows() == 3 && ctxmenu.sub_act(0) == ctxmenu.SORT_NAME);
+    assert(ctxmenu.sub_act(1) == ctxmenu.SORT_TYPE && ctxmenu.sub_act(2) == ctxmenu.SORT_SIZE);
+    U8[32] w;
+    assert(ctxmenu.words(ctxmenu.VIEW_TABLE, w) == 5 && w[0] == 'T' && w[4] == 'e');
+    assert(ctxmenu.words(ctxmenu.SORT_SIZE, w) == 4 && w[0] == 'S' && w[3] == 'e');
+    assert(ctxmenu.label(ctxmenu.SORT_BY, w) == 7 && w[5] == 'B');
+}
+
+test "DN-35: the 8 px dot sits on the current choice, one a submenu" {
+    tokens.set_theme(0);
+    ctxmenu.begin(ctxmenu.EMPTY, false);
+    ctxmenu.current(ctxmenu.VIEW_GRID);
+    ctxmenu.current(ctxmenu.SORT_NAME);
+    assert(ctxmenu.is_current(ctxmenu.VIEW_GRID) && !ctxmenu.is_current(ctxmenu.VIEW_TABLE));
+    ctxmenu.current(ctxmenu.VIEW_TABLE);
+    assert(ctxmenu.is_current(ctxmenu.VIEW_TABLE) && !ctxmenu.is_current(ctxmenu.VIEW_GRID));
+    assert(ctxmenu.is_current(ctxmenu.SORT_NAME));                        // the other submenu keeps its own
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, false);
+    Bool h = ctxmenu.hover(40, ctxmenu.row_top(0) + 4);                    // View's submenu, nothing in it hovered
+    I64 dx = ctxmenu.sub_left() + 160 - 6 - 10 - 4;                       // the dot's center column
+    for j in 0..2 {
+        I64 dy = ctxmenu.sub_row_top(j) + 14;
+        for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+        ctxmenu.row_at(row, dy, 1, 0, 1000);
+        if (j == 1) {
+            assert(row[dx] == tokens.word(tokens.INK));                    // Table, current
+        } else {
+            assert(row[dx] == tokens.word(tokens.SURF2));                  // Grid, no dot
+        }
+    }
+}
+
+test "DN-35: choosing a submenu row applies at once and closes both menus" {
+    ctxmenu.begin(ctxmenu.EMPTY, false);
+    ctxmenu.open_at(10, 10, 0, 0, 800, 600, false);
+    assert(ctxmenu.click(50, ctxmenu.row_top(1) + 4) == ctxmenu.STAY && ctxmenu.sub_open() >= 0);
+    assert(ctxmenu.click(ctxmenu.sub_left() + 40, ctxmenu.sub_row_top(2) + 4) == ctxmenu.SORT_SIZE);
+    assert(!ctxmenu.is_open() && ctxmenu.sub_open() == -1);
+    ctxmenu.open_at(10, 10, 0, 0, 800, 600, true);                       // by keys: View, Right, Down, Enter
+    assert(ctxmenu.key(RIGHT) == ctxmenu.STAY && ctxmenu.sub_selected() == 0);
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY);
+    assert(ctxmenu.key(ENTER) == ctxmenu.VIEW_TABLE && !ctxmenu.is_open() && ctxmenu.sub_open() == -1);
+}
+
+test "DN-35: the submenu opens right of its row 4 px over the menu, and flips left at the edge" {
+    ctxmenu.begin(ctxmenu.EMPTY, false);
+    ctxmenu.open_at(100, 50, 0, 0, 800, 600, false);
+    Bool h = ctxmenu.hover(140, ctxmenu.row_top(1) + 4);
+    assert(ctxmenu.sub_left() == 100 + 224 - 4);
+    assert(ctxmenu.sub_top() == ctxmenu.row_top(1) - 6);                   // its first row level with Sort By
+    ctxmenu.open_at(560, 50, 0, 0, 800, 600, false);                      // 560 + 224 - 4 + 160 > 800
+    h = ctxmenu.hover(600, ctxmenu.row_top(1) + 4);
+    assert(ctxmenu.sub_left() == 560 - 160 + 4 && ctxmenu.sub_left() + 160 <= 800);
+}
+
+test "DN-42: no focus ring in a menu: the selected row is FILL alone, the plate's ground right beside it" {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            ctxmenu.begin(ctxmenu.FILE, false);
+            ctxmenu.open_at(16, 16, 0, 0, 520, 300, true);   // keyed: the first row selected
+            I64 t = ctxmenu.row_top(0);
+            I64 y = (t + 14) * z;
+            for x in 0..520 * z { row[x] = tokens.word(tokens.PAPER); }
+            ctxmenu.row_at(row, y, z, th, 1000);
+            I64 x0 = (16 + 6) * z;               // the pill's left edge
+            assert(row[x0 + 14 * z] == tokens.word(tokens.FILL));
+            for k in 1..5 * z + 1 {             // between the plate's edge and the pill: SURF2, no ring
+                if (x0 - k >= (16 + 1) * z) { assert(row[x0 - k] == tokens.word(tokens.SURF2)); }
+            }
+            I64 above = (t - 3) * z;            // the rows above the pill: the strip's divider gap, no ring
+            for x in 0..520 * z { row[x] = tokens.word(tokens.PAPER); }
+            ctxmenu.row_at(row, above, z, th, 1000);
+            assert(row[(16 + 100) * z] == tokens.word(tokens.SURF2));
+        }
+    }
+    tokens.set_theme(0);
+}
+
+test "DN-42: the strip's keyed slot is FILL (its symbol mono); a hovered one BAR_RULE; Up reaches the strip, past dimmed" {
+    ctxmenu.begin(ctxmenu.FILE, false);
+    ctxmenu.slot_off(ctxmenu.CUT);
+    ctxmenu.open_at(16, 16, 0, 0, 520, 300, true);
+    assert(ctxmenu.key(UP) == ctxmenu.STAY && ctxmenu.hot_slot() == 1);   // Cut dimmed: Copy is the first live slot
+    I64 sy = (ctxmenu.slot_top() + 2);
+    for x in 0..520 { row[x] = tokens.word(tokens.PAPER); }
+    ctxmenu.row_at(row, sy, 1, 0, 1000);
+    assert(row[ctxmenu.slot_left(1) + 2] == tokens.word(tokens.FILL));
+    assert(row[ctxmenu.slot_left(0) + 2] == tokens.word(tokens.SURF2));   // the dimmed one: not focused
+    assert(ctxmenu.key(RIGHT) == ctxmenu.STAY && ctxmenu.hot_slot() == 2);
+    Bool h = ctxmenu.hover(ctxmenu.slot_left(4) + 4, ctxmenu.slot_top() + 10);
+    assert(ctxmenu.hot_slot() == 4);
+    for x in 0..520 { row[x] = tokens.word(tokens.PAPER); }
+    ctxmenu.row_at(row, sy, 1, 0, 1000);
+    assert(row[ctxmenu.slot_left(4) + 2] == tokens.word(tokens.BAR_RULE));   // the pointer's: BAR_RULE
+}
+
+test "AM-1, DN-58: the app menu: About APP, Window, Exit last; no strip; 216 wide; Window holds the window's modes" {
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    ctxmenu.about(b"Edit", 4);
+    ctxmenu.current(ctxmenu.TILED);
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, false);
+    assert(ctxmenu.slots() == 0 && ctxmenu.width() == 216);
+    assert(ctxmenu.rows() == 3);
+    assert(ctxmenu.row_act(0) == ctxmenu.ABOUT && ctxmenu.row_act(1) == ctxmenu.WIN_VIEW && ctxmenu.row_has(1));
+    assert(ctxmenu.row_act(2) == ctxmenu.EXIT);
+    U8[32] w;
+    I64 n = ctxmenu.label(ctxmenu.ABOUT, w);
+    assert(n == 10 && w[0] == 'A' && w[5] == ' ' && w[6] == 'E' && w[9] == 't');
+    n = ctxmenu.label(ctxmenu.WIN_VIEW, w);       // DN-58 (frame 41): the submenu is named Window, not View
+    assert(n == 6 && w[0] == 'W' && w[1] == 'i' && w[2] == 'n' && w[3] == 'd' && w[4] == 'o' && w[5] == 'w');
+    assert(ctxmenu.words(ctxmenu.VIEW, w) == 4 && w[0] == 'V');   // Index's View stays
+    assert(ctxmenu.left() == 44 && ctxmenu.top() == 36);
+    assert(ctxmenu.height() == 12 + 28 + 11 + 28 + 11 + 28);   // a divider between each group
+    Bool h = ctxmenu.hover(44 + 40, ctxmenu.row_top(1) + 4);
+    assert(ctxmenu.sub_rows() == 4);
+    assert(ctxmenu.sub_act(0) == ctxmenu.TILED && ctxmenu.sub_act(1) == ctxmenu.FLOATING);
+    assert(ctxmenu.sub_act(2) == ctxmenu.FULL_SCREEN && ctxmenu.sub_act(3) == ctxmenu.MINIMIZE);
+    assert(ctxmenu.is_current(ctxmenu.TILED) && !ctxmenu.is_current(ctxmenu.FLOATING));
+    assert(ctxmenu.sub_left() == 44 + 216 - 4);
+    assert(ctxmenu.sub_height() == 12 + 3 * 28 + 11 + 28);      // Minimize after a divider
+    assert(ctxmenu.click(ctxmenu.sub_left() + 40, ctxmenu.sub_row_top(1) + 4) == ctxmenu.FLOATING);
+    assert(!ctxmenu.is_open());
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, true);
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.key(ENTER) == ctxmenu.EXIT);
+}
+test "AM-4: an app's own rows after Settings, with keys, groups, the dot and dimmed rows; up to 16; app menu only" {
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    ctxmenu.about(b"Edit", 4);
+    ctxmenu.settings(false);
+    edit_rows();
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, false);
+    assert(ctxmenu.rows() == 14);                  // About, Settings, ten rows, Window, Exit
+    assert(ctxmenu.row_act(1) == ctxmenu.APP_SETTINGS && ctxmenu.row_act(2) == ctxmenu.APP);
+    assert(ctxmenu.row_sec(2) == ctxmenu.SEC_APP && ctxmenu.row_act(11) == ctxmenu.APP + 9);
+    assert(ctxmenu.row_act(12) == ctxmenu.WIN_VIEW && ctxmenu.row_act(13) == ctxmenu.EXIT);
+    // dividers: before the rows (New Window's g adds none), before Undo, Find and Word Wrap, then Window, then Exit
+    assert(ctxmenu.height() == 12 + 14 * 28 + 6 * 11);
+    assert(ctxmenu.row_top(2) == ctxmenu.row_top(1) + 28 + 11 && ctxmenu.row_top(3) == ctxmenu.row_top(2) + 28);
+    assert(ctxmenu.row_top(7) == ctxmenu.row_top(6) + 28 + 11 && ctxmenu.row_top(8) == ctxmenu.row_top(7) + 28);
+    assert(ctxmenu.row_off(2) && ctxmenu.row_off(3) && !ctxmenu.row_off(5) && !ctxmenu.row_off(11));
+    U8[32] w;
+    assert(ctxmenu.label(ctxmenu.APP + 3, w) == 4 && w[0] == 'S' && w[3] == 'e');   // the host logs a choice by it
+    assert(ctxmenu.click(44 + 40, ctxmenu.row_top(2) + 4) == ctxmenu.STAY && ctxmenu.is_open());   // dimmed
+    assert(ctxmenu.click(44 + 40, ctxmenu.row_top(5) + 4) == ctxmenu.APP + 3 && !ctxmenu.is_open());   // Save
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, true);
+    I64 k = ctxmenu.key(DOWN);
+    assert(ctxmenu.key(ENTER) == ctxmenu.APP_SETTINGS);
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, true);
+    k = ctxmenu.key(DOWN);
+    k = ctxmenu.key(DOWN);
+    assert(ctxmenu.selected() == 5 && ctxmenu.is_open());   // AM-SET: Down steps over New Window, Open, Open Recent
+    // the dot (o) on a menu row: Word Wrap's, at the row's right in its ink
+    for x in 0..1040 { row[x] = tokens.word(tokens.PAPER); }
+    I64 y = ctxmenu.row_top(11) + 14;
+    ctxmenu.close();
+    ctxmenu.open_at(0, 0, 0, 0, 1040, 1080, false);
+    y = ctxmenu.row_top(11) + 14;
+    ctxmenu.row_at(row, y, 1, 0, 1000);
+    assert(row[216 - 6 - 10 - 4] == tokens.word(tokens.INK));
+    // 16 rows, children included; a 17th, a row in another list, an action out of range: refused
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    for q in 0..16 { assert(ctxmenu.item_row(b"Row", 3, b"", 0, ctxmenu.APP + q, false, false, false, false)); }
+    assert(!ctxmenu.item_row(b"Row", 3, b"", 0, ctxmenu.APP + 16, false, false, false, false));
+    ctxmenu.begin(ctxmenu.TEXT, false);
+    assert(!ctxmenu.item_row(b"Row", 3, b"", 0, ctxmenu.APP, false, false, false, false));
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    assert(!ctxmenu.item_row(b"Row", 3, b"", 0, ctxmenu.SUB, false, false, false, false));
+    assert(!ctxmenu.item_row(b"Row", 3, b"", 0, ctxmenu.ABOUT, false, false, false, false));
+}
+
+test "AM-4: a row with children opens a submenu of them; a dimmed child takes no press or Enter; no child of a leaf" {
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    ctxmenu.about(b"Edit", 4);
+    assert(ctxmenu.item_row(b"Open Recent", 11, b"", 0, ctxmenu.APP, true, false, false, false));
+    assert(ctxmenu.item_row(b"Save", 4, b"Ctrl+S", 6, ctxmenu.APP + 3, false, false, false, false));
+    assert(ctxmenu.item_sub(ctxmenu.APP, b"notes.txt", 9, b"", 0, ctxmenu.SUB + 1, false, false, false));
+    assert(ctxmenu.item_sub(ctxmenu.APP, b"gone.txt", 8, b"", 0, ctxmenu.SUB + 2, true, false, true));
+    assert(!ctxmenu.item_sub(ctxmenu.APP + 3, b"x", 1, b"", 0, ctxmenu.SUB + 4, false, false, false));   // a leaf
+    assert(!ctxmenu.item_sub(ctxmenu.APP, b"x", 1, b"", 0, ctxmenu.APP + 5, false, false, false));       // not SUB
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, false);
+    assert(ctxmenu.rows() == 5 && ctxmenu.row_has(1));
+    Bool h = ctxmenu.hover(44 + 40, ctxmenu.row_top(1) + 4);
+    assert(ctxmenu.sub_rows() == 2 && ctxmenu.sub_act(0) == ctxmenu.SUB + 1);
+    assert(ctxmenu.sub_height() == 12 + 2 * 28 + 11);   // gone.txt starts a group
+    assert(ctxmenu.click(ctxmenu.sub_left() + 40, ctxmenu.sub_row_top(1) + 4) == ctxmenu.STAY && ctxmenu.is_open());
+    I64 k = ctxmenu.key(ENTER);
+    assert(k == ctxmenu.STAY && ctxmenu.is_open());
+    k = ctxmenu.key(UP);
+    assert(ctxmenu.key(ENTER) == ctxmenu.SUB + 1 && !ctxmenu.is_open());
+}
+
+test "AM-SET (board c4246c7): Up and Down step over dimmed rows and wrap; all rows dimmed keeps no selection" {
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    ctxmenu.about(b"Calc", 4);
+    ctxmenu.settings(true);
+    assert(ctxmenu.item_row(b"Copy Result", 11, b"Ctrl+C", 6, ctxmenu.APP + 2, false, false, false, true));
+    assert(ctxmenu.item_row(b"Paste", 5, b"Ctrl+V", 6, ctxmenu.APP + 3, false, false, false, true));
+    assert(ctxmenu.item_row(b"Clear Tape", 10, b"", 0, ctxmenu.APP + 4, false, true, false, false));
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, true);
+    I64 n = ctxmenu.rows();
+    assert(ctxmenu.row_off(1) && ctxmenu.row_off(2) && ctxmenu.row_off(3) && !ctxmenu.row_off(4));
+    assert(ctxmenu.selected() == 0);                                                      // About
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.selected() == 4);                 // over Settings, Copy, Paste
+    assert(ctxmenu.key(UP) == ctxmenu.STAY && ctxmenu.selected() == 0);
+    assert(ctxmenu.key(UP) == ctxmenu.STAY && ctxmenu.selected() == n - 1);               // wraps to Exit
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.selected() == 0);                 // and back
+    for k in 0..2 * n {                                                                   // never on a dimmed row
+        I64 c = DOWN;
+        if (k >= n) { c = UP; }
+        assert(ctxmenu.key(c) == ctxmenu.STAY && ctxmenu.selected() >= 0 && !ctxmenu.row_off(ctxmenu.selected()));
+    }
+    ctxmenu.close();
+    ctxmenu.begin(ctxmenu.TRASHED, false);                                                // every row dimmed
+    assert(ctxmenu.app_row(b"Restore", 7, ctxmenu.APP, false));
+    assert(ctxmenu.app_row(b"Delete Forever", 14, ctxmenu.APP + 1, false));
+    ctxmenu.row_dim(ctxmenu.APP);
+    ctxmenu.row_dim(ctxmenu.APP + 1);
+    ctxmenu.row_dim(ctxmenu.PROPERTIES);
+    ctxmenu.open_at(0, 0, 0, 0, 800, 600, true);
+    assert(ctxmenu.rows() == 3 && ctxmenu.selected() == -1);
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.selected() == -1);
+    assert(ctxmenu.key(UP) == ctxmenu.STAY && ctxmenu.selected() == -1);
+    assert(ctxmenu.key(ENTER) == ctxmenu.STAY && ctxmenu.is_open());
+    ctxmenu.close();
+    ctxmenu.begin(ctxmenu.APP_MENU, false);                                               // a submenu: the same
+    ctxmenu.about(b"Edit", 4);
+    assert(ctxmenu.item_row(b"Open Recent", 11, b"", 0, ctxmenu.APP, true, false, false, false));
+    assert(ctxmenu.item_sub(ctxmenu.APP, b"gone.txt", 8, b"", 0, ctxmenu.SUB + 1, false, false, true));
+    assert(ctxmenu.item_sub(ctxmenu.APP, b"notes.txt", 9, b"", 0, ctxmenu.SUB + 2, false, false, false));
+    assert(ctxmenu.item_sub(ctxmenu.APP, b"old.txt", 7, b"", 0, ctxmenu.SUB + 3, false, false, true));
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, true);
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.row_act(ctxmenu.selected()) == ctxmenu.APP);
+    assert(ctxmenu.key(RIGHT) == ctxmenu.STAY && ctxmenu.sub_selected() == 1);            // over gone.txt
+    assert(ctxmenu.key(DOWN) == ctxmenu.STAY && ctxmenu.sub_selected() == 1);             // over old.txt, wraps
+    assert(ctxmenu.key(UP) == ctxmenu.STAY && ctxmenu.sub_selected() == 1);
+    assert(ctxmenu.key(ENTER) == ctxmenu.SUB + 2 && !ctxmenu.is_open());
+}
+
+test "Settings declared dimmed (plan A, frame 41): drawn at 35 percent, takes no press or Enter" {
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    ctxmenu.about(b"Edit", 4);
+    ctxmenu.settings(true);
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, false);
+    assert(ctxmenu.row_act(1) == ctxmenu.APP_SETTINGS && ctxmenu.row_off(1) && !ctxmenu.row_off(0));
+    assert(ctxmenu.click(ctxmenu.left() + 40, ctxmenu.row_top(1) + 4) == ctxmenu.STAY);
+    ctxmenu.begin(ctxmenu.APP_MENU, false);
+    ctxmenu.about(b"Edit", 4);
+    ctxmenu.settings(false);
+    ctxmenu.open_at(44, 36, 0, 28, 1920, 1080, false);
+    assert(!ctxmenu.row_off(1));
+}
+// SPDX-License-Identifier: Apache-2.0

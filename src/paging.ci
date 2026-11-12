@@ -1,0 +1,171 @@
+// src/paging.ci: page tables, built and edited from cint through the view shim. The boot
+// tables (boot.S) map the first gigabyte with identity mappings; this module adds a second
+// gigabyte of address space under slot 1 of the boot PDPT (virtual 0x40000000 to 0x7FFFFFFF,
+// unmapped at boot): a page directory and page tables from the frame allocator, and 4 KiB
+// leaves that map, unmap, or change the protection of one page. The entries are read and
+// written 512 words at a time with phys_read64 and phys_write64; nothing in this file holds a
+// pointer. Accesses through these mappings are made by the probes of src/trap.ci
+// (vm_load64, vm_store64, vm_exec), so a violation is a #PF record.
+//
+// Every operation checks before it stores. Status: a value >= 0, or an ERR_ code.
+
+import src.phys;
+import src.trap;
+import src.frames;
+import src.pte;
+
+export const I64 ERR_NOT_READY = -21;
+export const I64 ERR_BAD_ADDRESS = -22;
+export const I64 ERR_NO_MEMORY = -23;
+export const I64 ERR_MAPPED = -24;
+export const I64 ERR_NOT_MAPPED = -25;
+export const I64 ERR_EXISTS = -26;
+
+I64 pd_phys = 0;
+
+void zero_frame(U64 pa) {
+    U64[512] z;
+    for i in 0..512 {
+        z[i] = 0;
+    }
+    phys.phys_write64(pa, z);
+}
+
+// Links a fresh page directory at slot 1 of the boot PDPT. Returns its frame index.
+export I64 init() {
+    if (pd_phys != 0) {
+        return ERR_EXISTS;
+    }
+    U64[512] t;
+    phys.phys_read64(trap.vm_root(), t);
+    U64 pdpt = pte.addr(t[0]);
+    phys.phys_read64(pdpt, t);
+    if (pte.present(t[1])) {
+        return ERR_EXISTS;
+    }
+    I64 f = frames.alloc(1);
+    if (f < 0) {
+        return ERR_NO_MEMORY;
+    }
+    U64 pd = frames.frame_addr(f) as U64;
+    zero_frame(pd);
+    t[1] = pte.make(pd, pte.FLAG_P | pte.FLAG_W);
+    phys.phys_write64(pdpt, t);
+    pd_phys = pd as I64;
+    return f;
+}
+
+// The page table covering va, as a physical address; 0 when there is none yet.
+U64 table_of(U64 va) {
+    U64[512] t;
+    phys.phys_read64(pd_phys as U64, t);
+    U64 e = t[pte.pd_index(va)];
+    U64 table = 0;
+    if (pte.present(e)) {
+        table = pte.addr(e);
+    }
+    return table;
+}
+
+// Maps the page at va to the frame at pa with flags (FLAG_W, FLAG_NX; present is added).
+export I64 map(U64 va, U64 pa, U64 flags) {
+    if (pd_phys == 0) {
+        return ERR_NOT_READY;
+    }
+    if (!pte.usable(va) || (pa & 4095) != 0 || pa == 0) {
+        return ERR_BAD_ADDRESS;
+    }
+    U64 table = table_of(va);
+    U64[512] t;
+    if (table != 0) {
+        phys.phys_read64(table, t);
+        if (pte.present(t[pte.pt_index(va)])) {
+            return ERR_MAPPED;
+        }
+    } else {
+        I64 f = frames.alloc(1);
+        if (f < 0) {
+            return ERR_NO_MEMORY;
+        }
+        table = frames.frame_addr(f) as U64;
+        zero_frame(table);
+        phys.phys_read64(pd_phys as U64, t);
+        t[pte.pd_index(va)] = pte.make(table, pte.FLAG_P | pte.FLAG_W);
+        phys.phys_write64(pd_phys as U64, t);
+        phys.phys_read64(table, t);
+    }
+    t[pte.pt_index(va)] = pte.make(pa, flags | pte.FLAG_P);
+    phys.phys_write64(table, t);
+    trap.vm_invlpg(va);
+    return 0;
+}
+
+// Unmaps the page at va and returns the physical address it mapped.
+export I64 unmap(U64 va) {
+    if (pd_phys == 0) {
+        return ERR_NOT_READY;
+    }
+    if (!pte.usable(va)) {
+        return ERR_BAD_ADDRESS;
+    }
+    U64 table = table_of(va);
+    if (table == 0) {
+        return ERR_NOT_MAPPED;
+    }
+    U64[512] t;
+    phys.phys_read64(table, t);
+    U64 e = t[pte.pt_index(va)];
+    if (!pte.present(e)) {
+        return ERR_NOT_MAPPED;
+    }
+    t[pte.pt_index(va)] = 0;
+    phys.phys_write64(table, t);
+    trap.vm_invlpg(va);
+    return pte.addr(e) as I64;
+}
+
+// Changes the flags of the mapped page at va, keeping its frame.
+export I64 protect(U64 va, U64 flags) {
+    if (pd_phys == 0) {
+        return ERR_NOT_READY;
+    }
+    if (!pte.usable(va)) {
+        return ERR_BAD_ADDRESS;
+    }
+    U64 table = table_of(va);
+    if (table == 0) {
+        return ERR_NOT_MAPPED;
+    }
+    U64[512] t;
+    phys.phys_read64(table, t);
+    U64 e = t[pte.pt_index(va)];
+    if (!pte.present(e)) {
+        return ERR_NOT_MAPPED;
+    }
+    t[pte.pt_index(va)] = pte.make(pte.addr(e), flags | pte.FLAG_P);
+    phys.phys_write64(table, t);
+    trap.vm_invlpg(va);
+    return 0;
+}
+
+// The physical address the page at va maps, or ERR_NOT_MAPPED.
+export I64 translate(U64 va) {
+    if (pd_phys == 0) {
+        return ERR_NOT_READY;
+    }
+    if (!pte.usable(va)) {
+        return ERR_BAD_ADDRESS;
+    }
+    U64 table = table_of(va);
+    if (table == 0) {
+        return ERR_NOT_MAPPED;
+    }
+    U64[512] t;
+    phys.phys_read64(table, t);
+    U64 e = t[pte.pt_index(va)];
+    if (!pte.present(e)) {
+        return ERR_NOT_MAPPED;
+    }
+    return pte.addr(e) as I64;
+}
+// SPDX-License-Identifier: Apache-2.0

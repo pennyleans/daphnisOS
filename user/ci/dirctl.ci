@@ -1,0 +1,8 @@
+// user/ci/dirctl.ci: a directory's names, as many as fit (FF 3h), a row of user/ci/host.c built only into a program
+// that imports this module (user/ci/build.sh defines CI_ROWS_DIR). shctl.sh_dirents answers -E2BIG when the names do
+// not all fit, which suits a listing that must be whole (cish, ls, Index); the Trash store frees a folder of any size
+// by reading what fits, freeing it and reading again, so it takes this call.
+//   dir_names(path, buf) -> I64: the names in directory path (. and .. among them, as readdir gives them), each ended
+//   by a 0 byte, the first ones that fit buf whole; the bytes written, or -errno.
+export extern unrestricted I64 dir_names(in U8[_] path, out U8[_] buf);
+// SPDX-License-Identifier: Apache-2.0

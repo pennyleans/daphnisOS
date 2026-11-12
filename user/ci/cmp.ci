@@ -1,0 +1,115 @@
+// user/ci/cmp.ci: cmp [-l|-s] FILE1 FILE2 (docs/specs/2026-11-06-c-core.md, CT-3; POSIX XCU cmp). `-` is descriptor
+// 0. Equal files: status 0, nothing said. At the first different byte, `FILE1 FILE2 differ: char N, line L`; -l lists
+// every different byte as `N O1 O2` (decimal position, octal bytes); -s says nothing. A file that ends first is said
+// on descriptor 2 (`cmp: EOF on FILE`, not with -s). Status 1 for a difference, 2 for an error. Two operands are
+// required (busybox reads descriptor 0 for a missing second: tests/core/DIFFS.md D-3).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+U8[4096] b1;
+U8[4096] b2;
+I64 n1 = 0;
+I64 n2 = 0;
+I64 i1 = 0;
+I64 i2 = 0;
+Bool e1 = false;
+Bool e2 = false;
+
+// v in octal, right-aligned in 3 columns, as busybox (XBD 5: a space of a format may be more blanks).
+void octal(I64 v) {
+    if (v < 64) { put.byte(' '); }
+    if (v < 8) { put.byte(' '); }
+    if (v >= 64) { put.byte(((v >> 6) + 48) as U8); }
+    if (v >= 8) { put.byte((((v >> 3) & 7) + 48) as U8); }
+    put.byte(((v & 7) + 48) as U8);
+}
+
+void fail(in U8[_] name, I64 e) {
+    msg.file(name, e);
+    msg.finish_with(2);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"cmp");
+    args.parse(a, b"ls", b"");
+    Bool lst = args.has('l');
+    Bool sil = args.has('s');
+    if (args.operands() != 2) { msg.usage(b"needs two files"); }
+    I64 fd1 = get.open(a[args.op_start(0)..args.op_stop(a, 0)]);
+    if (fd1 < 0) { msg.finish_with(2); }
+    I64 fd2 = get.open(a[args.op_start(1)..args.op_stop(a, 1)]);
+    if (fd2 < 0) { msg.finish_with(2); }
+    I64 pos = 1;
+    I64 ln = 1;
+    Bool differ = false;
+    Bool going = true;
+    while (going) {
+        if (i1 == n1 && !e1) {
+            n1 = get.read(fd1, b1);
+            i1 = 0;
+            if (n1 < 0) { fail(a[args.op_start(0)..args.op_stop(a, 0)], 0 - n1); }
+            if (n1 == 0) { e1 = true; }
+        }
+        if (i2 == n2 && !e2) {
+            n2 = get.read(fd2, b2);
+            i2 = 0;
+            if (n2 < 0) { fail(a[args.op_start(1)..args.op_stop(a, 1)], 0 - n2); }
+            if (n2 == 0) { e2 = true; }
+        }
+        if (e1 || e2) {
+            going = false;
+            if (e1 != e2) {
+                differ = true;
+                if (!sil) {
+                    put.flush();
+                    msg.begin();
+                    msg.text(b"EOF on ");
+                    if (e1) {
+                        msg.text(a[args.op_start(0)..args.op_stop(a, 0)]);
+                    } else {
+                        msg.text(a[args.op_start(1)..args.op_stop(a, 1)]);
+                    }
+                    msg.send();
+                }
+            }
+        } else {
+            U8 c1 = b1[i1];
+            U8 c2 = b2[i2];
+            if (c1 != c2) {
+                differ = true;
+                if (sil) {
+                    msg.finish_with(1);
+                }
+                if (lst) {
+                    put.num(pos, 0);
+                    put.byte(' ');
+                    octal(c1 as I64);
+                    put.byte(' ');
+                    octal(c2 as I64);
+                    put.byte('\n');
+                } else {
+                    put.bytes(a[args.op_start(0)..args.op_stop(a, 0)]);
+                    put.byte(' ');
+                    put.bytes(a[args.op_start(1)..args.op_stop(a, 1)]);
+                    put.bytes(b" differ: char ");
+                    put.num(pos, 0);
+                    put.bytes(b", line ");
+                    put.num(ln, 0);
+                    put.byte('\n');
+                    msg.finish_with(1);
+                }
+            }
+            if (c1 == '\n') { ln = ln + 1; }
+            pos = pos + 1;
+            i1 = i1 + 1;
+            i2 = i2 + 1;
+        }
+    }
+    if (differ) { msg.finish_with(1); }
+    msg.finish_with(0);
+}
+// SPDX-License-Identifier: Apache-2.0

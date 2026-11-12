@@ -1,0 +1,78 @@
+// user/ci/ps.ci: ps (docs/specs/2026-11-11-kf-facts.md section 2, KF-3b; XCU ps, no options): the processes the
+// caller may see, one row each in the order of the kernel's table: the pid, the parent's pid, the uid, the state
+// (R ready, S waiting, Z ended and not yet waited for), the frames held, the CPU time by the process's own clock as
+// minutes and seconds, and the command. Daphnis has no /proc: the rows are the records of facts(2, slot), which
+// gives a caller its own processes, and every process to uid 0 or a holder of ring 0; a slot the caller may not see
+// reads as an empty one and prints nothing. On Linux the call does not exist: `ps: facts: Function not
+// implemented`, status 1 (tests/core/DIFFS.md D-65).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.factsctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+
+U8[88] rec;
+
+// The u64 at byte at of rec, as a count.
+I64 word(I64 at) {
+    I64 v = 0;
+    for i in 0..8 {
+        v = v | ((rec[at + i] as I64) << (8 * i));
+    }
+    return v;
+}
+
+void two(I64 v) {
+    put.byte((48 + v / 10) as U8);
+    put.byte((48 + v % 10) as U8);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"ps");
+    args.parse(a, b"", b"");
+    if (args.operands() > 0) { msg.usage(b"extra operand"); }
+    I64 r = factsctl.co_facts(factsctl.PROCESS, 0, rec);
+    if (r == 0 - 38) {
+        msg.said(b"facts", b"Function not implemented");   // ENOSYS: a kernel with no such call (Linux)
+        msg.finish();
+    }
+    if (r < 0) {
+        msg.file(b"facts", 0 - r);
+        msg.finish();
+    }
+    put.bytes(b"  PID  PPID   UID S  FRAMES   TIME COMMAND\n");
+    I64 id = 0;
+    while (r >= factsctl.P_BYTES) {
+        I64 st = word(factsctl.P_STATE);
+        if (st != factsctl.S_EMPTY) {
+            put.num(word(factsctl.P_PID), 5);
+            put.byte(' ');
+            put.num(word(factsctl.P_PPID), 5);
+            put.byte(' ');
+            put.num(word(factsctl.P_UID), 5);
+            put.byte(' ');
+            U8 c = 'R';
+            if (st == factsctl.S_WAITING) { c = 'S'; }
+            if (st == factsctl.S_ENDED) { c = 'Z'; }
+            put.byte(c);
+            put.byte(' ');
+            put.num(word(factsctl.P_FRAMES), 7);
+            put.byte(' ');
+            I64 secs = word(factsctl.P_CPU_NS) / 1000000000;
+            put.num(secs / 60, 3);
+            put.byte(':');
+            two(secs % 60);
+            put.byte(' ');
+            I64 e = factsctl.P_COMM;
+            while (e < factsctl.P_COMM + 16 && rec[e] != 0) { e = e + 1; }
+            put.bytes(rec[factsctl.P_COMM..e]);
+            put.byte('\n');
+        }
+        id = id + 1;
+        r = factsctl.co_facts(factsctl.PROCESS, id, rec);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

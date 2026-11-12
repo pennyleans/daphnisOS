@@ -1,0 +1,203 @@
+// tests/rs/sessionend_test.ci: what a session leaves on the desk's overlay ends with it, hosted (PR 412). The asks
+// live on the overlay, not in a window, so closing the windows does not end them. Storage's Empty Trash ask (frame
+// 23): logout() and lock_now() close it, and logout() and start_session() forget the Storage page's walk and count,
+// so a login as another account shows no ask, no row of the last account's home, and Empty Trash dimmed until that
+// account's own walk and count (before, an Enter there emptied that account's Trash under the last one's count, and
+// the page showed the last account's folder sizes). AM section 7's unsaved ask: logout() closes it (a lock keeps it,
+// the same account comes back to it), so the next account's keys never act on the last account's Restart, which
+// would end the machine without a scan of the next account's windows. hdesk.ci is a program, so cint test cannot
+// import it: the statements below are hdesk.ci's, copied verbatim, over the real kits; tools/check-session-end.py
+// holds both files to them. Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.indextrash;
+import user.ci.kit.unsaved;
+import user.ci.kit.ststore;
+import user.ci.kit.homeuse;
+import user.ci.kit.stside;
+import user.ci.kit.stpage;
+
+const I64 ADA = 1;
+const I64 EVE = 2;
+
+I64 st_trash_n = 0;
+I64 s_acct = -1;
+Bool kp_open = false;
+I64 emptied = -1;                    // the account an Empty Trash ran as, or -1
+I64 powered = -1;                    // the power action the machine was told (unsaved.ACT_RESTART, ..), or -1
+
+// st_storage_forget: the session's own walk and count, none yet.
+void st_storage_forget() {
+    st_trash_n = 0;
+    ststore.set_trash_entries(0);
+    homeuse.start(b"", 0);             // no home walked: no part, no total
+    ststore.walk_started();
+    ststore.walk_done();               // the page takes that empty walk: no row shows
+}
+
+// The Storage page's walk of the home (RUN_DU): du's line for the Trash folder.
+void walked(in U8[_] home, in U8[_] trash) {
+    homeuse.start(home, len(home));
+    ststore.walk_started();
+    Bool t = homeuse.line(trash, len(trash));
+    homeuse.done();
+    ststore.walk_done();
+}
+
+// rn_take's RUN_TRASH_COUNT: c entries.
+void counted(I64 c) {
+    ststore.set_trash_entries(c);
+    st_trash_n = c;
+}
+
+// st_act: Empty Trash pressed on page p.
+void pressed(I64 p, I64 a) {
+    if (p == stside.STORAGE && a == ststore.EMPTY && st_trash_n > 0) {   // frame 23 asks first (DN-69's words)
+        indextrash.ask(indextrash.EMPTY_TRASH, st_trash_n, b"");
+    }
+}
+
+// route: a key while an ask is up, in hdesk.ci's order.
+void typed(I64 code, I64 value) {
+    if (indextrash.is_up() && !kp_open) {          // frame 23: the ask has the keys (Enter empties, Esc cancels)
+        if (value == 1) { et_answer(indextrash.key(code)); }
+        return;
+    }
+    if (unsaved.is_up() && !kp_open) {             // AM section 7: the ask has the keys
+        if (value == 1) { uv_answer(unsaved.key(code)); }
+        return;
+    }
+}
+
+// uv_ask: Restart or Shut Down (a) while n windows report unsaved work: the ask opens.
+void asked(I64 a, I64 n) {
+    U8[96] nm;
+    I64[4] nl;
+    if (!unsaved.gate(n)) { return; }
+    unsaved.open(a, nm, nl, n);
+}
+
+// uv_answer: GO acts at once (pl_action with uv_go: no scan of the windows), so the machine is told a.
+void uv_answer(I64 r) {
+    if (r == unsaved.STAY) { return; }
+    I64 a = unsaved.action();
+    unsaved.close();
+    if (r == unsaved.CANCEL) { return; }
+    powered = a;
+}
+
+// et_answer: GO empties the Trash by a run as the session's account (RUN_TRASH_EMPTY).
+void et_answer(I64 r) {
+    if (r == indextrash.STAY) { return; }
+    indextrash.close();
+    if (r == indextrash.GO) { emptied = s_acct; }
+}
+
+void logout() {
+    if (indextrash.is_up()) { indextrash.close(); }   // and no Empty Trash ask left up for the next account
+    if (unsaved.is_up()) { unsaved.close(); }         // nor AM section 7's: the next account's Restart scans its own
+    st_storage_forget();
+    s_acct = -1;
+}
+
+void start_session(I64 i) {
+    s_acct = i;
+    st_storage_forget();
+}
+
+void lock_now() {
+    if (indextrash.is_up()) { indextrash.close(); }   // frame 23's ask too, refused as the prompt is: nothing emptied
+}
+
+void begin() {
+    indextrash.close();
+    unsaved.close();
+    powered = -1;
+    st_trash_n = 0;
+    ststore.set_trash_entries(0);
+    s_acct = -1;
+    emptied = -1;
+}
+
+test "the ask up, logout, a login as another account: no ask, and Empty Trash dimmed until that account's count" {
+    begin();
+    start_session(ADA);
+    walked(b"/home/ada", b"8\t/home/ada/.trash");
+    counted(3);
+    assert(ststore.can_empty());
+    pressed(stside.STORAGE, ststore.EMPTY);
+    assert(indextrash.is_up());
+    logout();
+    start_session(EVE);
+    assert(!indextrash.is_up());
+    assert(!ststore.can_empty());                      // ada's walk is still on the page; no count is eve's yet
+    pressed(stside.STORAGE, ststore.EMPTY);
+    assert(!indextrash.is_up());
+    typed(stpage.K_ENTER, 1);
+    assert(emptied == -1);
+    walked(b"/home/eve", b"4\t/home/eve/.trash");
+    assert(!ststore.can_empty());                      // the walk alone says nothing
+    counted(2);
+    assert(ststore.can_empty());
+    pressed(stside.STORAGE, ststore.EMPTY);
+    typed(stpage.K_ENTER, 1);
+    assert(emptied == EVE && !indextrash.is_up());
+}
+
+test "after a logout and a login as another account, the Storage page shows no row until that account's own walk" {
+    begin();
+    start_session(ADA);
+    walked(b"/home/ada", b"8\t/home/ada/.trash");
+    assert(ststore.shows(ststore.R_TRASH));            // ada's Trash, its size
+    logout();
+    start_session(EVE);
+    for r in 0..ststore.ROWS { assert(!ststore.shows(r)); }
+    assert(homeuse.part_kib(homeuse.TRASH) == -1 && homeuse.other() == -1);
+    walked(b"/home/eve", b"4\t/home/eve/.trash");
+    assert(ststore.shows(ststore.R_TRASH) && !ststore.shows(ststore.R_DOCUMENTS));   // eve's walk alone
+}
+
+test "the ask up, lock, unlock: no ask and nothing emptied; the session's own count stands" {
+    begin();
+    start_session(ADA);
+    walked(b"/home/ada", b"8\t/home/ada/.trash");
+    counted(3);
+    pressed(stside.STORAGE, ststore.EMPTY);
+    assert(indextrash.is_up());
+    lock_now();
+    assert(!indextrash.is_up());
+    typed(stpage.K_ENTER, 1);                          // unlocked: the first Enter
+    assert(emptied == -1);
+    assert(ststore.can_empty());
+    pressed(stside.STORAGE, ststore.EMPTY);
+    assert(indextrash.is_up());
+}
+
+test "the unsaved ask up, logout, a login as another account: no ask, and no key acts on the machine's power" {
+    begin();
+    start_session(ADA);
+    asked(unsaved.ACT_RESTART, 1);                     // ada picks Restart with a window's unsaved work
+    assert(unsaved.is_up());
+    logout();                                          // ada's first shell ends while the ask is up
+    start_session(EVE);
+    assert(!unsaved.is_up());
+    typed(stpage.K_TAB, 1);
+    typed(stpage.K_LEFT, 1);
+    typed(stpage.K_SPACE, 1);
+    typed(stpage.K_ENTER, 1);
+    assert(powered == -1);
+}
+
+test "within the session the ask answers: Enter keeps the work; Tab, Left, then Space restarts; a lock keeps it" {
+    begin();
+    start_session(ADA);
+    asked(unsaved.ACT_RESTART, 1);
+    typed(stpage.K_ENTER, 1);
+    assert(!unsaved.is_up() && powered == -1);         // Enter keeps the work (note 68)
+    asked(unsaved.ACT_RESTART, 1);
+    lock_now();
+    assert(unsaved.is_up());                           // the same account comes back to it
+    typed(stpage.K_TAB, 1);
+    typed(stpage.K_LEFT, 1);
+    typed(stpage.K_SPACE, 1);
+    assert(powered == unsaved.ACT_RESTART);
+}
+// SPDX-License-Identifier: Apache-2.0

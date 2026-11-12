@@ -1,0 +1,4 @@
+// tests/hosted/index/dev.ci: user/ci/dev.ci's exit_now, which user/ci/core/msg.ci calls at a walk's limit; the test
+// never reaches one, so reaching it fails the test.
+export void exit_now(I64 code) { assert(code == 0 - 1); }
+// SPDX-License-Identifier: Apache-2.0

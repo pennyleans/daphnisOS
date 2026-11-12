@@ -1,0 +1,27 @@
+{
+  "id": "find-not-found",
+  "rules": [
+    "FIND-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    1,
+    1
+  ],
+  "chunks": [
+    "06",
+    "7a",
+    "1b"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

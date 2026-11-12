@@ -1,0 +1,28 @@
+{
+  "id": "find-enter-accepts",
+  "rules": [
+    "FIND-2"
+  ],
+  "text": "abc abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "6263",
+    "0d",
+    "58"
+  ],
+  "expect": {
+    "text": "aX abc",
+    "sel": [
+      2,
+      2
+    ]
+  }
+}

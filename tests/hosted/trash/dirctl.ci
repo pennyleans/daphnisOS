@@ -1,0 +1,6 @@
+// tests/hosted/trash/dirctl.ci: user/ci/dirctl.ci's dir_names over the memfs, the first names that fit, as host.c's
+// r_dir_names gives them.
+import user.ci.memfs;
+
+export I64 dir_names(in U8[_] path, inout U8[_] buf) { return memfs.names(path, buf, false); }
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,25 @@
+{
+  "database": "IANA time zone database (tzdb)",
+  "version": "2026f",
+  "license": "public domain, as each file taken says on its third line and as the tzdb LICENSE (vendor/tzdata/LICENSE) says of every tzdb file but date.c, newstrftime.3 and strftime.c, none of which is taken",
+  "from": {
+    "package": "tzdata 2026.6 on PyPI, the IANA release as packaged for Python; its own packaging is Apache-2.0, the files taken are IANA's",
+    "url": "https://files.pythonhosted.org/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl",
+    "sha256": "0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec",
+    "files": {
+      "tzdata/zoneinfo/tzdata.zi": "tzdata.zi",
+      "tzdata/zoneinfo/zone.tab": "zone.tab"
+    }
+  },
+  "sha256": {
+    "tzdata.zi": "76f36b09780cd03f8d0576d0208813395e01bbc9bd861e9bdeadb4db35721fda",
+    "zone.tab": "e2e8e31c4e10f44576c79345e76060591dbb3eef6ce14e006afc8a373caa9593"
+  },
+  "license_file": {
+    "file": "LICENSE",
+    "url": "https://raw.githubusercontent.com/eggert/tz/2026f/LICENSE",
+    "from": "the tzdb's LICENSE at tag 2026f of its development repository (IANA's servers refuse this lane's network, and the wheel does not carry it); zone.tab at the same tag has the SHA-256 above",
+    "sha256": "0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf"
+  },
+  "generated": "user/ci/core/tzdata.ci and tests/tz/ by tools/tz-table.py"
+}

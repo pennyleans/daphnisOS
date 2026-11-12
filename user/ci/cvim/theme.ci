@@ -1,0 +1,73 @@
+// user/ci/cvim/theme.ci: cvim's colors (CV-6, spec section 7), one table: each code role of hl.ci and each editor mark
+// as SGR, bold and reverse and the eight Console colors (KD-5 B). It is DN-45 (design note 45, frame 30, look,
+// provisional, DECISIONS 2026-11-10 17:55Z), one table for both themes since Console is dark in both (K-8, K-DT). It
+// reads without color by bold and reverse: sgr and mark are the color forms, mono and mono_mark what each keeps on a
+// terminal without color (Vim's term= beside its cterm=), and test_hl.ci checks the second. Red 31 is Console's rose
+// #e06c75, never cadmium.
+// Design retunes it here alone.
+import user.ci.cvim.hl;
+
+// The editor's marks (term.ci draws selection and line numbers today; the rest wait for search, matching and the
+// diagnostics list).
+export const I64 MARK_SELECTION = 1;
+export const I64 MARK_MATCH = 2;
+export const I64 MARK_MATCH_CURRENT = 3;
+export const I64 MARK_BRACKET = 4;
+export const I64 MARK_DIAG_E = 5;
+export const I64 MARK_DIAG_W = 6;
+export const I64 MARK_LINE_NUMBER = 7;
+// CV-7: the completion menu, cells only (CV-R6 A), the S1 sheet's cells-only form until a design note sets it:
+// a row on ground 40, the chosen row reversed blue, a row's kind and source cyan on 40.
+export const I64 MARK_MENU = 8;
+export const I64 MARK_MENU_CHOSEN = 9;
+export const I64 MARK_MENU_DIM = 10;
+
+// The SGR parameters of code role r after its `ESC [ 0`, as text into o; their length.
+export I64 sgr(I64 r, inout U8[_] o) {
+    if (r == hl.KEYWORD || r == hl.PREPROC) { return put(o, b";1;34"); }   // keyword: blue, bold
+    if (r == hl.TYPE) { return put(o, b";33"); }                            // type: yellow
+    if (r == hl.BUILTIN) { return put(o, b";36"); }                         // builtin: cyan
+    if (r == hl.NUMBER) { return put(o, b";35"); }                          // number: magenta
+    if (r == hl.STRING) { return put(o, b";32"); }                          // string: green
+    if (r == hl.DECL) { return put(o, b";1;39"); }                          // declaration name: ink, bold
+    if (r == hl.ERROR) { return put(o, b";1;31"); }                         // error: red, bold
+    if (r == hl.COMMENT) { return put(o, b";90"); }                         // comment: B, bright black (l 18:03Z)
+    return put(o, b";39");                                                  // operator, punctuation, plain: ink
+}
+
+// The SGR parameters of editor mark m after its `ESC [ 0`; their length.
+export I64 mark(I64 m, inout U8[_] o) {
+    if (m == MARK_SELECTION) { return put(o, b";37;44"); }          // blue ground, white text
+    if (m == MARK_MATCH) { return put(o, b";33;7"); }               // reverse on yellow
+    if (m == MARK_MATCH_CURRENT) { return put(o, b";1;33;7"); }     // and bold
+    if (m == MARK_BRACKET) { return put(o, b";1;33"); }             // yellow, bold, no ground
+    if (m == MARK_DIAG_E) { return put(o, b";1;31"); }              // the margin's E: red, bold
+    if (m == MARK_DIAG_W) { return put(o, b";1;33"); }              // the margin's W: yellow, bold
+    if (m == MARK_LINE_NUMBER) { return put(o, b";30"); }           // black
+    if (m == MARK_MENU) { return put(o, b";39;40"); }               // CV-7, provisional: ink on the panel ground
+    if (m == MARK_MENU_CHOSEN) { return put(o, b";1;7;34"); }       // the chosen row: reverse blue, bold
+    if (m == MARK_MENU_DIM) { return put(o, b";36;40"); }           // kind and source
+    return 0;
+}
+
+// The no-color form of code role r: only its bold (keyword, declaration name, error), else nothing.
+export I64 mono(I64 r, inout U8[_] o) {
+    if (r == hl.KEYWORD || r == hl.PREPROC || r == hl.DECL || r == hl.ERROR) { return put(o, b";1"); }
+    return 0;
+}
+
+// The no-color form of mark m. The selection is reverse there, not bold: bold already marks keywords and names
+// (coordinator 18:00Z, on DN-45), so its color form stays 37 on 44 and its no-color form is 7.
+export I64 mono_mark(I64 m, inout U8[_] o) {
+    if (m == MARK_SELECTION) { return put(o, b";7"); }
+    if (m == MARK_MATCH) { return put(o, b";7"); }
+    if (m == MARK_MATCH_CURRENT) { return put(o, b";1;7"); }
+    if (m == MARK_BRACKET || m == MARK_DIAG_E || m == MARK_DIAG_W) { return put(o, b";1"); }
+    return 0;
+}
+
+I64 put(inout U8[_] o, in U8[_] s) {
+    for i in 0..len(s) { o[i] = s[i]; }
+    return len(s);
+}
+// SPDX-License-Identifier: Apache-2.0

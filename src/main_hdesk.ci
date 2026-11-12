@@ -1,0 +1,130 @@
+// src/main_hdesk.ci: H-3a, the hybrid desk (docs/specs/2026-11-05-h-hybrid.md section 7): the user kernel with
+// another main and an image of hdesk, busybox sh, doom and its bundle, mcifb and the text files. hdesk boots to one
+// terminal filling the plane on desktop 1; check-hybrid.sh types its script, and tools/check-hdesk.py checks each
+// layout, placement and the screen after the desk. HW-17: the release image, so it brings up the network as
+// src/main_desknet.ci does (net.init, DHCP and the gateway's ARP, each wait bounded by LIMIT timer ticks): a machine
+// with no network device or no cable costs at most the bound, and the desk boots either way.
+
+import src.portio;
+import src.serial;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.surface;
+import src.input;
+import src.tile;
+import src.blk;
+import src.pool;
+import src.acpi;
+import src.xhci;
+import src.dsp;
+import src.rng;
+import src.rtc;
+import src.bootarg;
+import src.k12;
+import src.net;
+import src.eth;
+import src.dhcp;
+import src.udp;
+
+const I64 LIMIT = 300;   // ticks for DHCP, then for the gateway's ARP reply, as src/main_desknet.ci
+
+void main() {
+    serial.serial_write("Daphnis H: the hybrid desk\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    acpi.init();              // HW-2: the firmware's tables, read only; S5 for daphnis.poweroff=1
+    _ = xhci.init();          // HW-4: a USB keyboard and mouse, when there is an xHCI (prints only then)
+    k12.set(bootarg.has_word("daphnis.k12=1"));   // K-12: the measurement lines under daphnis.k12=1 only
+    user.user_init();
+    fs.init();
+    if (user.fb_init() > 0) {
+        fs.set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        serial.serial_write("daphnis: framebuffer ");
+        proc.put_dec(user.fb_word(0) as I64);
+        serial.serial_write("x");
+        proc.put_dec(user.fb_word(1) as I64);
+        serial.serial_write(" stride ");
+        proc.put_dec(user.fb_word(2) as I64);
+        serial.serial_write("\n");
+    } else {
+        serial.serial_write("daphnis: no framebuffer\n");
+    }
+    pit.pic_remap();
+    pit.pit_start(11932);
+    rng.init();               // K-6: the date (A-3), live with RDRAND (KVM, -cpu max); the fixed epoch in every gate
+    rtc.boot();
+    if (bootarg.has_word("daphnis.kernhold=20")) {
+        proc.set_hold(20);       // R0-R4 B: the gates' hold, 20 s for 5 minutes
+    }
+    if (bootarg.has_word("daphnis.stepframes")) {
+        tile.set_step();         // SP-3: the gates step an animation's frames by Shift
+    }
+    _ = dsp.init();           // AU-3: /dev/dsp when an HDA controller is there; nothing said when none is
+    if (input.devices_on()) {
+        serial.serial_write("daphnis: keyboard and mouse on\n");
+    } else {
+        serial.serial_write("daphnis: keyboard on, no mouse\n");
+    }
+    if (net.init()) {
+        if (dhcp.boot_begin()) {
+            while (!dhcp.bound() && net.timers() < LIMIT) {   // NW-1's wait: the bound counts timer interrupts
+                _ = udp.wait();
+                udp.pump();
+            }
+        }
+        dhcp.report_boot(LIMIT);
+        I64 gw = eth.gateway();
+        if (gw != 0) {
+            eth.request(gw);
+            I64 gw_until = net.timers() + LIMIT;
+            while (!eth.known(gw) && net.timers() < gw_until) {
+                _ = udp.wait();
+                udp.pump();
+            }
+            if (eth.known(gw)) {
+                serial.serial_write("daphnis: net gateway ");
+                dhcp.put_ip(gw);
+                serial.serial_write(" known\n");
+            } else {
+                serial.serial_write("daphnis: net no reply from the gateway\n");
+            }
+        }
+    } else {
+        serial.serial_write("daphnis: no network device\n");
+    }
+    fs.set_input(true);
+    if (blk.init() > 0 && fs.mount_disk()) {
+        serial.serial_write("daphnis: /home mounted\n");
+        if (fs.load_mode()) {
+            serial.serial_write("daphnis: the saved size ");
+            proc.put_dec(user.fb_word(0) as I64);
+            serial.serial_write("x");
+            proc.put_dec(user.fb_word(1) as I64);
+            serial.serial_write("\n");
+        }
+    }
+    serial.serial_write("daphnis: image ");
+    proc.put_dec(user.initrd_size());
+    serial.serial_write(" bytes from the loader module\n");
+    proc.run_desk(1, "hdesk");
+    surface.print();
+    if (input.dropped() != 0 || tile.dropped() != 0) {
+        serial.serial_write("daphnis: input dropped\n");
+        input.say_dropped(tile.dropped());
+    }
+    proc.report_pool();
+    _ = blk.flush();          // before S5 or the reset cuts the disk's power (the read of PR 489); it prints a failure
+    if (proc.ending() == 1) {
+        serial.serial_write("daphnis: shut down\n");   // FF-4: the desk asked
+    }
+    serial.serial_write("daphnis: done\n");
+    if (proc.ending() == 2) {
+        serial.serial_write("daphnis: restart\n");      // FF-4: the 8042's pulse on the reset line
+        portio.port_out8(0x64, 0xFE);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

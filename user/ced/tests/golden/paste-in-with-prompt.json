@@ -1,0 +1,27 @@
+{
+  "id": "paste-in-with-prompt",
+  "rules": [
+    "KEY-4",
+    "FIND-4"
+  ],
+  "text": "alpha beta gamma",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "62657461",
+    "0d",
+    "1b5b3230307e58581b5b3230317e",
+    "0d",
+    "61"
+  ],
+  "expect": {
+    "text": "alpha XX gamma"
+  }
+}

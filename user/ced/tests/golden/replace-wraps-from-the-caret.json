@@ -1,0 +1,36 @@
+{
+  "id": "replace-wraps-from-the-caret",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a a a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    2,
+    2
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "620d",
+    "61"
+  ],
+  "expect": {
+    "text": "b b b",
+    "sel": [
+      1,
+      1
+    ],
+    "screen": [
+      "b b b",
+      "",
+      "",
+      "",
+      " x [+]  3 replaced                  1:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

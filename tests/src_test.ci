@@ -1,0 +1,561 @@
+// tests/src_test.ci: hosted tests for the pure modules under src/ and user/ci/keymap.ci. Run by check.sh:
+//   cint test --root . tests/src_test.ci
+
+import src.sha256;
+import src.text;
+import src.gate;
+import src.tss;
+import src.frames;
+import src.heap;
+import src.memstate;
+import src.allocdemo;
+import src.memmap;
+import src.pte;
+import src.cpio;
+import src.elf;
+import user.ci.keymap;
+import src.civil;
+import src.surfsize;
+import src.fair;
+
+I64 hexval(U8 c) {
+    if (c >= 97) {
+        return (c as I64) - 87;
+    }
+    return (c as I64) - 48;
+}
+
+// True when the lowercase hex text `want` (2 * 32 digits) is the digest.
+Bool digest_is[w](in U8[32] digest, in U8[w] want) {
+    for i in 0..32 {
+        I64 hi = hexval(want[2 * i]);
+        I64 lo = hexval(want[2 * i + 1]);
+        if ((digest[i] as I64) != hi * 16 + lo) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Writes v into b[at..at + width) little-endian.
+void put_le[n](inout U8[n] b, I64 at, I64 width, U64 v) {
+    for k in 0..width {
+        b[at + k] = ((v >> (8 * k)) & 0xFF) as U8;
+    }
+}
+
+test "sha256 of abc (FIPS 180-4 B.1)" {
+    U8[32] d;
+    sha256.sha_digest("abc", 0, 3, d);
+    assert(digest_is(d, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+}
+
+test "sha256 of the empty message" {
+    U8[32] d;
+    sha256.sha_digest("", 0, 0, d);
+    assert(digest_is(d, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+}
+
+test "sha256 of the 448-bit message (FIPS 180-4 B.2)" {
+    U8[32] d;
+    sha256.sha_digest("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", 0, 56, d);
+    assert(digest_is(d, "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"));
+}
+
+test "hex digits" {
+    assert(text.hex_digit(0 as U8) == 48);
+    assert(text.hex_digit(9 as U8) == 57);
+    assert(text.hex_digit(10 as U8) == 97);
+    assert(text.hex_digit(15 as U8) == 102);
+    assert(text.hex_digit(0xAB as U8) == 98);
+}
+
+test "hex bytes" {
+    U8[4] src;
+    src[0] = 0xDE;
+    src[1] = 0xAD;
+    src[2] = 0xBE;
+    src[3] = 0xEF;
+    U8[8] dst;
+    text.hex_bytes(src, 4, dst);
+    assert(digest_is_dead(dst));
+}
+
+Bool digest_is_dead[d](in U8[d] t) {
+    return t[0] == 100 && t[1] == 101 && t[2] == 97 && t[3] == 100 && t[4] == 98 && t[5] == 101 && t[6] == 101 && t[7] == 102;
+}
+
+test "decimal digits" {
+    U8[20] d;
+    assert(text.dec_digits(0, d) == 1);
+    assert(d[0] == 48);
+    assert(text.dec_digits(100, d) == 3);
+    assert(d[0] == 49 && d[1] == 48 && d[2] == 48);
+    assert(text.dec_digits(9223372036854775807, d) == 19);
+    assert(d[0] == 57 && d[18] == 55);
+}
+
+test "interrupt gate words" {
+    // offset 0x105678, selector 8: offset[15:0] 0x5678, selector 8 << 16, 0x8E << 40,
+    // offset[31:16] 0x0010 << 48.
+    assert(gate.gate_lo(0x105678 as U64, 8 as U64) == 0x00108E0000085678);
+    assert(gate.gate_hi(0x105678 as U64) == 0);
+    assert(gate.gate_hi(0x0000123400105678 as U64) == 0x1234);
+    assert(gate.gate_lo(0xFFFFFFFFFFFFFFFF as U64, 8 as U64) == 0xFFFF8E000008FFFF);
+}
+
+test "interrupt gate words with an IST index and attribute" {
+    assert(gate.gate_lo_attr(0x105678 as U64, 8 as U64, 3 as U64, 0x8E as U64) == 0x0108E0300085678);
+    assert(gate.gate_lo_attr(0x105678 as U64, 8 as U64, 0 as U64, 0x0E as U64) == 0x0100E0000085678);
+    assert(gate.gate_lo_attr(0xFFFFFFFFFFFFFFFF as U64, 8 as U64, 7 as U64, 0x8E as U64) == 0xFFFF8E070008FFFF);
+    // the new form with IST 0 and 0x8E is the old gate word
+    assert(gate.gate_lo_attr(0x105678 as U64, 8 as U64, 0 as U64, 0x8E as U64) == gate.gate_lo(0x105678 as U64, 8 as U64));
+}
+
+test "TSS descriptor words and IST offsets" {
+    assert(tss.tss_desc_lo(0x1122334455667788 as U64, 103 as U64) == 0x5500896677880067);
+    assert(tss.tss_desc_hi(0x1122334455667788 as U64) == 0x11223344);
+    // the offsets of the SDM's TSS: ist1 at 36, ist2 at 44, ist3 at 52, ist7 at 84; written out,
+    // not computed by the formula under test
+    assert(tss.ist_offset(1) == 36);
+    assert(tss.ist_offset(2) == 44);
+    assert(tss.ist_offset(3) == 52);
+    assert(tss.ist_offset(7) == 84);
+    assert(tss.ist_of(8) == 1 && tss.ist_of(2) == 2 && tss.ist_of(14) == 3);
+    assert(tss.ist_of(0) == 0 && tss.ist_of(6) == 0 && tss.ist_of(13) == 0 && tss.ist_of(32) == 0);
+}
+
+test "allocator demo: refusals leave the state hash unchanged" {
+    I64[20] f;
+    U8[192] h;
+    allocdemo.run(f, h);
+    assert(f[0] == 1 && f[1] == 9 && f[2] == 13 && f[3] == 14 && f[4] == 9);   // FB: frame 0 is the bitmap's
+    assert(f[5] == -1 && f[6] == -2 && f[7] == -3 && f[8] == -2);
+    assert(f[9] == 16365 && f[16] == -1);
+    assert(f[10] == 0);
+    assert(f[11] == 33554432 + 19 * 4096 && f[12] == f[11] + 128);
+    assert(f[13] == -14 && f[14] == 16383 && f[15] == 228);
+    Bool frames_same = true;
+    Bool heap_same = true;
+    Bool moved = false;
+    for i in 0..32 {
+        if (h[32 + i] != h[64 + i]) {
+            frames_same = false;
+        }
+        if (h[96 + i] != h[128 + i]) {
+            heap_same = false;
+        }
+        if (h[i] != h[160 + i]) {
+            moved = true;
+        }
+    }
+    assert(frames_same);
+    assert(heap_same);
+    assert(moved);
+}
+
+test "frame allocator: first fit, ownership, bounds" {
+    assert(frames.free_count() == 16383 && frames.owned_count() == 1);   // FB: frame 0 holds the bitmap
+    assert(frames.alloc(16383) == 1);
+    assert(frames.alloc(1) == frames.ERR_EXHAUSTED);
+    assert(frames.free_count() == 0);
+    assert(frames.release(10, 3) == 3);
+    assert(frames.alloc(4) == frames.ERR_EXHAUSTED);
+    assert(frames.alloc(3) == 10);
+    assert(frames.release(16383, 2) == frames.ERR_BAD_COUNT);
+    assert(frames.release(-1, 1) == frames.ERR_BAD_COUNT);
+    assert(frames.release(0, 2) == frames.ERR_NOT_OWNED);   // the bitmap's own frame is never given
+    assert(frames.release(1, 16383) == 16383);
+    assert(frames.release(1, 1) == frames.ERR_NOT_OWNED);
+    assert(frames.frame_addr(0) == 33554432);
+    assert(frames.frame_addr(16383) == 33554432 + 16383 * 4096);
+    assert(frames.frame_addr(16384) == frames.ERR_BAD_FRAME);
+}
+
+test "frame allocator: the doom flavor's pool, 1,024 frames past the run blob's MiB (pool.past_blob)" {
+    // what src/pool.ci past_blob(1024) asks of the bitmap: reach to 101 MiB, RAM [32, 96) and [97, 101) MiB
+    assert(frames.init(17664, 0) == 17664);
+    assert(frames.usable_range(0, 16384) == 16384);
+    assert(frames.usable_range(16640, 17664) == 1024);
+    assert(frames.ram() == 17408 && frames.bitmap_frames() == 1);
+    assert(frames.free_count() == 17407 && frames.quota() == 16384);
+    assert(frames.alloc(16383) == 1);                 // every frame below the run blob's MiB
+    assert(frames.alloc(2) == 16640);                 // the next run starts at 97 MiB, never inside [96, 97)
+    assert(frames.frame_addr(16640) == 0x6100000);
+    assert(frames.alloc(1023) == frames.ERR_EXHAUSTED);
+    assert(frames.alloc(1022) == 16642);
+    assert(frames.free_count() == 0 && frames.alloc(1) == frames.ERR_EXHAUSTED);
+    assert(frames.release(16383, 1) == 1 && frames.alloc(1) == 16383);
+    assert(frames.frame_addr(17663) == 0x6100000 + 1023 * 4096 && frames.frame_addr(17664) == frames.ERR_BAD_FRAME);
+}
+
+test "memory map parsing" {
+    U8[96] info;
+    for i in 0..96 {
+        info[i] = 0;
+    }
+    info[0] = 0x40;
+    info[44] = 48;
+    info[48] = 0;
+    assert(memmap.mmap_valid(info));
+    assert(memmap.mmap_length(info) == 48);
+    U8[48] mm;
+    for i in 0..48 {
+        mm[i] = 0;
+    }
+    // entry 0: size 20, base 0, length 0x9F000, type 1; entry 1: base 0x100000, length
+    // 0x7EE0000 (to 0x7FE0000), type 1
+    mm[0] = 20;
+    mm[12] = 0x00;
+    mm[13] = 0xF0;
+    mm[14] = 0x09;
+    mm[20] = 1;
+    mm[24] = 20;
+    mm[30] = 0x10;
+    mm[36] = 0x00;
+    mm[37] = 0x00;
+    mm[38] = 0xEE;
+    mm[39] = 0x07;
+    mm[44] = 1;
+    assert(memmap.usable_covers(mm, 48, 16777216 as U64, 33554432 as U64));
+    assert(!memmap.usable_covers(mm, 48, 0 as U64, 1048576 as U64));
+    assert(!memmap.usable_covers(mm, 48, 134217728 as U64, 134217729 as U64));
+    assert(memmap.ram_end(mm, 48) == 0x7FE0000);
+    assert(memmap.ram_mib(mm, 48) == 128);
+    // a reserved entry far above RAM (QEMU's PCI hole) does not count: entry 2, type 2, base 1 TiB
+    U8[72] big;
+    for i in 0..48 {
+        big[i] = mm[i];
+    }
+    for i in 48..72 {
+        big[i] = 0;
+    }
+    big[48] = 20;
+    big[48 + 4 + 5] = 0x01;
+    big[48 + 12 + 4] = 0x01;
+    big[48 + 20] = 2;
+    assert(memmap.ram_end(big, 72) == 0x7FE0000);
+    assert(memmap.ram_mib(big, 72) == 128);
+}
+
+test "multiboot 2 memory map: the same answers as the Multiboot 1 reader" {
+    // total_size 120; a command-line tag of size 9 (padded to 16); the map tag (size 88, entry_size
+    // 24): base 0 length 0x9F000 type 1, base 0x100000 length 0x7EE0000 type 1, base 1 TiB type 2;
+    // the end tag at 112
+    U8[128] b;
+    for i in 0..128 {
+        b[i] = 0xEE;
+    }
+    put_le(b, 0, 4, 120 as U64);
+    put_le(b, 4, 4, 0 as U64);
+    put_le(b, 8, 4, 1 as U64);
+    put_le(b, 12, 4, 9 as U64);
+    put_le(b, 24, 4, 6 as U64);
+    put_le(b, 28, 4, 88 as U64);
+    put_le(b, 32, 4, 24 as U64);
+    put_le(b, 36, 4, 0 as U64);
+    put_le(b, 40, 8, 0 as U64);
+    put_le(b, 48, 8, 0x9F000 as U64);
+    put_le(b, 56, 8, 1 as U64);
+    put_le(b, 64, 8, 0x100000 as U64);
+    put_le(b, 72, 8, 0x7EE0000 as U64);
+    put_le(b, 80, 8, 1 as U64);
+    put_le(b, 88, 8, 0x10000000000 as U64);
+    put_le(b, 96, 8, 0x1000000 as U64);
+    put_le(b, 104, 8, 2 as U64);
+    put_le(b, 112, 4, 0 as U64);
+    put_le(b, 116, 4, 8 as U64);
+    I64 length = memmap.mb2_length(b);
+    assert(length == 120);
+    assert(memmap.mb2_tag(b, length, 1) == 8);
+    I64 at = memmap.mb2_mmap(b, length);
+    assert(at == 24);
+    assert(memmap.mb2_usable_covers(b, at, 16777216 as U64, 33554432 as U64));
+    assert(!memmap.mb2_usable_covers(b, at, 0 as U64, 1048576 as U64));
+    assert(!memmap.mb2_usable_covers(b, at, 134217728 as U64, 134217729 as U64));
+    assert(memmap.mb2_ram_end(b, at) == 0x7FE0000);
+    assert(memmap.mb2_ram_mib(b, at) == 128);
+    // a type the block does not carry, a block larger than the view, a map tag that runs past the
+    // block, and a map whose entries are too short: each is refused
+    assert(memmap.mb2_tag(b, length, 4) == -1);
+    put_le(b, 0, 4, 136 as U64);
+    assert(memmap.mb2_length(b) == -1);
+    put_le(b, 0, 4, 120 as U64);
+    put_le(b, 28, 4, 200 as U64);
+    assert(memmap.mb2_mmap(b, length) == -1);
+    put_le(b, 28, 4, 88 as U64);
+    put_le(b, 32, 4, 16 as U64);
+    assert(memmap.mb2_mmap(b, length) == -1);
+    // the end tag stops the walk: a map tag after it is not found
+    put_le(b, 32, 4, 24 as U64);
+    put_le(b, 24, 4, 0 as U64);
+    assert(memmap.mb2_mmap(b, length) == -1);
+}
+
+test "page table entries" {
+    assert(pte.make(0x1234000 as U64, 3 as U64) == 0x1234003);
+    assert(pte.make(0x1234FFF as U64, 3 as U64) == 0x1234003);
+    assert(pte.make(0x1234000 as U64, pte.FLAG_P | pte.FLAG_NX) == 0x8000000001234001);
+    assert(pte.addr(0x8000000001234007 as U64) == 0x1234000);
+    assert(pte.present(0x1 as U64) && !pte.present(0x2 as U64));
+    assert(pte.writable(0x3 as U64) && !pte.writable(0x1 as U64));
+    assert(pte.no_exec(0x8000000000000001 as U64) && !pte.no_exec(0x1 as U64));
+    assert(pte.pd_index(0x40000000 as U64) == 0 && pte.pd_index(0x40200000 as U64) == 1);
+    assert(pte.pd_index(0x7FE00000 as U64) == 511);
+    assert(pte.pt_index(0x40001000 as U64) == 1 && pte.pt_index(0x401FF000 as U64) == 511);
+    assert(pte.usable(0x40000000 as U64) && pte.usable(0x7FFFF000 as U64));
+    assert(!pte.usable(0x3FFFF000 as U64) && !pte.usable(0x80000000 as U64) && !pte.usable(0x40000800 as U64));
+}
+
+void copy_text[n, d](in U8[n] t, inout U8[d] dst) {
+    for i in 0..n {
+        dst[i] = t[i];
+    }
+}
+
+test "cpio newc header fields (U1-1)" {
+    // a member "hello" of 5 bytes: namesize 6 (the NUL), mode 0100755
+    U8[110] h;
+    copy_text("07070100000001000081ED0000000000000000000000010000000000000005000000000000000000000000000000000000000600000000", h);
+    assert(cpio.magic_ok(h));
+    assert(cpio.field(h, cpio.F_FILESIZE) == 5);
+    assert(cpio.field(h, cpio.F_NAMESIZE) == 6);
+    assert(cpio.field(h, cpio.F_MODE) == 0x81ED);
+    assert(cpio.field(h, 0) == 1 && cpio.field(h, 13) == -1);
+    // header 110 + name 6 = 116, a multiple of 4; data 5 -> next at 124
+    assert(cpio.data_at(0, 6) == 116 && cpio.next_at(0, 6, 5) == 124);
+    assert(cpio.data_at(124, 11) == 248);
+    h[20] = 0x47;
+    assert(cpio.field(h, 1) == -1);
+    h[0] = 0x31;
+    assert(!cpio.magic_ok(h));
+}
+
+// An ELF64 x86-64 ET_EXEC header with one program header at 64.
+void elf_header(inout U8[64] h) {
+    for i in 0..64 {
+        h[i] = 0;
+    }
+    put_le(h, 0, 4, 0x464C457F);
+    h[4] = 2;
+    h[5] = 1;
+    h[6] = 1;
+    put_le(h, 16, 2, 2);
+    put_le(h, 18, 2, 62);
+    put_le(h, 20, 4, 1);
+    put_le(h, 24, 8, 0x4000B0);
+    put_le(h, 32, 8, 64);
+    put_le(h, 54, 2, 56);
+    put_le(h, 56, 2, 1);
+}
+
+test "ELF64 file header (U1-1)" {
+    U8[64] h;
+    elf_header(h);
+    assert(elf.exec_ok(h, 120 as U64));
+    assert(elf.entry(h) == 0x4000B0 && elf.phoff(h) == 64 && elf.phnum(h) == 1);
+    assert(!elf.exec_ok(h, 119 as U64));        // the program header runs past the file
+    put_le(h, 16, 2, 3);
+    assert(!elf.exec_ok(h, 120 as U64));        // ET_DYN: not a static executable
+    elf_header(h);
+    put_le(h, 18, 2, 183);
+    assert(!elf.exec_ok(h, 120 as U64));        // AArch64
+    elf_header(h);
+    put_le(h, 32, 8, 0xFFFFFFFFFFFFFFF0);
+    assert(!elf.exec_ok(h, 120 as U64));        // an offset that would wrap
+    elf_header(h);
+    put_le(h, 56, 2, 17);
+    assert(!elf.exec_ok(h, 2000 as U64));       // more program headers than the loader takes
+}
+
+test "ELF64 program header bounds (U1-1)" {
+    U8[56] p;
+    for i in 0..56 {
+        p[i] = 0;
+    }
+    put_le(p, 0, 4, 1);
+    put_le(p, 4, 4, 5);
+    put_le(p, 8, 8, 0);
+    put_le(p, 16, 8, 0x400000);
+    put_le(p, 32, 8, 0xE3);
+    put_le(p, 40, 8, 0xE3);
+    assert(elf.p_type(p) == elf.PT_LOAD && elf.p_flags(p) == 5);
+    assert(elf.load_ok(p, 896 as U64, 0x200000 as U64, 0x7FFFFFFFB000 as U64));
+    assert(!elf.load_ok(p, 0xE2 as U64, 0x200000 as U64, 0x7FFFFFFFB000 as U64));   // file too short
+    put_le(p, 40, 8, 0x10);
+    assert(!elf.load_ok(p, 896 as U64, 0x200000 as U64, 0x7FFFFFFFB000 as U64));   // filesz > memsz
+    put_le(p, 40, 8, 0xFFFFFFFFFFFFFF00);
+    assert(!elf.load_ok(p, 896 as U64, 0x200000 as U64, 0x7FFFFFFFB000 as U64));   // memory runs past the top
+    put_le(p, 40, 8, 0xE3);
+    put_le(p, 16, 8, 0x1000);
+    assert(!elf.load_ok(p, 896 as U64, 0x200000 as U64, 0x7FFFFFFFB000 as U64));   // under user space
+}
+
+// The bytes keymap.seq_of gives key code with the modifiers equal want.
+Bool keys_are(I64 code, Bool shift, Bool ctrl, in U8[_] want) {
+    U8[6] got;
+    I64 n = keymap.seq_of(code, shift, ctrl, got);
+    return n == len(want) && equal(got[0..n], want);
+}
+
+test "E-3: a key with a byte gives it alone; a key with none gives nothing" {
+    assert(keys_are(30, false, false, b"a"));
+    assert(keys_are(30, true, false, b"A"));
+    assert(keys_are(30, false, true, b"\x01"));
+    assert(keys_are(28, false, false, b"\r"));
+    assert(keys_are(1, false, false, b"\x1b"));
+    assert(keys_are(42, false, false, b""));
+    assert(keys_are(59, false, false, b""));
+    assert(keys_are(112, false, false, b""));
+}
+
+test "E-3: the arrows, Home and End are CSI, with 1 ; m before the final byte when modified" {
+    assert(keys_are(103, false, false, b"\x1b[A"));
+    assert(keys_are(108, false, false, b"\x1b[B"));
+    assert(keys_are(106, false, false, b"\x1b[C"));
+    assert(keys_are(105, false, false, b"\x1b[D"));
+    assert(keys_are(102, false, false, b"\x1b[H"));
+    assert(keys_are(107, false, false, b"\x1b[F"));
+    assert(keys_are(103, true, false, b"\x1b[1;2A"));
+    assert(keys_are(106, false, true, b"\x1b[1;5C"));
+    assert(keys_are(105, true, true, b"\x1b[1;6D"));
+    assert(keys_are(107, true, false, b"\x1b[1;2F"));
+}
+
+test "E-3: PgUp, PgDn, Insert and Delete are n ~, F3 is SS3 R" {
+    assert(keys_are(104, false, false, b"\x1b[5~"));
+    assert(keys_are(109, false, false, b"\x1b[6~"));
+    assert(keys_are(110, false, false, b"\x1b[2~"));
+    assert(keys_are(111, false, false, b"\x1b[3~"));
+    assert(keys_are(111, false, true, b"\x1b[3;5~"));
+    assert(keys_are(104, true, true, b"\x1b[5;6~"));
+    assert(keys_are(61, false, false, b"\x1bOR"));
+    assert(keys_are(61, true, false, b"\x1b[1;2R"));
+}
+
+test "civil date to epoch seconds and BCD (A-3)" {
+    assert(civil.epoch_seconds(1970, 1, 1, 0, 0, 0) == 0);
+    assert(civil.epoch_seconds(2026, 1, 1, 0, 0, 0) == 1767225600);    // the fixed epoch of the gate flavors
+    assert(civil.epoch_seconds(2000, 2, 29, 12, 34, 56) == 951827696);
+    assert(civil.epoch_seconds(2026, 11, 6, 3, 20, 50) == 1793935250);
+    assert(civil.epoch_seconds(2100, 3, 1, 0, 0, 0) == 4107542400);
+    assert(civil.epoch_seconds(2026, 2, 29, 0, 0, 0) == -1);   // not a leap year
+    assert(civil.epoch_seconds(2100, 2, 29, 0, 0, 0) == -1);   // a century, not a leap year
+    assert(civil.epoch_seconds(2026, 13, 1, 0, 0, 0) == -1 && civil.epoch_seconds(2026, 1, 1, 24, 0, 0) == -1);
+    assert(civil.epoch_seconds(1969, 12, 31, 23, 59, 59) == -1);
+    assert(civil.bcd(0x59) == 59 && civil.bcd(0x00) == 0 && civil.bcd(0x20) == 20);
+    assert(civil.bcd(0x5A) == -1 && civil.bcd(0xA0) == -1);
+}
+
+// K-6: the desk's clock and calendar read the date back from the day count.
+Bool civil_is(I64 days, I64 y, I64 m, I64 d, I64 wd) {
+    I64[4] v;
+    civil.from_days(days, v);
+    return v[0] == y && v[1] == m && v[2] == d && v[3] == wd;
+}
+
+test "civil date from a day count (K-6)" {
+    assert(civil_is(0, 1970, 1, 1, 4));                    // a Thursday
+    assert(civil_is(1767225600 / 86400, 2026, 1, 1, 4));   // the fixed epoch, a Thursday
+    assert(civil_is(1793935250 / 86400, 2026, 11, 6, 5));  // a Friday
+    assert(civil_is(951827696 / 86400, 2000, 2, 29, 2));   // a leap day, a Tuesday
+    assert(civil_is(4107542400 / 86400, 2100, 3, 1, 1));   // after a century's February, a Monday
+    assert(civil_is(4107542400 / 86400 - 1, 2100, 2, 28, 0));
+    assert(civil.month_days(2026, 2) == 28 && civil.month_days(2028, 2) == 29 && civil.month_days(2026, 11) == 30);
+}
+
+// RS-CLK: a set of the clock is written back to the CMOS clock (src/cmos.ci) in the format its register B names, and
+// the boot's read gives the same seconds back.
+Bool cmos_are(I64 s, U8 sb, in U8[7] want) {
+    U8[7] r;
+    civil.cmos_bytes(s, sb, r);
+    for i in 0..7 {
+        if (r[i] != want[i]) {
+            return false;
+        }
+    }
+    return civil.cmos_seconds(r, sb) == s;
+}
+
+test "RS-CLK: the CMOS registers of a time, BCD or binary, 24 or 12 hours" {
+    U8[7] a = [0x50, 0x20, 0x03, 0x06, 0x11, 0x26, 0x20];     // 2026-11-06T03:20:50Z, BCD, 24 hours
+    assert(cmos_are(1793935250, 0x02, a));
+    U8[7] b = [50, 20, 3, 6, 11, 26, 20];                      // binary
+    assert(cmos_are(1793935250, 0x06, b));
+    U8[7] c = [0x56, 0x34, 0x92, 0x29, 0x02, 0x00, 0x20];     // 2000-02-29T12:34:56Z, BCD, 12 hours: noon is 12 PM
+    assert(cmos_are(951827696, 0x00, c));
+    U8[7] d = [0x00, 0x00, 0x12, 0x01, 0x01, 0x26, 0x20];     // 2026-01-01T00:00:00Z, 12 hours: midnight is 12 AM
+    assert(cmos_are(1767225600, 0x00, d));
+    U8[7] e = [59, 59, 0x8B, 31, 12, 25, 20];                  // 2025-12-31T23:59:59Z, binary, 12 hours: 11 PM
+    assert(cmos_are(1767225599, 0x04, e));
+    U8[7] f = [0x00, 0x00, 0x00, 0x01, 0x01, 0x70, 0x19];     // 1970-01-01, the century 19
+    assert(cmos_are(0, 0x02, f));
+}
+
+test "RS-CLK: every format reads back what it wrote, to Linux's settimeofday bound" {
+    U8[4] fmt = [0x00, 0x02, 0x04, 0x06];
+    I64 s = 0;
+    U64 x = 12345;
+    for k in 0..400 {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        s = (x as I64) * 3 + (k as I64) * 20000000;           // 1970 to past 2220, any second of the day
+        for j in 0..4 {
+            U8[7] r;
+            civil.cmos_bytes(s, fmt[j], r);
+            assert(civil.cmos_seconds(r, fmt[j]) == s);
+        }
+    }
+    U8[7] r;
+    civil.cmos_bytes(8277292035, 0x02, r);                     // the last second clock_settime takes, 2232
+    assert(r[6] == 0x22 && r[5] == 0x32 && civil.cmos_seconds(r, 0x02) == 8277292035);
+}
+
+test "RS-CLK: the seconds a set takes, from a caller or a replay's clk line, stop short of Linux's bound" {
+    assert(civil.settable(0) && civil.settable(1793935250) && civil.settable(8277292035));
+    assert(!civil.settable(8277292036) && !civil.settable(999999999999) && !civil.settable(-1));
+    assert(civil.SETTOD_MAX == 8277292036);
+    for k in 0..64 {
+        I64 v = (k as I64) * 200000000;                         // 1970 to past 2370, across the bound
+        assert(civil.settable(v) == (v < 8277292036));
+    }
+}
+
+test "RS-CLK: what the boot reads from a clock it cannot take" {
+    U8[7] a = [0x00, 0x00, 0x00, 0x01, 0x01, 0x26, 0x00];     // no century register: the year is 20YY
+    assert(civil.cmos_seconds(a, 0x02) == 1767225600);
+    U8[7] b = [0x5A, 0x00, 0x00, 0x01, 0x01, 0x26, 0x20];     // a BCD digit over 9
+    assert(civil.cmos_seconds(b, 0x02) == -1);
+    U8[7] c = [0x00, 0x00, 0x00, 0x30, 0x02, 0x26, 0x20];     // February 30
+    assert(civil.cmos_seconds(c, 0x02) == -1);
+}
+
+// RES-1: a window's private surface (FBIO_TILE_WANT, src/tile.ci want) is capped by the screen it is on, not
+// 1920 x 1080; the screens are rt/fbmode.h's, which tests/hosted/fbmode_test.c checks.
+test "RES-1: a private surface the size of the screen is taken, one pixel larger on either side is refused" {
+    I64[6] sw = [1920, 3840, 5120, 2160, 2560, 640];
+    I64[6] sh = [1080, 2160, 1440, 3840, 1080, 480];
+    for k in 0..6 {
+        assert(surfsize.fits(sw[k], sh[k], sw[k], sh[k]));
+        assert(!surfsize.fits(sw[k] + 1, sh[k], sw[k], sh[k]));
+        assert(!surfsize.fits(sw[k], sh[k] + 1, sw[k], sh[k]));
+        assert(!surfsize.fits(sw[k] + 1, sh[k] + 1, sw[k], sh[k]));
+        assert(surfsize.fits(1, 1, sw[k], sh[k]) && surfsize.fits(320, 200, sw[k], sh[k]));
+        assert(!surfsize.fits(0, sh[k], sw[k], sh[k]) && !surfsize.fits(sw[k], 0, sw[k], sh[k]));
+        assert(!surfsize.fits(-1, 1, sw[k], sh[k]) && !surfsize.fits(1, -1, sw[k], sh[k]));
+    }
+    assert(surfsize.fits(3840, 2160, 3840, 2160));     // 4K, past HX-0's 1920 x 1080
+    assert(surfsize.fits(5120, 1440, 5120, 1440));     // ultrawide
+    assert(surfsize.fits(2160, 3840, 2160, 3840));     // 4K portrait
+    assert(!surfsize.fits(1921, 1080, 1920, 1080) && !surfsize.fits(1920, 1081, 1920, 1080));
+    assert(!surfsize.fits(1920, 1080, 1080, 1920));    // a landscape surface on a portrait screen of the same pixels
+}
+
+test "fair: pty output reported at most PER_TICK times a tick, then again at the next (board 20261110T234031Z)" {
+    fair.reset();
+    for k in 0..fair.PER_TICK { assert(fair.out_due(7)); }
+    assert(!fair.out_due(7));
+    assert(!fair.out_due(7));
+    assert(fair.out_due(8));
+    fair.reset();
+}
+// SPDX-License-Identifier: Apache-2.0

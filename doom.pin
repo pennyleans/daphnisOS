@@ -1,0 +1,6 @@
+# freedoom-ci, the Doom port (docs/specs/2026-11-08-doom-split.md, ruling DS-1). tools/doom/fetch.sh checks out
+# `commit` from `url` (or from $FREEDOOM_CI, another clone) and refuses any other tree.
+# DS-4 (l's go 2026-11-08 21:08Z): the first public commit.
+url=https://github.com/pennyleans/freedoom-ci
+commit=278639863591f1013befacbaf25237c79b8abeb1
+tree=66a68d56a6236a4a735a5ef9e2dc344010ca9aa1

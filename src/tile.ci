@@ -1,0 +1,1555 @@
+// src/tile.ci: tiles in the kernel (W-2, docs/specs/2026-11-05-w-tiler.md sections 2 and 4, ruling WT-1 A).
+// Each process has a surface: none, the framebuffer (fullscreen, as in stage R), or a private surface of
+// w x h with stride 4 * w in its own pages. One process at a time is the tiler: it asks FBIO_TILER on
+// /dev/fb0 and maps the framebuffer. Before it starts a client it sets FBIO_TILE_NEXT {w, h, x, y}; its next
+// child takes that tile at its fork, and the child's open of /dev/fb0 gives a private surface of that size,
+// bound to the tile at (x, y); the tile stays across execve. The
+// kernel copies a bound client's surface into its tile on the framebuffer: on the tiler's FBIO_TILE_SYNC, at
+// most once a timer tick, and once more when the client ends, so the last frame stays and the surface digest
+// at the end never depends on the timer. While the tiler has the screen, an open of /dev/fb0 with no tile
+// set is -EBUSY.
+//
+// W-4 (the desk): a process the tiler did not fork, with no tile, takes the tile set at its open of /dev/fb0
+// instead (a program the desk's shell starts), unless a client still has that tile (-EBUSY); a window the tiler
+// places (H-2) is off it while placed, so a desk that offers each client the same corner runs any number; one
+// unplaced again (its WANT, a mode change) is copied at its tile, and holds it until placed. FBIO_TILE_SYNC
+// returns 3, before an end, while a pty's master has a write to read (src/pty.ci), and 2 once for each end, not once for all the ends since the last sync, so how often the tiler wakes
+// never depends on the timing.
+//
+// W-3 (input): while the tiler has the screen, another process's open of /dev/input/event0 gives it a tile
+// queue of 64 events instead of the device; the tiler reads the device and writes each event it routes to a
+// client's queue with FBIO_TILE_INPUT {pid, type, code, value}. FBIO_TILE_SYNC returns 1 when the device has an
+// event for the tiler, 2 when a process has ended since the tiler's last sync, and otherwise waits for the
+// device. Each sync copies the bound clients when two ticks have passed since the last copies, whatever it
+// returns: the kernel runs with interrupts off, so a tick that comes during the copies ends the next client's
+// turn at once, and copies every tick that took longer than a tick (a loaded host, a large tile) left the
+// clients no time at all; copies only while waiting left a busy terminal's neighbor undrawn.
+//
+// H-2 (docs/specs/2026-11-05-h-hybrid.md section 5 item 2): the tiler places a window with FBIO_TILE_PLACE, by
+// its pid or, with pid 0, before it starts (the tile set next): the screen pixel of its surface's 0,0, an integer
+// scale 1..6 and up to 32 rectangles the window shows, which the tiler cut (user/ci/kit/layout.ci). A placed window
+// is copied by its rectangles only, none at all with 0; the timed copies of placed windows write at most BUDGET
+// pixels and resume where they stopped. FBIO_TILE_SYNC with SETTLE in its u32 flags copies every window whole at
+// once and returns 0 without waiting, before a pinned digest. Placements stay out of the canonical state: the
+// screen digest pins them.
+//
+// K-6 (the desk's clock): when the boot read a live date (src/rtc.ci, A-3), FBIO_TILE_SYNC returns 5, after every
+// other report, each time the date's minute differs from the one the tiler was last told, so the bar's clock turns
+// with no input. The date is the boot's and the PIT's whole seconds since: real time under KVM. Every gate flavor
+// keeps the fixed epoch, so there it never returns 5 and the clock stays at 2026-01-01 00:00.
+
+import src.serial;
+import src.text;
+import src.trap;
+import src.sha256;
+import src.user;
+import src.uvm;
+import src.input;
+import src.pty;
+import src.cursor;
+import src.pit;
+import src.k12;
+import src.surfsize;
+import src.fair;     // board 20261110T234031Z: pty output reported at most fair.PER_TICK times a tick
+import src.seat;
+
+export const I64 NONE = 0;
+export const I64 SCREEN = 1;
+export const I64 PRIVATE = 2;
+
+export const U64 FBIO_TILER = 0x4680;       // the caller becomes the tiler: 0, or -EBUSY
+export const U64 FBIO_TILE_NEXT = 0x4681;   // arg: u32 w, h, x, y; the next client's tile (0 x 0: none)
+export const U64 FBIO_TILE_SYNC = 0x4683;   // copies the bound clients; 1 input, 3 pty output, 2 an end, 5 a minute, 6 a variable, 7 the tray (SP-2), 8 a frame (SP-3, FRAME), 9 ring 0 (R0-1), 10 an open (FF-6c, src/proc.ci), else waits
+export const U64 FBIO_TILE_INPUT = 0x4684;  // arg: u32 pid (as the tiler sees it), u16 type, u16 code, i32 value
+export const U64 FBIO_TILE_INFO = 0x4687;   // arg: u32 kind, u32 id; out u32 vpid, u32 0, u64 grant, comm[16]
+export const U64 FBIO_TILE_MENU = 0x4691;   // arg: u32 n, n records {u32 id, u32 kind, label[24]}: the app menu (AM-2, AM-4)
+export const U64 FBIO_TILE_AUDIO = 0x4690;  // arg: u32 level 0..100; the mix's level by the system panel (SP-1, src/proc.ci), the tiler only
+export const U64 FBIO_TILE_KERN = 0x468D;   // arg: u32 vpid, u32 verb; ring 0 by the desk's word (R0-1, src/proc.ci), the tiler only
+export const U64 FBIO_TILE_FOCUS = 0x468E;  // arg: u32 kind, u32 id; the focused window (SCHED-1), the tiler only, src/proc.ci
+export const U64 FBIO_TILE_MARK = 0x468F;   // arg: u32 what; a k12 mark line (K-12), the tiler only
+export const U64 FBIO_TILE_MODE = 0x468B;   // arg: u32 w, h; the screen switched to w x h (HX-13), the tiler only; not saved
+export const U64 FBIO_TILE_SAVE = 0x4692;   // arg: none read; the screen's size now saved for the next boot (RES-1, DN-10), the tiler only, src/fs.ci
+export const U64 FBIO_TILE_CURSOR = 0x4686; // arg: i32 x, y, u32 scale 1..3, shape (H-4; DN-51 frame 26: 0 hidden,
+                                            // src/cursor.ci's 1 Arrow to 9 Not here), the tiler only
+export const U64 FBIO_TILE_BUSY = 0x4693;   // arg: u32 on, w, h, i32 dx, dy, w * h words 0xAARRGGBB: a sprite beside the
+                                            // arrow, AA its coverage in 16ths (DN-37, docs/specs/2026-11-10-busy-pointer.md), the tiler only
+export const U64 FBIO_TILE_VAR = 0x4688;    // arg: VAR_LEN bytes, the caller's own bar variable (HX-6), NUL padded
+export const I64 VAR_LEN = 64;               // RS-TTL section 6: a name such as `Screenshot 2026-11-09 01.59.12.png`
+export const U64 FBIO_TILE_WANT = 0x4689;   // arg: u32 w, h; the caller's surface size, after its open, before its mmap (HX-4)
+export const U64 FBIO_TILE_RESIZE = 0x468A; // arg: u32 on; EV_WIN_RESIZE from the tiler into the caller's queue (HX-4)
+export const I64 EV_WIN_RESIZE = 5;         // type 5, code w, value h: the window's content box (H-3c3)
+export const U64 FBIO_TILE_POINT = 0x468C;  // arg: u32 on; EV_ABS from the tiler into the caller's queue (BP-6)
+export const I64 EV_ABS = 3;                // type 3, code 0 x or 1 y, in the caller's surface pixels; -1 off it (BP-6)
+export const U64 FBIO_TILE_PLACE = 0x4685;  // arg: u32 pid (0: the tile set next), i32 dst_x, dst_y, u16 scale,
+                                            // u16 nrects, u64 uaddr of nrects {u32 x, y, w, h}
+export const I64 RECTS = 32;                // rectangles a placement holds
+export const I64 SETTLE = 1;                // FBIO_TILE_SYNC's u32 flags: every window whole now, 0 at once
+export const I64 FRAME = 2;                 // SP-3, MS-2: and 8 once a timer tick (10 ms) passes since the last 8: an animation's frame
+const I64 BUDGET = 614400;                  // the budget until it is measured, and where the PIT is not programmed
+const I64 NEXT = 64;                        // the placement of the tile set next (uvm.PROCS)
+const I64 RECORDS = 17;                     // placements at once: 16 windows (WINS) and the tile set next
+const I64 POOL = 128;                       // rectangles all placements hold together
+const I64 ENOSPC = 28;
+export const I64 WAIT = -1000;              // fs.WOULD_BLOCK: the call is made again
+const I64 QUEUES = 8;                       // tile queues at once
+const I64 QUEUE = 64;                       // events a queue holds
+const I64 EAGAIN = 11;
+const I64 ENFILE = 23;
+const I64 ESRCH = 3;
+const I64 EBUSY = 16;
+const I64 EFAULT = 14;
+const I64 EINVAL = 22;
+const I64 EPERM = 1;
+
+I64[64] kind;
+I64[64] sw;
+I64[64] sh;
+U64[64] sva;        // where the private surface is mapped, 0 before mmap
+Bool[64] swait;     // RS-SURF: a new size was taken; no copy until the client writes a page of the new surface
+Bool[64] sonce;     // RS-SURF: the program has mapped a private surface (a later new size is a resize)
+Bool[64] bound;
+I64[64] tx;
+I64[64] ty;
+U8[65] book;        // H-2: 1 + the placement record of slot p (NEXT: the tile set next), 0 for none
+I64[17] owner;      // 1 + the slot a record is for, 0 for a free one
+I64[17] pdx;        // the screen pixel of the surface's 0,0 (may be off the screen)
+I64[17] pdy;
+I64[17] psc;        // integer scale 1..6
+I64[17] pn;         // rectangles, 0..RECTS; 0: the window draws nothing
+I64[17] pat;        // its first rectangle in the pool
+U64[128] rect;      // the pool, x | y << 16 | w << 32 | h << 48, records' rectangles one after another
+I64 tick_px = BUDGET; // D-ROW: pixels of placed windows a timed copy writes (measured at FBIO_TILER); the rest next
+I64 used = 0;       // rectangles in the pool (the module state pool is 96 KiB: no room for 32 a slot)
+I64 cur_p = 0;      // where the timed copy of placed windows resumes: slot, rectangle, row
+I64 cur_k = 0;
+Bool shown_new = false; // K-12: the copy under way began with the window's pages written
+I64 cur_r = 0;
+I64 tiler = -1;
+I64 next_w = 0;     // 0: no tile set
+I64 next_h = 0;
+I64 next_x = 0;
+I64 next_y = 0;
+I64 last_tick = -1;
+I64 ends = 0;       // processes ended since boot (not the tiler, not by execve)
+I64 seen = 0;       // ends the tiler was told of
+I64 binds = 0;      // H-3a: processes that took the tile set next at their open
+I64 bound_told = 0; // binds the tiler was told of
+I64 last_bind = -1; // the slot of the latest
+I64 date_s = -1;    // K-6: the boot's date in seconds since 1970 (src/rtc.ci), -1 for the fixed epoch
+I64 minute_told = -1;   // the date's minute the tiler was last told of (FBIO_TILE_SYNC 5)
+I64 vars = 0;           // BP-6: variables changed after their first (FBIO_TILE_VAR), and names (NAMES-28); those told
+I64 vars_told = 0;
+I64 frame_tick = 0;     // SP-3: the timer tick of the last FBIO_TILE_SYNC 8
+Bool step = false;      // SP-3: the gates' stepped frames (daphnis.stepframes): the desk steps on Shift, not the timer
+I64[64] queue_of;   // the tile queue a process reads, or -1
+I64[8] qpid;        // the process a queue is for, or -1
+I64[8] qhead;
+I64[8] qlen;
+I64[8] qgiven;      // events the tiler wrote to the queue
+U64[512] qev;       // QUEUE events a queue: type | code << 16 | value << 32
+I64 qlost = 0;
+Bool queues_set = false;
+I64 cur_x = 0;      // H-4: the pointer's hot spot on the screen, its scale; drawn while cur_on
+I64 cur_y = 0;
+I64 cur_s = 1;
+I64 cur_shape = 1;  // DN-51 frame 26: its shape (src/cursor.ci), the arrow until the tiler names another
+Bool cur_on = false;
+I64 ux = 0;         // the screen under the arrow (its box cut to the screen), 4 bytes a pixel, row by row
+I64 uy = 0;
+I64 uw = 0;
+I64 uh = 0;
+U8[30976] under;    // 88 x 88 pixels: the arrow at 3x with the largest Busy sprite (FBIO_TILE_BUSY)
+Bool busy_on = false;  // DN-37: the Busy sprite beside the arrow, w x h at (dx, dy) from the hot spot
+I64 busy_w = 0;
+I64 busy_h = 0;
+I64 busy_dx = 0;
+I64 busy_dy = 0;
+U8[9216] busy_px;  // 48 x 48 words at most
+U8[9216] busy_in;  // a call's sprite as read, before it replaces busy_px (a module buffer: a local this size is the
+                   // hosted rt's scratch, which the kernel rt has none of)
+const I64 BUSY_MAX = 48;
+const I64 BUSY_OFF_MAX = 40;
+U8[4096] tvar;      // H-3c3: VAR_LEN bytes a process, its variable (FBIO_TILE_VAR); not canonical (section 5 item 7)
+U8[7168] tmenu;     // AM-2, DN-43: 112 bytes a process, its app menu: About's name [0..24), version [24..40), text [40..100),
+                    // byte 104 bit 0 Settings declared, bit 1 dimmed (AM-4), u32 its id at 105
+// AM-4 (docs/specs/2026-11-11-am4-appitems.md section 5): a pixel program's own rows, MROWS of ROW bytes in one of
+// MTABS tables, taken by its first declaration with a row and given back when a declaration has none, at execve and
+// at its end. One table a window (16), so 12 KiB of state, not 48 KiB for every process. A row: u16 id, u16 parent
+// (0 a menu row), u8 marks (MARK_GROUP, MARK_ON, MARK_DIM), u8 the label's length, u8 the keys' length, u8 0,
+// label[24], keys[16], each NUL padded.
+const I64 MROWS = 16;
+const I64 MTABS = 16;
+const I64 ROW = 48;
+I64[16] mown;       // 1 + the slot table t is for, 0 for a free one
+U8[64] mtab;        // 1 + slot p's table, 0 for none
+U8[16] mrows;       // rows in table t
+U8[12288] mrow;     // MTABS tables of MROWS rows
+U8[768] mrow_in;    // a declaration's rows as read: a refused one changes nothing
+Bool[64] on_resize; // H-3c3: the process asked FBIO_TILE_RESIZE
+Bool[64] on_point;  // BP-6: the process asked FBIO_TILE_POINT
+Bool[17] pfresh;    // H-4b: the record was placed since its last copy began; copied whatever its pages say
+
+void queues_init() {
+    if (queues_set) {
+        return;
+    }
+    for p in 0..uvm.PROCS {
+        queue_of[p] = -1;
+    }
+    for q in 0..QUEUES {
+        qpid[q] = -1;
+    }
+    queues_set = true;
+}
+
+// pid's tile queue, taken if it has none: its index, or -1 when every queue is taken.
+I64 queue_for(I64 pid) {
+    queues_init();
+    if (queue_of[pid] >= 0) {
+        return queue_of[pid];
+    }
+    for q in 0..QUEUES {
+        if (queue_of[pid] < 0 && qpid[q] < 0) {
+            qpid[q] = pid;
+            qhead[q] = 0;
+            qlen[q] = 0;
+            qgiven[q] = 0;
+            queue_of[pid] = q;
+        }
+    }
+    return queue_of[pid];
+}
+
+void queue_free(I64 pid) {
+    queues_init();
+    I64 q = queue_of[pid];
+    if (q >= 0) {
+        qpid[q] = -1;
+        qlen[q] = 0;
+        queue_of[pid] = -1;
+    }
+}
+
+// open("/dev/input/event0") by pid: 1 when it reads a tile queue (the tiler has the screen and pid is not
+// the tiler), 0 for the device, -ENFILE when no queue is free.
+export I64 on_open_input(I64 pid) {
+    if (tiler < 0 || pid == tiler) {
+        return 0;
+    }
+    if (queue_for(pid) < 0) {
+        return 0 - ENFILE;
+    }
+    return 1;
+}
+
+// True when pid's reads of /dev/input/event0 come from its tile queue.
+export Bool queued(I64 pid) {
+    queues_init();
+    return queue_of[pid] >= 0;
+}
+
+// read on a tile queue into pid's memory at buf, as input.read_events reads the device: the bytes copied,
+// WAIT (the tiler has not written yet), -EAGAIN, -EINVAL or -EFAULT.
+export I64 read_queue(I64 pid, U64 buf, U64 n, U64 now, Bool nonblock) {
+    I64 q = queue_of[pid];
+    if (n < 24) {
+        return 0 - EINVAL;
+    }
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    if (qlen[q] == 0) {
+        if (nonblock) {
+            return 0 - EAGAIN;
+        }
+        return WAIT;
+    }
+    I64 k = qlen[q];
+    if ((n / 24) < k as U64) {
+        k = (n / 24) as I64;
+    }
+    U64 sec = now / 1000000000;
+    U64 usec = (now % 1000000000) / 1000;
+    U8[1536] b;
+    for i in 0..k {
+        U64 e = qev[QUEUE * q + (qhead[q] + i) % QUEUE];
+        I64 at = 24 * i;
+        for j in 0..8 {
+            b[at + j] = ((sec >> ((8 * j) as U64)) & 0xFF) as U8;
+            b[at + 8 + j] = ((usec >> ((8 * j) as U64)) & 0xFF) as U8;
+            b[at + 16 + j] = ((e >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+    }
+    I64 done = uvm.poke(pid, buf, b, 24 * k, true) / 24;
+    if (done == 0) {
+        return 0 - EFAULT;
+    }
+    qhead[q] = (qhead[q] + done) % QUEUE;
+    qlen[q] -= done;
+    return 24 * done;
+}
+
+// FBIO_TILE_INPUT from the tiler: the event into the queue of process slot (src/proc.ci resolved the pid the
+// tiler named); 0, -ESRCH for none, -ENFILE when no queue is free. A full queue drops the event and counts it.
+export I64 input_to(I64 slot, U64 arg) {
+    if (slot < 0) {
+        return 0 - ESRCH;
+    }
+    U8[12] b;
+    if (arg >= uvm.USER_HI || uvm.peek(tiler, arg, b, 12) != 12) {
+        return 0 - EFAULT;
+    }
+    Bool resize = ((b[4] as I64) | ((b[5] as I64) << 8)) == EV_WIN_RESIZE;
+    if (resize && !on_resize[slot]) {
+        return 1;                      // H-3c3: a client that did not ask never gets one (HX-4)
+    }
+    if (((b[4] as I64) | ((b[5] as I64) << 8)) == EV_ABS && !on_point[slot]) {
+        return 1;                      // BP-6: nor the pointer's place, and the tiler learns that it did not ask
+    }
+    I64 q = queue_for(slot);
+    if (q < 0) {
+        return 0 - ENFILE;
+    }
+    if (qlen[q] == QUEUE) {
+        if (resize) {
+            return 1;                  // H-3c3: a full queue drops the resize event, never an input event, uncounted
+        }
+        qlost += 1;
+        return 0;
+    }
+    U64 e = u32_at(b, 4) | (u32_at(b, 8) << 32);
+    qev[QUEUE * q + (qhead[q] + qlen[q]) % QUEUE] = e;
+    qlen[q] += 1;
+    qgiven[q] += 1;
+    return 0;
+}
+
+// DN-51 frame 25: process p's tile queue, the events waiting unread and the events it took since the queue was
+// given; 0 and 0 with no queue.
+export I64 queue_unread(I64 p) {
+    queues_init();
+    if (p < 0 || p >= uvm.PROCS || queue_of[p] < 0) {
+        return 0;
+    }
+    return qlen[queue_of[p]];
+}
+export I64 queue_taken(I64 p) {
+    queues_init();
+    if (p < 0 || p >= uvm.PROCS || queue_of[p] < 0) {
+        return 0;
+    }
+    return qgiven[queue_of[p]] - qlen[queue_of[p]];
+}
+
+// The slot of the latest process that took the tile set next at its open (H-3a), or -1.
+export I64 bound_last() {
+    return last_bind;
+}
+
+// The tiler, or -1.
+// K-6: the date is s, the seconds since 1970 that src/rtc.ci read at boot (src/proc.ci set_realtime).
+export void set_date(I64 s) {
+    date_s = s;
+}
+
+// K-6: the date now in seconds since 1970, the boot's and the PIT's whole seconds since; -1 for the fixed epoch.
+export I64 date_now() {
+    if (date_s < 0) {
+        return -1;
+    }
+    return date_s + trap.timer_ticks() * pit.USER_DIVISOR / pit.INPUT_HZ;
+}
+
+export I64 tiler_pid() {
+    return tiler;
+}
+
+// Events dropped at a full tile queue since boot.
+export I64 dropped() {
+    return qlost;
+}
+
+export void reset(I64 pid) {
+    kind[pid] = NONE;
+    sw[pid] = 0;
+    sh[pid] = 0;
+    sva[pid] = 0;
+    swait[pid] = false;
+    sonce[pid] = false;
+    bound[pid] = false;
+    tx[pid] = 0;
+    ty[pid] = 0;
+    for k in 0..VAR_LEN { tvar[VAR_LEN * pid + k] = 0; }
+    for k in 0..32 {
+        tmenu[112 * pid + 3 * k] = 0;      // AM-2: the declaration goes with the program
+        tmenu[112 * pid + 3 * k + 1] = 0;
+        tmenu[112 * pid + 3 * k + 2] = 0;
+    }
+    for k in 96..112 { tmenu[112 * pid + k] = 0; }
+    on_resize[pid] = false;
+    on_point[pid] = false;
+    rows_free(pid);
+    unplace(pid);
+}
+
+// AM-4: pid's rows go, and its table, zeroed, with them.
+void rows_free(I64 pid) {
+    if (mtab[pid] > 0) {
+        I64 t = mtab[pid] as I64 - 1;
+        for k in 0..MROWS * ROW { mrow[t * MROWS * ROW + k] = 0; }
+        mrows[t] = 0;
+        mown[t] = 0;
+        mtab[pid] = 0;
+    }
+}
+
+// pid no longer placed: its record and rectangles go back (the later records' rectangles move down); the timed
+// copy does not resume inside it.
+void unplace(I64 pid) {
+    if (book[pid] > 0) {
+        I64 w = book[pid] as I64 - 1;
+        I64 n = pn[w];
+        for i in pat[w]..used - n {
+            rect[i] = rect[i + n];
+        }
+        for q in 0..RECORDS {
+            if (owner[q] > 0 && pat[q] > pat[w]) {
+                pat[q] -= n;
+            }
+        }
+        used -= n;
+        owner[w] = 0;
+        book[pid] = 0;
+    }
+    if (cur_p == pid) {
+        cur_k = 0;
+        cur_r = 0;
+    }
+}
+
+Bool placed(I64 pid) {
+    return book[pid] > 0;
+}
+
+// Field f (0 x, 1 y, 2 w, 3 h) of rectangle k of placed window pid.
+I64 rf(I64 pid, I64 k, I64 f) {
+    return ((rect[pat[book[pid] as I64 - 1] + k] >> ((16 * f) as U64)) & 0xFFFF) as I64;
+}
+
+I64 rects_of(I64 pid) {
+    if (book[pid] == 0) {
+        return 0;
+    }
+    return pn[book[pid] as I64 - 1];
+}
+
+export I64 kind_of(I64 pid) {
+    return kind[pid];
+}
+
+export I64 width(I64 pid) {
+    return sw[pid];
+}
+
+export I64 height(I64 pid) {
+    return sh[pid];
+}
+
+export I64 stride(I64 pid) {
+    if (kind[pid] == PRIVATE) {
+        return 4 * sw[pid];
+    }
+    return user.fb_word(2) as I64;
+}
+
+// open("/dev/fb0") by pid, of uid: the surface it gets. 0, or -EBUSY while the tiler has the screen and no tile is
+// set, or the tile set is not for uid (LO-1: seat.binds).
+export I64 on_open(I64 pid, I64 uid) {
+    if (kind[pid] == PRIVATE) {
+        return 0;
+    }
+    if (tiler >= 0 && pid != tiler) {
+        if (next_w == 0 || !seat.binds(uid)) {
+            return 0 - EBUSY;          // LO-1: the offered tile is the named account's alone (src/seat.ci)
+        }
+        for p in 0..uvm.PROCS {
+            if (bound[p] && !placed(p) && tx[p] == next_x && ty[p] == next_y) {
+                return 0 - EBUSY;      // W-4: the tile set is still another client's; a placed one is off it, and an
+                                       // unplaced one (its own new size, a mode change) is copied there again
+            }
+        }
+        bind(pid);                     // W-4: a process the tiler did not fork takes the tile set at its open
+        binds += 1;                    // H-3a: the tiler's next sync returns 4 for it
+        last_bind = pid;
+        return 0;
+    }
+    kind[pid] = SCREEN;
+    sw[pid] = user.fb_word(0) as I64;
+    sh[pid] = user.fb_word(1) as I64;
+    return 0;
+}
+
+// mmap of the private surface at va.
+export void mapped(I64 pid, U64 va) {
+    sva[pid] = va;
+    sonce[pid] = true;
+}
+
+// RS-SURF (docs/specs/2026-11-05-h-hybrid.md section 5a): pages [lo, hi) of pid go (munmap, or an anonymous
+// MAP_FIXED over them). If they hold a page of its private surface, the mapping ends: nothing more is copied from
+// it, and the screen keeps the last picture copied, until the client maps a surface again.
+export void unmapped(I64 pid, U64 lo, U64 hi) {
+    if (kind[pid] != PRIVATE || sva[pid] == 0) {
+        return;
+    }
+    U64 top = sva[pid] + (4 * sw[pid] * sh[pid]) as U64;
+    if (lo < top && hi > sva[pid]) {
+        sva[pid] = 0;
+    }
+}
+
+// fork: the child has the parent's surface words and a copy of its pages, bound to no tile.
+// The tiler's child takes the tile the tiler set (W-3: the tile is the child's from its fork, so the tiler can
+// start the next client before this one opens the surface).
+// The tile set with FBIO_TILE_NEXT becomes pid's.
+void bind(I64 pid) {
+    kind[pid] = PRIVATE;
+    sw[pid] = next_w;
+    sh[pid] = next_h;
+    sva[pid] = 0;
+    swait[pid] = false;
+    sonce[pid] = false;
+    bound[pid] = true;
+    tx[pid] = next_x;
+    ty[pid] = next_y;
+    next_w = 0;
+    unplace(pid);
+    if (book[NEXT] > 0) {
+        book[pid] = book[NEXT];        // the record moves to the window
+        owner[book[pid] as I64 - 1] = pid + 1;
+        book[NEXT] = 0;
+    }
+}
+
+export void clone(I64 src, I64 dst) {
+    if (src == tiler && next_w > 0) {
+        bind(dst);
+        return;
+    }
+    kind[dst] = kind[src];
+    sw[dst] = sw[src];
+    sh[dst] = sh[src];
+    sva[dst] = sva[src];
+    swait[dst] = false;
+    sonce[dst] = sonce[src];
+    bound[dst] = false;
+    tx[dst] = 0;
+    ty[dst] = 0;
+    unplace(dst);
+}
+
+U64 u32_at[n](in U8[n] b, I64 at) {
+    U64 v = 0;
+    for k in 0..4 {
+        v = v | ((b[at + k] as U64) << ((8 * k) as U64));
+    }
+    return v;
+}
+
+// FBIO_TILE_WANT (HX-4): pid's private surface becomes w x h (1..W x 1..H on the current screen of W x H, RES-1,
+// src/surfsize.ci; HX-0's cap was 1920 x 1080), asked after its open and before its mmap, by a placed window only
+// (the tiler scales it; W-4's fixed tiles keep their size, H-3c3b). Its placement goes (it was for the old size) and
+// the tiler's next sync returns 4, as at a bind, so the tiler reads the size (FBIO_TILE_INFO) and places it again.
+// RS-SURF (section 5a): a client whose surface is mapped asks after a munmap of it (unmapped); then the window's
+// next copy waits for a written page of the new surface (swait), so its fresh zero pages are never shown.
+// 0, -EINVAL (no private surface, not placed, mapped, or a size out of range), -EFAULT.
+I64 want(I64 pid, U64 arg) {
+    U8[8] b;
+    if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 8) != 8) {
+        return 0 - EFAULT;
+    }
+    I64 w = u32_at(b, 0) as I64;
+    I64 h = u32_at(b, 4) as I64;
+    if (kind[pid] != PRIVATE || !placed(pid) || sva[pid] != 0 ||
+        !surfsize.fits(w, h, user.fb_word(0) as I64, user.fb_word(1) as I64)) {
+        return 0 - EINVAL;
+    }
+    if (w == sw[pid] && h == sh[pid]) {
+        return 0;                      // the size it has: the placement stands, the tiler is not told
+    }
+    sw[pid] = w;
+    sh[pid] = h;
+    swait[pid] = sonce[pid];        // a resize; a program's first ask before its first map shows as before
+    unplace(pid);
+    binds += 1;
+    last_bind = pid;
+    return 0;
+}
+
+// AM-2 (docs/specs/2026-11-10-am-app-menu.md section 4, AM-R1 B): kinds a declaration may hold in 0.1.0.
+export const I64 MENU_ABOUT = 0;      // About's name (DN-43: name, version, text; the icon is the system's)
+export const I64 MENU_SETTINGS = 1;
+export const I64 MENU_ITEM = 2;       // AM-4: an own row {u32 id | PARENT << 16, u32 2 | MARKS << 8, label[24]}
+export const I64 MENU_VERSION = 3;    // About's version
+export const I64 MENU_TEXT = 4;       // About's text: the records in order, 60 bytes at most
+export const I64 MENU_DIRTY = 5;      // AM section 7: unsaved work, its id word 1 or 0 (byte 100)
+export const I64 MENU_KEYS = 6;       // AM-4: an own row's keys {u32 id, u32 6, keys[16], 8 zero bytes}
+export const I64 MENU_RECORDS = 38;   // AM-4: About, its version, 3 of text and Settings, then 16 rows and their keys
+export const I64 MARK_GROUP = 1;      // AM-4 section 2's marks: a divider above (g), the dot (o), dimmed (d)
+export const I64 MARK_ON = 2;
+export const I64 MARK_DIM = 4;
+const I64 MENU_UNSAVED_AT = 100;
+
+// AM-4: rows pid declared, 0 to MROWS.
+export I64 rows_of(I64 pid) {
+    if (mtab[pid] == 0) {
+        return 0;
+    }
+    return mrows[mtab[pid] as I64 - 1] as I64;
+}
+
+// AM-4: byte b (0..ROW) of pid's row k, in the order declared; 0 past its rows, for FBIO_TILE_INFO kinds 15 and 16.
+export U8 row_byte(I64 pid, I64 k, I64 b) {
+    if (k < 0 || k >= rows_of(pid) || b < 0 || b >= ROW) {
+        return 0;
+    }
+    return mrow[(mtab[pid] as I64 - 1) * MROWS * ROW + k * ROW + b];
+}
+
+// AM-4 section 2: the length of the NUL-padded text e[at..at + cap), its bytes up to the first NUL; -1 when a byte
+// other than NUL follows it, or the text is not UTF-8 (RFC 3629: no overlong form, no surrogate, nothing past
+// U+10FFFF) or holds a byte under 0x20, 0x7F or ';'.
+export I64 row_text(in U8[_] e, I64 at, I64 cap) {
+    I64 n = 0;
+    while (n < cap && e[at + n] != 0) { n += 1; }
+    for k in n..cap {
+        if (e[at + k] != 0) { return -1; }
+    }
+    I64 i = 0;
+    while (i < n) {
+        I64 c = e[at + i] as I64;
+        I64 more = 0;
+        I64 lo = 0x80;
+        I64 hi = 0xBF;
+        if (c < 0x20 || c == 0x7F || c == 59) {
+            return -1;
+        } else if (c < 0x80) {
+            more = 0;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            more = 1;
+        } else if (c == 0xE0) {
+            more = 2;
+            lo = 0xA0;
+        } else if (c == 0xED) {
+            more = 2;
+            hi = 0x9F;
+        } else if (c >= 0xE1 && c <= 0xEF) {
+            more = 2;
+        } else if (c == 0xF0) {
+            more = 3;
+            lo = 0x90;
+        } else if (c >= 0xF1 && c <= 0xF3) {
+            more = 3;
+        } else if (c == 0xF4) {
+            more = 3;
+            hi = 0x8F;
+        } else {
+            return -1;
+        }
+        if (i + 1 + more > n) { return -1; }
+        for j in 1..1 + more {
+            I64 d = e[at + i + j] as I64;
+            if (j > 1) {
+                lo = 0x80;
+                hi = 0xBF;
+            }
+            if (d < lo || d > hi) { return -1; }
+        }
+        i += 1 + more;
+    }
+    return n;
+}
+
+// AM-2: byte k (0..112) of pid's app menu declaration (tmenu), for FBIO_TILE_INFO kinds 8 to 11.
+export U8 menu_byte(I64 pid, I64 k) {
+    return tmenu[112 * pid + k];
+}
+
+// Byte k of pid's variable (FBIO_TILE_VAR), for FBIO_TILE_INFO.
+export U8 var_byte(I64 pid, I64 k) {
+    return tvar[VAR_LEN * pid + k];
+}
+
+// D-ROW (docs/specs/2026-11-07-ds-desk-speed.md section 2 item 5): the compose budget as a time. At the first
+// FBIO_TILER of a tiler, the copy path of place_row (a peek of the tiler's memory, px_spread at 2x, a write to the
+// screen) runs over 128 pixels of the screen's row 0, writing back the pixels it read (the arrow too), so the
+// screen does not change, and channel 0 of the PIT times it, read every 32 copies, for one tick. The budget is the
+// pixels copied in half a tick, clipped to BUDGET_MIN to BUDGET_MAX; under TCG on the cloud it measures below
+// BUDGET_MIN, so the gates copy as before. Without a programmed PIT the budget stays BUDGET.
+const I64 HALF_TICK = 5966;                 // PIT counts: half of pit.USER_DIVISOR
+const I64 BUDGET_MIN = BUDGET;              // never below the constant: a slow host (TCG) copies as it did
+const I64 BUDGET_MAX = 8294400;             // a 3840 x 2160 screen
+const I64 SAMPLE = 32;                      // copies between two reads of the PIT
+
+void measure(I64 pid) {
+    if (!pit.pit_is_programmed(pit.USER_DIVISOR) || user.fb_word(0) < 128) {
+        return;
+    }
+    U8[512] save;
+    U8[512] o;
+    I64 got = user.fb_get(0, save);
+    if (got != 512) {
+        return;
+    }
+    U64 src = user.user_reg(pid, user.R_RSP);
+    I64 done = 0;
+    I64 counts = 0;
+    I64 rounds = 0;
+    I64 prev = pit.latched();
+    while (counts < 2 * HALF_TICK && rounds < 10000) {
+        for k in 0..SAMPLE {
+            I64 n = uvm.peek(pid, src, o, 256);
+            user.px_spread(o[0..512], 64, 2, 0);
+            user.fb_put(0, save[0..512]);
+        }
+        done += 128 * SAMPLE;
+        rounds += 1;
+        I64 now = pit.latched();
+        I64 d = prev - now;
+        if (d < 0) {
+            d += pit.USER_DIVISOR;
+        }
+        counts += d;
+        prev = now;
+    }
+    if (counts <= 0) {
+        return;
+    }
+    tick_px = done * HALF_TICK / counts;
+    if (tick_px < BUDGET_MIN) {
+        tick_px = BUDGET_MIN;
+    }
+    if (tick_px > BUDGET_MAX) {
+        tick_px = BUDGET_MAX;
+    }
+}
+
+export I64 budget_now() {
+    return tick_px;
+}
+
+// The tiler's requests on /dev/fb0, and a client's VAR, WANT, RESIZE and POINT; EINVAL for any other.
+export I64 ioctl(I64 pid, U64 req, U64 arg) {
+    if (req == FBIO_TILER) {
+        if (tiler >= 0 && tiler != pid) {
+            return 0 - EBUSY;
+        }
+        if (tiler != pid) {
+            measure(pid);
+        }
+        tiler = pid;
+        seen = ends;
+        bound_told = binds;
+        minute_told = -1;
+        vars_told = vars;
+        return 0;
+    }
+    if (req == FBIO_TILE_MARK) {
+        U8[4] m;
+        if (pid != tiler) {
+            return 0 - EPERM;
+        }
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, m, 4) != 4) {
+            return 0 - EFAULT;
+        }
+        k12.mark(u32_at(m, 0) as I64);    // K-12: the desk drew what it marks; a line under daphnis.k12=1 only
+        return 0;
+    }
+    if (req == FBIO_TILE_VAR) {
+        U8[64] v;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, v, VAR_LEN) != VAR_LEN) {
+            return 0 - EFAULT;
+        }
+        Bool moved = false;
+        for k in 0..VAR_LEN {
+            if (tvar[VAR_LEN * pid + k] != v[k]) { moved = true; }
+            tvar[VAR_LEN * pid + k] = v[k];
+        }
+        if (moved) { vars += 1; }         // BP-6, RS-TTL section 6: a name set or changed wakes the tiler, 6
+        return 0;
+    }
+    if (req == FBIO_TILE_MENU) {      // AM-2: About's text and the Settings item; AM-4: own rows and their keys
+        U8[4] hd;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, hd, 4) != 4) {
+            return 0 - EFAULT;
+        }
+        I64 n = (hd[0] as I64) | ((hd[1] as I64) << 8) | ((hd[2] as I64) << 16) | ((hd[3] as I64) << 24);
+        if (n < 0 || n > MENU_RECORDS) { return 0 - EINVAL; }
+        U8[112] m;
+        for k in 0..112 { m[k] = 0; }
+        I64 tn = 0;
+        I64 nr = 0;                       // AM-4: rows read into mrow_in
+        Bool only_dirty = n > 0;          // AM section 7: dirty records alone change the flag and nothing else
+        for r in 0..n {
+            U8[32] e;
+            if (uvm.peek(pid, arg + 4 + 32 * (r as U64), e, 32) != 32) {
+                return 0 - EFAULT;
+            }
+            I64 kd = (e[4] as I64) | ((e[5] as I64) << 8) | ((e[6] as I64) << 16) | ((e[7] as I64) << 24);
+            if (kd != MENU_DIRTY) { only_dirty = false; }
+            if (kd == MENU_ABOUT) {
+                for k in 0..24 { m[k] = e[8 + k]; }
+            } else if (kd == MENU_VERSION) {
+                for k in 0..16 { m[24 + k] = e[8 + k]; }
+            } else if (kd == MENU_TEXT) {
+                for k in 0..24 {
+                    if (tn < 60 && e[8 + k] != 0) {
+                        m[40 + tn] = e[8 + k];
+                        tn += 1;
+                    }
+                }
+            } else if ((kd & 0xFF) == MENU_SETTINGS && (kd >> 8) != MARK_DIM && (kd >> 8) != 0) {
+                return 0 - EINVAL;            // AM-4: Settings takes one mark, dimmed
+            } else if ((kd & 0xFF) == MENU_SETTINGS) {
+                m[104] = 1;
+                if ((kd >> 8) == MARK_DIM) { m[104] = 3; }   // bit 1: Settings dimmed, drawn at 35 percent, no press
+                for k in 0..4 { m[105 + k] = e[k]; }
+            } else if (kd == MENU_DIRTY) {
+                m[MENU_UNSAVED_AT] = 0;
+                if (e[0] != 0 || e[1] != 0 || e[2] != 0 || e[3] != 0) { m[MENU_UNSAVED_AT] = 1; }
+            } else if ((kd & 0xFF) == MENU_ITEM && (kd >> 16) == 0) {
+                // AM-4: a new id of 1 to 65535; PARENT 0 or a menu row read before; MARKS of the three; 1 to 24 bytes
+                I64 id = (e[0] as I64) | ((e[1] as I64) << 8);
+                I64 par = (e[2] as I64) | ((e[3] as I64) << 8);
+                I64 mk = (kd >> 8) & 0xFF;
+                I64 ln = row_text(e, 8, 24);
+                if (id == 0 || nr == MROWS || (mk & (0xFF - 7)) != 0 || ln < 1) { return 0 - EINVAL; }
+                Bool rooted = par == 0;
+                for j in 0..nr {
+                    I64 jid = (mrow_in[ROW * j] as I64) | ((mrow_in[ROW * j + 1] as I64) << 8);
+                    I64 jpar = (mrow_in[ROW * j + 2] as I64) | ((mrow_in[ROW * j + 3] as I64) << 8);
+                    if (jid == id) { return 0 - EINVAL; }
+                    if (jid == par && jpar == 0) { rooted = true; }
+                }
+                if (!rooted) { return 0 - EINVAL; }   // no such menu row, or a child's child
+                for k in 0..ROW { mrow_in[ROW * nr + k] = 0; }
+                for k in 0..4 { mrow_in[ROW * nr + k] = e[k]; }
+                mrow_in[ROW * nr + 4] = mk as U8;
+                mrow_in[ROW * nr + 5] = ln as U8;
+                for k in 0..24 { mrow_in[ROW * nr + 8 + k] = e[8 + k]; }
+                nr += 1;
+            } else if (kd == MENU_KEYS) {
+                // AM-4: the keys of a row read before that has none yet: 0 to 16 bytes, then 8 zero bytes
+                I64 id = (e[0] as I64) | ((e[1] as I64) << 8) | ((e[2] as I64) << 16) | ((e[3] as I64) << 24);
+                I64 ln = row_text(e, 8, 24);
+                if (id == 0 || ln < 0 || ln > 16) { return 0 - EINVAL; }
+                I64 at = -1;
+                for j in 0..nr {
+                    I64 jid = (mrow_in[ROW * j] as I64) | ((mrow_in[ROW * j + 1] as I64) << 8);
+                    if (jid == id) { at = j; }
+                }
+                if (at < 0 || mrow_in[ROW * at + 7] != 0) { return 0 - EINVAL; }
+                mrow_in[ROW * at + 6] = ln as U8;
+                mrow_in[ROW * at + 7] = 1;   // keys read; byte 7 is 0 again before the rows are kept
+                for k in 0..16 { mrow_in[ROW * at + 32 + k] = e[8 + k]; }
+            } else {
+                return 0 - EINVAL;
+            }
+        }
+        if (only_dirty) {
+            tmenu[112 * pid + MENU_UNSAVED_AT] = m[MENU_UNSAVED_AT];
+            return 0;
+        }
+        if (m[104] != 0 && m[107] == 0 && m[108] == 0) {
+            I64 sid = (m[105] as I64) | ((m[106] as I64) << 8);
+            for j in 0..nr {
+                I64 jid = (mrow_in[ROW * j] as I64) | ((mrow_in[ROW * j + 1] as I64) << 8);
+                if (jid == sid) { return 0 - EINVAL; }   // AM-4 section 2: one id space with Settings
+            }
+        }
+        if (nr > 0 && !(kind[pid] == PRIVATE && bound[pid])) {
+            return 0 - EPERM;                 // AM-4: rows are a window's, so 16 tables hold every window's
+        }
+        I64 t = mtab[pid] as I64 - 1;
+        if (nr > 0 && t < 0) {
+            for q in 0..MTABS {
+                if (t < 0 && mown[q] == 0) { t = q; }
+            }
+            if (t < 0) { return 0 - ENOSPC; }   // every table is a window's: nothing changed
+        }
+        for k in 0..112 { tmenu[112 * pid + k] = m[k]; }
+        if (nr == 0) {
+            rows_free(pid);
+            return 0;
+        }
+        mown[t] = pid + 1;
+        mtab[pid] = (t + 1) as U8;
+        for k in 0..MROWS * ROW { mrow[t * MROWS * ROW + k] = 0; }
+        for j in 0..nr {
+            mrow_in[ROW * j + 7] = 0;
+            for k in 0..ROW { mrow[t * MROWS * ROW + ROW * j + k] = mrow_in[ROW * j + k]; }
+        }
+        mrows[t] = nr as U8;
+        return 0;
+    }
+    if (req == FBIO_TILE_RESIZE) {
+        U8[4] b;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 4) != 4) {
+            return 0 - EFAULT;
+        }
+        on_resize[pid] = u32_at(b, 0) != 0;
+        return 0;
+    }
+    if (req == FBIO_TILE_POINT) {
+        U8[4] b;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 4) != 4) {
+            return 0 - EFAULT;
+        }
+        on_point[pid] = u32_at(b, 0) != 0;
+        return 0;
+    }
+    if (req == FBIO_TILE_WANT) {
+        return want(pid, arg);
+    }
+    if (pid != tiler) {
+        if (req == FBIO_TILE_NEXT || req == FBIO_TILE_SYNC) {
+            return 0 - EPERM;
+        }
+        return 0 - EINVAL;
+    }
+    if (req == FBIO_TILE_BUSY) {         // DN-37: the Busy sprite beside the arrow
+        U8[20] h;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, h, 20) != 20) {
+            return 0 - EFAULT;
+        }
+        Bool was = cur_on;
+        I64 ax = cur_x;                  // the pointer's place, shown again after the change
+        I64 ay = cur_y;
+        I64 as_ = cur_s;
+        I64 ak = cur_shape;
+        if (u32_at(h, 0) == 0) {
+            arrow_hide();
+            busy_on = false;
+            if (was) { arrow_show(ax, ay, as_, ak); }
+            return 0;
+        }
+        I64 w = u32_at(h, 4) as I64;
+        I64 ht = u32_at(h, 8) as I64;
+        I64 dx = i32_at(h, 12);
+        I64 dy = i32_at(h, 16);
+        if (w < 1 || w > BUSY_MAX || ht < 1 || ht > BUSY_MAX || dx < 0 || dx > BUSY_OFF_MAX || dy < 0 ||
+            dy > BUSY_OFF_MAX) {
+            return 0 - EINVAL;
+        }
+        if (uvm.peek(pid, arg + 20, busy_in, 4 * w * ht) != 4 * w * ht) {
+            return 0 - EFAULT;
+        }
+        arrow_hide();
+        for k in 0..4 * w * ht { busy_px[k] = busy_in[k]; }
+        busy_w = w;
+        busy_h = ht;
+        busy_dx = dx;
+        busy_dy = dy;
+        busy_on = true;
+        if (was) { arrow_show(ax, ay, as_, ak); }
+        return 0;
+    }
+    if (req == FBIO_TILE_CURSOR) {
+        U8[16] b;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 16) != 16) {
+            return 0 - EFAULT;
+        }
+        I64 s = u32_at(b, 8) as I64;
+        I64 shape = u32_at(b, 12) as I64;
+        if (s < 1 || s > 3 || shape > cursor.LAST) {
+            return 0 - EINVAL;
+        }
+        arrow_hide();
+        if (shape != 0) {
+            arrow_show(i32_at(b, 0), i32_at(b, 4), s, shape);
+        }
+        return 0;
+    }
+    if (req == FBIO_TILE_MODE) {
+        U8[8] b;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 8) != 8) {
+            return 0 - EFAULT;
+        }
+        arrow_hide();                  // H-4: the save-under is of the old screen; the tiler shows the arrow again
+        cur_on = false;
+        I64 r = user.fb_mode(u32_at(b, 0), u32_at(b, 4));
+        if (r == 0) {
+            // HX-13: every placement was for the old size; the windows go back to their tiles until placed again
+            for q in 0..uvm.PROCS + 1 { unplace(q); }
+            next_w = 0;
+        }
+        return r;
+    }
+    if (req == FBIO_TILE_NEXT) {
+        U8[16] b;
+        if (arg >= uvm.USER_HI || uvm.peek(pid, arg, b, 16) != 16) {
+            return 0 - EFAULT;
+        }
+        I64 w = u32_at(b, 0) as I64;
+        I64 h = u32_at(b, 4) as I64;
+        I64 x = u32_at(b, 8) as I64;
+        I64 y = u32_at(b, 12) as I64;
+        I64 fw = user.fb_word(0) as I64;
+        I64 fh = user.fb_word(1) as I64;
+        if (w == 0 && h == 0) {
+            next_w = 0;                // H-3a: no tile set, so the tiler's next child (a terminal's shell) takes none
+            unplace(NEXT);
+            return 0;
+        }
+        if (w < 1 || h < 1 || x + w > fw || y + h > fh) {
+            return 0 - EINVAL;
+        }
+        next_w = w;
+        next_h = h;
+        next_x = x;
+        next_y = y;
+        unplace(NEXT);                 // H-2: a placement for this tile follows with pid 0
+        return 0;
+    }
+    if (req == FBIO_TILE_SYNC) {
+        U8[4] f;
+        I64 flags = 0;
+        if (arg < uvm.USER_HI && uvm.peek(pid, arg, f, 4) == 4) {
+            flags = u32_at(f, 0) as I64;
+        }
+        I64 t = trap.timer_ticks();
+        if ((flags & SETTLE) != 0) {
+            last_tick = t;             // H-2: every window whole, whatever the budget, before a pinned digest
+            for p in 0..uvm.PROCS {
+                if (bound[p]) {
+                    compose(p);
+                }
+            }
+            cur_p = 0;
+            cur_k = 0;
+            cur_r = 0;
+            user.fb_present();          // HW-1 B: direct mmap writes reach VRAM before SETTLE returns
+            return 0;                  // a settle never waits; the next sync reports
+        } else if (t - last_tick >= 2) {
+            last_tick = t;
+            for p in 0..uvm.PROCS {
+                if (bound[p] && !placed(p)) {
+                    compose(p);
+                }
+            }
+            compose_placed(tick_px);   // H-2: placed windows a budget at a time, so a copy never outlasts a tick
+        }
+        user.fb_present();              // includes the tiler's own fullscreen mapping, not just fb_put spans
+        if (input.pending()) {
+            return 1;
+        }
+        if (pty.out_ready() && fair.out_due(t)) {
+            return 3;                  // W-4: a pty's master has a write to read (the desk's terminal)
+        }
+        if (binds != bound_told) {
+            bound_told = binds;        // H-3a: a window took the tile set next at its open; FBIO_TILE_INFO kind 0 id 0 names it
+            return 4;
+        }
+        if (ends != seen) {
+            seen += 1;                 // W-4: one return an end, so the tiler wakes as often whatever the timing
+            return 2;
+        }
+        I64 dn = date_now();
+        if (dn >= 0 && dn / 60 != minute_told) {
+            minute_told = dn / 60;     // K-6: the clock's minute turned (a live date only)
+            return 5;
+        }
+        if (vars != vars_told) {
+            vars_told = vars;          // BP-6: a variable changed after its first, or a name (NAMES-28)
+            return 6;
+        }
+        if ((flags & FRAME) != 0 && t - frame_tick >= 1) {
+            frame_tick = t;            // SP-3, MS-2: an animation's next frame, every tick (100 Hz) while FRAME is set, after every other report; the copies of clients keep their two ticks above
+            return 8;
+        }
+        return input.WOULD_BLOCK_DEV;
+    }
+    return 0 - EINVAL;
+}
+
+// SP-3: the gates' stepped frames (boot word daphnis.stepframes, src/main_hdesk.ci), told the tiler by
+// FBIO_TILE_INFO kind 2's flags bit 1.
+export void set_step() {
+    step = true;
+}
+
+export Bool stepped() {
+    return step;
+}
+
+// FBIO_TILE_PLACE (H-2) for slot (NEXT for pid 0; src/proc.ci resolved the pid the tiler named): the window's
+// surface pixel (sx, sy) is screen pixel (dst_x + scale * sx, dst_y + scale * sy), and only the rectangles are
+// drawn. Each rectangle lies on the screen and on the scaled surface; the tiler cut them (user/ci/kit/layout.ci),
+// the kernel never intersects. 0, -ESRCH, -EFAULT, or -EINVAL (no surface, no tile set, scale outside 1..6,
+// more than RECTS, a rectangle off the screen or the surface), -ENOSPC when 17 windows are placed or the pool's 128 rectangles are taken.
+export I64 place(I64 slot, U64 arg) {
+    if (slot < 0) {
+        return 0 - ESRCH;
+    }
+    U8[24] b;
+    if (arg >= uvm.USER_HI || uvm.peek(tiler, arg, b, 24) != 24) {
+        return 0 - EFAULT;
+    }
+    I64 w = next_w;
+    I64 h = next_h;
+    if (slot != NEXT) {
+        if (!bound[slot]) {
+            return 0 - EINVAL;
+        }
+        w = sw[slot];
+        h = sh[slot];
+    }
+    I64 dx = i32_at(b, 4);
+    I64 dy = i32_at(b, 8);
+    I64 s = (b[12] as I64) | ((b[13] as I64) << 8);
+    I64 n = (b[14] as I64) | ((b[15] as I64) << 8);
+    U64 at = u32_at(b, 16) | (u32_at(b, 20) << 32);
+    if (w == 0 || s < 1 || s > 6 || n > RECTS) {
+        return 0 - EINVAL;
+    }
+    U8[512] r;
+    if (n > 0 && (at >= uvm.USER_HI || uvm.peek(tiler, at, r, 16 * n) != 16 * n)) {
+        return 0 - EFAULT;
+    }
+    I64 fw = user.fb_word(0) as I64;
+    I64 fh = user.fb_word(1) as I64;
+    for k in 0..n {
+        I64 x = u32_at(r, 16 * k) as I64;
+        I64 y = u32_at(r, 16 * k + 4) as I64;
+        I64 rw_ = u32_at(r, 16 * k + 8) as I64;
+        I64 rh_ = u32_at(r, 16 * k + 12) as I64;
+        if (rw_ < 1 || rh_ < 1 || x + rw_ > fw || y + rh_ > fh || x < dx || y < dy ||
+            x + rw_ > dx + s * w || y + rh_ > dy + s * h) {
+            return 0 - EINVAL;
+        }
+    }
+    I64 had = rects_of(slot);
+    if (used - had + n > POOL) {
+        return 0 - ENOSPC;
+    }
+    unplace(slot);
+    I64 rec = -1;
+    for q in 0..RECORDS {
+        if (rec < 0 && owner[q] == 0) {
+            rec = q;
+        }
+    }
+    if (rec < 0) {
+        return 0 - ENOSPC;
+    }
+    owner[rec] = slot + 1;
+    book[slot] = (rec + 1) as U8;
+    pdx[rec] = dx;
+    pdy[rec] = dy;
+    psc[rec] = s;
+    pn[rec] = n;
+    pat[rec] = used;
+    pfresh[rec] = true;
+    for k in 0..n {
+        rect[used] = u32_at(r, 16 * k) | (u32_at(r, 16 * k + 4) << 16) | (u32_at(r, 16 * k + 8) << 32) |
+            (u32_at(r, 16 * k + 12) << 48);
+        used += 1;
+    }
+    return 0;
+}
+
+I64 i32_at[n](in U8[n] b, I64 at) {
+    I64 v = u32_at(b, at) as I64;
+    if (v >= 0x80000000) {
+        v = v - 0x100000000;
+    }
+    return v;
+}
+
+// The shape's color at screen pixel (x, y): 0 none, else the word (H-4; DN-51 frame 26: its box's top left is the
+// hot spot less cursor.hot at the scale).
+U64 arrow_at(I64 x, I64 y) {
+    I64 x0 = cur_x - cursor.hot(cur_shape) * cur_s;
+    I64 y0 = cur_y - cursor.hot(cur_shape) * cur_s;
+    if (x < x0 || y < y0) {
+        return 0;
+    }
+    I64 c = cursor.shape_at(cur_shape, (x - x0) / cur_s, (y - y0) / cur_s);
+    if (c == 0) {
+        return 0;
+    }
+    if (c == 2) {
+        return 0x141413;
+    }
+    return 0xF3EFE6;
+}
+
+// The pointer's pixel at screen (x, y) over the screen's word u: the Busy sprite blended (DN-37), then the arrow
+// on top; u itself where neither is.
+U64 pointer_px(I64 x, I64 y, U64 u) {
+    U64 c = arrow_at(x, y);
+    if (c != 0) {
+        return c;
+    }
+    if (!busy_on || cur_shape != cursor.ARROW) {
+        return u;
+    }
+    I64 sx = x - cur_x - busy_dx;
+    I64 sy = y - cur_y - busy_dy;
+    if (sx < 0 || sy < 0 || sx >= busy_w || sy >= busy_h) {
+        return u;
+    }
+    I64 at = 4 * (sy * busy_w + sx);
+    U64 w = (busy_px[at] as U64) | ((busy_px[at + 1] as U64) << 8) | ((busy_px[at + 2] as U64) << 16) |
+        ((busy_px[at + 3] as U64) << 24);
+    return cursor.blend(u, w);
+}
+
+// Every kernel write to the screen (W-2's rows, H-2's rectangles): bytes at byte offset off. Under a shown arrow,
+// what the write puts goes to the save-under and the arrow stays on top (H-4, section 5 item 3).
+void fb_out(U64 off, in U8[_] b) {
+    I64 n = len(b) / 4;
+    I64 line = user.fb_word(2) as I64;
+    I64 y = (off as I64) / line;
+    I64 x0 = ((off as I64) % line) / 4;
+    if (!cur_on || y < uy || y >= uy + uh || x0 + n <= ux || x0 >= ux + uw) {
+        user.fb_put(off, b);
+        return;
+    }
+    U8[512] o;
+    for k in 0..4 * n { o[k] = b[k]; }
+    for i in 0..n {
+        I64 x = x0 + i;
+        if (x >= ux && x < ux + uw) {
+            I64 at = 4 * ((y - uy) * uw + (x - ux));
+            for k in 0..4 { under[at + k] = o[4 * i + k]; }
+            U64 u = (o[4 * i] as U64) | ((o[4 * i + 1] as U64) << 8) | ((o[4 * i + 2] as U64) << 16);
+            U64 c = pointer_px(x, y, u);
+            for k in 0..3 { o[4 * i + k] = ((c >> ((8 * k) as U64)) & 0xFF) as U8; }
+        }
+    }
+    user.fb_put(off, o[0..4 * n]);
+}
+
+// The arrow off the screen: the save-under back.
+void arrow_hide() {
+    if (!cur_on) {
+        return;
+    }
+    cur_on = false;
+    U64 line = user.fb_word(2);
+    for r in 0..uh {
+        user.fb_put(((uy + r) as U64) * line + (4 * ux) as U64, under[4 * uw * r..4 * uw * (r + 1)]);
+    }
+}
+
+// Shape form on the screen with its hot spot at (x, y), scale s: what is under it saved, then drawn.
+void arrow_show(I64 x, I64 y, I64 s, I64 form) {
+    I64 fw = user.fb_word(0) as I64;
+    I64 fh = user.fb_word(1) as I64;
+    cur_x = x;
+    cur_y = y;
+    cur_s = s;
+    cur_shape = form;
+    ux = x - cursor.hot(form) * s;
+    uy = y - cursor.hot(form) * s;
+    I64 x1 = ux + cursor.width(form) * s;
+    I64 y1 = uy + cursor.height(form) * s;
+    if (busy_on && form == cursor.ARROW) {   // DN-37: the box takes the Busy sprite too (beside the arrow only, so the
+                                          // box stays within the save-under's 88 x 88)
+        x1 = max(x1, x + busy_dx + busy_w);
+        y1 = max(y1, y + busy_dy + busy_h);
+    }
+    if (ux < 0) { ux = 0; }
+    if (uy < 0) { uy = 0; }
+    if (x1 > fw) { x1 = fw; }
+    if (y1 > fh) { y1 = fh; }
+    uw = x1 - ux;
+    uh = y1 - uy;
+    if (uw <= 0 || uh <= 0) {
+        uw = 0;
+        uh = 0;
+        return;
+    }
+    U64 line = user.fb_word(2);
+    U8[352] o;
+    for r in 0..uh {
+        U64 off = ((uy + r) as U64) * line + (4 * ux) as U64;
+        I64 got = user.fb_get(off, under[4 * uw * r..4 * uw * (r + 1)]);
+        for i in 0..uw {
+            I64 b = 4 * uw * r + 4 * i;
+            U64 u = (under[b] as U64) | ((under[b + 1] as U64) << 8) | ((under[b + 2] as U64) << 16);
+            U64 c = pointer_px(ux + i, uy + r, u);
+            for k in 0..3 { o[4 * i + k] = ((c >> ((8 * k) as U64)) & 0xFF) as U8; }
+            o[4 * i + 3] = under[b + 3];
+        }
+        user.fb_put(off, o[0..4 * uw]);
+    }
+    cur_on = true;
+}
+
+// Screen rows y..y + reps - 1 of rectangle k of placed window pid, all of one surface row: screen pixel x shows
+// surface pixel ((x - dst_x) / scale, (y - dst_y) / scale). Each run is scaled once (rt/fb.c px_spread, H-4b) and
+// written reps times. A source run it has not mapped ends the rows.
+void place_row(I64 pid, I64 k, I64 y, I64 reps) {
+    I64 w = book[pid] as I64 - 1;
+    I64 s = psc[w];
+    I64 dx = pdx[w];
+    U64 src = sva[pid] + (4 * sw[pid] * ((y - pdy[w]) / s)) as U64;
+    U64 line = user.fb_word(2);
+    U64 dst = (y as U64) * line;
+    U8[512] o;
+    I64 x = rf(pid, k, 0);
+    I64 x1 = x + rf(pid, k, 2);
+    while (x < x1) {
+        I64 n = x1 - x;
+        if (n > 128) {
+            n = 128;
+        }
+        I64 s0 = (x - dx) / s;
+        if (s == 1) {
+            if (uvm.peek(pid, src + (4 * s0) as U64, o, 4 * n) != 4 * n) {
+                return;
+            }
+        } else {
+            I64 m = (x + n - 1 - dx) / s - s0 + 1;
+            if (uvm.peek(pid, src + (4 * s0) as U64, o, 4 * m) != 4 * m) {
+                return;
+            }
+            user.px_spread(o[0..4 * n], m, s, x - dx - s * s0);
+        }
+        for r in 0..reps {
+            fb_out(dst + (r as U64) * line + (4 * x) as U64, o[0..4 * n]);
+        }
+        x += n;
+    }
+}
+
+// Of screen rows y..lim - 1 of a placed window's rectangle, how many from y show the same surface row as y.
+I64 alike(I64 w, I64 y, I64 lim) {
+    I64 s = psc[w];
+    I64 c = s - (y - pdy[w]) % s;
+    if (y + c > lim) {
+        c = lim - y;
+    }
+    return c;
+}
+
+// The placed windows' rows from where the last timed copy stopped, at most budget pixels and one round of the
+// slots, so a 2x window at 3840 x 2160 takes several ticks and never one long copy with interrupts off.
+void compose_placed(I64 budget) {
+    I64 left = budget;
+    for v in 0..uvm.PROCS {
+        I64 p = cur_p;
+        if (bound[p] && placed(p) && sva[p] != 0) {
+            I64 w = book[p] as I64 - 1;
+            if (cur_k == 0 && cur_r == 0) {
+                if (left <= 0) {
+                    return;
+                }
+                Bool go = false;
+                if (swait[p]) {        // RS-SURF: a new size shows only once the client has drawn into it
+                    go = uvm.written(p, sva[p], (4 * sw[p] * sh[p]) as U64);
+                    swait[p] = !go;
+                } else {
+                    go = pfresh[w] || p == tiler || uvm.written(p, sva[p], (4 * sw[p] * sh[p]) as U64);
+                }
+                if (go) {
+                    pfresh[w] = false;
+                    shown_new = true;          // K-12: this copy shows a new frame
+                } else {
+                    shown_new = false;
+                    cur_k = rects_of(p);   // H-4b: no page written since its last copy began; the screen holds it
+                }
+            }
+            while (cur_k < rects_of(p)) {
+                I64 lim = rf(p, cur_k, 1) + rf(p, cur_k, 3);
+                while (cur_r < rf(p, cur_k, 3)) {
+                    if (left <= 0) {
+                        return;
+                    }
+                    I64 y = rf(p, cur_k, 1) + cur_r;
+                    I64 c = alike(w, y, lim);
+                    place_row(p, cur_k, y, c);
+                    left -= c * rf(p, cur_k, 2);
+                    cur_r += c;
+                }
+                cur_k += 1;
+                cur_r = 0;
+            }
+            if (shown_new) {
+                shown_new = false;
+                k12.frame(p);                  // K-12: the frame is on the screen
+            }
+        }
+        cur_k = 0;
+        cur_r = 0;
+        cur_p = (cur_p + 1) % uvm.PROCS;
+    }
+}
+
+// Copies pid's private surface into its tile on the framebuffer, row by row; a row it has not mapped is skipped.
+// A placed window (H-2) copies its rectangles instead: none when it has 0, at once.
+void compose(I64 pid) {
+    if (sva[pid] == 0) {
+        return;
+    }
+    if (swait[pid]) {                  // RS-SURF: nothing of a new size until the client has written a page of it
+        if (!uvm.written(pid, sva[pid], (4 * sw[pid] * sh[pid]) as U64)) {
+            return;
+        }
+        swait[pid] = false;
+    }
+    if (placed(pid)) {
+        I64 w = book[pid] as I64 - 1;
+        for k in 0..rects_of(pid) {
+            I64 y = rf(pid, k, 1);
+            I64 lim = y + rf(pid, k, 3);
+            while (y < lim) {
+                I64 c = alike(w, y, lim);
+                place_row(pid, k, y, c);
+                y += c;
+            }
+        }
+        return;
+    }
+    U64 line = user.fb_word(2);
+    U8[512] b;
+    for y in 0..sh[pid] {
+        U64 src = sva[pid] + (y * 4 * sw[pid]) as U64;
+        U64 dst = ((ty[pid] + y) as U64) * line + (4 * tx[pid]) as U64;
+        I64 done = 0;
+        while (done < 4 * sw[pid]) {
+            I64 c = 4 * sw[pid] - done;
+            if (c > 512) {
+                c = 512;
+            }
+            if (uvm.peek(pid, src + done as U64, b, c) != c) {
+                return;
+            }
+            fb_out(dst + done as U64, b[0..c]);
+            done += c;
+        }
+    }
+}
+
+// The digest of pid's private surface, w * h pixels row by row, as the surface digest is of the screen.
+void digest(I64 pid, inout U8[32] d) {
+    sha256.Sha256[1] s;
+    sha256.sha_init(s);
+    U8[512] b;
+    for y in 0..sh[pid] {
+        U64 src = sva[pid] + (y * 4 * sw[pid]) as U64;
+        I64 done = 0;
+        while (done < 4 * sw[pid]) {
+            I64 c = 4 * sw[pid] - done;
+            if (c > 512) {
+                c = 512;
+            }
+            I64 got = uvm.peek(pid, src + done as U64, b, c);
+            for i in got..c {
+                b[i] = 0;
+            }
+            sha256.sha_update(s, b, 0, c);
+            done += c;
+        }
+    }
+    sha256.sha_final(s, d);
+}
+
+void put_num(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+// pid ends (exit or signal), its pages still mapped: a bound client's surface is copied into its tile once
+// more and its digest printed, `daphnis: tile surface WxH at X,Y sha256 HEX`, and a tile queue's count, `daphnis:
+// tile queue N events given, U unread`; then pid has no surface and no queue, and the tiler's next sync returns 2. The tiler's end leaves the screen to whoever opens it next. On
+// execve (exiting false) only the pages go.
+// NAMES-28: a process's name changed (its exec, prctl's PR_SET_NAME), so the tiler is woken as for a variable (6) and
+// reads the bar again. A program that writes nothing after its exec (Read with no file) is named no other way.
+export void named() {
+    vars += 1;
+}
+
+export void end(I64 pid, Bool exiting) {
+    if (!exiting) {
+        sva[pid] = 0;                  // execve: the pages go, the tile and the queue stay
+        swait[pid] = false;
+        sonce[pid] = false;
+        for k in 0..VAR_LEN { tvar[VAR_LEN * pid + k] = 0; }
+        for k in 0..32 {
+            tmenu[112 * pid + 3 * k] = 0;   // AM-2
+            tmenu[112 * pid + 3 * k + 1] = 0;
+            tmenu[112 * pid + 3 * k + 2] = 0;
+        }
+        for k in 96..112 { tmenu[112 * pid + k] = 0; }
+        on_resize[pid] = false;        // H-3c3: the variable and the resize events were the old program's
+        on_point[pid] = false;         // BP-6: and the pointer's place
+        rows_free(pid);                // AM-4: and the rows
+        return;
+    }
+    if (bound[pid] && sva[pid] != 0) {
+        compose(pid);
+        U8[32] d;
+        digest(pid, d);
+        serial.serial_write("daphnis: tile surface ");
+        put_num(sw[pid]);
+        serial.serial_write("x");
+        put_num(sh[pid]);
+        serial.serial_write(" at ");
+        put_num(tx[pid]);
+        serial.serial_write(",");
+        put_num(ty[pid]);
+        serial.serial_write(" sha256 ");
+        for i in 0..32 {
+            serial.serial_putc(text.hex_digit(d[i] >> 4));
+            serial.serial_putc(text.hex_digit(d[i] & 15));
+        }
+        serial.serial_write("\n");
+    }
+    queues_init();
+    I64 q = queue_of[pid];
+    if (q >= 0) {
+        serial.serial_write("daphnis: tile queue ");
+        put_num(qgiven[q]);
+        serial.serial_write(" events given, ");
+        put_num(qlen[q]);
+        serial.serial_write(" unread\n");
+    }
+    if (pid == tiler) {
+        tiler = -1;
+        next_w = 0;
+    } else {
+        ends += 1;
+    }
+    queue_free(pid);
+    reset(pid);
+}
+
+// The surface of pid in its canonical state (W-2): its kind (u8), w, h and stride (u32 each), the length of
+// its tile input queue (u8, 0 for none); 14 bytes.
+export void state[n](I64 pid, inout U8[n] b) {
+    U64[3] w;
+    w[0] = sw[pid] as U64;
+    w[1] = sh[pid] as U64;
+    w[2] = 0;
+    if (kind[pid] != NONE) {
+        w[2] = stride(pid) as U64;
+    }
+    b[0] = kind[pid] as U8;
+    for i in 0..3 {
+        for k in 0..4 {
+            b[1 + 4 * i + k] = ((w[i] >> ((8 * k) as U64)) & 0xFF) as U8;
+        }
+    }
+    b[13] = 0;
+    queues_init();
+    if (queue_of[pid] >= 0) {
+        b[13] = qlen[queue_of[pid]] as U8;
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

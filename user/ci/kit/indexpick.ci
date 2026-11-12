@@ -1,0 +1,60 @@
+// user/ci/kit/indexpick.ci: Choose Picture (DN-58 item 8; Settings' Desk page, frame 33): Index as a picker of PNG
+// files, `finder --pick png`, as a kit. The desk starts it as the account, in a window. It lists folders and PNG files
+// only (shows), with links as Index lists them: by what they lead to, as the account may follow them, or as
+// themselves when they lead nowhere it may reach. Choose (kit/pickbar.ci's, in the bar at the foot) is live on one
+// chosen entry that chooses(); choosing writes the entry's absolute path, a link's own path when it is one, as the
+// account's desk.background (choose: kit/setfile.ci's put from this process, the account's own, as View's Set as
+// Background), and the program ends 0. Cancel, Esc or q with no filter typed, or the window closed, writes nothing
+// and ends 1. It opens no picture: the desk reads it through bgread, as the account, so a link resolves under the
+// account's rights when it is read too. tests/set/indexpick_test.ci runs it over tests/set's volume in memory
+// (tools/check-settings.py).
+import user.ci.kit.setfile;
+
+const I64 S_IFMT = 0xF000;
+const I64 S_IFDIR = 0x4000;
+const I64 S_IFREG = 0x8000;
+const I64 PATH = 4096;               // a path's bytes with its ending 0 (kit/finder.ci's)
+const I64 EINVAL = 22;
+
+// Whether name ends in .png, in any case, after a stem.
+export Bool png(in U8[_] name) {
+    I64 n = len(name);
+    if (n < 5) { return false; }
+    U8[4] e = b".png";
+    for q in 0..4 {
+        U8 c = name[n - 4 + q];
+        if (c >= 'A' && c <= 'Z') { c = c + 32; }
+        if (c != e[q]) { return false; }
+    }
+    return true;
+}
+
+// Whether the picker lists an entry of name and mode m (the mode Index lists it by: a stat that follows a link, or
+// the link's own when that fails): a folder, or a PNG's name.
+export Bool shows(in U8[_] name, I64 m) { return (m & S_IFMT) == S_IFDIR || png(name); }
+
+// Whether Choose takes an entry of name and mode m: a regular file, once a link is followed, with a PNG's name that a
+// setting's value can hold (no CR or LF).
+export Bool chooses(in U8[_] name, I64 m) {
+    if ((m & S_IFMT) != S_IFREG || !png(name)) { return false; }
+    for q in 0..len(name) {
+        if (name[q] == 10 || name[q] == 13) { return false; }
+    }
+    return true;
+}
+
+// Choose: path, absolute and its last name a PNG's, as the account's desk.background in the settings file under home;
+// 0, or setfile.put's failure with the file as it was. -EINVAL, and nothing written, for any other path, one at PATH
+// bytes or past, or one holding a 0 byte, CR or LF.
+export I64 choose(in U8[_] home, in U8[_] path) {
+    I64 n = len(path);
+    if (n < 2 || n >= PATH || path[0] != '/') { return 0 - EINVAL; }
+    I64 s = n;
+    while (s > 0 && path[s - 1] != '/') { s = s - 1; }
+    if (!png(path[s..n])) { return 0 - EINVAL; }
+    for q in 0..n {
+        if (path[q] == 0 || path[q] == 10 || path[q] == 13) { return 0 - EINVAL; }
+    }
+    return setfile.put(home, b"desk.background", path);
+}
+// SPDX-License-Identifier: Apache-2.0

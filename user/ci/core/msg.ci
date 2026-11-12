@@ -1,0 +1,211 @@
+// user/ci/core/msg.ci: a core tool's diagnostics and status (docs/specs/2026-11-06-c-core.md sections 2 and 5). One
+// form: `TOOL: path: reason` on descriptor 2, written whole; the reason is musl's text for the errno. A refusal
+// (`TOOL: not supported: -X`) and a limit (`TOOL: limit: NAME`) end the tool with status 2.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+
+U8[1024] line;
+I64 n = 0;
+U8[32] tool;
+I64 tn = 0;
+I64 status = 0;
+
+// The tool's name, the first word of each line.
+export void name(in U8[_] t) {
+    tn = 0;
+    for i in 0..len(t) {
+        if (tn < 32) {
+            tool[tn] = t[i];
+            tn = tn + 1;
+        }
+    }
+}
+
+export void text(in U8[_] s) {
+    for i in 0..len(s) {
+        if (n < 1023) {
+            line[n] = s[i];
+            n = n + 1;
+        }
+    }
+}
+
+export void byte(U8 b) {
+    if (n < 1023) {
+        line[n] = b;
+        n = n + 1;
+    }
+}
+
+export void begin() {
+    n = 0;
+    text(tool[0..tn]);
+    text(b": ");
+}
+
+export void send() {
+    byte('\n');
+    _ = shctl.fd_write(2, line[0..n]);
+    n = 0;
+}
+
+// errno e as musl's strerror says it, else `error E`.
+export void reason(I64 e) {
+    if (e == 1) { text(b"Operation not permitted"); }
+    else if (e == 2) { text(b"No such file or directory"); }
+    else if (e == 5) { text(b"I/O error"); }
+    else if (e == 9) { text(b"Bad file descriptor"); }
+    else if (e == 12) { text(b"Out of memory"); }
+    else if (e == 13) { text(b"Permission denied"); }
+    else if (e == 16) { text(b"Resource busy"); }
+    else if (e == 17) { text(b"File exists"); }
+    else if (e == 18) { text(b"Cross-device link"); }
+    else if (e == 20) { text(b"Not a directory"); }
+    else if (e == 21) { text(b"Is a directory"); }
+    else if (e == 22) { text(b"Invalid argument"); }
+    else if (e == 24) { text(b"No file descriptors available"); }
+    else if (e == 27) { text(b"File too large"); }
+    else if (e == 28) { text(b"No space left on device"); }
+    else if (e == 30) { text(b"Read-only file system"); }
+    else if (e == 32) { text(b"Broken pipe"); }
+    else if (e == 36) { text(b"Filename too long"); }
+    else if (e == 39) { text(b"Directory not empty"); }
+    else if (e == 40) { text(b"Symbolic link loop"); }
+    else if (e == 101) { text(b"Network unreachable"); }   // CT-5: wget's socket errors
+    else if (e == 104) { text(b"Connection reset by peer"); }
+    else if (e == 110) { text(b"Operation timed out"); }
+    else if (e == 111) { text(b"Connection refused"); }
+    else if (e == 113) { text(b"Host is unreachable"); }
+    else {
+        text(b"error ");
+        I64 x = e;
+        U8[24] d;
+        I64 k = 0;
+        if (x <= 0) {
+            byte('0');
+        }
+        while (x > 0) {
+            d[k] = ((x % 10) as U8) + 48;
+            x = x / 10;
+            k = k + 1;
+        }
+        while (k > 0) {
+            k = k - 1;
+            byte(d[k]);
+        }
+    }
+}
+
+// `TOOL: path: reason`; the status becomes 1, the tool goes on.
+export void file(in U8[_] path, I64 e) {
+    begin();
+    text(path);
+    text(b": ");
+    reason(e);
+    send();
+    status = 1;
+}
+
+// `TOOL: path: what? ` with no newline, a question whose answer the caller reads (CT-2: -i).
+export void ask(in U8[_] path, in U8[_] what) {
+    begin();
+    text(path);
+    text(b": ");
+    text(what);
+    text(b"? ");
+    _ = shctl.fd_write(2, line[0..n]);
+    n = 0;
+}
+
+// `TOOL: path: why` for a reason that is no errno (CT-2: `same file`); the status becomes 1, the tool goes on.
+export void said(in U8[_] path, in U8[_] why) {
+    begin();
+    text(path);
+    text(b": ");
+    text(why);
+    send();
+    status = 1;
+}
+
+// Ends the tool: descriptor 1 flushed, the status 1 after any diagnostic or failed write, else 0.
+// Whether nothing has set a failing status yet (SP-7: fetch tells the desk a download finished only then).
+export Bool ok() { return status == 0; }
+
+export void finish() {
+    put.flush();
+    if (put.failed() && status == 0) { status = 1; }
+    dev.exit_now(status);
+}
+
+// v in decimal on the diagnostic line.
+export void num(I64 v) {
+    U8[24] d;
+    I64 k = 0;
+    I64 x = v;
+    if (x < 0) {
+        byte('-');
+        x = 0 - x;
+    }
+    if (x == 0) { byte('0'); }
+    while (x > 0) {
+        d[k] = ((x % 10) as U8) + 48;
+        x = x / 10;
+        k = k + 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        byte(d[k]);
+    }
+}
+
+// The status becomes 1 (a failure said by the tool itself); the tool goes on.
+export void status_one() {
+    if (status == 0) { status = 1; }
+}
+
+// Ends the tool with status code after flushing descriptor 1 (grep's 0, 1 and 2).
+export void finish_with(I64 code) {
+    put.flush();
+    dev.exit_now(code);
+}
+
+// Ends the tool with status 2 after `TOOL: not supported: -X` (gate 4).
+export void refuse(U8 c) {
+    begin();
+    text(b"not supported: -");
+    byte(c);
+    send();
+    put.flush();
+    dev.exit_now(2);
+}
+
+// Ends the tool with status 2 after `TOOL: WHAT` (a usage error: an option without its value, a bad number).
+export void usage(in U8[_] what) {
+    begin();
+    text(what);
+    send();
+    put.flush();
+    dev.exit_now(2);
+}
+
+// Ends the tool with status 2 after `TOOL: option requires an argument: -X`.
+export void needs(U8 c) {
+    begin();
+    text(b"option requires an argument: -");
+    byte(c);
+    send();
+    put.flush();
+    dev.exit_now(2);
+}
+
+// Ends the tool with status 2 after `TOOL: limit: NAME` (gate 3, section 5).
+export void limit(in U8[_] lname) {
+    begin();
+    text(b"limit: ");
+    text(lname);
+    send();
+    put.flush();
+    dev.exit_now(2);
+}
+// SPDX-License-Identifier: Apache-2.0

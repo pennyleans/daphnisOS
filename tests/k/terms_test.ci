@@ -1,0 +1,254 @@
+// tests/k/terms_test.ci: hosted tests of the terminal's UTF-8 decode (K-2b, user/ci/terms.ci; docs/reviews/
+// 2026-11-07-macos-critic-review.md B-5, RV-5 A; docs/specs/2026-11-07-k-kit2.md section 3f). Each vector's want is
+// what Python's bytes.decode("utf-8", "replace") gives. Run by check.sh:
+// cint test --root . tests/k/terms_test.ci
+
+import user.ci.terms;
+
+Bool same(in U8[_] a, in U8[_] b) {
+    if (len(a) != len(b)) { return false; }
+    for k in 0..len(a) {
+        if (a[k] != b[k]) { return false; }
+    }
+    return true;
+}
+
+void feeds(I64 s, in U8[_] b) {
+    for k in 0..len(b) { terms.feed(s, b[k]); }
+}
+
+// Row 0 of slot s, from column 0, is want, a code point a column, and the cursor is just past it.
+Bool row_is(I64 s, in I64[_] want) {
+    for c in 0..len(want) {
+        if (terms.code(s, 0, c) != want[c]) { return false; }
+    }
+    if (terms.code(s, 0, len(want)) != 32) { return false; }
+    return terms.cursor_x(s) == len(want) && terms.cursor_y(s) == 0;
+}
+
+Bool fresh(I64 s, in U8[_] b, in I64[_] want) {
+    terms.init(s, 80, 25);
+    feeds(s, b);
+    return row_is(s, want);
+}
+
+test "ASCII is a code point a column" {
+    I64[3] w = [0x61, 0x7E, 0x20];
+    assert(fresh(0, b"a~ ", w));
+    I64[5] h = [0x68, 0x65, 0x6C, 0x6C, 0x6F];
+    assert(fresh(0, b"hello", h));
+}
+
+test "two, three and four byte sequences, one column each" {
+    I64[6] w = [0x63, 0x61, 0x66, 0xE9, 0x21, 0x7FF];
+    assert(fresh(0, b"caf\xc3\xa9!\xdf\xbf", w));
+    I64[4] t = [0x20AC, 0x31, 0x800, 0xFFFF];
+    assert(fresh(0, b"\xe2\x82\xac1\xe0\xa0\x80\xef\xbf\xbf", t));
+    I64[4] f = [0x1F600, 0x10000, 0x10FFFF, 0x21];
+    assert(fresh(0, b"\xf0\x9f\x98\x80\xf0\x90\x80\x80\xf4\x8f\xbf\xbf!", f));
+    I64[3] e = [0xD7FF, 0xE000, 0xA0];
+    assert(fresh(0, b"\xed\x9f\xbf\xee\x80\x80\xc2\xa0", e));
+}
+
+test "a sequence split between two writes decodes whole" {
+    terms.init(1, 80, 25);
+    feeds(1, b"x\xe2");
+    assert(terms.cursor_x(1) == 1);
+    feeds(1, b"\x82");
+    assert(terms.cursor_x(1) == 1);
+    feeds(1, b"\xacy\xf0\x9f");
+    feeds(1, b"\x98");
+    feeds(1, b"\x80\xc3");
+    feeds(1, b"\xa9");
+    I64[5] w = [0x78, 0x20AC, 0x79, 0x1F600, 0xE9];
+    assert(row_is(1, w));
+}
+
+test "two slots mid-sequence do not mix" {
+    terms.init(2, 80, 25);
+    terms.init(3, 80, 25);
+    feeds(2, b"\xe2\x82");
+    feeds(3, b"\xc3");
+    feeds(2, b"\xac");
+    feeds(3, b"\xa9");
+    I64[1] a = [0x20AC];
+    I64[1] b = [0xE9];
+    assert(row_is(2, a));
+    assert(row_is(3, b));
+}
+
+test "unexpected continuation bytes are U+FFFD each" {
+    I64[4] w = [0x61, 0xFFFD, 0xFFFD, 0x62];
+    assert(fresh(0, b"a\x80\xbfb", w));
+    I64[3] t = [0xE9, 0xFFFD, 0x21];
+    assert(fresh(0, b"\xc3\xa9\xa9!", t));
+}
+
+test "bytes that never lead: 0xC0, 0xC1 and 0xF5 to 0xFF" {
+    I64[2] c0 = [0xFFFD, 0xFFFD];
+    assert(fresh(0, b"\xc0\xaf", c0));
+    assert(fresh(0, b"\xc1\xbf", c0));
+    I64[6] hi = [0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 0x7A];
+    assert(fresh(0, b"\xf5\xf8\xfc\xfe\xffz", hi));
+}
+
+test "overlongs are rejected" {
+    I64[3] e0 = [0xFFFD, 0xFFFD, 0xFFFD];
+    assert(fresh(0, b"\xe0\x80\x80", e0));
+    assert(fresh(0, b"\xe0\x9f\xbf", e0));
+    I64[4] f0 = [0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD];
+    assert(fresh(0, b"\xf0\x80\x80\x80", f0));
+    assert(fresh(0, b"\xf0\x8f\xbf\xbf", f0));
+}
+
+test "surrogates U+D800 to U+DFFF are rejected" {
+    I64[3] w = [0xFFFD, 0xFFFD, 0xFFFD];
+    assert(fresh(0, b"\xed\xa0\x80", w));
+    assert(fresh(0, b"\xed\xbf\xbf", w));
+    I64[6] pair = [0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD];
+    assert(fresh(0, b"\xed\xa0\xbd\xed\xb8\x80", pair));
+}
+
+test "values above U+10FFFF are rejected" {
+    I64[4] w = [0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD];
+    assert(fresh(0, b"\xf4\x90\x80\x80", w));
+    assert(fresh(0, b"\xf7\xbf\xbf\xbf", w));
+}
+
+test "a truncated sequence is U+FFFD and the cutting byte is read afresh" {
+    I64[3] w = [0xFFFD, 0x41, 0x42];
+    assert(fresh(0, b"\xe2\x82AB", w));
+    I64[2] t = [0xFFFD, 0x20AC];
+    assert(fresh(0, b"\xf0\x9f\x98\xe2\x82\xac", t));
+    I64[2] c = [0xFFFD, 0xE9];
+    assert(fresh(0, b"\xc3\xc3\xa9", c));
+    I64[2] cr = [0x78, 0x79];
+    assert(fresh(0, b"\xc3\rxy", cr));
+    assert(terms.code(0, 0, 0) == 0x78);
+    terms.init(0, 80, 25);
+    feeds(0, b"q\xe2\x82\nz");
+    assert(terms.code(0, 0, 0) == 0x71 && terms.code(0, 0, 1) == 0xFFFD && terms.code(0, 1, 2) == 0x7A);
+    assert(terms.cursor_x(0) == 3 && terms.cursor_y(0) == 1);
+}
+
+test "C1 code points are a cell each, as any other" {
+    I64[5] w = [0x61, 0x80, 0x85, 0x9F, 0x62];
+    assert(fresh(0, b"a\xc2\x80\xc2\x85\xc2\x9fb", w));
+}
+
+test "escape sequences keep working, also across a cut sequence" {
+    terms.init(0, 80, 25);
+    feeds(0, b"\xe2\x82\x1b[2;5H\xc3\xa9\x1b[1;1H\xe2\x82\xac");
+    assert(terms.code(0, 0, 0) == 0x20AC && terms.code(0, 0, 1) == 32);
+    assert(terms.code(0, 1, 4) == 0xE9);
+    assert(terms.cursor_x(0) == 1 && terms.cursor_y(0) == 0);
+    terms.init(0, 80, 25);
+    feeds(0, b"\x1b]0;caf\xc3\xa9\x07\x1b[7m\xc3\xa9\x1b[m\x1b[?25l");
+    assert(terms.code(0, 0, 0) == 0xE9 && terms.cursor_x(0) == 1 && !terms.cursor_shown(0));
+    U8[32] v;
+    assert(terms.var_of(0, v) == 5);
+    terms.init(0, 80, 25);
+    feeds(0, b"\x1b[\xc3\xa9mx");
+    assert(terms.code(0, 0, 0) == 0x78 && terms.cursor_x(0) == 1);
+}
+
+test "columns advance one a code point, and wrap" {
+    terms.init(0, 4, 3);
+    feeds(0, b"\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80\x80z");
+    assert(terms.code(0, 0, 0) == 0xE9 && terms.code(0, 0, 1) == 0x20AC);
+    assert(terms.code(0, 0, 2) == 0x1F600 && terms.code(0, 0, 3) == 0xFFFD);
+    assert(terms.code(0, 1, 0) == 0x7A && terms.cursor_x(0) == 1 && terms.cursor_y(0) == 1);
+}
+
+test "a code point survives a scroll and an erase writes blanks" {
+    terms.init(5, 6, 2);
+    feeds(5, b"\xc3\xa9\r\n\xf0\x9f\x98\x80\xe2\x82\xac\r\n!");
+    assert(terms.code(5, 0, 0) == 0x1F600 && terms.code(5, 0, 1) == 0x20AC && terms.code(5, 1, 0) == 0x21);
+    feeds(5, b"\x1b[1;1H\x1b[K");
+    assert(terms.code(5, 0, 0) == 32 && terms.code(5, 0, 1) == 32);
+    feeds(5, b"a\xc3\xa9");
+    feeds(5, b"\x1b[1;1Hb");
+    assert(terms.code(5, 0, 0) == 0x62 && terms.code(5, 0, 1) == 0xE9);
+    feeds(5, b"\x1b[2;3H");
+    terms.resize(5, 6, 1);
+    assert(terms.code(5, 0, 0) == 0x21 && terms.cursor_y(5) == 0);
+}
+
+test "text_of gives a byte a cell, ? above 126" {
+    terms.init(7, 80, 25);
+    feeds(7, b"caf\xc3\xa9 \xf0\x9f\x98\x80\x80!   ");
+    U8[80] t;
+    I64 n = terms.text_of(7, 0, t);
+    assert(n == 8);
+    assert(same(t[0..n], b"caf? ??!"));
+}
+
+// FONT-1 swap: tests/font/term_cells_test.ci holds each cell to kit/mtext.ci's; here, only that none is `?`'s now.
+test "a code point above 126 draws as its own cell, not as ?" {
+    terms.init(0, 4, 1);
+    terms.init(1, 4, 1);
+    feeds(0, b"\xc3\xa9\xf0\x9f\x98\x80\x1b[1m\xe2\x82\xac\x1b[7m\x80");
+    feeds(1, b"??\x1b[1m?\x1b[7m?");
+    feeds(0, b"\x1b[?25l");
+    feeds(1, b"\x1b[?25l");
+    U32[64] a;
+    U32[64] b;
+    for z in 1..3 {
+        Bool[4] differs = [false, false, false, false];
+        for y in 0..16 * z {
+            terms.draw_row(0, a, y, z);
+            terms.draw_row(1, b, y, z);
+            for x in 0..32 * z {
+                if (a[x] != b[x]) { differs[x / (8 * z)] = true; }
+            }
+        }
+        for c in 0..4 { assert(differs[c]); }
+    }
+}
+
+test "AM-2: OSC 7770 declares a terminal program's app menu: About's name, version and text, and a Settings item" {
+    terms.init(3, 80, 24);
+    U8[70] o = b"\x1b]7770;about;CVim;0.1.0;A modal editor; Vim's keys\x07\x1b]7770;settings;12\x07";
+    for k in 0..len(o) { terms.feed(3, o[k]); }
+    U8[160] t;
+    I64 n = terms.menu_name(3, t);
+    assert(n == 4 && t[0] == 'C' && t[3] == 'm');
+    n = terms.menu_version(3, t);
+    assert(n == 5 && t[0] == '0' && t[4] == '0');
+    n = terms.menu_text(3, t);
+    assert(n == 26 && t[0] == 'A' && t[14] == ';' && t[25] == 's');   // the text keeps its own ';'
+    assert(terms.menu_settings(3) == 12);
+    terms.init(3, 80, 24);
+    assert(terms.menu_name(3, t) == 0 && terms.menu_settings(3) == -1);
+}
+
+test "AM-3: a new title forgets the declaration; the next 7770 declares again" {
+    terms.init(3, 80, 24);
+    U8[57] o = b"\x1b]7770;about;Calc;0.1.0;Sums\x07\x1b]7770;settings;4\x07\x1b]2;/home\x07";
+    for k in 0..len(o) { terms.feed(3, o[k]); }
+    U8[160] t;
+    assert(terms.menu_name(3, t) == 0 && terms.menu_text(3, t) == 0 && terms.menu_settings(3) == -1);
+    U8[30] p = b"\x1b]7770;about;Console;0.1.0;Sh\x07";
+    for k in 0..len(p) { terms.feed(3, p[k]); }
+    assert(terms.menu_name(3, t) == 7 && t[0] == 'C' && terms.menu_text(3, t) == 2);
+}
+
+test "feed_bytes matches byte-at-a-time feed across wraps, SGR, UTF-8 and scrolling" {
+    terms.init(0, 12, 4);
+    terms.init(1, 12, 4);
+    U8[88] stream = b"hello world!\r\n\x1b[1;32;44mbold-wrap-line-012345\x1b[7mREV!\x1b[mcaf\xc3\xa9\n\xf0\x9f\x98\x80\tZ\x08Y\r\nlast-line\x1b]2;ti\x07";
+    for k in 0..len(stream) { terms.feed(0, stream[k]); }
+    terms.feed_bytes(1, stream, len(stream));
+    assert(terms.cursor_x(0) == terms.cursor_x(1) && terms.cursor_y(0) == terms.cursor_y(1));
+    U8[32] v0;
+    U8[32] v1;
+    assert(terms.var_of(0, v0) == terms.var_of(1, v1));
+    U32[192] a;
+    U32[192] b;
+    for y in 0..4 * 16 {
+        terms.draw_row(0, a, y, 1);
+        terms.draw_row(1, b, y, 1);
+        for x in 0..12 * 8 { assert(a[x] == b[x]); }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

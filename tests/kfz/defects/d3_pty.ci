@@ -1,0 +1,52 @@
+// tests/kfz/defects/d3_pty.ci: the plan's P1 of 2026-11-11 (board 20261111T211136Z): any process opens any window's
+// terminal. At this base sys_open of /dev/pts/n (src/fs.ci) asks only pty.slave_ok, and the slave's TCSETS,
+// TIOCSWINSZ, TIOCSPGRP and TIOCSCTTY (src/pty.ci ioctl) ask nothing of whose it is. PR 393 makes a slave its owner
+// session's: these cases fail here and pass with it merged, and join tests/kfz/k7_pty.ci once it is in the base.
+// Uses k7_pty.ci's helpers.
+
+test "PTY-1: another uid opens no slave of a pair it did not make, before the maker's first open or after" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 b = kz_proc(1001, fs.GRANT_ALL, 0);
+    I64 z = kz_proc(0, fs.GRANT_ALL, 0);                  // uid 0, not the desk: another account here too
+    I64 m = kz_ptm(a);
+    I64 n = kz_ptn(a, m);
+    assert(kz_pts(b, n, KZ_O_RDWR | KZ_O_NOCTTY) == E_ACCES);       // a fresh pair: the maker's uid alone
+    assert(kz_pts(b, n, KZ_O_RDWR) == E_ACCES);
+    assert(kz_pts(z, n, KZ_O_RDWR) == E_ACCES);
+    assert(kz_pts(a, n, KZ_O_RDWR | KZ_O_NOCTTY) >= 3);
+    assert(kz_pts(b, n, KZ_O_RDWR | KZ_O_NOCTTY) == E_ACCES);
+    assert(kz_pts(z, n, KZ_O_RDWR | KZ_O_NOCTTY) == E_ACCES);
+    assert(job.terminal(b) == -1 && job.terminal(z) == -1);
+    kz_end(z);
+    kz_end(b);
+    kz_end(a);
+}
+
+test "PTY-2: the same uid in another session opens no slave and changes none; a slave it holds still reads and writes" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 m = kz_ptm(a);
+    I64 n = kz_ptn(a, m);
+    I64 s = kz_pts(a, n, KZ_O_RDWR);                      // a's terminal
+    assert(s >= 3);
+    // another window's shell of the same account: another family
+    I64 c = kz_proc(1000, fs.GRANT_ALL, 0);
+    assert(kz_pts(c, n, KZ_O_RDWR | KZ_O_NOCTTY) == E_ACCES && kz_pts(c, n, KZ_O_RDWR) == E_ACCES);
+    // a's own child after setsid: another session of a's family, holding the slave it inherited
+    I64 k = kz_fork(a);
+    assert(kz_call(k, NR_SETSID, 0, 0, 0, 0, 0, 0) > 0 && job.terminal(k) == -1);
+    assert(kz_pts(k, n, KZ_O_RDWR | KZ_O_NOCTTY) == E_ACCES && kz_pts(k, n, KZ_O_RDWR) == E_ACCES);
+    kz_put(a, KZ_RW + 1024, "hi\n");
+    assert(kz_call(a, 1, m as U64, KZ_RW + 1024, 3, 0, 0, 0) == 3);
+    kz_own(k, KZ_RW + 1100, 16);
+    assert(kz_call(k, 0, s as U64, KZ_RW + 1100, 16, 0, 0, 0) == 3);
+    kz_put(k, KZ_RW + 1200, "ok");
+    assert(kz_call(k, 1, s as U64, KZ_RW + 1200, 2, 0, 0, 0) == 2);
+    I64[4] r;
+    kz_changes(k, s, r);
+    assert(r[0] == E_ACCES && r[1] == E_ACCES && r[2] == E_ACCES && r[3] == E_ACCES);
+    assert(job.terminal(k) == -1 && job.terminal(a) == n);
+    kz_end(k);
+    kz_end(c);
+    kz_end(a);
+}
+// SPDX-License-Identifier: Apache-2.0

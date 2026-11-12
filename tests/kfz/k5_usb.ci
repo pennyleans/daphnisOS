@@ -1,0 +1,1178 @@
+// tests/kfz/k5_usb.ci: HW-4m's USB disk (src/usbms.ci over src/usbscsi.ci) and src/xhci.ci's third device place,
+// against the fake controller and disk of tests/kfz/xhc.ci. The disk lies one stage at a time: READ CAPACITY's sizes
+// at 0, 1 and past READ (10)'s reach; a CSW of another signature, tag or status, or with a residue past the request;
+// a short data stage; sense longer than asked; a unit not ready; a stage that never answers; a stall; babble; the
+// device gone mid transfer; a model that changes after the write check. After each: what the call answers, what the
+// caller's frame holds, whether the transport reset and the next command reads right, and no register touched
+// outside the BAR's window. The controller's side: Enable Slot answering a slot it did not enable or one a device
+// holds (KFZ-8), endpoint numbers at their edges, events for slots and endpoints no device holds, registers named past
+// the BAR (KFZ-7). HW-12's write guard on a disk that carries a stick's GUID partition table (xhc.ci's kfz_xhc_put):
+// written only when the boot line names its volume partition's unique GUID, and then only inside that partition; its
+// model, another GUID, a near miss, a raw device's GUID word and a broken table all stay read only. The cases that
+// fail at this base would be tests/kfz/defects/d2_usb.ci's; it has none now.
+
+const U64 KZ_SECOND = 1000000;          // the controller's clock counts microseconds
+
+// The disk on port 1 at high speed, src/xhci.ci and src/usbms.ci up on it: usbms's sectors. Once a test: xhci.init
+// runs once a boot (its ring indexes stay), and each test starts on a fresh machine.
+I64 kz_usb() {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    machine.kfz_cmdline("quiet");
+    _ = xhci.init();
+    assert(xhci.ms_on());
+    return usbms.init();
+}
+
+// The controller off the bus and the boot line empty, as the other tests have the machine.
+void kz_usb_end() {
+    assert(xhc.kfz_xhc_outside() == 0 && xhc.kfz_xhc_lost() == 0);
+    xhc.kfz_xhc_unplug();
+    machine.kfz_cmdline_clear();
+}
+
+void kz_set(U64 a, U8 v) {
+    U8[4096] b;
+    for k in 0..4096 {
+        b[k] = v;
+    }
+    phys.phys_write8(a, b);
+}
+
+// A pool frame of the caller's, every byte v: its physical address.
+U64 kz_buf(U8 v) {
+    I64 f = frames.alloc(1);
+    assert(f >= 0);
+    U64 a = frames.frame_addr(f) as U64;
+    kz_set(a, v);
+    return a;
+}
+
+void kz_free(U64 a) {
+    assert(frames.release(((a - frames.POOL_BASE as U64) / 4096) as I64, 1) >= 0);
+}
+
+Bool kz_all(U64 a, U8 v) {
+    U8[4096] b;
+    phys.phys_read8(a, b);
+    for k in 0..4096 {
+        if (b[k] != v) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// True when the frame at a holds sectors lba to lba + 7 as the disk has them.
+Bool kz_holds(U64 a, I64 lba) {
+    U8[4096] b;
+    phys.phys_read8(a, b);
+    for k in 0..4096 {
+        if (b[k] != xhc.kfz_xhc_byte(lba + k / 512, k % 512)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// A read that fails, then one that reads right: the transport survived the lie.
+void kz_then_right(U64 a) {
+    kz_set(a, 0x5C);
+    assert(usbms.read(16, a) && kz_holds(a, 16) && xhci.ms_on());
+}
+
+test "usb: an honest disk: found, 8 sectors a read as the disk has them, writes only to the disk the boot line names" {
+    machine.kfz_said_clear();
+    assert(kz_usb() == 1024);
+    assert(machine.kfz_said("daphnis: usb: port 1 speed 3: mass storage\n"));
+    assert(machine.kfz_said("daphnis: usb: storage KFZ_DISK, 1024 sectors, read only\n"));
+    assert(!usbms.writable());
+    U64 a = kz_buf(0x11);
+    xhc.kfz_xhc_watch(a);                                 // a caller's frame is never in a TRB (a review's P1)
+    assert(usbms.read(0, a) && kz_holds(a, 0));
+    assert(usbms.read(1016, a) && kz_holds(a, 1016));
+    // past the end, or before the start: refused before a command goes out
+    I64 reads = xhc.kfz_xhc_ops(0x28);
+    I64[6] bad = [1017, 1024, -1, -8, 0x7FFFFFFFFFFFFFFF, -0x7FFFFFFFFFFFFFFF];
+    kz_set(a, 0x11);
+    for b in 0..6 {
+        assert(!usbms.read(bad[b], a));
+    }
+    assert(xhc.kfz_xhc_ops(0x28) == reads && kz_all(a, 0x11));
+    // a disk the boot line does not name: no write goes out
+    assert(!usbms.write(8, a) && xhc.kfz_xhc_ops(0x2A) == 0 && !xhc.kfz_xhc_stored(8));
+    // named: written, and read back
+    machine.kfz_cmdline("console=ttyS0 daphnis.disk.write=KFZ_DISK quiet");
+    assert(usbms.init() == 1024 && usbms.writable());
+    kz_set(a, 0x3C);
+    assert(usbms.write(8, a) && xhc.kfz_xhc_writes() == 1 && xhc.kfz_xhc_stored(8) && xhc.kfz_xhc_stored(15));
+    assert(xhc.kfz_xhc_watched() == 0);
+    U64 c = kz_buf(0);
+    xhc.kfz_xhc_watch(c);
+    assert(usbms.read(8, c) && kz_all(c, 0x3C) && xhc.kfz_xhc_watched() == 0);
+    for b in 0..6 {
+        assert(!usbms.write(bad[b], a));
+    }
+    assert(xhc.kfz_xhc_writes() == 1 && xhc.kfz_xhc_out() == 0 && xhc.kfz_xhc_resets() == 0);
+    kz_free(c);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: before the machine ends, the disk's cache is written: SYNCHRONIZE CACHE (10) after the last WRITE" {
+    machine.kfz_said_clear();
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x5A);
+    // read only: nothing written, so nothing to send
+    assert(usbms.read(0, a) && usbms.flush() && xhc.kfz_xhc_ops(0x35) == 0);
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    assert(usbms.init() == 1024 && usbms.writable());
+    assert(usbms.flush() && xhc.kfz_xhc_ops(0x35) == 0);            // named, but no WRITE yet
+    assert(usbms.write(8, a) && xhc.kfz_xhc_writes() == 1);
+    assert(usbms.flush());
+    assert(xhc.kfz_xhc_ops(0x35) == 1 && xhc.kfz_xhc_synced() == 1 && !xhc.kfz_xhc_sync_immed());
+    assert(xhc.kfz_xhc_out() == 0 && xhc.kfz_xhc_resets() == 0);   // its CSW came: the command was waited for
+    assert(usbms.flush() && xhc.kfz_xhc_ops(0x35) == 1);            // nothing written since: nothing sent
+    assert(usbms.write(16, a) && usbms.write(24, a) && usbms.flush());
+    assert(xhc.kfz_xhc_ops(0x35) == 2 && xhc.kfz_xhc_synced() == 3);
+    // the device fails it (sense key 0): false and one line; the next flush sends it again
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_STATUS, 0x35, 1, 1);
+    assert(usbms.write(8, a) && !usbms.flush() && xhc.kfz_xhc_ops(0x35) == 3);
+    assert(machine.kfz_said("daphnis: usb: storage: SYNCHRONIZE CACHE (10) failed: the last writes may not be on the disk\n"));
+    assert(usbms.flush() && xhc.kfz_xhc_ops(0x35) == 4 && xhc.kfz_xhc_synced() == 4);
+    // the transport breaks under it: false, and sent again next time
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_SIGNATURE, 0x35, 0, 1);
+    assert(usbms.write(8, a) && !usbms.flush() && xhc.kfz_xhc_ops(0x35) == 5);
+    assert(usbms.flush() && xhc.kfz_xhc_ops(0x35) == 6 && xhc.kfz_xhc_synced() == 5);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: a disk with no SYNCHRONIZE CACHE (10) answers ILLEGAL REQUEST: done, said nothing, not sent again" {
+    xhc.kfz_xhc_no_sync();
+    assert(kz_usb() == 1024);
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    assert(usbms.init() == 1024 && usbms.writable());
+    U64 a = kz_buf(0x5A);
+    machine.kfz_said_clear();
+    assert(usbms.write(8, a) && usbms.flush() && xhc.kfz_xhc_ops(0x35) == 1 && xhc.kfz_xhc_synced() == -1);
+    assert(!machine.kfz_said("SYNCHRONIZE"));
+    assert(usbms.flush() && xhc.kfz_xhc_ops(0x35) == 1);
+    kz_free(a);
+    kz_usb_end();
+}
+
+// The kernel read's P3 on PR 493: SYNCHRONIZE CACHE's status comes once the stick's cache is on its flash, which may
+// take longer than any other command's 5 s; it is waited for up to 30 s, and nothing else gets more than 5 s.
+test "usb: SYNCHRONIZE CACHE's status is waited for up to 30 s; past that the disk is dropped" {
+    machine.kfz_said_clear();
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x44);
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    assert(usbms.init() == 1024 && usbms.writable());
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_LATE, 0x35, 20000, 1);
+    U64 t = xhc.kfz_xhc_now();
+    assert(usbms.write(8, a) && usbms.flush() && xhci.ms_on());
+    assert(xhc.kfz_xhc_now() - t >= 20000000 && xhc.kfz_xhc_synced() == 1);
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_LATE, 0x35, 31000, 1);
+    I64 stops = xhc.kfz_xhc_stops();
+    t = xhc.kfz_xhc_now();
+    assert(usbms.write(16, a) && !usbms.flush() && !xhci.ms_on() && xhc.kfz_xhc_stops() == stops + 1);
+    U64 took = xhc.kfz_xhc_now() - t;
+    assert(took >= 30000000 && took < 31000000);
+    assert(machine.kfz_said("daphnis: usb: storage: no answer in 30 s, the disk is dropped\n"));
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: every other command's CSW still gets 5 s: a READ whose status comes at 6 s drops the disk" {
+    machine.kfz_said_clear();
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x44);
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_LATE, 0x28, 6000, 1);
+    U64 t = xhc.kfz_xhc_now();
+    assert(!usbms.read(0, a) && !xhci.ms_on());
+    U64 took = xhc.kfz_xhc_now() - t;
+    assert(took >= 5000000 && took < 6000000);
+    assert(machine.kfz_said("daphnis: usb: storage: no answer in 5 s, the disk is dropped\n"));
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: blk's flush, which the desk's main calls before the machine ends, reaches the USB disk" {
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    _ = xhci.init();
+    assert(blk.init() == 1024 && blk.is_usb());
+    I64 f = frames.alloc(1);
+    assert(f >= 0);
+    assert(blk.flush() && xhc.kfz_xhc_ops(0x35) == 0);
+    assert(blk.write(0, f) && blk.flush() && xhc.kfz_xhc_ops(0x35) == 1 && xhc.kfz_xhc_synced() == 1);
+    assert(frames.release(f, 1) >= 0);
+    kz_usb_end();
+}
+
+test "usb: the boot line names a disk by the whole word and exactly the model init prints" {
+    assert(kz_usb() == 1024);
+    machine.kfz_cmdline("daphnis.disk.write=KFZ");
+    assert(usbms.init() == 1024 && !usbms.writable());
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISKS");
+    assert(usbms.init() == 1024 && !usbms.writable());
+    machine.kfz_cmdline("xdaphnis.disk.write=KFZ_DISK");
+    assert(usbms.init() == 1024 && !usbms.writable());
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK,");
+    assert(usbms.init() == 1024 && !usbms.writable());
+    machine.kfz_cmdline("daphnis.disk.write=kfz_disk");
+    assert(usbms.init() == 1024 && !usbms.writable());
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    assert(usbms.init() == 1024 && usbms.writable());
+    machine.kfz_cmdline("a daphnis.disk.write=KFZ_DISK b");
+    assert(usbms.init() == 1024 && usbms.writable());
+    // a blank model is never named
+    xhc.kfz_xhc_model("                ");
+    machine.kfz_cmdline("daphnis.disk.write= daphnis.disk.write=_");
+    assert(usbms.init() == 1024 && !usbms.writable());
+    // sixteen bytes, every one in the name
+    xhc.kfz_xhc_model("ABCDEFGHIJKLMNOP");
+    machine.kfz_cmdline("daphnis.disk.write=ABCDEFGHIJKLMNO");
+    assert(usbms.init() == 1024 && !usbms.writable());
+    machine.kfz_cmdline("daphnis.disk.write=ABCDEFGHIJKLMNOP");
+    assert(usbms.init() == 1024 && usbms.writable());
+    // bytes that are not letters, digits, `.` or `-` read `_`, so these two models are one name (a review's P3)
+    U8[8] m;
+    for k in 0..8 {
+        m[k] = 0x41;
+    }
+    m[3] = 0xC3;
+    xhc.kfz_xhc_model(m);
+    machine.kfz_cmdline("daphnis.disk.write=AAA_AAAA");
+    assert(usbms.init() == 1024 && usbms.writable());
+    kz_usb_end();
+}
+
+test "usb: READ CAPACITY at 0, 1 and past READ (10)'s reach, and blocks not of 512 bytes, give no disk" {
+    assert(kz_usb() == 1024);
+    U64[11] lasts = [0, 6, 7, 0xFFFFFFFE, 0xFFFFFFFF, 1023, 1023, 1023, 1023, 1023, 1023];
+    U64[11] blens = [512, 512, 512, 512, 512, 0, 1, 256, 513, 4096, 0xFFFFFFFF];
+    I64[11] want = [-1, -1, 8, 0xFFFFFFFF, -1, -1, -1, -1, -1, -1, -1];
+    U64 a = kz_buf(0x22);
+    for i in 0..11 {
+        xhc.kfz_xhc_capacity(lasts[i], blens[i]);
+        assert(usbms.init() == want[i]);
+        I64 reads = xhc.kfz_xhc_ops(0x28);
+        if (want[i] < 0) {
+            assert(!usbms.read(0, a) && xhc.kfz_xhc_ops(0x28) == reads);
+        }
+    }
+    // eight sectors: one read, at 0
+    xhc.kfz_xhc_capacity(7, 512);
+    assert(usbms.init() == 8);
+    assert(usbms.read(0, a) && kz_holds(a, 0));
+    assert(!usbms.read(1, a));
+    // 2^32 - 1 sectors: the last read's address still fits READ (10)'s four bytes
+    xhc.kfz_xhc_capacity(0xFFFFFFFE, 512);
+    assert(usbms.init() == 0xFFFFFFFF);
+    assert(usbms.read(0xFFFFFFFF - 8, a) && kz_holds(a, 0xFFFFFFFF - 8));
+    I64 reads = xhc.kfz_xhc_ops(0x28);
+    assert(!usbms.read(0xFFFFFFFF - 7, a) && !usbms.read(0x100000000, a) && xhc.kfz_xhc_ops(0x28) == reads);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: a CSW of another signature or tag, a phase error, or a status past 2 is no answer; the transport resets" {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x33);
+    I64[6] lie = [xhc.LIE_CSW_SIGNATURE, xhc.LIE_CSW_TAG, xhc.LIE_CSW_STATUS, xhc.LIE_CSW_STATUS,
+                  xhc.LIE_CSW_STATUS, xhc.LIE_CSW_STATUS];
+    I64[6] arg = [0, 0, 2, 3, 0x80, 0xFF];
+    for i in 0..6 {
+        I64 r = xhc.kfz_xhc_resets();
+        xhc.kfz_xhc_lie(lie[i], 0x28, arg[i], 1);
+        assert(!usbms.read(0, a));
+        assert(xhc.kfz_xhc_resets() == r + 1);
+        kz_then_right(a);
+    }
+    // FAILED: no read, the sense asked once, no reset
+    I64 r = xhc.kfz_xhc_resets();
+    I64 senses = xhc.kfz_xhc_ops(0x03);
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_STATUS, 0x28, 1, 1);
+    assert(!usbms.read(0, a));
+    assert(xhc.kfz_xhc_resets() == r && xhc.kfz_xhc_ops(0x03) == senses + 1);
+    kz_then_right(a);
+    // a CSW lie at INQUIRY, TEST UNIT READY or READ CAPACITY: no disk, and init again finds it
+    I64[3] at = [0x12, 0x00, 0x25];
+    for i in 0..3 {
+        xhc.kfz_xhc_lie(xhc.LIE_CSW_TAG, at[i], 0, 1);
+        assert(usbms.init() == -1);
+        assert(usbms.init() == 1024);
+    }
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: a residue the CSW should not have, or a data stage that says it is short, is no read" {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x44);
+    // all 4,096 bytes came and the CSW says some did not: the two disagree, the transport is reset
+    U64[6] res = [1, 511, 512, 4096, 4097, 0xFFFFFFFF];
+    for i in 0..6 {
+        I64 r = xhc.kfz_xhc_resets();
+        kz_set(a, 0x44);
+        xhc.kfz_xhc_lie(xhc.LIE_CSW_RESIDUE, 0x28, res[i] as I64, 1);
+        assert(!usbms.read(0, a) && xhc.kfz_xhc_resets() == r + 1);
+        assert(kz_all(a, 0x44));
+        kz_then_right(a);
+    }
+    // short, and the CSW says by how much: they agree, but a block is all 4,096 bytes or no read; no reset
+    I64[4] short_by = [1, 512, 4095, 4096];
+    for i in 0..4 {
+        I64 r = xhc.kfz_xhc_resets();
+        kz_set(a, 0x44);
+        xhc.kfz_xhc_lie(xhc.LIE_HONEST_SHORT, 0x28, short_by[i], 1);
+        assert(!usbms.read(0, a) && xhc.kfz_xhc_resets() == r);
+        assert(kz_all(a, 0x44));
+        kz_then_right(a);
+    }
+    // INQUIRY needs its bytes 0 to 31 (the type and the product): 35 or 32 came is a disk, 31 is none
+    xhc.kfz_xhc_lie(xhc.LIE_HONEST_SHORT, 0x12, 1, 1);
+    assert(usbms.init() == 1024);
+    xhc.kfz_xhc_lie(xhc.LIE_HONEST_SHORT, 0x12, 4, 1);
+    assert(usbms.init() == 1024);
+    xhc.kfz_xhc_lie(xhc.LIE_HONEST_SHORT, 0x12, 5, 1);
+    assert(usbms.init() == -1);
+    // READ CAPACITY needs all 8
+    xhc.kfz_xhc_lie(xhc.LIE_HONEST_SHORT, 0x25, 1, 1);
+    assert(usbms.init() == -1);
+    xhc.kfz_xhc_lie(xhc.LIE_HONEST_SHORT, 0x25, 4, 1);
+    assert(usbms.init() == -1);
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_RESIDUE, 0x25, 1, 1);
+    assert(usbms.init() == -1);
+    assert(usbms.init() == 1024);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: a unit not ready 49 times comes up; 50 times is no disk, in about 5 s; sense longer than asked is read" {
+    assert(kz_usb() == 1024);
+    I64 tur = xhc.kfz_xhc_ops(0x00);
+    xhc.kfz_xhc_not_ready(3, true);                       // sense with 245 more bytes than the 18 asked
+    assert(usbms.init() == 1024);
+    assert(xhc.kfz_xhc_ops(0x00) == tur + 4);
+    tur = xhc.kfz_xhc_ops(0x00);
+    xhc.kfz_xhc_not_ready(49, false);
+    assert(usbms.init() == 1024 && xhc.kfz_xhc_ops(0x00) == tur + 50);
+    tur = xhc.kfz_xhc_ops(0x00);
+    xhc.kfz_xhc_not_ready(50, false);
+    U64 t0 = xhc.kfz_xhc_now();
+    assert(usbms.init() == -1 && xhc.kfz_xhc_ops(0x00) == tur + 50);
+    U64 took = xhc.kfz_xhc_now() - t0;
+    assert(took >= 49 * KZ_SECOND / 10 && took < 6 * KZ_SECOND);
+    // REQUEST SENSE answered with more bytes than its 18 (babble): no sense, the transport resets, the unit comes up
+    xhc.kfz_xhc_not_ready(1, false);
+    xhc.kfz_xhc_lie(xhc.LIE_BABBLE, 0x03, 0, 1);
+    I64 r = xhc.kfz_xhc_resets();
+    assert(usbms.init() == 1024 && xhc.kfz_xhc_resets() == r + 1);
+    kz_usb_end();
+}
+
+// A READ with lie at one of its stages that never answers: Stop Endpoint, the disk dropped after 5 s, the caller's
+// frame as it was; then nothing waits or goes out.
+void kz_mute(I64 lie) {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x55);
+    xhc.kfz_xhc_lie(lie, 0x28, 0, 1);
+    I64 stops = xhc.kfz_xhc_stops();
+    U64 t0 = xhc.kfz_xhc_now();
+    assert(!usbms.read(0, a));
+    U64 took = xhc.kfz_xhc_now() - t0;
+    assert(took >= 5 * KZ_SECOND && took < 6 * KZ_SECOND);
+    assert(!xhci.ms_on() && xhc.kfz_xhc_stops() == stops + 1);
+    assert(kz_all(a, 0x55));
+    I64 cmds = xhc.kfz_xhc_ops(0x28);
+    U64 t1 = xhc.kfz_xhc_now();
+    assert(!usbms.read(0, a) && !usbms.write(0, a) && usbms.init() == 0);
+    assert(xhc.kfz_xhc_ops(0x28) == cmds && xhc.kfz_xhc_now() - t1 < KZ_SECOND / 100);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: a CBW that never answers drops the disk after 5 s, and nothing waits or goes out after" {
+    kz_mute(xhc.LIE_CBW_MUTE);
+}
+
+test "usb: a data stage that never answers drops the disk after 5 s, and nothing waits or goes out after" {
+    kz_mute(xhc.LIE_DATA_MUTE);
+}
+
+test "usb: a CSW that never answers drops the disk after 5 s, and nothing waits or goes out after" {
+    kz_mute(xhc.LIE_CSW_MUTE);
+}
+
+// A review's P1 (KFZ-4, KFZ-5; fixed by PR 346): a data stage that answers after the 5 s, with its
+// caller's frame given back and handed on by then. The late bytes must reach no frame the pool handed on.
+test "usb: a READ's data stage answering after 5 s: Stop Endpoint, and the late bytes reach no frame given back" {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x44);
+    I64 stops = xhc.kfz_xhc_stops();
+    xhc.kfz_xhc_lie(xhc.LIE_DATA_LATE, 0x28, 6000, 1);
+    assert(!usbms.read(0, a) && !xhci.ms_on() && xhc.kfz_xhc_stops() == stops + 1);
+    kz_free(a);
+    kz_set(a, 0x5A);                                      // the frame's next holder
+    xhc.kfz_xhc_run(10000);
+    assert(kz_all(a, 0x5A));
+    kz_usb_end();
+}
+
+// The same with a controller that takes Stop Endpoint and never completes it: the device still answers late.
+test "usb: a late READ answer reaches no frame given back, when Stop Endpoint does not complete either" {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x44);
+    xhc.kfz_xhc_mute(15);
+    xhc.kfz_xhc_lie(xhc.LIE_DATA_LATE, 0x28, 6000, 1);
+    assert(!usbms.read(0, a) && !xhci.ms_on());
+    kz_free(a);
+    kz_set(a, 0x5A);
+    xhc.kfz_xhc_run(10000);
+    assert(kz_all(a, 0x5A));
+    kz_usb_end();
+}
+
+test "usb: a WRITE's data stage read after 5 s takes no byte of a frame given back onto the disk" {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    _ = xhci.init();
+    assert(usbms.init() == 1024 && usbms.writable());
+    U64 a = kz_buf(0x3C);
+    U8[512] was;
+    for k in 0..512 {
+        was[k] = xhc.kfz_xhc_byte(8, k);
+    }
+    xhc.kfz_xhc_lie(xhc.LIE_DATA_LATE, 0x2A, 6000, 1);
+    assert(!usbms.write(8, a) && !xhci.ms_on());
+    kz_free(a);
+    kz_set(a, 0x66);                                      // another process's page now
+    xhc.kfz_xhc_run(10000);
+    for k in 0..512 {                                     // the sector as it was, or the caller's own bytes
+        U8 got = xhc.kfz_xhc_byte(8, k);
+        assert(got == was[k] || got == 0x3C);
+    }
+    kz_usb_end();
+}
+
+// A review's P2 (KFZ-6; fixed by PR 346): a short data stage with a CSW residue of 0. The bytes moved and the
+// CSW disagree: no read, the transport reset, the caller's frame as it was; at INQUIRY, no disk.
+test "usb: a data stage short with a CSW residue of 0 is no read and resets the transport; at INQUIRY, no disk" {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x99);
+    I64[4] short_by = [1, 512, 4095, 4096];
+    for i in 0..4 {
+        I64 r = xhc.kfz_xhc_resets();
+        kz_set(a, 0x99);
+        xhc.kfz_xhc_lie(xhc.LIE_SHORT, 0x28, short_by[i], 1);
+        assert(!usbms.read(0, a) && xhc.kfz_xhc_resets() == r + 1 && kz_all(a, 0x99));
+        kz_then_right(a);
+    }
+    xhc.kfz_xhc_lie(xhc.LIE_SHORT, 0x12, 1, 1);
+    assert(usbms.init() == -1);
+    xhc.kfz_xhc_lie(xhc.LIE_SHORT, 0x12, 20, 1);
+    assert(usbms.init() == -1);
+    xhc.kfz_xhc_lie(xhc.LIE_SHORT, 0x25, 1, 1);
+    assert(usbms.init() == -1);
+    assert(usbms.init() == 1024);
+    kz_free(a);
+    kz_usb_end();
+}
+
+// The device gone at a READ's data stage: no read, the disk dropped, no wait past bound.
+void kz_gone(I64 lie, U64 bound) {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x66);
+    xhc.kfz_xhc_lie(lie, 0x28, 0, 1);
+    U64 t0 = xhc.kfz_xhc_now();
+    assert(!usbms.read(0, a));
+    U64 took = xhc.kfz_xhc_now() - t0;
+    assert(!xhci.ms_on() && kz_all(a, 0x66));
+    assert(took < bound);
+    assert(!usbms.read(0, a) && usbms.init() == 0);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: the device gone mid transfer with transaction errors: no read, the disk dropped within 2 s" {
+    kz_gone(xhc.LIE_GONE, 2 * KZ_SECOND);
+}
+
+test "usb: the device gone mid transfer without a word: no read, the disk dropped within 6 s" {
+    kz_gone(xhc.LIE_GONE_QUIET, 6 * KZ_SECOND);
+}
+
+test "usb: a stalled data stage, a CSW stalled once or twice, and babble: no read but the one asked again" {
+    assert(kz_usb() == 1024);
+    U64 a = kz_buf(0x77);
+    // the data stage stalled, then a FAILED CSW: the halts cleared, no mass storage reset
+    I64 r = xhc.kfz_xhc_resets();
+    I64 h = xhc.kfz_xhc_halts_cleared();
+    xhc.kfz_xhc_lie(xhc.LIE_DATA_STALL, 0x28, 1, 1);
+    assert(!usbms.read(0, a));
+    assert(xhc.kfz_xhc_resets() == r && xhc.kfz_xhc_halts_cleared() == h + 2);
+    kz_then_right(a);
+    // the data stage stalled, then a PASSED CSW with its residue
+    xhc.kfz_xhc_lie(xhc.LIE_DATA_STALL, 0x28, 0, 1);
+    assert(!usbms.read(0, a));
+    kz_then_right(a);
+    // the CSW stalled once: asked once more, and the read is whole
+    kz_set(a, 0x77);
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_STALL, 0x28, 1, 1);
+    assert(usbms.read(0, a) && kz_holds(a, 0));
+    // twice: no read, a reset
+    r = xhc.kfz_xhc_resets();
+    xhc.kfz_xhc_lie(xhc.LIE_CSW_STALL, 0x28, 2, 1);
+    assert(!usbms.read(0, a) && xhc.kfz_xhc_resets() == r + 1);
+    kz_then_right(a);
+    // babble on the data stage
+    r = xhc.kfz_xhc_resets();
+    xhc.kfz_xhc_lie(xhc.LIE_BABBLE, 0x28, 0, 1);
+    assert(!usbms.read(0, a) && xhc.kfz_xhc_resets() == r + 1);
+    kz_then_right(a);
+    // every lie on every one of 40 reads in a row, each followed by one that reads right
+    I64[11] lies = [xhc.LIE_CSW_SIGNATURE, xhc.LIE_CSW_TAG, xhc.LIE_CSW_STATUS, xhc.LIE_CSW_RESIDUE,
+                    xhc.LIE_HONEST_SHORT, xhc.LIE_DATA_STALL, xhc.LIE_CSW_STALL, xhc.LIE_BABBLE,
+                    xhc.LIE_CSW_STATUS, xhc.LIE_HONEST_SHORT, xhc.LIE_CSW_STALL];
+    I64[11] args = [0, 0, 2, 8, 9, 1, 3, 0, 1, 4096, 2];
+    for k in 0..40 {
+        xhc.kfz_xhc_lie(lies[k % 11], 0x28, args[k % 11], 1);
+        assert(!usbms.read(8 * (k % 100), a));
+        kz_then_right(a);
+    }
+    assert(xhc.kfz_xhc_out() == 0);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb: the write check is init's: a model that changes after it moves nothing until init asks again" {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    _ = xhci.init();
+    assert(usbms.init() == 1024 && usbms.writable());
+    U64 a = kz_buf(0x21);
+    xhc.kfz_xhc_model("OTHER STICK");
+    I64 inq = xhc.kfz_xhc_ops(0x12);
+    assert(usbms.write(0, a) && xhc.kfz_xhc_writes() == 1);  // the same device: INQUIRY is not asked again
+    assert(xhc.kfz_xhc_ops(0x12) == inq);
+    assert(usbms.init() == 1024 && !usbms.writable());
+    assert(!usbms.write(0, a) && xhc.kfz_xhc_writes() == 1);
+    // the model back: written again
+    xhc.kfz_xhc_model("KFZ DISK");
+    assert(usbms.init() == 1024 && usbms.writable());
+    assert(usbms.write(8, a) && xhc.kfz_xhc_writes() == 2);
+    // a disk that is not a disk (INQUIRY's peripheral type) gives none, writable or not
+    xhc.kfz_xhc_kind(5);
+    assert(usbms.init() == -1 && !usbms.writable() && !usbms.write(8, a) && xhc.kfz_xhc_writes() == 2);
+    xhc.kfz_xhc_kind(0x7F);
+    assert(usbms.init() == -1 && !usbms.read(0, a));
+    kz_free(a);
+    kz_usb_end();
+}
+
+// HW-12 (PR 454): a disk with a GUID partition table is written only when the boot line names its volume partition's
+// unique GUID, and then only inside that partition; a raw device only by its model. The stick's GUIDs, as the disk
+// holds them (the first three groups least significant byte first) and as `lsblk -o PARTUUID` prints them.
+// 6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123, the volume's
+U8[16] KG_VOL = [0x2C, 0x3B, 0x1F, 0x6A, 0x4E, 0x9D, 0x50, 0x4F, 0x8A, 0x61, 0xB7, 0xC8, 0xD9, 0xE0, 0xF1, 0x23];
+// 0b0e5a11-7c3d-4e2f-9a8b-1c2d3e4f5a6b, the ESP's
+U8[16] KG_ESP = [0x11, 0x5A, 0x0E, 0x0B, 0x3D, 0x7C, 0x2F, 0x4E, 0x9A, 0x8B, 0x1C, 0x2D, 0x3E, 0x4F, 0x5A, 0x6B];
+// d15c0000-1111-4222-8333-444455556666, the disk's
+U8[16] KG_DISK = [0x00, 0x00, 0x5C, 0xD1, 0x11, 0x11, 0x22, 0x42, 0x83, 0x33, 0x44, 0x44, 0x55, 0x55, 0x66, 0x66];
+// 0fc63daf-8483-4772-8e79-3d69d8477de4, the Linux filesystem type
+U8[16] KG_LINUX = [0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4];
+// c12a7328-f81f-11d2-ba4b-00a0c93ec93b, the EFI system partition type
+U8[16] KG_ESP_TYPE = [0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B];
+
+const I64 KG_SOUND = 0;                // kg_stick's tables: sound,
+const I64 KG_HEADER_CRC = 1;           // or broken one way: the header's CRC,
+const I64 KG_ENTRIES_CRC = 2;          // the entries' CRC,
+const I64 KG_NO_HEADER = 3;            // a protective MBR with no header,
+const I64 KG_OVERLAP = 4;              // the ESP's last sector the volume's first,
+const I64 KG_PAST = 5;                 // the volume one sector past the usable range,
+const I64 KG_NO_LINUX = 6;             // no Linux filesystem partition;
+const I64 KG_BLANK = 7;                // or sound with the volume's unique GUID all zeros
+
+// CRC32 (IEEE 802.3, reflected) of the first n bytes of b, as UEFI takes the header's and the entries'.
+U64 kg_crc(in U8[512] b, I64 n) {
+    U64 r = 0xFFFFFFFF;
+    for i in 0..n {
+        r = r ^ (b[i] as U64);
+        for k in 0..8 {
+            U64 m = 0;
+            if ((r & 1) != 0) {
+                m = 0xEDB88320;
+            }
+            r = (r >> 1) ^ m;
+        }
+    }
+    return r ^ 0xFFFFFFFF;
+}
+
+void kg_entry(inout U8[512] e, I64 at, in U8[16] kind, in U8[16] uid, I64 first, I64 last) {
+    for k in 0..16 {
+        e[at + k] = kind[k];
+        e[at + 16 + k] = uid[k];
+    }
+    kz_le(e, at + 32, first as U64, 8);
+    kz_le(e, at + 40, last as U64, 8);
+}
+
+// The fake disk's 1,024 sectors laid out as tools/build-stick.sh lays out a stick: a protective MBR, the header at
+// LBA 1 (usable 34 to 990, the backup at 1023), four entries at LBA 2, the ESP at 40 to 103 and the volume, a Linux
+// filesystem partition of unique GUID KG_VOL, at 128 to 639: what, KG_SOUND or one of the kinds above.
+void kg_stick(I64 what) {
+    U8[512] m;
+    U8[512] h;
+    U8[512] e;
+    U8[16] z;
+    for k in 0..512 {
+        m[k] = 0;
+        h[k] = 0;
+        e[k] = 0;
+    }
+    for k in 0..16 {
+        z[k] = 0;
+    }
+    m[446 + 4] = 0xEE;                                       // one partition of type 0xEE over the disk
+    kz_le(m, 446 + 8, 1, 4);
+    kz_le(m, 446 + 12, 1023, 4);
+    m[510] = 0x55;
+    m[511] = 0xAA;
+    I64 esp_last = 103;
+    if (what == KG_OVERLAP) {
+        esp_last = 128;
+    }
+    I64 vol_last = 639;
+    if (what == KG_PAST) {
+        vol_last = 991;
+    }
+    kg_entry(e, 0, KG_ESP_TYPE, KG_ESP, 40, esp_last);
+    if (what == KG_NO_LINUX) {
+        kg_entry(e, 128, KG_ESP_TYPE, KG_VOL, 128, vol_last);
+    } else if (what == KG_BLANK) {
+        kg_entry(e, 128, KG_LINUX, z, 128, vol_last);
+    } else {
+        kg_entry(e, 128, KG_LINUX, KG_VOL, 128, vol_last);
+    }
+    U8[8] sig = [0x45, 0x46, 0x49, 0x20, 0x50, 0x41, 0x52, 0x54];   // EFI PART
+    for k in 0..8 {
+        h[k] = sig[k];
+    }
+    kz_le(h, 8, 0x10000, 4);                                 // revision 1.0
+    kz_le(h, 12, 92, 4);                                     // the header's size
+    kz_le(h, 24, 1, 8);                                      // its own LBA, then the backup's
+    kz_le(h, 32, 1023, 8);
+    kz_le(h, 40, 34, 8);                                     // the first and last usable LBA
+    kz_le(h, 48, 990, 8);
+    for k in 0..16 {
+        h[56 + k] = KG_DISK[k];
+    }
+    kz_le(h, 72, 2, 8);                                      // the entries: at LBA 2, 4 of 128 bytes
+    kz_le(h, 80, 4, 4);
+    kz_le(h, 84, 128, 4);
+    U64 ec = kg_crc(e, 512);
+    if (what == KG_ENTRIES_CRC) {
+        ec = ec ^ 1;
+    }
+    kz_le(h, 88, ec, 4);
+    U64 hc = kg_crc(h, 92);
+    if (what == KG_HEADER_CRC) {
+        hc = hc ^ 1;
+    }
+    kz_le(h, 16, hc, 4);
+    if (what == KG_NO_HEADER) {
+        for k in 0..512 {
+            h[k] = 0;
+        }
+    }
+    xhc.kfz_xhc_put(0, m);
+    xhc.kfz_xhc_put(1, h);
+    xhc.kfz_xhc_put(2, e);
+}
+
+// The table wiped off as wipefs leaves the front of a disk: sectors 0 and 1 zero, so the device is raw.
+void kg_wipe() {
+    U8[512] z;
+    for k in 0..512 {
+        z[k] = 0;
+    }
+    xhc.kfz_xhc_put(0, z);
+    xhc.kfz_xhc_put(1, z);
+}
+
+// The disk on port 1 carrying kg_stick(what), the boot line `quiet`, xhci and usbms up: usbms's sectors.
+I64 kg_up(I64 what) {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    kg_stick(what);
+    machine.kfz_cmdline("quiet");
+    _ = xhci.init();
+    assert(xhci.ms_on());
+    return usbms.init();
+}
+
+// The boot line line names nothing of this disk: init finds its volume of v sectors read only, says the one reason
+// that fits (the volume partition's GUID when parted, else the model), and no write goes out.
+void kg_read_only[n](in U8[n] line, I64 v, Bool parted) {
+    machine.kfz_said_clear();
+    machine.kfz_cmdline(line);
+    I64 w = xhc.kfz_xhc_writes();
+    assert(usbms.init() == v && !usbms.writable());
+    Bool by_guid = machine.kfz_said("storage: read only: the boot line does not name the volume partition's GUID\n");
+    Bool by_model = machine.kfz_said("storage: read only: the boot line does not name this disk's model\n");
+    assert(by_guid == parted && by_model == !parted);
+    U64 a = kz_buf(0x11);
+    assert(!usbms.write(0, a) && xhc.kfz_xhc_writes() == w);
+    kz_free(a);
+}
+
+test "usb, HW-12: a stick with a GUID table is written when the line names its volume's GUID, and only inside it" {
+    machine.kfz_said_clear();
+    assert(kg_up(KG_SOUND) == 512 && !usbms.writable());
+    assert(machine.kfz_said("daphnis: usb: storage: volume partition 2 at sector 128\n"));
+    assert(machine.kfz_said("daphnis: usb: storage KFZ_DISK, 512 sectors, read only\n"));
+    U64 a = kz_buf(0x11);
+    assert(usbms.read(0, a) && kz_holds(a, 128));            // the volume's sector 0 is the device's 128
+    assert(usbms.read(504, a) && kz_holds(a, 632));          // its last 8 end on the partition's last, 639
+    assert(!usbms.write(0, a) && xhc.kfz_xhc_ops(0x2A) == 0);
+    // named by its GUID as lsblk prints it: written at the volume's sectors, and the GUID never printed
+    machine.kfz_said_clear();
+    machine.kfz_cmdline("console=ttyS0 daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123 quiet");
+    assert(usbms.init() == 512 && usbms.writable());
+    assert(machine.kfz_said("daphnis: usb: storage KFZ_DISK, 512 sectors, writes on\n"));
+    assert(!machine.kfz_said("read only") && !machine.kfz_said("6a1f3b2c") && !machine.kfz_said("6A1F3B2C"));
+    kz_set(a, 0x3C);
+    assert(usbms.write(0, a) && xhc.kfz_xhc_writes() == 1);
+    assert(xhc.kfz_xhc_wrote_lo() == 128 && xhc.kfz_xhc_wrote_hi() == 135);
+    assert(usbms.write(504, a) && xhc.kfz_xhc_writes() == 2 && xhc.kfz_xhc_wrote_hi() == 639);
+    // before the volume's start or past its end: refused before a command goes out
+    I64 reads = xhc.kfz_xhc_ops(0x28);
+    I64[8] bad = [505, 512, 863, 1016, -1, -8, -128, 0x7FFFFFFFFFFFFFFF];
+    for b in 0..8 {
+        assert(!usbms.write(bad[b], a) && !usbms.read(bad[b], a));
+    }
+    assert(xhc.kfz_xhc_ops(0x28) == reads && xhc.kfz_xhc_ops(0x2A) == 2 && xhc.kfz_xhc_writes() == 2);
+    assert(xhc.kfz_xhc_wrote_lo() == 128 && xhc.kfz_xhc_wrote_hi() == 639);
+    for s in 0..16 {
+        assert(!xhc.kfz_xhc_stored(s));                      // the MBR and the table untouched
+    }
+    // in capitals, in mixed case, and after the model's word among other words: the volume's GUID still
+    machine.kfz_cmdline("daphnis.disk.write=6A1F3B2C-9D4E-4F50-8A61-B7C8D9E0F123");
+    assert(usbms.init() == 512 && usbms.writable());
+    machine.kfz_cmdline("a daphnis.disk.write=KFZ_DISK daphnis.disk.write=6a1f3B2C-9d4e-4F50-8a61-B7C8d9e0f123 b");
+    assert(usbms.init() == 512 && usbms.writable());
+    assert(xhc.kfz_xhc_out() == 0 && xhc.kfz_xhc_resets() == 0);
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb, HW-12: on a stick with a GUID table, its model, another GUID or a GUID's near miss stays read only" {
+    assert(kg_up(KG_SOUND) == 512);
+    kg_read_only("daphnis.disk.write=KFZ_DISK", 512, true);                                 // its model
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f124", 512, true);     // the last byte
+    kg_read_only("daphnis.disk.write=7a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123", 512, true);     // the first byte
+    kg_read_only("daphnis.disk.write=2c3b1f6a-4e9d-504f-8a61-b7c8d9e0f123", 512, true);     // the disk's byte order
+    kg_read_only("daphnis.disk.write=0b0e5a11-7c3d-4e2f-9a8b-1c2d3e4f5a6b", 512, true);     // the ESP's
+    kg_read_only("daphnis.disk.write=d15c0000-1111-4222-8333-444455556666", 512, true);     // the disk's
+    kg_read_only("daphnis.disk.write=0fc63daf-8483-4772-8e79-3d69d8477de4", 512, true);     // the Linux type
+    kg_read_only("daphnis.disk.write=00000000-0000-0000-0000-000000000000", 512, true);
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f12", 512, true);      // a digit short
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f1234", 512, true);    // a digit over
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f12g", 512, true);     // not a digit
+    kg_read_only("daphnis.disk.write=6a1f3b2c9d4e4f508a61b7c8d9e0f123", 512, true);         // no dashes
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61_b7c8d9e0f123", 512, true);     // a dash not a dash
+    kg_read_only("daphnis.disk.write=PARTUUID=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123", 512, true);
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123,", 512, true);
+    kg_read_only("xdaphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123", 512, true);
+    kg_read_only("daphnis.disk.write= 6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123", 512, true);
+    machine.kfz_cmdline("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123");
+    assert(usbms.init() == 512 && usbms.writable());       // the same disk, named
+    // a volume whose unique GUID is all zeros: no word names it, the zeros' least of all
+    kg_stick(KG_BLANK);
+    kg_read_only("daphnis.disk.write=00000000-0000-0000-0000-000000000000", 512, true);
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123", 512, true);
+    assert(xhc.kfz_xhc_ops(0x2A) == 0);
+    kz_usb_end();
+}
+
+test "usb, HW-12: a raw device is named by its model only: a GUID word stays read only, after a table came off too" {
+    assert(kz_usb() == 1024);
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123", 1024, false);
+    kg_read_only("daphnis.disk.write=00000000-0000-0000-0000-000000000000", 1024, false);
+    // the same disk given the stick's table: the volume's GUID names it
+    kg_stick(KG_SOUND);
+    machine.kfz_cmdline("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123");
+    assert(usbms.init() == 512 && usbms.writable());
+    // the table wiped: raw again, all 1,024 sectors, and the GUID that named it names nothing
+    kg_wipe();
+    kg_read_only("daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123", 1024, false);
+    // its model names it, and it is written from the device's sector 0
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK");
+    assert(usbms.init() == 1024 && usbms.writable());
+    U64 a = kz_buf(0x5A);
+    assert(usbms.write(0, a) && xhc.kfz_xhc_writes() == 1 && xhc.kfz_xhc_wrote_lo() == 0 && xhc.kfz_xhc_stored(0));
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "usb, HW-12: a broken table gives no volume, so nothing is read or written whatever the boot line names" {
+    assert(kg_up(KG_SOUND) == 512);
+    machine.kfz_cmdline("daphnis.disk.write=KFZ_DISK daphnis.disk.write=6a1f3b2c-9d4e-4f50-8a61-b7c8d9e0f123");
+    assert(usbms.init() == 512 && usbms.writable());       // this line names the sound stick
+    U64 a = kz_buf(0x11);
+    for what in KG_HEADER_CRC..KG_BLANK {
+        kg_stick(what);
+        machine.kfz_said_clear();
+        assert(usbms.init() == -1 && !usbms.writable());
+        if (what == KG_HEADER_CRC || what == KG_NO_HEADER) {
+            assert(machine.kfz_said("storage: the GUID partition table is not sound; no volume\n"));
+        } else if (what == KG_ENTRIES_CRC || what == KG_PAST) {
+            assert(machine.kfz_said("storage: the partition entries are not sound; no volume\n"));
+        } else if (what == KG_OVERLAP) {
+            assert(machine.kfz_said("storage: the Linux partition shares sectors with another; no volume\n"));
+        } else {
+            assert(machine.kfz_said("storage: no Linux filesystem partition; no volume\n"));
+        }
+        assert(!machine.kfz_said("writes on") && !machine.kfz_said("read only"));
+        kz_set(a, 0x11);
+        assert(!usbms.write(0, a) && !usbms.read(0, a) && kz_all(a, 0x11));
+    }
+    assert(xhc.kfz_xhc_ops(0x2A) == 0 && xhc.kfz_xhc_writes() == 0 && xhc.kfz_xhc_wrote_hi() < 0);
+    kg_stick(KG_SOUND);
+    assert(usbms.init() == 512 && usbms.writable());
+    kz_free(a);
+    kz_usb_end();
+}
+
+// Port 1's Enable Slot answered with slot id: that device gets no slot; the disk on port 2 comes up, reads right,
+// the device context base array holds nothing past the 8 slots enabled, and no command names a slot past them.
+void kz_slot_lie(I64 id) {
+    xhc.kfz_xhc_plug(xhc.OTHER, 1, 3);
+    xhc.kfz_xhc_also(xhc.DISK, 2);
+    xhc.kfz_xhc_slot_lie(id);
+    _ = xhci.init();
+    assert(xhci.ms_on() && usbms.init() == 1024);
+    U64 a = kz_buf(0);
+    assert(usbms.read(0, a) && kz_holds(a, 0));
+    U64[512] w;
+    phys.phys_read64(xhc.kfz_xhc_dcbaap(), w);
+    for k in 9..512 {
+        assert(w[k] == 0);
+    }
+    assert(xhc.kfz_xhc_strays() == 0);                    // no command named a slot past the 8 enabled
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "xhci: Enable Slot answering slot 0 gives that device none" {
+    kz_slot_lie(0);
+}
+
+test "xhci: Enable Slot answering a slot past MaxSlotsEn gives that device none" {
+    kz_slot_lie(9);
+}
+
+test "xhci: Enable Slot answering slot 255 gives that device none" {
+    kz_slot_lie(255);
+}
+
+test "xhci: Enable Slot answering a slot in range it did not enable: Address Device refused, that device skipped" {
+    kz_slot_lie(3);
+}
+
+// KFZ-8: a slot id is the driver's only from its own Enable Slot until the controller confirms Disable Slot.
+test "xhci: an Enable Slot answering the disk's own slot is refused; nothing is taken from the disk" {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_also(xhc.OTHER, 2);
+    xhc.kfz_xhc_slot_lie_after(1, 1);                     // port 2's Enable Slot answers port 1's slot
+    machine.kfz_said_clear();
+    _ = xhci.init();
+    assert(machine.kfz_said("daphnis: usb: port 2: the controller gave slot 1, which is in use\n"));
+    assert(xhci.ms_on() && usbms.init() == 1024 && xhc.kfz_xhc_disables() == 0);
+    U64 a = kz_buf(0);
+    assert(usbms.read(0, a) && kz_holds(a, 0));
+    kz_free(a);
+    kz_usb_end();
+}
+
+test "xhci: a Disable Slot the controller does not confirm keeps its slot: an Enable Slot naming it is refused" {
+    xhc.kfz_xhc_plug(xhc.OTHER, 1, 3);
+    xhc.kfz_xhc_also(xhc.DISK, 2);
+    xhc.kfz_xhc_mute(10);                                  // Disable Slot taken, never completed
+    xhc.kfz_xhc_slot_lie_after(1, 1);                     // port 2's Enable Slot answers port 1's slot again
+    machine.kfz_said_clear();
+    _ = xhci.init();
+    assert(machine.kfz_said("daphnis: usb: slot 1: Disable Slot not confirmed; the slot stays out of use\n"));
+    assert(machine.kfz_said("daphnis: usb: port 2: the controller gave slot 1, which is in use\n"));
+    assert(!xhci.ms_on() && usbms.init() == 0);
+    U64[512] w;
+    phys.phys_read64(xhc.kfz_xhc_dcbaap(), w);
+    assert(w[1] != 0);                                     // slot 1's entry kept: the controller may still use it
+    kz_usb_end();
+}
+
+test "xhci: a controller with no slots: no device and no fault" {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_shape(0, 4, 0x10000, 0x1000, 0x2000);
+    _ = xhci.init();
+    assert(!xhci.ms_on() && usbms.init() == 0);
+    kz_usb_end();
+}
+
+test "xhci: a controller with 255 slots and the disk on its last port: 8 slots enabled, the disk up" {
+    xhc.kfz_xhc_plug(xhc.DISK, 4, 3);
+    xhc.kfz_xhc_shape(255, 4, 0x10000, 0x1000, 0x2000);
+    _ = xhci.init();
+    assert(xhci.ms_on() && usbms.init() == 1024 && xhc.kfz_xhc_slots_en() == 8);
+    kz_usb_end();
+}
+
+// The disk with these endpoint addresses and max packet: up (both endpoints running at the doorbell targets the
+// addresses make, a read right) or not configured.
+void kz_eps(I64 out_addr, I64 in_addr, I64 mps, Bool up) {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_endpoints(out_addr, in_addr, mps);
+    _ = xhci.init();
+    assert(xhci.ms_on() == up);
+    if (up) {
+        assert(usbms.init() == 1024);
+        assert(xhc.kfz_xhc_running(1, xhc.kfz_xhc_dci(false)) && xhc.kfz_xhc_running(1, xhc.kfz_xhc_dci(true)));
+        U64 a = kz_buf(0);
+        assert(usbms.read(0, a) && kz_holds(a, 0));
+        kz_free(a);
+    } else {
+        assert(usbms.init() == 0);
+    }
+    kz_usb_end();
+}
+
+test "xhci: the disk's endpoints at the last numbers, 15 OUT and 15 IN: doorbell targets 30 and 31" {
+    kz_eps(0x0F, 0x8F, 512, true);
+}
+
+test "xhci: the disk's endpoints sharing number 1, and given IN first" {
+    kz_eps(0x01, 0x81, 512, true);
+}
+
+test "xhci: the disk's endpoints given IN first" {
+    kz_eps(0x81, 0x01, 512, true);
+}
+
+test "xhci: the disk's endpoints at number 0: no disk" {
+    kz_eps(0x00, 0x80, 512, false);
+}
+
+test "xhci: an OUT endpoint at number 0 beside a good IN: no disk" {
+    kz_eps(0x00, 0x82, 512, false);
+}
+
+test "xhci: an IN endpoint at number 0 beside a good OUT: no disk" {
+    kz_eps(0x01, 0x80, 512, false);
+}
+
+test "xhci: a max packet of 0: Configure Endpoint refused (17), no disk" {
+    kz_eps(0x01, 0x82, 0, false);
+}
+
+test "xhci: a max packet of 0xFFFF reads as 2047, which the controller takes" {
+    kz_eps(0x01, 0x82, 0xFFFF, true);
+}
+
+test "xhci: a device of no class the kernel drives gives its slot back; the disk behind it comes up" {
+    xhc.kfz_xhc_plug(xhc.OTHER, 1, 3);
+    xhc.kfz_xhc_also(xhc.DISK, 2);
+    _ = xhci.init();
+    assert(xhc.kfz_xhc_disables() == 1 && xhci.ms_on() && usbms.init() == 1024);
+    assert(xhc.kfz_xhc_running(1, xhc.kfz_xhc_dci(true)));   // on slot 1: the id given back is free again
+    kz_usb_end();
+}
+
+test "xhci: events for slots no device holds, or endpoints not the disk's, are no answer of the disk's" {
+    xhc.kfz_xhc_plug(xhc.OTHER, 1, 3);
+    xhc.kfz_xhc_also(xhc.DISK, 2);
+    _ = xhci.init();
+    assert(usbms.init() == 1024);
+    U64 a = kz_buf(0);
+    I64[10] slot = [0, 2, 3, 8, 9, 255, 1, 1, 1, 1];
+    I64[10] dci = [5, 5, 2, 5, 2, 31, 0, 1, 3, 31];
+    for k in 0..40 {
+        for i in 0..10 {
+            xhc.kfz_xhc_event(slot[i], dci[i], 1 + (k % 2) as U64 * 12, 0);
+        }
+        kz_set(a, 0x88);
+        assert(usbms.read(8 * k, a) && kz_holds(a, 8 * k));
+        xhci.poll();
+    }
+    // a halted disk endpoint's stray Stopped events, after a stall and its recovery
+    xhc.kfz_xhc_lie(xhc.LIE_DATA_STALL, 0x28, 1, 1);
+    assert(!usbms.read(0, a));
+    xhc.kfz_xhc_event(1, xhc.kfz_xhc_dci(true), 26, 0);
+    kz_then_right(a);
+    kz_free(a);
+    kz_usb_end();
+}
+
+// KFZ-7: the controller as shaped (and with kfz_xhc_caps as set) is driven, the disk up and a read right, or it is
+// not, with the line that says why; either way no register is touched outside the BAR. It masters the bus only when
+// driven (the kernel read's P3-1 of PR 397).
+void kz_bar(Bool up) {
+    machine.kfz_said_clear();
+    _ = xhci.init();
+    assert(xhci.ms_on() == up);
+    assert(((xhc.kfz_xhc_pci_cmd() & 4) != 0) == up);
+    assert(machine.kfz_said("daphnis: usb: the controller names registers past its BAR\n") == !up);
+    if (up) {
+        assert(usbms.init() == 1024);
+        U64 a = kz_buf(0);
+        assert(usbms.read(0, a) && kz_holds(a, 0));
+        kz_free(a);
+    } else {
+        assert(usbms.init() == 0);
+    }
+    kz_usb_end();
+}
+
+// The disk on port 1 of a controller of slots slots and ports ports, a BAR of span bytes, runtime registers at rt and
+// doorbells at db.
+void kz_shape(I64 slots, I64 ports, U64 span, U64 rt, U64 db, Bool up) {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_shape(slots, ports, span, rt, db);
+    kz_bar(up);
+}
+
+test "xhci: runtime registers at the BAR's end are not read (KFZ-7)" {
+    kz_shape(8, 4, 0x1000, 0x1000, 0x800, false);
+}
+
+test "xhci: runtime registers whose interrupter runs a dword past the BAR are not read" {
+    kz_shape(8, 4, 0x1000, 0xFE0, 0x800, false);
+}
+
+test "xhci: runtime registers ending at the BAR's last byte are driven" {
+    kz_shape(8, 4, 0x1000, 0xFC0, 0x800, true);
+}
+
+test "xhci: doorbells for 8 slots running a dword past the BAR are not rung" {
+    kz_shape(8, 4, 0x1000, 0x800, 0xFE0, false);
+}
+
+test "xhci: doorbells for 8 slots ending at the BAR's last byte are driven" {
+    kz_shape(8, 4, 0x1000, 0x800, 0xFDC, true);
+}
+
+test "xhci: a BAR too short for the capability registers: nothing read past it" {
+    kz_shape(8, 4, 0x10, 0x1000, 0x2000, false);
+}
+
+test "xhci: port registers running past the BAR are not read" {
+    kz_shape(8, 15, 0x500, 0x480, 0x4C0, false);
+}
+
+test "xhci: a CAPLENGTH that puts the port registers past the BAR is not driven" {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_shape(8, 1, 0x500, 0x480, 0x4C0);
+    xhc.kfz_xhc_caps(0xFF, 0, 0);
+    kz_bar(false);
+}
+
+test "xhci: the same BAR with CAPLENGTH 0x20 is driven" {
+    kz_shape(8, 1, 0x500, 0x480, 0x4C0, true);
+}
+
+// The disk on port 1 of a controller whose first extended capability is ecp dwords in, its register word.
+void kz_ecp(U64 ecp, U64 word, Bool up) {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_caps(0x20, ecp, word);
+    kz_bar(up);
+}
+
+test "xhci: an extended capability past the BAR is not read" {
+    kz_ecp(0xFFFF, 0, false);
+}
+
+test "xhci: an extended capability whose next one lies past the BAR: that one is not read" {
+    kz_ecp(0x3FC0, 0xFF02, false);
+}
+
+test "xhci: a legacy support capability in the BAR's last dword: its second register is not read" {
+    kz_ecp(0x3FFF, 1, false);
+}
+
+test "xhci: a legacy support capability inside the BAR: the controller handed over and driven" {
+    kz_ecp(0x200, 1, true);
+    assert(xhc.kfz_xhc_cap_writes() == 2);                // the semaphore, then the SMIs off
+}
+
+// The kernel read's P3-2 of PR 397: every capability is checked before any is written.
+test "xhci: a legacy support capability whose next one lies past the BAR: refused with nothing written" {
+    kz_ecp(0x3FC0, 0xFF01, false);
+    assert(xhc.kfz_xhc_cap_writes() == 0);
+}
+
+test "xhci: a controller refused that the firmware left mastering the bus is left as it was" {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_shape(8, 4, 0x1000, 0x1000, 0x800);
+    xhc.kfz_xhc_firmware_dma();
+    _ = xhci.init();
+    assert(!xhci.ms_on() && (xhc.kfz_xhc_pci_cmd() & 6) == 6);
+    kz_usb_end();
+}
+
+test "xhci: a controller accepted that then does not run is given up and masters the bus no more" {
+    xhc.kfz_xhc_plug(xhc.DISK, 1, 3);
+    xhc.kfz_xhc_stuck();
+    machine.kfz_said_clear();
+    _ = xhci.init();
+    assert(machine.kfz_said("daphnis: usb: the controller did not run\n"));
+    assert(!xhci.ms_on() && (xhc.kfz_xhc_pci_cmd() & 4) == 0);
+    kz_usb_end();
+}
+
+// The kernel read's P3-3 of PR 397: a transfer event for the keyboard's interrupt endpoint (slot 1, doorbell target
+// 3) whose TRB pointer lies outside its ring is no report and posts no TRB again (four of them would overrun its 8),
+// and the kernel goes on; the key on its first TRB then comes through.
+test "xhci: a keyboard report event pointing outside the ring is no report and no fault; one inside is a key" {
+    xhc.kfz_xhc_plug(xhc.KEYBOARD, 1, 3);
+    assert(xhci.init());
+    U64[4] at = [0, 8, 0x8000000000000000, 0xFFFFFFFFFFFFFFF0];
+    for i in 0..4 {
+        xhc.kfz_xhc_event(1, 3, 1, at[i]);
+        xhci.poll();
+    }
+    assert(!input.pending());
+    U8[8] r = [0, 0, 4, 0, 0, 0, 0, 0];                    // a down
+    xhc.kfz_xhc_key(1, 3, r);
+    xhci.poll();
+    assert(input.pending());
+    kz_usb_end();
+}
+
+// The kernel read's P1 on the 375 merge: init tried the disk in places 0 and 1 before 2. A keyboard plugged in after
+// boot whose Enable Slot answers the disk's slot is refused (KFZ-8), and its failed arrival gives back no frame it did
+// not take: the disk's EP0 ring stays the disk's, so the frame the pool hands on next takes no TRB of the transport's
+// reset after a stalled data stage, and the disk reads right.
+test "xhci: a keyboard plugged in after boot that gets no slot gives back nothing of the disk's" {
+    assert(kz_usb() == 1024);
+    U64 b = kz_buf(0x77);
+    xhc.kfz_xhc_slot_lie(1);
+    machine.kfz_said_clear();
+    xhc.kfz_xhc_arrive(xhc.KEYBOARD, 2, 3);
+    for k in 0..30 {
+        xhci.poll();
+        xhc.kfz_xhc_run(10);
+    }
+    assert(machine.kfz_said("daphnis: usb: port 2: the controller gave slot 1, which is in use\n"));
+    assert(machine.kfz_said("daphnis: usb: port 2 speed 3: skipped\n") && xhc.kfz_xhc_disables() == 0);
+    U64 a = kz_buf(0x5A);                                 // the pool's next frame, whoever held it before
+    xhc.kfz_xhc_lie(xhc.LIE_DATA_STALL, 0x28, 1, 1);      // the halts cleared through the disk's EP0
+    assert(!usbms.read(0, b));
+    kz_then_right(b);
+    assert(kz_all(a, 0x5A));
+    kz_free(a);
+    kz_free(b);
+    kz_usb_end();
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,9 @@
+// src/main_hello.ci: boot and print. The smallest freestanding image: one line on COM1, exit.
+
+import src.serial;
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("hello from Daphnis\n");
+}
+// SPDX-License-Identifier: Apache-2.0

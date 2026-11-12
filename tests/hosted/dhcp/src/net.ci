@@ -1,0 +1,25 @@
+// tests/hosted/dhcp/src/net.ci: src/net.ci for the hosted DHCP test. The two clocks move apart on purpose: ticks()
+// counts network ticks (one a pump, which a key or a frame also brings), timers() counts the 100 Hz timer wakes of
+// NW-1's udp.wait(). The test drives each with advance().
+
+I64 now_ticks = 0;
+I64 now_timers = 0;
+
+export void advance(I64 dt, I64 dm) {
+    now_ticks += dt;
+    now_timers += dm;
+}
+
+export I64 ticks() {
+    return now_ticks;
+}
+
+export I64 timers() {
+    return now_timers;
+}
+
+export U8 mac_byte(I64 i) {
+    U8[6] m = [0x02, 0x00, 0x00, 0x00, 0x00, 0x2A];
+    return m[i];
+}
+// SPDX-License-Identifier: Apache-2.0

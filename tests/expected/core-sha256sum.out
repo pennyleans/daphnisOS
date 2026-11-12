@@ -1,0 +1,61 @@
+$ text.txt
+4eb69a7d087144a689c9be93972cb54fc24423fc88828ac8cd569d7ca761651a  text.txt
+status 0
+$ text.txt nonl.txt empty long.txt utf8.txt
+4eb69a7d087144a689c9be93972cb54fc24423fc88828ac8cd569d7ca761651a  text.txt
+e421985de8560d2d2847361afd20f82baf462e4ae68b199b19d664a7e4c2428d  nonl.txt
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  empty
+ae561fe9f91467bbb9f669618dd167428e607538d984026c94b2696f1419011d  long.txt
+b7207a5d45ee12443a06bc2af8908509eb4e33463a1efc305394d11654815689  utf8.txt
+status 0
+$  < long.txt
+ae561fe9f91467bbb9f669618dd167428e607538d984026c94b2696f1419011d  -
+status 0
+$ - < text.txt
+4eb69a7d087144a689c9be93972cb54fc24423fc88828ac8cd569d7ca761651a  -
+status 0
+$ missing text.txt
+4eb69a7d087144a689c9be93972cb54fc24423fc88828ac8cd569d7ca761651a  text.txt
+-- stderr
+sha256sum: missing: No such file or directory
+status 1
+$ -c sums.txt
+text.txt: OK
+nonl.txt: OK
+empty: OK
+status 0
+$ -c bad.sums
+long.txt: OK
+text.txt: FAILED
+utf8.txt: OK
+missing: FAILED
+-- stderr
+sha256sum: missing: No such file or directory
+sha256sum: WARNING: 2 of 4 computed checksums did NOT match
+status 1
+$ -c -s bad.sums
+-- stderr
+sha256sum: missing: No such file or directory
+status 1
+$ -c -w bad.sums
+long.txt: OK
+text.txt: FAILED
+utf8.txt: OK
+missing: FAILED
+-- stderr
+sha256sum: missing: No such file or directory
+sha256sum: WARNING: 2 of 4 computed checksums did NOT match
+status 1
+$ -c < sums.txt
+text.txt: OK
+nonl.txt: OK
+empty: OK
+status 0
+$ -c missing
+-- stderr
+sha256sum: missing: No such file or directory
+status 1
+$ -b text.txt
+-- stderr
+sha256sum: not supported: -b
+status 2

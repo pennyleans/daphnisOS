@@ -1,0 +1,71 @@
+// Reclaimed history must release only dead replay boundaries.
+import user.ci.cvim.key;
+import user.ci.cvim.state;
+import user.ci.cvim.buf;
+import user.ced.keys;
+
+test "reclaim: redo replacement does not consume a lifetime piece budget" {
+    I64[16384] r; I64[2000] x; U8[4] orig; U8[2048] add; I64[96] sp; I64[278528] u;
+    orig[0]='a'; orig[1]='b'; orig[2]='c'; orig[3]='\n';
+    key.init(r,x,4,256); assert(key.load(r,x,orig,add));
+    for cycle in 0..1000 {
+        key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'Z');
+        assert(r[state.R_FULL] == 0);
+        key.step(r,x,orig,add,sp,u,keys.K_ESC); key.step(r,x,orig,add,sp,u,'u');
+        assert(buf.total(x) == 4 && r[state.R_U_AT] == 0 && r[state.R_U_OPS] == 1);
+        assert(r[state.R_SPTOP] == 0);
+    }
+    assert(r[state.R_PBOUND] <= 4);
+    key.step(r,x,orig,add,sp,u,'3'); key.step(r,x,orig,add,sp,u,'r'); key.step(r,x,orig,add,sp,u,'X');
+    assert(r[state.R_FULL] == 0 && r[state.R_U_OPS] == 2);
+    assert(r[state.R_U_POT] == 6 && r[state.R_U_APOT] == 6);
+    for cycle in 0..20 {
+        assert(buf.total(x) == 4);
+        for i in 0..3 { assert(buf.byte_at(x,orig,add,i) == 'X'); }
+        key.step(r,x,orig,add,sp,u,'u'); assert(r[state.R_U_APOT] == 0);
+        for i in 0..4 { assert(buf.byte_at(x,orig,add,i) == orig[i]); }
+        key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r');
+        assert(r[state.R_FULL] == 0);
+    }
+}
+
+test "reclaim: joined insertion potential follows recorded chunks" {
+    I64[16384] r; I64[2000] x; U8[2] orig; U8[128] add; I64[96] sp; I64[278528] u;
+    orig[0]='a'; orig[1]='\n';
+    for chunk in 1..8 {
+        key.init(r,x,4,chunk); assert(key.load(r,x,orig,add));
+        key.step(r,x,orig,add,sp,u,'i');
+        for i in 0..29 {
+            key.step(r,x,orig,add,sp,u,'Z'); assert(r[state.R_FULL] == 0);
+            assert(r[state.R_U_POT] == (i+1+chunk-1)/chunk+2 && r[state.R_U_APOT] == r[state.R_U_POT]);
+        }
+        key.step(r,x,orig,add,sp,u,keys.K_ESC); key.step(r,x,orig,add,sp,u,'u');
+        assert(r[state.R_U_APOT] == 0 && r[state.R_U_POT] == (29+chunk-1)/chunk+2);
+        for cycle in 0..10 {
+            key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r'); assert(r[state.R_U_APOT] == r[state.R_U_POT] && buf.total(x) == 31);
+            key.step(r,x,orig,add,sp,u,'u'); assert(r[state.R_U_APOT] == 0 && buf.total(x) == 2);
+        }
+        key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'Y'); key.step(r,x,orig,add,sp,u,'X');
+        assert(r[state.R_U_POT] == (2+chunk-1)/chunk+2 && r[state.R_U_APOT] == r[state.R_U_POT]);
+    }
+}
+
+test "reclaim: failed compound preserves prospective redo and aggregates" {
+    I64[16384] r; I64[16384] before; I64[2000] x; U8[2] orig; U8[128] add;
+    I64[3] sp; I64[278528] u; I64[278528] old_u;
+    orig[0]='a'; orig[1]='\n';
+    key.init(r,x,4,256); assert(key.load(r,x,orig,add));
+    key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'Z'); key.step(r,x,orig,add,sp,u,keys.K_ESC);
+    key.step(r,x,orig,add,sp,u,'u'); key.step(r,x,orig,add,sp,u,'y'); key.step(r,x,orig,add,sp,u,'y');
+    key.step(r,x,orig,add,sp,u,'r');
+    before[0..16384]=r[0..16384]; old_u[0..278528]=u[0..278528];
+    key.step(r,x,orig,add,sp,u,'X');
+    assert(r[state.R_FULL] == 1 && buf.total(x) == 2 && r[state.R_CUR] == 0);
+    for i in 0..278528 { assert(u[i] == old_u[i]); }
+    for i in state.R_REG_FROM..state.R_REPLAY+1 { assert(r[i] == before[i]); }
+    for i in state.R_U_N..state.R_U_OPEN+1 { assert(r[i] == before[i]); }
+    for i in state.R_PBOUND..state.R_CHUNK+1 { assert(r[i] == before[i]); }
+    key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r');
+    assert(r[state.R_FULL] == 0 && buf.total(x) == 3 && buf.byte_at(x,orig,add,0) == 'Z');
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,104 @@
+// tests/tz/tz_twin.ci: RS-TZa against the database's own zdump (docs/specs/2026-11-11-rs-tza.md section 4). Prints, for
+// tools/check-tz.py, which renders each L line in zdump's form and compares:
+//   N i hex                      city i's zone name, its bytes in hex
+//   W name                       a part starts: zdump-2026-2027, probe-2026-2027, zdump-1970-2037
+//   L i y mo d h mi s wd  y mo d h mi s wd  dst offset hex
+//                                one zdump line: the UT fields, then the local fields (cal.at through tz.local, wd 0
+//                                Sunday), the daylight flag, the offset and the letters in hex
+// A zdump part has, for each city, the second before and the second of each change tz.next finds in the part's years;
+// the probe part has 00:00:00 UT of January 1 and July 1 of 2026 and 2027 for each city with no change in those years.
+//   I i l t                      RS-TZc: utc_of(i, l), or "gap"; for each change of 1970 to 2037 at u, from offset o1
+//                                to o2, the local times u + o1 - 1, u + o1, u + o2 - 1 and u + o2; for a city with no
+//                                change, the local time 2026-01-01 00:00:00
+import user.ci.core.tz;
+import user.ci.core.cal;
+
+U8[64] buf;
+
+void hex(I64 n) {
+    " ";
+    for k in 0..n {
+        I64 b = buf[k] as I64;
+        "{b:02x}";
+    }
+}
+
+void line(I64 i, I64 t) {
+    cal.at(t);
+    I64 y = cal.year();
+    I64 mo = cal.month();
+    I64 d = cal.day();
+    I64 h = cal.hour();
+    I64 mi = cal.minute();
+    I64 s = cal.second();
+    I64 wd = cal.weekday();
+    I64 o = tz.local(i, t);
+    I64 ly = cal.year();
+    I64 lmo = cal.month();
+    I64 ld = cal.day();
+    I64 lh = cal.hour();
+    I64 lmi = cal.minute();
+    I64 ls = cal.second();
+    I64 lwd = cal.weekday();
+    I64 dst = tz.dst(i, t);
+    "L {i} {y} {mo} {d} {h} {mi} {s} {wd} {ly} {lmo} {ld} {lh} {lmi} {ls} {lwd} {dst} {o}";
+    hex(tz.abbr(i, t, buf));
+    "\n";
+}
+
+void window(I64 lo, I64 hi) {
+    for i in 0..tz.cities() {
+        I64 u = tz.next(i, lo - 1);
+        while (u >= 0 && u < hi) {
+            line(i, u - 1);
+            line(i, u);
+            u = tz.next(i, u);
+        }
+    }
+}
+
+void inverse(I64 i, I64 l) {
+    I64 r = tz.utc_of(i, l);
+    if (r == tz.GAP) {
+        "I {i} {l} gap\n";
+    } else {
+        "I {i} {l} {r}\n";
+    }
+}
+
+void main() {
+    for i in 0..tz.cities() {
+        "N {i}";
+        hex(tz.name(i, buf));
+        "\n";
+    }
+    "W zdump-2026-2027\n";
+    window(1767225600, 1830297600);
+    "W probe-2026-2027\n";
+    for i in 0..tz.cities() {
+        I64 u = tz.next(i, 1767225599);
+        if (u < 0 || u >= 1830297600) {
+            line(i, 1767225600);                     // 2026-01-01
+            line(i, 1782864000);                     // 2026-07-01
+            line(i, 1798761600);                     // 2027-01-01
+            line(i, 1814400000);                     // 2027-07-01
+        }
+    }
+    "W zdump-1970-2037\n";
+    window(0, 2145916800);
+    "W inverse-1970-2037\n";
+    for i in 0..tz.cities() {
+        I64 u = tz.next(i, -1);
+        if (u < 0 || u >= 2145916800) { inverse(i, 1767225600); }
+        while (u >= 0 && u < 2145916800) {
+            I64 o1 = tz.offset(i, u - 1);
+            I64 o2 = tz.offset(i, u);
+            inverse(i, u + o1 - 1);
+            inverse(i, u + o1);
+            inverse(i, u + o2 - 1);
+            inverse(i, u + o2);
+            u = tz.next(i, u);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

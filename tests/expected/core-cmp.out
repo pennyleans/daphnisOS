@@ -1,0 +1,55 @@
+$ text.txt text2.txt
+status 0
+$ text.txt text3.txt
+text.txt text3.txt differ: char 1, line 1
+status 1
+$ -l text.txt text3.txt
+1 157 117
+24 145 105
+-- stderr
+cmp: EOF on text3.txt
+status 1
+$ -s text.txt text3.txt
+status 1
+$ -s text.txt text2.txt
+status 0
+$ text.txt nonl.txt
+text.txt nonl.txt differ: char 1, line 1
+status 1
+$ empty text.txt
+-- stderr
+cmp: EOF on empty
+status 1
+$ text.txt empty
+-- stderr
+cmp: EOF on empty
+status 1
+$ -l empty text.txt
+-- stderr
+cmp: EOF on empty
+status 1
+$ long.txt long.txt
+status 0
+$ - text2.txt < text.txt
+status 0
+$ text.txt - < text3.txt
+text.txt - differ: char 1, line 1
+status 1
+$ missing text.txt
+-- stderr
+cmp: missing: No such file or directory
+status 2
+$ -s missing text.txt
+-- stderr
+cmp: missing: No such file or directory
+status 2
+$ text.txt
+-- stderr
+cmp: needs two files
+status 2
+$ a b c
+-- stderr
+cmp: needs two files
+status 2
+$ -ls text.txt text3.txt
+status 1

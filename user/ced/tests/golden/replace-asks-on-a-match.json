@@ -1,0 +1,37 @@
+{
+  "id": "replace-asks-on-a-match",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a b a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "61",
+    "0d",
+    "7a",
+    "0d"
+  ],
+  "expect": {
+    "text": "a b a",
+    "sel": [
+      0,
+      1
+    ],
+    "screen": [
+      "a b a",
+      "",
+      "",
+      "",
+      " x  1 char selected                 1:2",
+      "y replace  n skip  a all  Esc stop"
+    ]
+  }
+}

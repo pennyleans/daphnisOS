@@ -1,0 +1,9 @@
+# RS-VIEW (PR 318) at the 512 MiB floor: `cview -d` decodes a 3840 x 2160 PNG to the digest of its pixels (sh/view.sh,
+# status 0); then View opens it in a window, which takes the large buffers (guest.py color reads its middle); q ends it.
+hdesk: screen 1920x1080 plane 1920x
+=hdesk: terminal 1 ended, status 0
+~hdesk: float 1 app -?[0-9]+ frame -?[0-9]+,-?[0-9]+ [0-9]+x[0-9]+
+~hdesk: pixel 1 pid [0-9]+ size [0-9]+x[0-9]+
+=hdesk: pixel 1 ended
+=hdesk: shell ended, status 0
+!fault: cint-core-1/fault/v2

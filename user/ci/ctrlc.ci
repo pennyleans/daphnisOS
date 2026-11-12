@@ -1,0 +1,49 @@
+// user/ci/ctrlc.ci: ctrlc [SHELL [PATH]], the K-10 gate's driver (docs/specs/2026-11-07-k-kit2.md section 3a), in no
+// flavor's image: check-cish.sh runs it on Linux and puts it in an image of its own for Daphnis. It runs SHELL on a
+// pty (user/ci/typist.ci) and types at it: Ctrl-C at a running program and at a pipeline in a loop, and Ctrl-\ at a
+// running program, each time asking $? after. Ctrl-C at the prompt is the line editor's, in keyed (K-9): busybox ash
+// has no line editor to be its oracle.
+// The shell's own words (a newline, a message) are not part of its output, so cish under Daphnis, cish on Linux and
+// busybox ash on Linux print the same lines.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.ptyctl;
+import user.ci.typist;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+void main(in U8[_] a) {
+    typist.start(b"ctrlc", a);
+    typist.wait_for(b"start", b"@> ");
+    // 1. Ctrl-C at a running program: cat ends by SIGINT, the shell lives, $? is 130
+    typist.keys(b"echo r''un; cat\n");
+    typist.wait_for(b"cat", b"run");
+    typist.keys(b"x\n");
+    typist.wait_for(b"cat reads", b"x\r\nx\r\n");
+    typist.keys(b"\x03");
+    typist.wait_for(b"after Ctrl-C", b"@> ");
+    typist.keys(b"echo s''1=$?\n");
+    typist.wait_for(b"status", b"s1=130");
+    // 2. Ctrl-C at a pipeline in a loop: both members end and the loop with them
+    typist.wait_for(b"prompt", b"@> ");
+    typist.keys(b"while :; do echo l''oop; cat | cat; done\n");
+    typist.wait_for(b"loop", b"loop");
+    typist.keys(b"y\n");
+    typist.wait_for(b"pipeline reads", b"y\r\ny\r\n");
+    typist.keys(b"\x03");
+    typist.wait_for(b"after Ctrl-C", b"@> ");
+    typist.keys(b"echo s''2=$?\n");
+    typist.wait_for(b"status", b"s2=130");
+    // 3. Ctrl-\ at a running program: SIGQUIT, $? is 131
+    typist.wait_for(b"prompt", b"@> ");
+    typist.keys(b"echo q''uit; cat\n");
+    typist.wait_for(b"cat", b"quit");
+    typist.keys(b"z\n");
+    typist.wait_for(b"cat reads", b"z\r\nz\r\n");
+    typist.keys(b"\x1c");
+    typist.wait_for(b"after Ctrl-\\", b"@> ");
+    typist.keys(b"echo s''3=$?\n");
+    typist.wait_for(b"status", b"s3=131");
+    typist.wait_for(b"prompt", b"@> ");
+    typist.keys(b"exit\n");
+    typist.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

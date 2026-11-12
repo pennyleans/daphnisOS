@@ -1,0 +1,3 @@
+# RS-R4 (PR 319), the homes leg's first session: ada adds eve, a child whose passphrase is `four`; eve's home and
+# its three folders come at eve's first login (RS-HOME, PR 316), not here.
+k | add ada eve child 14 | sevenhorsesrunfour | ok | 0

@@ -1,0 +1,480 @@
+// user/ci/kit/acctform.ci: frame 49 (design notes 66 and 67, approved by l 2026-11-11 19:34Z), the forms that
+// Settings' Add Account and Change Password open (RS-AQ, docs/specs/2026-11-11-rs-accounts-page.md section 4). The
+// entries are user/ci/acctask.ci's; this module draws them, holds the focus, and turns keys and presses into the
+// module's calls. Enter on a ready form hands the operation to the frame 17 prompt (DONE); Esc or Cancel ends it.
+//
+// The plate: a dialog of the frame 23 kind, W wide, centered over the plane by the host. A 1 px FILL ring with a
+// 36 px FILL header, its name in LABEL on ON_FILL; the body PAPER, radius 12 outside, 14 px in, 10 between rows.
+// Add Account: Name, Role (Parent | Child, Child at open), Password, `Type Password again`. Change Password: the
+// account's disc, name and role, then Password and `Type Password again`. Fields are 36 px MANTLE of radius 6; the
+// focused one has a 2 px ULTRAMARINE ring outside it, and one at fault a 2 px CADMIUM ring once the focus left it
+// with something typed, or once Enter or Create was pressed on a form not ready, or once authd refused it.
+// Under them one 17 px line: the first refused entry's fact (`That name is taken.`, `That name cannot be used.`,
+// `N characters or more.`, `The passwords do not match.`) in OCHRE on dark and CADMIUM on light; for a Parent's
+// password `N characters or more.` from the start in INK_DIM. Create or Change on FILL with an Enter keycap at the
+// left, at 40 percent until every entry passes; Cancel on SURF1 with an Esc keycap at the right. Name has the focus
+// at open; a dropped key in Name shows nothing, a capital folds to its small letter (acctask.form_put).
+//
+// Coordinates are logical pixels from the plate's top left; row_at draws device row y at zoom z from the plate's
+// device top left (ox, oy).
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;
+import user.ci.kit.blend;
+import user.ci.acct;
+import user.ci.acctask;
+
+export const I64 W = 400;
+export const I64 H_ADD = 324;
+export const I64 H_CHANGE = 266;
+export const I64 PAD = 14;
+export const I64 HEAD = 36;
+export const I64 FIELD = 36;
+export const I64 GAP = 10;
+export const I64 BTN_H = 36;
+export const I64 SEG_W = 176;
+export const I64 LINE = 17;
+const I64 DIM = 102;                   // 40 percent in 256ths (DN-58 item 12)
+
+// What a key or a press did.
+export const I64 STAY = 0;
+export const I64 DONE = 1;             // the form holds: the host raises the frame 17 prompt
+export const I64 CANCEL = 2;           // the operation ended
+
+// The focus stops, in order.
+export const I64 S_NAME = 0;
+export const I64 S_ROLE = 1;
+export const I64 S_NEW = 2;
+export const I64 S_AGAIN = 3;
+
+const I64 K_ESC = 1;
+const I64 K_BACKSPACE = 14;
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+
+U32[2] DISCS = [0x009e4724, 0x002f7a72];   // kit/stacct.ci's discs, the same on both themes (design note 62)
+const U32 INITIAL = 0x00f3efe6;
+
+Bool up = false;
+I64 stop = S_NAME;
+Bool[4] left;                          // the focus has left this stop once: its fault shows
+Bool tried = false;                    // Enter or Create on a form not ready, or authd refused it: all faults show
+Bool warn = false;                     // the line states a refusal
+
+U32 tok(I64 t) { return tokens.word(t); }
+Bool adding() { return acctask.operation() == acctask.ADD; }
+
+export Bool is_up() { return up; }
+export I64 focus() { return stop; }
+export I64 height() {
+    if (adding()) { return H_ADD; }
+    return H_CHANGE;
+}
+
+// The form up for the operation acctask.begin opened at FORM.
+export void open() {
+    up = acctask.phase() == acctask.FORM;
+    for k in 0..4 { left[k] = false; }
+    tried = false;
+    stop = S_NEW;
+    if (adding()) { stop = S_NAME; }
+    focus_field();
+}
+
+// Back to the form after authd refused an entry (acctask.answer gave O_FORM): that entry shows its fault.
+export void reopen() {
+    up = acctask.phase() == acctask.FORM;
+    I64 f = acctask.field();
+    stop = S_NEW;
+    if (f == acctask.F_NAME) { stop = S_NAME; }
+    left[stop] = true;
+    tried = true;
+    focus_field();
+}
+
+export void close() { up = false; }
+
+void focus_field() {
+    if (stop == S_NAME) { acctask.form_focus(acctask.F_NAME); }
+    if (stop == S_NEW) { acctask.form_focus(acctask.F_NEW); }
+    if (stop == S_AGAIN) { acctask.form_focus(acctask.F_AGAIN); }
+}
+
+I64 first() {
+    if (adding()) { return S_NAME; }
+    return S_NEW;
+}
+
+void move(I64 d) {
+    left[stop] = true;
+    I64 n = stop + d;
+    if (n > S_AGAIN) { n = first(); }
+    if (n < first()) { n = S_AGAIN; }
+    stop = n;
+    focus_field();
+}
+
+I64 finish() {
+    if (!acctask.form_ready()) {
+        tried = true;
+        return STAY;
+    }
+    if (acctask.form_done() != acctask.PROMPT) { return STAY; }
+    up = false;
+    return DONE;
+}
+
+I64 cancel() {
+    acctask.cancel();
+    up = false;
+    return CANCEL;
+}
+
+// A key: code, and b the byte it types (keymap.byte_of) or -1. Tab moves on, Shift+Tab (back) moves back; Left and
+// Right choose the role on Role; Enter finishes a ready form, else moves on; Esc cancels.
+export I64 key(I64 code, I64 b, Bool back) {
+    if (!up) { return STAY; }
+    if (code == K_ESC) { return cancel(); }
+    if (code == K_ENTER) {
+        if (acctask.form_ready()) { return finish(); }
+        if (stop == S_AGAIN) { return finish(); }
+        move(1);
+        return STAY;
+    }
+    if (code == K_TAB) {
+        if (back) { move(-1); } else { move(1); }
+        return STAY;
+    }
+    if (stop == S_ROLE) {
+        if (code == K_LEFT) { acctask.form_set_role(acct.PARENT); }
+        if (code == K_RIGHT) { acctask.form_set_role(acct.CHILD); }
+        return STAY;
+    }
+    if (code == K_BACKSPACE) {
+        acctask.form_back();
+        return STAY;
+    }
+    if (b >= 32 && b <= 126) { acctask.form_put(b); }
+    return STAY;
+}
+
+// --- geometry (logical, from the plate's top left) ---
+
+export I64 row_y(I64 s) {
+    I64 y = HEAD + PAD;
+    if (!adding()) { return y + 28 + GAP + (FIELD + GAP) * (s - S_NEW); }
+    if (s == S_NAME) { return y; }
+    if (s == S_ROLE) { return y + FIELD + GAP; }
+    return y + FIELD + GAP + 40 + GAP + (FIELD + GAP) * (s - S_NEW);
+}
+
+export I64 line_y() { return row_y(S_AGAIN) + FIELD + GAP; }
+
+// DN-51 frame 26: whether (px, py) from the form's top left is on a text field (the Text pointer): Name, Password
+// and Type Password again, never Role's segments.
+export Bool field_at(I64 px, I64 py) {
+    if (!up || px < PAD || px >= W - PAD) { return false; }
+    I64 s0 = S_NAME;
+    if (!adding()) { s0 = S_NEW; }     // Change Password: its two fields alone
+    for s in s0..S_AGAIN + 1 {
+        if (s != S_ROLE && py >= row_y(s) && py < row_y(s) + FIELD) { return true; }
+    }
+    return false;
+}
+export I64 btn_y() { return height() - 1 - PAD - BTN_H; }
+
+I64 txt_w(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+I64 key_w(in U8[_] s, I64 n) { return txt_w(s, n, faces.PATH) + 12; }
+I64 btn_w(in U8[_] k, I64 kn, in U8[_] w, I64 wn) { return 12 + key_w(k, kn) + 10 + txt_w(w, wn, faces.NAME) + 12; }
+export I64 go_w() {
+    if (adding()) { return btn_w(b"Enter", 5, b"Create", 6); }
+    return btn_w(b"Enter", 5, b"Change", 6);
+}
+export I64 cancel_w() { return btn_w(b"Esc", 3, b"Cancel", 6); }
+
+// A press at (px, py) from the plate's top left.
+export I64 click(I64 px, I64 py) {
+    if (!up) { return STAY; }
+    I64 bt = btn_y();
+    if (py >= bt && py < bt + BTN_H) {
+        if (px >= PAD && px < PAD + go_w()) { return finish(); }
+        if (px >= W - PAD - cancel_w() && px < W - PAD) { return cancel(); }
+        return STAY;
+    }
+    if (px < PAD || px >= W - PAD) { return STAY; }
+    for s in first()..4 {
+        I64 ry = row_y(s);
+        if (s == S_ROLE) {
+            I64 sx = W - PAD - SEG_W;
+            if (py >= ry + 4 && py < ry + 36 && px >= sx) {
+                if (stop != S_ROLE) { left[stop] = true; }
+                stop = S_ROLE;
+                I64 r = acct.CHILD;
+                if (px < sx + SEG_W / 2) { r = acct.PARENT; }
+                acctask.form_set_role(r);
+                return STAY;
+            }
+        } else if (py >= ry && py < ry + FIELD) {
+            if (stop != s) { left[stop] = true; }
+            stop = s;
+            focus_field();
+            return STAY;
+        }
+    }
+    return STAY;
+}
+
+// --- what is drawn ---
+
+I64 field_of(I64 s) {
+    if (s == S_NAME) { return acctask.F_NAME; }
+    if (s == S_NEW) { return acctask.F_NEW; }
+    return acctask.F_AGAIN;
+}
+
+// The fault stop s shows: once the focus has left it with something typed, or once the form was tried.
+export I64 shown(I64 s) {
+    if (s == S_ROLE) { return 0; }
+    if (!tried && (!left[s] || typed_len(s) == 0)) { return 0; }
+    return acctask.fault_at(field_of(s));
+}
+
+I64 typed_len(I64 s) {
+    if (s == S_NAME) { return acctask.name_len(); }
+    if (s == S_NEW) { return acctask.new_len(); }
+    return acctask.again_len();
+}
+
+I64 put(inout U8[_] d, I64 at, in U8[_] s) {
+    for k in 0..len(s) { d[at + k] = s[k]; }
+    return at + len(s);
+}
+
+// The line under the fields into t, its length; `warns` then says it states a refusal.
+export I64 line(inout U8[_] t) {
+    warn = true;
+    for s in first()..4 {
+        I64 f = shown(s);
+        if (f == acctask.NAME_TAKEN) { return put(t, 0, "That name is taken."); }
+        if (f == acctask.NAME_BAD) { return put(t, 0, "That name cannot be used."); }
+        if (f == acctask.SHORT) { return least(t); }
+        if (f == acctask.DIFFER) { return put(t, 0, "The passwords do not match."); }
+    }
+    warn = false;
+    if (acctask.role_for_new() == acct.PARENT) { return least(t); }
+    return 0;
+}
+
+export Bool warns() { return warn; }
+
+// `N characters or more.` for the role the password is judged by (AC-D3, acct.ci's minimums).
+I64 least(inout U8[_] t) {
+    I64 m = acct.CHILD_MIN;
+    if (acctask.role_for_new() == acct.PARENT) { m = acct.PARENT_MIN; }
+    I64 n = 0;
+    if (m >= 10) {
+        t[0] = (48 + m / 10) as U8;
+        n = 1;
+    }
+    t[n] = (48 + m % 10) as U8;
+    return put(t, n + 1, " characters or more.");
+}
+
+I64 base(I64 top, I64 h) { return top + h / 2 + 5; }
+
+// A field at stop s from logical top ry: its ground, its ring, its dots or name or placeholder, the caret.
+void field(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z, I64 s, I64 ry) {
+    I64 x0 = ox + PAD * z;
+    I64 x1 = ox + (W - PAD) * z;
+    I64 y0 = oy + ry * z;
+    I64 y1 = oy + (ry + FIELD) * z;
+    if (y < y0 - 2 * z || y >= y1 + 2 * z) { return; }
+    if (stop == s) {
+        shape.ring(row, y, x0 - 2 * z, y0 - 2 * z, x1 + 2 * z, y1 + 2 * z, 8 * z, 2 * z, tok(tokens.ULTRAMARINE));
+    } else if (shown(s) != 0) {
+        shape.ring(row, y, x0 - 2 * z, y0 - 2 * z, x1 + 2 * z, y1 + 2 * z, 8 * z, 2 * z, tok(tokens.CADMIUM));
+    }
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, x0, y0, x1, y1, 6 * z, tok(tokens.MANTLE));
+    I64 tx = x0 + 12 * z;
+    I64 bl = oy + base(ry, FIELD) * z;
+    I64 e = 0;
+    I64 n = 0;
+    if (s == S_NAME) {
+        n = acctask.name_len();
+        U8[32] nm;
+        for k in 0..n { nm[k] = acctask.name_byte(k); }
+        if (n > 0) { e = ctext.text(row, y, tx, bl, x1 - 12 * z, nm, n, tok(tokens.INK), faces.BODY, z); }
+        tx = tx + ctext.width(nm, n, faces.BODY, z);
+    } else {
+        n = acctask.new_len();
+        if (s == S_AGAIN) { n = acctask.again_len(); }
+        I64 d = min(n, (W - 2 * PAD - 28) / 14);
+        I64 cy = ry + FIELD / 2 - 4;
+        for k in 0..d {
+            I64 dx = tx + 14 * z * k;
+            shape.rounded(row, y, dx, oy + cy * z, dx + 8 * z, oy + (cy + 8) * z, 4 * z, tok(tokens.INK));
+        }
+        if (d > 0) { tx = tx + (14 * d - 4) * z; }
+    }
+    if (stop == s && y >= oy + (ry + 9) * z && y < oy + (ry + 27) * z) {
+        I64 cx = tx;
+        if (n > 0) { cx = tx + 2 * z; }
+        I64 q = cx;
+        while (q < cx + 2 * z) {
+            if (q >= 0 && q < len(row)) { row[q] = tok(tokens.INK); }
+            q = q + 1;
+        }
+        tx = cx + 8 * z;
+    }
+    if (n == 0) {                                      // the placeholder, after the caret when focused
+        if (s == S_NAME) { e = ctext.text(row, y, tx, bl, x1, b"Name", 4, tok(tokens.INK_DIM), faces.BODY, z); }
+        if (s == S_NEW) { e = ctext.text(row, y, tx, bl, x1, b"Password", 8, tok(tokens.INK_DIM), faces.BODY, z); }
+        if (s == S_AGAIN) {
+            e = ctext.text(row, y, tx, bl, x1, b"Type Password again", 19, tok(tokens.INK_DIM), faces.BODY, z);
+        }
+    }
+}
+
+// Role: the word at the left; the two parts at the right, the chosen one FILL with ON_FILL in NAME.
+void role(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z, I64 ry) {
+    I64 y0 = oy + (ry + 4) * z;
+    I64 y1 = oy + (ry + 36) * z;
+    I64 sx0 = ox + (W - PAD - SEG_W) * z;
+    I64 sx1 = ox + (W - PAD) * z;
+    if (stop == S_ROLE && y >= y0 - 4 * z && y < y1 + 4 * z) {
+        shape.focus_ring(row, y, sx0, y0, sx1, y1, 16 * z, z, tok(tokens.PAPER), tok(tokens.ULTRAMARINE));
+    }
+    if (y < oy + ry * z || y >= oy + (ry + 40) * z) { return; }
+    I64 e = ctext.text(row, y, ox + PAD * z, oy + base(ry, 40) * z, sx0, b"Role", 4, tok(tokens.INK), faces.NAME, z);
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, sx0, y0, sx1, y1, 16 * z, tok(tokens.MANTLE));
+    I64 half = SEG_W / 2;
+    Bool parent = acctask.form_role() == acct.PARENT;
+    I64 cx0 = sx0 + 2 * z;
+    if (!parent) { cx0 = sx0 + (half) * z; }
+    shape.rounded(row, y, cx0, y0 + 2 * z, cx0 + (half - 2) * z, y1 - 2 * z, 14 * z, tok(tokens.FILL));
+    I64 bl = oy + base(ry + 4, 32) * z;
+    U32 pc = tok(tokens.INK_DIM);
+    U32 cc = tok(tokens.ON_FILL);
+    I64 pf = faces.BODY;
+    I64 cf = faces.NAME;
+    if (parent) {
+        pc = tok(tokens.ON_FILL);
+        cc = tok(tokens.INK_DIM);
+        pf = faces.NAME;
+        cf = faces.BODY;
+    }
+    I64 pw = ctext.width(b"Parent", 6, pf, z);
+    I64 cw = ctext.width(b"Child", 5, cf, z);
+    e = ctext.text(row, y, sx0 + (half * z - pw) / 2, bl, sx0 + half * z, b"Parent", 6, pc, pf, z);
+    e = ctext.text(row, y, sx0 + half * z + (half * z - cw) / 2, bl, sx1, b"Child", 5, cc, cf, z);
+}
+
+// Change Password's account: its disc with the initial, its name, its role.
+void who(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z, I64 ry) {
+    if (y < oy + ry * z || y >= oy + (ry + 28) * z) { return; }
+    I64 a = acctask.account();
+    if (a < 0) { return; }
+    I64 x0 = ox + PAD * z;
+    shape.rounded(row, y, x0, oy + ry * z, x0 + 28 * z, oy + (ry + 28) * z, 14 * z, DISCS[acct.uid_of(a) % 2]);
+    U8[32] nm;
+    I64 n = acct.name_len(a);
+    for k in 0..n { nm[k] = acct.name_byte(a, k); }
+    U8[1] ini;
+    ini[0] = nm[0];
+    if (ini[0] >= 97 && ini[0] <= 122) { ini[0] = ini[0] - 32; }
+    I64 bl = oy + base(ry, 28) * z;
+    I64 iw = ctext.width(ini, 1, faces.NAME_BOLD, z);
+    I64 e = ctext.text(row, y, x0 + (28 * z - iw) / 2, bl, x0 + 28 * z, ini, 1, INITIAL, faces.NAME_BOLD, z);
+    I64 nx = x0 + 38 * z;
+    e = ctext.text(row, y, nx, bl, ox + (W - PAD) * z, nm, n, tok(tokens.INK), faces.NAME_BOLD, z);
+    I64 rx = nx + ctext.width(nm, n, faces.NAME_BOLD, z) + 10 * z;
+    if (acct.role_of(a) == acct.PARENT) {
+        e = ctext.text(row, y, rx, bl, ox + (W - PAD) * z, b"Parent", 6, tok(tokens.INK_DIM), faces.BODY, z);
+    } else {
+        e = ctext.text(row, y, rx, bl, ox + (W - PAD) * z, b"Child", 5, tok(tokens.INK_DIM), faces.BODY, z);
+    }
+}
+
+// A button with its keycap: ground g, ink k, the keycap's ring kr; dimmed toward PAPER when dim.
+void button(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z, I64 x, in U8[_] kc, I64 kn, in U8[_] w, I64 wn, U32 g,
+            U32 ink, U32 kr, U32 kink, Bool dim) {
+    I64 bt = btn_y();
+    I64 x0 = ox + x * z;
+    I64 y0 = oy + bt * z;
+    I64 bw = btn_w(kc, kn, w, wn);
+    I64 x1 = x0 + bw * z;
+    I64 y1 = y0 + BTN_H * z;
+    if (y < y0 || y >= y1) { return; }
+    U32 ground = g;
+    U32 fg = ink;
+    U32 ring = kr;
+    U32 kfg = kink;
+    if (dim) {
+        U32 p = tok(tokens.PAPER);
+        ground = blend.mix_px(p, g, DIM);
+        fg = blend.mix_px(p, ink, DIM);
+        ring = blend.mix_px(p, kr, DIM);
+        kfg = blend.mix_px(p, kink, DIM);
+    }
+    shape.rounded(row, y, x0, y0, x1, y1, 6 * z, ground);
+    I64 kx0 = x0 + 12 * z;
+    I64 kx1 = kx0 + key_w(kc, kn) * z;
+    shape.ring(row, y, kx0, y0 + 8 * z, kx1, y0 + 28 * z, 4 * z, z, ring);
+    I64 kw = ctext.width(kc, kn, faces.PATH, z);
+    I64 bl = oy + (bt + 22) * z;
+    I64 e = ctext.text(row, y, kx0 + (kx1 - kx0 - kw) / 2, bl, kx1, kc, kn, kfg, faces.PATH, z);
+    e = ctext.text(row, y, kx1 + 10 * z, oy + base(bt, BTN_H) * z, x1, w, wn, fg, faces.NAME, z);
+}
+
+// Device row y of the plate at zoom z, its device top left (ox, oy): the whole plate, ring and ground included.
+export void row_at(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z) {
+    if (!up) { return; }
+    I64 h = height();
+    if (y < oy - 4 * z || y >= oy + (h + 4) * z) { return; }
+    I64 x1 = ox + W * z;
+    if (y >= oy && y < oy + h * z) {
+        shape.rounded(row, y, ox, oy, x1, oy + h * z, 12 * z, tok(tokens.FILL));
+        shape.lower_rounded(row, y, ox + z, oy + HEAD * z, x1 - z, oy + (h - 1) * z, 11 * z, tok(tokens.PAPER));
+        if (y < oy + HEAD * z) {
+            U8[16] t;
+            I64 tn = put(t, 0, "CHANGE PASSWORD");
+            if (adding()) { tn = put(t, 0, "ADD ACCOUNT"); }
+            I64 tw = ctext.width(t, tn, faces.LABEL, z);
+            I64 e = ctext.text(row, y, ox + (W * z - tw) / 2, oy + 22 * z, x1, t, tn, tok(tokens.ON_FILL), faces.LABEL,
+                               z);
+        }
+    }
+    if (adding()) {
+        field(row, y, ox, oy, z, S_NAME, row_y(S_NAME));
+        role(row, y, ox, oy, z, row_y(S_ROLE));
+    } else {
+        who(row, y, ox, oy, z, HEAD + PAD);
+    }
+    field(row, y, ox, oy, z, S_NEW, row_y(S_NEW));
+    field(row, y, ox, oy, z, S_AGAIN, row_y(S_AGAIN));
+    I64 ly = line_y();
+    if (y >= oy + ly * z && y < oy + (ly + LINE) * z) {
+        U8[40] t;
+        I64 tn = line(t);
+        U32 c = tok(tokens.INK_DIM);
+        if (warn && tokens.theme() == tokens.LIGHT) { c = tok(tokens.CADMIUM); }
+        if (warn && tokens.theme() != tokens.LIGHT) { c = tok(tokens.OCHRE); }
+        I64 e = ctext.text(row, y, ox + PAD * z, oy + (ly + 13) * z, x1 - PAD * z, t, tn, c, faces.SMALL, z);
+    }
+    Bool ready = acctask.form_ready();
+    if (adding()) {
+        button(row, y, ox, oy, z, PAD, b"Enter", 5, b"Create", 6, tok(tokens.FILL), tok(tokens.ON_FILL),
+               tok(tokens.ON_FILL), tok(tokens.ON_FILL), !ready);
+    } else {
+        button(row, y, ox, oy, z, PAD, b"Enter", 5, b"Change", 6, tok(tokens.FILL), tok(tokens.ON_FILL),
+               tok(tokens.ON_FILL), tok(tokens.ON_FILL), !ready);
+    }
+    button(row, y, ox, oy, z, W - PAD - cancel_w(), b"Esc", 3, b"Cancel", 6, tok(tokens.SURF1), tok(tokens.INK),
+           tok(tokens.RULE), tok(tokens.INK_DIM), false);
+}
+// SPDX-License-Identifier: Apache-2.0

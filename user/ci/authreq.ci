@@ -1,0 +1,151 @@
+// user/ci/authreq.ci: the words of authd's store operations (docs/specs/2026-11-11-rs-role.md section 2; RS-R3 and
+// RS-R4, docs/specs/2026-11-11-rs-accounts-ops.md), pure: the request the desk writes to authd and the answer it
+// reads back. user/ci/authop.ci, in authd, is the other end and takes its codes from here.
+//   role   BY NAME parent|child LF PASSPHRASE
+//   ceil   BY NAME WORD LF PASSPHRASE          WORD one digit, 0 to 7: disk 1, net 2, audio 4
+//   remove BY NAME LF PASSPHRASE
+//   add    BY NAME parent|child N LF PASSPHRASE NEW
+//   passwd BY NAME N LF PASSPHRASE NEW
+// BY is who approves and PASSPHRASE is BY's own, never NAME's: a parent, or for `passwd` NAME itself with its
+// current passphrase. In the first three it runs to the request's end. In `add` and `passwd` it is the N bytes after
+// the LF (N in decimal, 1 to 256, no leading 0) and NEW, NAME's new passphrase, is every byte after them, with
+// nothing between the two. The words are parted by one space. The answer is one line and authd's exit status.
+
+export const I64 DONE = 0;             // `ok`, status 0: the store holds what was asked
+export const I64 WRONG = 1;            // `no`, status 1: the passphrase is not BY's
+export const I64 E_REQUEST = 20;       // `error request`, status 2
+export const I64 E_STORE = 21;         // `error store`: it cannot be read (as for any process neither uid 0 nor ring 0)
+export const I64 E_WRITE = 22;         // `error write`: it was not written; it reads as before
+export const I64 E_RANDOM = 23;        // `error random`: no salt could be drawn for NEW
+export const I64 R_APPROVER = 30;      // `refused approver`, status 3: BY is no parent
+export const I64 R_ACCOUNT = 31;       // `refused account`: no NAME
+export const I64 R_LAST = 32;          // `refused last parent`
+export const I64 R_PARENT = 33;        // `refused parent`: a parent's ceiling is every grant
+export const I64 R_PASS = 34;          // `refused password`: NAME's passphrase does not meet the rule of the role asked
+export const I64 R_TAKEN = 35;         // `refused taken`: `add`, and NAME is an account
+export const I64 R_FULL = 36;          // `refused full`: `add`, and the store holds every account it can
+export const I64 R_HOME = 37;          // `refused home`: `remove`, and the name NAME's home would take aside is there
+
+export const I64 REQ_MAX = 593;        // the longest request: `add`, two names of 32, `parent`, `256`, two of 256
+export const I64 LINE_MAX = 19;        // the longest answer line, without its LF
+
+export I64 status(I64 code) {
+    if (code == DONE || code == WRONG) { return code; }
+    if (code >= R_APPROVER) { return 3; }
+    return 2;
+}
+
+I64 put(inout U8[_] o, I64 at, in U8[_] s, I64 n) {
+    for k in 0..n { o[at + k] = s[k]; }
+    return at + n;
+}
+
+// The answer line of code, without its LF, into o (LINE_MAX bytes or more); its length.
+export I64 line(I64 code, inout U8[_] o) {
+    if (code == DONE) { return put(o, 0, "ok", 2); }
+    if (code == WRONG) { return put(o, 0, "no", 2); }
+    if (code == E_STORE) { return put(o, 0, "error store", 11); }
+    if (code == E_WRITE) { return put(o, 0, "error write", 11); }
+    if (code == E_RANDOM) { return put(o, 0, "error random", 12); }
+    if (code == R_APPROVER) { return put(o, 0, "refused approver", 16); }
+    if (code == R_ACCOUNT) { return put(o, 0, "refused account", 15); }
+    if (code == R_LAST) { return put(o, 0, "refused last parent", 19); }
+    if (code == R_PARENT) { return put(o, 0, "refused parent", 14); }
+    if (code == R_PASS) { return put(o, 0, "refused password", 16); }
+    if (code == R_TAKEN) { return put(o, 0, "refused taken", 13); }
+    if (code == R_FULL) { return put(o, 0, "refused full", 12); }
+    if (code == R_HOME) { return put(o, 0, "refused home", 12); }
+    return put(o, 0, "error request", 13);
+}
+
+// The code of authd's answer ans[0..n), with or without its LF; E_REQUEST for a line that is none of them (as
+// authd's own `error` lines for a request it could not read).
+export I64 code_of(in U8[_] ans, I64 n) {
+    I64 e = 0;
+    while (e < n && e < len(ans) && ans[e] != 10) { e = e + 1; }
+    U8[19] w;
+    for c in 0..14 {
+        I64 code = c;                                          // DONE, WRONG
+        if (c >= 2) { code = E_REQUEST + c - 2; }              // the four errors
+        if (c >= 6) { code = R_APPROVER + c - 6; }             // the eight refusals
+        I64 wn = line(code, w);
+        Bool same = wn == e;
+        for k in 0..wn {
+            if (same && ans[k] != w[k]) { same = false; }
+        }
+        if (same) { return code; }
+    }
+    return E_REQUEST;
+}
+
+// The head `OP BY NAME` into o; its length, or -1 for a name that is none or o too short for the whole request.
+I64 head(inout U8[_] o, in U8[_] op, in U8[_] who, I64 wl, in U8[_] name, I64 nl, I64 pl) {
+    if (wl < 1 || wl > 32 || nl < 1 || nl > 32 || pl < 1 || pl > 256 || len(o) < REQ_MAX) { return -1; }
+    I64 at = put(o, 0, op, len(op));
+    o[at] = 32;
+    at = put(o, at + 1, who, wl);
+    o[at] = 32;
+    return put(o, at + 1, name, nl);
+}
+
+I64 tail(inout U8[_] o, I64 at, in U8[_] pass, I64 pl) {
+    o[at] = 10;
+    return put(o, at + 1, pass, pl);
+}
+
+// The request that sets NAME's role (1 parent, 2 child, user/ci/acct.ci's) into o, REQ_MAX bytes or more; its
+// length, or -1. pass[0..pl) is BY's passphrase; the caller wipes o once it is sent.
+export I64 role(inout U8[_] o, in U8[_] who, I64 wl, in U8[_] name, I64 nl, I64 r, in U8[_] pass, I64 pl) {
+    I64 at = head(o, "role", who, wl, name, nl, pl);
+    if (at < 0 || (r != 1 && r != 2)) { return -1; }
+    o[at] = 32;
+    if (r == 1) { at = put(o, at + 1, "parent", 6); } else { at = put(o, at + 1, "child", 5); }
+    return tail(o, at, pass, pl);
+}
+
+// The request that sets child NAME's grant ceiling to c, 0 to 7.
+export I64 ceil(inout U8[_] o, in U8[_] who, I64 wl, in U8[_] name, I64 nl, I64 c, in U8[_] pass, I64 pl) {
+    I64 at = head(o, "ceil", who, wl, name, nl, pl);
+    if (at < 0 || c < 0 || c > 7) { return -1; }
+    o[at] = 32;
+    o[at + 1] = (48 + c) as U8;
+    return tail(o, at + 2, pass, pl);
+}
+
+// The request that removes NAME. The desk ends NAME's session before it sends this.
+export I64 remove(inout U8[_] o, in U8[_] who, I64 wl, in U8[_] name, I64 nl, in U8[_] pass, I64 pl) {
+    I64 at = head(o, "remove", who, wl, name, nl, pl);
+    if (at < 0) { return -1; }
+    return tail(o, at, pass, pl);
+}
+
+// ` N`, LF, pass and fresh after at: the tail of a request with two passphrases; its end, or -1.
+I64 tail2(inout U8[_] o, I64 at, in U8[_] pass, I64 pl, in U8[_] fresh, I64 fl) {
+    if (at < 0 || fl < 1 || fl > 256) { return -1; }
+    o[at] = 32;
+    I64 e = at + 1;
+    if (pl >= 100) { o[e] = (48 + pl / 100) as U8; e = e + 1; }
+    if (pl >= 10) { o[e] = (48 + (pl / 10) % 10) as U8; e = e + 1; }
+    o[e] = (48 + pl % 10) as U8;
+    e = tail(o, e + 1, pass, pl);
+    return put(o, e, fresh, fl);
+}
+
+// The request that adds NAME with role r (1 parent, 2 child) and the passphrase fresh[0..fl). pass[0..pl) is BY's,
+// a parent's. A new child's ceiling is no grant, a parent's every grant. The caller wipes o once it is sent.
+export I64 add(inout U8[_] o, in U8[_] who, I64 wl, in U8[_] name, I64 nl, I64 r, in U8[_] pass, I64 pl,
+               in U8[_] fresh, I64 fl) {
+    I64 at = head(o, "add", who, wl, name, nl, pl);
+    if (at < 0 || (r != 1 && r != 2)) { return -1; }
+    o[at] = 32;
+    if (r == 1) { at = put(o, at + 1, "parent", 6); } else { at = put(o, at + 1, "child", 5); }
+    return tail2(o, at, pass, pl, fresh, fl);
+}
+
+// The request that sets NAME's passphrase to fresh[0..fl). pass[0..pl) is BY's: a parent's, or NAME's own current
+// one when BY is NAME.
+export I64 passwd(inout U8[_] o, in U8[_] who, I64 wl, in U8[_] name, I64 nl, in U8[_] pass, I64 pl,
+                  in U8[_] fresh, I64 fl) {
+    return tail2(o, head(o, "passwd", who, wl, name, nl, pl), pass, pl, fresh, fl);
+}
+// SPDX-License-Identifier: Apache-2.0

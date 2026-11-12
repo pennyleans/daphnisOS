@@ -1,0 +1,105 @@
+// tests/fs/ext2_big_test.ci: HW-15, hosted. src/ext2.ci as it is, on the 512 MiB volume tools/mkcintvol.sh makes
+// with 32,768 inodes (tests/fs/ext2_big.ci, 8,192 inodes and 32,768 blocks a group, inodes 1 to 32,760 in use) in the
+// sparse hosted disk: the mount gives dumpe2fs's counts; a new file takes the last group's inode at the last byte of
+// its bitmap and that group's blocks, and after commit() the device holds its bytes, its inode, the bitmap bit and
+// the free counts; the last 8 inodes go in turn, then ENOSPC. check.sh runs it beside tests/fs/times_test.ci.
+
+import src.blk;
+import src.ext2;
+import tests.fs.ext2_big;
+
+const I64 ROOT = 2;
+const I64 BS = 4096;
+const I64 N = 10000;            // three blocks
+
+void volume() {
+    blk.blank(ext2_big.SECTORS);
+    for k in 0..ext2_big.RUNS {
+        blk.load(ext2_big.start(k), ext2_big.span(k), ext2_big.value(k));
+    }
+    assert(ext2.mount() == 0);
+    assert(ext2.is_writable());
+}
+
+// The device's byte at offset off, and its little-endian 16-bit and 32-bit values.
+I64 dev8(I64 off) {
+    return ((blk.word(off / 8) >> (8 * (off % 8)) as U64) & 0xFF) as I64;
+}
+
+I64 dev16(I64 off) {
+    return dev8(off) | (dev8(off + 1) << 8);
+}
+
+I64 dev32(I64 off) {
+    return dev16(off) | (dev16(off + 2) << 16);
+}
+
+U8 pat(I64 k) {
+    return ((7 * k + 1) % 251 + 1) as U8;
+}
+
+test "the mount reads a 512 MiB volume of 32,768 inodes in 4 groups: dumpe2fs's counts" {
+    volume();
+    assert(ext2_big.INODES == 32768 && ext2_big.INODES_PER_GROUP == 8192 && ext2_big.BLOCKS == 131072);
+    assert(ext2.block_size() == BS);
+    assert(ext2.blocks_total() == ext2_big.BLOCKS && ext2.blocks_free() == ext2_big.FREE_BLOCKS);
+    assert(ext2.inodes_total() == ext2_big.INODES && ext2.inodes_free() == ext2_big.FREE_INODES);
+}
+
+test "a file in / takes inode 32,761 (group 3, bit 8,184) and group 3's blocks; after commit the device holds it" {
+    volume();
+    I64 i = ext2.create(ROOT, "a", 1, 0x1A4, 1000);
+    assert(i == ext2_big.USED + 1);
+    U8[10000] b;
+    for k in 0..N {
+        b[k] = pat(k);
+    }
+    assert(ext2.write_at(i, 0, b, 0, N, 1010) == N);
+    assert(ext2.commit());
+    U8[10000] r;
+    assert(ext2.read_at(i, 0, r, 0, N) == N);
+    for k in 0..N {
+        assert(r[k] == b[k]);
+    }
+    // the device: the bit, the inode, its three blocks in group 3 and their bytes
+    I64 idx = i - 1 - 3 * ext2_big.INODES_PER_GROUP;
+    assert(idx == 8184);
+    assert((dev8(ext2_big.INODE_BITMAP_3 * BS + idx / 8) >> (idx % 8)) & 1 == 1);
+    I64 ino = ext2_big.INODE_TABLE_3 * BS + 128 * idx;
+    assert(dev16(ino) == 0x81A4 && dev32(ino + 4) == N && dev16(ino + 26) == 1);
+    for j in 0..3 {
+        I64 blkno = dev32(ino + 40 + 4 * j);
+        assert(blkno == ext2_big.FIRST_FREE_3 + j);
+        assert((dev8(ext2_big.BLOCK_BITMAP_3 * BS + (blkno - 3 * ext2_big.BLOCKS_PER_GROUP) / 8)
+            >> ((blkno - 3 * ext2_big.BLOCKS_PER_GROUP) % 8)) & 1 == 1);
+        I64 n = BS;
+        if (j == 2) { n = N - 2 * BS; }
+        for k in 0..n {
+            assert(dev8(blkno * BS + k) == pat(BS * j + k) as I64);
+        }
+    }
+    assert(dev32(ino + 40 + 12) == 0);
+    // the counts: group 3's descriptor (the table at block 1) and the superblock
+    assert(dev16(BS + 32 * 3 + 14) == ext2_big.FREE_INODES - 1);
+    I64 g3_used = ext2_big.FIRST_FREE_3 - 3 * ext2_big.BLOCKS_PER_GROUP;     // its bitmaps and inode table
+    assert(dev16(BS + 32 * 3 + 12) == ext2_big.BLOCKS_PER_GROUP - g3_used - 3);
+    assert(dev32(1024 + 16) == ext2_big.FREE_INODES - 1);
+    assert(dev32(1024 + 12) == ext2_big.FREE_BLOCKS - 3);
+    assert(ext2.lookup(ROOT, "a", 1) == i);
+}
+
+test "the last 8 inodes go in turn, up to 32,768, then a create is ENOSPC" {
+    volume();
+    U8[2] nm = [110, 48];
+    for k in 0..8 {
+        nm[1] = (48 + k) as U8;
+        assert(ext2.create(ROOT, nm, 2, 0x1A4, 1000 + k) == ext2_big.USED + 1 + k);
+    }
+    assert(ext2.inodes_free() == 0);
+    assert(ext2.create(ROOT, "z", 1, 0x1A4, 2000) == -28);
+    assert(ext2.lookup(ROOT, "z", 1) == 0);
+    assert(ext2.commit());
+    assert(dev16(BS + 32 * 3 + 14) == 0 && dev32(1024 + 16) == 0);
+    assert(dev8(ext2_big.INODE_BITMAP_3 * BS + 1023) == 0xFF);
+}
+// SPDX-License-Identifier: Apache-2.0

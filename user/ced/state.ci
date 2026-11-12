@@ -1,0 +1,125 @@
+export const I64 R_GAP_START = 2;
+export const I64 R_GAP_END = 3;
+
+export const I64 R_ANCHOR = 14;
+export const I64 R_HEAD = 15;
+
+export const I64 R_U_RECS = 16;
+export const I64 R_U_AT = 17;
+export const I64 R_U_BYTES = 18;
+export const I64 R_U_GROUP = 19;
+export const I64 R_U_SAVED = 20;
+
+export const I64 R_GOAL = 21;
+
+export const I64 R_REQ = 6;
+export const I64 REQ_SAVE = 1;
+export const I64 REQ_QUIT = 2;
+export const I64 REQ_BELL = 4;
+
+export const I64 R_RUN_KIND = 22;
+export const I64 R_RUN_GROUP = 23;
+export const I64 R_RUN_POS = 24;
+export const I64 R_RUN_COUNT = 25;
+export const I64 RUN_TYPE = 1;
+export const I64 RUN_BACK = 2;
+
+export const I64 R_CLIP_LEN = 26;
+export const I64 R_MSG = 27;
+export const I64 R_QUIT_ARMED = 28;
+
+export const I64 MSG_NONE = 0;
+export const I64 MSG_TOO_BIG = 1;
+export const I64 MSG_HISTORY_CLEARED = 2;
+export const I64 MSG_SAVED = 3;
+export const I64 MSG_SAVE_FAILED = 4;
+export const I64 MSG_NOT_FOUND = 5;
+export const I64 MSG_WRAPPED = 6;
+export const I64 MSG_QUIT_WARN = 7;
+export const I64 MSG_NOTHING_TO_UNDO = 8;
+export const I64 MSG_NOTHING_TO_REDO = 9;
+export const I64 MSG_COPIED = 10;
+export const I64 MSG_REPLACED = 11;
+export const I64 MSG_WRAP_ON = 12;
+export const I64 MSG_WRAP_OFF = 13;
+export const I64 MSG_EXISTS = 14;
+export const I64 MSG_BAD_NAME = 15;
+
+export const I64 R_MODE = 29;
+export const I64 MODE_EDIT = 0;
+export const I64 MODE_FIND = 1;
+export const I64 MODE_LINE = 2;
+export const I64 MODE_REPLACE_FIND = 3;
+export const I64 MODE_REPLACE_WITH = 4;
+export const I64 MODE_REPLACE_ASK = 5;
+export const I64 MODE_SAVE_AS = 6;
+export const I64 R_FIND_LEN = 30;
+export const I64 R_ORIGIN = 31;
+export const I64 R_LINE_NUM = 32;
+
+export const I64 R_ROWS = 33;
+export const I64 R_COLS = 34;
+export const I64 R_TOP = 35;
+export const I64 R_LEFT = 36;
+export const I64 R_CUR_ROW = 37;
+export const I64 R_CUR_COL = 38;
+export const I64 R_NAME_LEN = 39;
+export const I64 R_NEW_FILE = 40;
+export const I64 R_OUT_LEN = 4;
+export const I64 MAX_ROWS = 100;
+export const I64 MAX_COLS = 400;
+
+// a cell is code point + style * 2^21
+export const I64 STYLE = 2097152;
+export const I64 S_PLAIN = 0;
+export const I64 S_SELECTED = 1;
+export const I64 S_BAR = 2;
+export const I64 S_DIM = 3;
+
+export const I64 R_PASTE = 41;
+
+export const I64 R_LF_AT = 42;
+export const I64 R_LF_COUNT = 43;
+
+export const I64 R_FIND_TYPED = 44;
+export const I64 R_BEFORE_ANCHOR = 45;
+export const I64 R_BEFORE_HEAD = 46;
+
+export const I64 R_INDENT_TAB = 47;
+export const I64 R_CREATED = 48;
+
+export const I64 R_WITH_LEN = 49;
+export const I64 R_REPLACE_AT = 50;
+export const I64 R_REPLACE_STOP = 51;
+export const I64 R_REPLACE_WRAPPED = 52;
+export const I64 R_REPLACE_DONE = 53;
+export const I64 R_REPLACE_SEEN = 54;
+export const I64 R_REPLACE_GROUP = 55;
+export const I64 R_U_LOST = 56;
+
+export const I64 R_ESC_OPEN = 57;
+export const I64 R_ESC_AGE = 58;
+export const I64 R_HELD_AGE = 59;
+export const I64 R_PASTE_GROUP = 60;
+export const I64 ESC_WINDOW = 1000;
+
+export const I64 R_WRAP = 61;
+
+// 1 in a daphnis desk terminal
+export const I64 R_DESK = 62;
+
+// 1 while the text has no file
+export const I64 R_UNTITLED = 7;
+export const I64 R_ASK_LEN = 8;
+
+// f: query, replacement, then a typed name
+export const I64 FIND_MAX = 256;
+export const I64 ASK_AT = 512;
+export const I64 ASK_MAX = 255;
+export const I64 F_BYTES = 768;
+export const I64 MIB = 1048576;
+
+export const I64 OK = 0;
+export const I64 E_NOT_UTF8 = 1;
+export const I64 E_NUL = 2;
+export const I64 E_TOO_LARGE = 3;

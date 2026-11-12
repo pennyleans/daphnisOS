@@ -1,0 +1,44 @@
+// src/rtc.ci: A-3 (docs/specs/2026-11-06-a-agent.md sections 3 and 4) and K-6b (docs/specs/2026-11-07-k-kit2.md
+// section 3b), the date. Once at boot the CMOS clock is read (live) or the journal's `rtc S` line is taken (replay);
+// `rtc S` is printed, S the seconds since 1970-01-01T00:00:00Z, and CLOCK_REALTIME adds S in place of 2026-01-01.
+// Live means getrandom has a source (src/rng.ci, A-3) or the boot line holds daphnis.rtc=1 (K-6b: a person's boot,
+// tools/play.sh, as daphnis.pool=max is); replay means the image holds rng.journal. Otherwise the fixed epoch stays
+// and nothing is printed, so no golden moves: the date enters a run only as its journal's `rtc` line, and a compare
+// of a live run masks that line. A clock that does not read as a valid date also leaves the fixed epoch, silently.
+// The clock's registers are src/cmos.ci's. RS-CLK: a later set is src/proc.ci's sys_clock_settime, which prints and
+// journals `clk S` (src/rng.ci) and writes the clock back (src/cmos.ci).
+
+import src.serial;
+import src.text;
+import src.cmos;
+import src.rng;
+import src.proc;
+import src.bootarg;
+
+extern unrestricted void journal_record(I64 kind, in U8[_] bytes);
+
+// Reads the date once, prints `rtc S` and gives it to CLOCK_REALTIME; nothing when neither live nor replay (above).
+export void boot() {
+    I64 s = -1;
+    if (rng.mode() == rng.REPLAY) {
+        s = rng.journal_rtc();
+    } else if (!rng.private_replay() && (rng.mode() == rng.LIVE || bootarg.has_word("daphnis.rtc=1"))) {
+        s = cmos.read();
+    }
+    if (s < 0) {
+        return;
+    }
+    U8[25] record;
+    record[0] = 114;
+    record[1] = 116;
+    record[2] = 99;
+    record[3] = 32;
+    I64 end = 4 + text.dec_digits(s, record[4..25]);
+    record[end] = 10;
+    serial.serial_write("rtc ");
+    proc.put_dec(s);
+    serial.serial_write("\n");
+    journal_record(2, record[0..end + 1]);
+    proc.set_realtime(s as U64);
+}
+// SPDX-License-Identifier: Apache-2.0

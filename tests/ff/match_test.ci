@@ -1,0 +1,109 @@
+// tests/ff/match_test.ci: hosted tests of the Super plane's matcher (FF-2, user/ci/kit/match.ci; docs/specs/
+// 2026-11-07-ff-super-plane.md section 5). Run by check.sh: cint test --root . tests/ff/match_test.ci
+
+import user.ci.kit.match;
+
+test "a subsequence matches, anything else does not" {
+    match.begin("abc");
+    assert(match.score("xaxbxc") != match.NONE);
+    assert(match.score("acb") == match.NONE);
+    assert(match.score("ab") == match.NONE);
+}
+
+test "the empty query matches everything with 0" {
+    match.begin("");
+    assert(match.score("anything") == 0);
+    assert(match.score("") == 0);
+}
+
+test "letters fold, other bytes do not" {
+    match.begin("ReadMe");
+    assert(match.score("readme") != match.NONE);
+    match.begin("_");
+    assert(match.score("-") == match.NONE);
+}
+
+test "the scores of section 5" {
+    match.begin("a");
+    assert(match.score("a") == 8);          // the start is a boundary
+    assert(match.score("xa") == 1);
+    assert(match.score("x/a") == 8);
+    assert(match.score("x.a") == 8);
+    assert(match.score("x_a") == 8);
+    assert(match.score("x-a") == 8);
+    match.begin("b");
+    assert(match.score("aB") == 8);         // a capital after a lowercase letter
+    assert(match.score("AB") == 1);
+    match.begin("ab");
+    assert(match.score("ab") == 12);        // 8, then 4 adjacent
+    assert(match.score("axb") == 8);        // 8 + 1 - 1 skipped
+    assert(match.score("axxb") == 7);
+    assert(match.score("a/b") == 15);       // 8 + 8 - 1
+}
+
+test "the best way wins over the first way" {
+    match.begin("fb");
+    // f at 0, b at 2 (8 + 1 - 1 = 8) loses to f at 0, b after the slash (8 + 8 - 3 = 13)
+    assert(match.score("fab/b") == 13);
+}
+
+test "marks show the best way" {
+    match.begin("fb");
+    U8[5] m;
+    assert(match.marks("fab/b", m) == 13);
+    assert(m[0] == 1 && m[1] == 0 && m[2] == 0 && m[3] == 0 && m[4] == 1);
+}
+
+test "a long candidate is matched on its tail" {
+    U8[600] c;
+    for i in 0..600 { c[i] = 'x'; }
+    c[0] = 'q';
+    c[599] = 'z';
+    match.begin("z");
+    assert(match.score(c) == 1);
+    match.begin("q");
+    assert(match.score(c) == match.NONE);
+}
+
+test "kept: best first, ties by the shorter, then the more recent" {
+    match.begin("ab");
+    assert(match.offer(1, "axb", 0) == 8);
+    assert(match.offer(2, "ab", 0) == 12);
+    assert(match.offer(3, "nothing", 0) == match.NONE);
+    assert(match.offer(4, "axbyy", 5) == 8);
+    assert(match.offer(5, "axbzz", 9) == 8);
+    assert(match.kept() == 4);
+    assert(match.kept_id(0) == 2);
+    assert(match.kept_id(1) == 1);
+    assert(match.kept_id(2) == 5);
+    assert(match.kept_id(3) == 4);
+}
+
+test "kept holds the best TOP" {
+    match.begin("a");
+    for i in 0..40 {
+        if (i == 39) {
+            _ = match.offer(i, "a", 0);
+        } else {
+            _ = match.offer(i, "xa", i);
+        }
+    }
+    assert(match.kept() == match.TOP);
+    assert(match.kept_id(0) == 39);
+    assert(match.kept_id(1) == 38);
+    assert(match.kept_score(match.TOP - 1) == 1);
+    assert(match.kept_id(match.TOP - 1) == 8);
+}
+
+test "offer_as ranks a candidate on ties as the length it is given" {
+    match.begin(b"sh");
+    I64 a = match.offer(1, b"sh - /", 0);
+    I64 b = match.offer_as(2, b"shell", 8, 0);
+    assert(a == b);
+    assert(match.kept() == 2 && match.kept_id(0) == 1 && match.kept_id(1) == 2);
+    match.begin(b"sh");
+    I64 c = match.offer(1, b"sh - /", 0);
+    I64 d = match.offer(2, b"shell", 0);
+    assert(match.kept_id(0) == 2);
+}
+// SPDX-License-Identifier: Apache-2.0

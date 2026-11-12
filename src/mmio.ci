@@ -1,0 +1,12 @@
+// src/mmio.ci: device registers in memory (AU-1, docs/specs/2026-11-06-au-audio.md section 8), the rows of
+// rt/mmio.c. mmio_map(base, len) maps a BAR uncached and opens it to the other rows (0, or -1); a register
+// outside an open window is a host.error fault, as a refused phys_read is.
+
+export extern unrestricted I64 mmio_map(U64 base, U64 len);
+export extern observe U8 mmio_in8(U64 addr);
+export extern observe U16 mmio_in16(U64 addr);
+export extern observe U32 mmio_in32(U64 addr);
+export extern unrestricted void mmio_out8(U64 addr, U8 val);
+export extern unrestricted void mmio_out16(U64 addr, U16 val);
+export extern unrestricted void mmio_out32(U64 addr, U32 val);
+// SPDX-License-Identifier: Apache-2.0

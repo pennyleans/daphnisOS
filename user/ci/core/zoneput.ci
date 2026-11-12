@@ -1,0 +1,40 @@
+// user/ci/core/zoneput.ci: RS-ASK, the desk's write of the machine's zone (docs/specs/2026-11-11-rs-ask.md section 1;
+// RS-TZc section 7: mode 0644, uid 0, written whole to a new name and renamed over the old). Only the desk imports it,
+// as uid 0, once a parent approved the Time Zone (frame 17); every session reads the file through core/zonefile.ci.
+//   put(c): /home/.daphnis-zone set to city c's zone name (tz.name) and a line end; for -1 (UTC) the file removed,
+//     as a missing file reads UTC. A leftover new name is removed first, and the new one is made afresh (O_EXCL,
+//     without following a link or waiting on a pipe), mode 0644, so uid 0 always owns it. 0, or -errno (-EINVAL for
+//     a city not in the table, or a line zonefile would not read).
+// user/ci/build.sh picks host.c's call rows from a program's whole import closure, so a program that imports this
+// module gets shctl's and corectl's rows without importing them itself.
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.tz;
+
+const I64 O_MAKE = 0x208C1;            // O_WRONLY | O_CREAT | O_EXCL | O_NONBLOCK | O_NOFOLLOW
+
+export I64 put(I64 c) {
+    if (c == -1) {
+        I64 u = corectl.co_unlink(b"/home/.daphnis-zone");
+        if (u == -2) { return 0; }     // -ENOENT: UTC already
+        return u;
+    }
+    U8[64] b;                          // clocktext.ZONE_READ: the line and its end stay below it
+    I64 n = tz.name(c, b);
+    if (n < 1 || n > 62) { return -22; }
+    b[n] = 10;
+    n = n + 1;
+    I64 old = corectl.co_unlink(b"/home/.daphnis-zone.new");   // a leftover is never reused with its owner
+    I64 fd = shctl.sh_open(b"/home/.daphnis-zone.new", O_MAKE, 0x1A4);
+    if (fd < 0) { return fd; }
+    I64 w = shctl.fd_write(fd, b[0..n]);
+    I64 e = shctl.fd_close(fd);
+    if (w >= 0 && w != n) { w = -5; }  // -EIO: a short write
+    if (w >= 0 && e < 0) { w = e; }
+    if (w < 0) {
+        I64 d = corectl.co_unlink(b"/home/.daphnis-zone.new");
+        return w;
+    }
+    return corectl.co_rename(b"/home/.daphnis-zone.new", b"/home/.daphnis-zone");
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,493 @@
+// user/ci/core/deflate.ci: deflate (RFC 1951) in the zlib wrapper (RFC 1950), the writer beside inflate.ci, for
+// U-PNG (docs/specs/2026-11-11-u-png.md). LZ77 over the 32 KiB window by hash chains, greedy; each block of tokens
+// then goes out the shortest of three ways: stored, the fixed codes, or its own codes, built by Huffman's method and
+// kept within 15 bits (7 for the code-length code) by halving the counts. Every code has two symbols at least, as
+// zlib sends them, so every code is complete and any inflater takes it.
+//   zlib(src, from, stop, dst, at): the stream of src[from .. stop) written at dst[at ..); where it ends, or E_ROOM.
+//   bound(n): the most bytes zlib writes for n bytes in.
+// The chains and the tokens are locals of zlib (640 KiB, zeroed by the runtime), so no table is bytes of a binary.
+
+export const I64 E_ROOM = -2;       // dst is full (inflate.ci's number for the same)
+
+const I64 WINDOW = 32768;           // the farthest a match reaches back; also the chains' size
+const I64 HASH = 32768;             // chain heads, a 15-bit hash of three bytes
+const I64 CHAIN = 48;               // candidates tried at one position
+const I64 BLOCK = 16384;            // tokens a block
+const I64 MATCH_MAX = 258;
+const I64 STORED_MAX = 65535;
+
+I64[29] lbase = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+                 163, 195, 227, 258];
+I64[29] lextra = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+I64[30] dbase = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049,
+                 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+I64[30] dextra = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+I64[19] order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+
+Bool ready = false;
+I64[259] lcode_of;      // a match length 3 .. 258: its length code 0 .. 28 (symbol 257 + code)
+I64[512] dcode_of;      // a distance d: its code, at [d] for d <= 256, else at [256 + (d - 1) / 128]
+I64[288] flen;          // the fixed codes (RFC 1951 3.2.6), bit-reversed for sending
+I64[288] fcode;
+I64[30] fdlen;
+I64[30] fdcode;
+
+// the block being sent
+I64[288] lfreq;
+I64[30] dfreq;
+I64[288] llen;
+I64[288] lcode;
+I64[30] dlen;
+I64[30] dcode;
+I64[19] cfreq;
+I64[19] clen;
+I64[19] ccode;
+I64[320] lens;          // the code lengths of a dynamic header, literal/length then distance
+I64[320] rle_s;         // the same run-length coded: the code-length symbols, and their extra bits
+I64[320] rle_x;
+I64 n_rle = 0;
+I64 hlit = 0;
+I64 hdist = 0;
+I64 hclen = 0;
+
+// the bit writer
+I64 out_at = 0;
+I64 bitbuf = 0;
+I64 bitcnt = 0;
+Bool full = false;
+
+// Huffman's method
+I64[288] hf;            // the counts, halved while the longest code is too long
+I64[288] hs;            // the used symbols by count
+I64[576] hw;            // node weights: leaves 0 .. m in hs's order, then the joins
+I64[576] hp;            // node parents
+I64[576] hd;            // node depths
+
+export I64 bound(I64 n) {
+    return n + n / 2048 + 64;
+}
+
+I64 rev(I64 c, I64 l) {
+    I64 r = 0;
+    I64 v = c;
+    for k in 0..l {
+        r = (r << 1) | (v & 1);
+        v = v >> 1;
+    }
+    return r;
+}
+
+// The canonical codes (RFC 1951 3.2.2) of n symbols of lengths bl, bit-reversed into code.
+void canon(in I64[_] bl, I64 n, inout I64[_] code) {
+    I64[16] cnt;
+    I64[16] next;
+    for s in 0..n { cnt[bl[s]] = cnt[bl[s]] + 1; }
+    cnt[0] = 0;
+    I64 c = 0;
+    for b in 1..16 {
+        c = (c + cnt[b - 1]) << 1;
+        next[b] = c;
+    }
+    for s in 0..n {
+        I64 l = bl[s];
+        code[s] = 0;
+        if (l > 0) {
+            code[s] = rev(next[l], l);
+            next[l] = next[l] + 1;
+        }
+    }
+}
+
+void init() {
+    if (ready) { return; }
+    for i in 0..28 {
+        for l in lbase[i]..lbase[i + 1] { lcode_of[l] = i; }
+    }
+    lcode_of[258] = 28;
+    for i in 0..30 {
+        for d in dbase[i]..dbase[i] + (1 << dextra[i]) {
+            if (d <= 256) { dcode_of[d] = i; } else { dcode_of[256 + (d - 1) / 128] = i; }
+        }
+    }
+    for s in 0..288 {
+        I64 l = 8;
+        if (s >= 144 && s < 256) { l = 9; }
+        if (s >= 256 && s < 280) { l = 7; }
+        flen[s] = l;
+    }
+    canon(flen, 288, fcode);
+    for d in 0..30 { fdlen[d] = 5; }
+    canon(fdlen, 30, fdcode);
+    ready = true;
+}
+
+I64 dist_code(I64 d) {
+    if (d <= 256) { return dcode_of[d]; }
+    return dcode_of[256 + (d - 1) / 128];
+}
+
+// k bits of v, the first in the low bit; a byte past dst is not written and sets full.
+void put[n](inout U8[n] dst, I64 v, I64 k) {
+    bitbuf = bitbuf | (v << bitcnt);
+    bitcnt = bitcnt + k;
+    while (bitcnt >= 8) {
+        if (out_at < n) {
+            dst[out_at] = (bitbuf & 255) as U8;
+            out_at = out_at + 1;
+        } else {
+            full = true;
+        }
+        bitbuf = bitbuf >> 8;
+        bitcnt = bitcnt - 8;
+    }
+}
+
+void align[n](inout U8[n] dst) {
+    if (bitcnt > 0) { put(dst, 0, 8 - bitcnt); }
+}
+
+// The code lengths of n symbols from their counts freq, none past limit, into bl.
+void huff(in I64[_] freq, I64 n, I64 limit, inout I64[_] bl) {
+    I64 used = 0;
+    for s in 0..n {
+        hf[s] = freq[s];
+        bl[s] = 0;
+        if (freq[s] > 0) { used = used + 1; }
+    }
+    for s in 0..n {
+        if (used < 2 && hf[s] == 0) {
+            hf[s] = 1;
+            used = used + 1;
+        }
+    }
+    Bool done = false;
+    while (!done) {
+        I64 m = 0;                                  // the used symbols by count, then by symbol
+        for s in 0..n {
+            if (hf[s] > 0) {
+                I64 j = m;
+                while (j > 0 && hf[hs[j - 1]] > hf[s]) {
+                    hs[j] = hs[j - 1];
+                    j = j - 1;
+                }
+                hs[j] = s;
+                m = m + 1;
+            }
+        }
+        for i in 0..m { hw[i] = hf[hs[i]]; }
+        I64 li = 0;                                 // the next leaf
+        I64 ni = m;                                 // the next join to take; joins are made in weight order
+        I64 nn = m;                                 // the next join to make
+        for k in 0..m - 1 {
+            I64 a = 0;
+            if (li < m && (ni >= nn || hw[li] <= hw[ni])) {
+                a = li;
+                li = li + 1;
+            } else {
+                a = ni;
+                ni = ni + 1;
+            }
+            I64 b = 0;
+            if (li < m && (ni >= nn || hw[li] <= hw[ni])) {
+                b = li;
+                li = li + 1;
+            } else {
+                b = ni;
+                ni = ni + 1;
+            }
+            hw[nn] = hw[a] + hw[b];
+            hp[a] = nn;
+            hp[b] = nn;
+            nn = nn + 1;
+        }
+        I64 root = nn - 1;
+        hd[root] = 0;
+        I64 deep = 0;
+        I64 i = root;
+        while (i > 0) {
+            i = i - 1;
+            hd[i] = hd[hp[i]] + 1;
+            if (i < m && hd[i] > deep) { deep = hd[i]; }
+        }
+        if (deep <= limit) {
+            for k in 0..m { bl[hs[k]] = hd[k]; }
+            done = true;
+        } else {
+            for s in 0..n {
+                if (hf[s] > 0) { hf[s] = (hf[s] + 1) / 2; }
+            }
+        }
+    }
+}
+
+// The bits of the block's tokens under the codes of lengths ll and dl, extra bits and the end code with them.
+I64 data_bits(in I64[_] ll, in I64[_] dl) {
+    I64 t = 0;
+    for s in 0..286 { t = t + lfreq[s] * ll[s]; }
+    for i in 0..29 { t = t + lfreq[257 + i] * lextra[i]; }
+    for d in 0..30 { t = t + dfreq[d] * (dl[d] + dextra[d]); }
+    return t;
+}
+
+void rle_add(I64 s, I64 x) {
+    rle_s[n_rle] = s;
+    rle_x[n_rle] = x;
+    n_rle = n_rle + 1;
+    cfreq[s] = cfreq[s] + 1;
+}
+
+// lens[0 .. total) run-length coded (RFC 1951 3.2.7): 16 repeats the last length 3 to 6 times, 17 and 18 send
+// 3 to 10 and 11 to 138 zeros.
+void rle(I64 total) {
+    n_rle = 0;
+    for s in 0..19 { cfreq[s] = 0; }
+    I64 i = 0;
+    while (i < total) {
+        I64 cur = lens[i];
+        I64 run = 1;
+        while (i + run < total && lens[i + run] == cur) { run = run + 1; }
+        i = i + run;
+        if (cur == 0) {
+            while (run >= 11) {
+                I64 r = run;
+                if (r > 138) { r = 138; }
+                rle_add(18, r - 11);
+                run = run - r;
+            }
+            if (run >= 3) {
+                rle_add(17, run - 3);
+                run = 0;
+            }
+        } else {
+            rle_add(cur, 0);
+            run = run - 1;
+            while (run >= 3) {
+                I64 r = run;
+                if (r > 6) { r = 6; }
+                rle_add(16, r - 3);
+                run = run - r;
+            }
+        }
+        while (run > 0) {
+            rle_add(cur, 0);
+            run = run - 1;
+        }
+    }
+}
+
+// The block's own codes and the bits of its header.
+I64 dynamic_codes() {
+    huff(lfreq, 286, 15, llen);
+    huff(dfreq, 30, 15, dlen);
+    hlit = 286;
+    while (hlit > 257 && llen[hlit - 1] == 0) { hlit = hlit - 1; }
+    hdist = 30;
+    while (hdist > 1 && dlen[hdist - 1] == 0) { hdist = hdist - 1; }
+    for i in 0..hlit { lens[i] = llen[i]; }
+    for i in 0..hdist { lens[hlit + i] = dlen[i]; }
+    rle(hlit + hdist);
+    huff(cfreq, 19, 7, clen);
+    hclen = 19;
+    while (hclen > 4 && clen[order[hclen - 1]] == 0) { hclen = hclen - 1; }
+    I64 bits = 5 + 5 + 4 + 3 * hclen;
+    for i in 0..n_rle {
+        I64 s = rle_s[i];
+        bits = bits + clen[s];
+        if (s == 16) { bits = bits + 2; }
+        if (s == 17) { bits = bits + 3; }
+        if (s == 18) { bits = bits + 7; }
+    }
+    canon(llen, 286, lcode);
+    canon(dlen, 30, dcode);
+    canon(clen, 19, ccode);
+    return bits;
+}
+
+void send_header[n](inout U8[n] dst) {
+    put(dst, hlit - 257, 5);
+    put(dst, hdist - 1, 5);
+    put(dst, hclen - 4, 4);
+    for k in 0..hclen { put(dst, clen[order[k]], 3); }
+    for i in 0..n_rle {
+        I64 s = rle_s[i];
+        put(dst, ccode[s], clen[s]);
+        if (s == 16) { put(dst, rle_x[i], 2); }
+        if (s == 17) { put(dst, rle_x[i], 3); }
+        if (s == 18) { put(dst, rle_x[i], 7); }
+    }
+}
+
+void send_tokens[n](inout U8[n] dst, in I64[_] tok, I64 nt, in I64[_] lc, in I64[_] ll, in I64[_] dc,
+                    in I64[_] dl) {
+    for i in 0..nt {
+        I64 t = tok[i];
+        if (t < 256) {
+            put(dst, lc[t], ll[t]);
+        } else {
+            I64 l = t >> 16;
+            I64 d = t & 65535;
+            I64 c = lcode_of[l];
+            put(dst, lc[257 + c], ll[257 + c]);
+            if (lextra[c] > 0) { put(dst, l - lbase[c], lextra[c]); }
+            I64 e = dist_code(d);
+            put(dst, dc[e], dl[e]);
+            if (dextra[e] > 0) { put(dst, d - dbase[e], dextra[e]); }
+        }
+    }
+    put(dst, lc[256], ll[256]);
+}
+
+// src[from .. stop) as stored blocks, the last one final when last is.
+void send_stored[n](in U8[_] src, I64 from, I64 stop, Bool last, inout U8[n] dst) {
+    I64 p = from;
+    Bool going = true;
+    while (going) {
+        I64 l = stop - p;
+        if (l > STORED_MAX) { l = STORED_MAX; }
+        Bool fin = last && p + l == stop;
+        if (fin) { put(dst, 1, 1); } else { put(dst, 0, 1); }
+        put(dst, 0, 2);
+        align(dst);
+        put(dst, l & 255, 8);
+        put(dst, l >> 8, 8);
+        put(dst, (l ^ 65535) & 255, 8);
+        put(dst, (l ^ 65535) >> 8, 8);
+        for k in 0..l {
+            if (out_at < n) {
+                dst[out_at] = src[p + k];
+                out_at = out_at + 1;
+            } else {
+                full = true;
+            }
+        }
+        p = p + l;
+        going = p < stop;
+    }
+}
+
+// One block of tokens, src[from .. stop), the shortest way.
+void block[n](in U8[_] src, I64 from, I64 stop, in I64[_] tok, I64 nt, Bool last, inout U8[n] dst) {
+    lfreq[256] = 1;
+    I64 bytes = stop - from;
+    I64 pieces = (bytes + STORED_MAX - 1) / STORED_MAX;
+    if (pieces == 0) { pieces = 1; }
+    I64 stored = 8 * bytes + pieces * (3 + 7 + 32);  // a bound: each piece's header, its padding and LEN, NLEN
+    I64 fixed = 3 + data_bits(flen, fdlen);
+    I64 dyn = 3 + dynamic_codes();
+    dyn = dyn + data_bits(llen, dlen);
+    I64 fin = 0;
+    if (last) { fin = 1; }
+    if (stored <= fixed && stored <= dyn) {
+        send_stored(src, from, stop, last, dst);
+    } else if (fixed <= dyn) {
+        put(dst, fin, 1);
+        put(dst, 1, 2);
+        send_tokens(dst, tok, nt, fcode, flen, fdcode, fdlen);
+    } else {
+        put(dst, fin, 1);
+        put(dst, 2, 2);
+        send_header(dst);
+        send_tokens(dst, tok, nt, lcode, llen, dcode, dlen);
+    }
+}
+
+I64 hash(in U8[_] src, I64 p) {
+    return (((src[p] as I64) << 10) ^ ((src[p + 1] as I64) << 5) ^ (src[p + 2] as I64)) & (HASH - 1);
+}
+
+export I64 zlib[n](in U8[_] src, I64 from, I64 stop, inout U8[n] dst, I64 at) {
+    init();
+    I64[32768] head;        // a hash's newest position, plus 1 (0: none)
+    I64[32768] prev;        // the position before it with the same hash, plus 1, at position % WINDOW
+    I64[16384] tok;         // a literal byte, or length << 16 | distance
+    out_at = at;
+    bitbuf = 0;
+    bitcnt = 0;
+    full = false;
+    put(dst, 0x78, 8);      // deflate, a 32 KiB window, the default level; 0x789C is a multiple of 31
+    put(dst, 0x9C, 8);
+    I64 p = from;
+    Bool last = false;
+    while (!last) {
+        for s in 0..288 { lfreq[s] = 0; }
+        for d in 0..30 { dfreq[d] = 0; }
+        I64 start = p;
+        I64 nt = 0;
+        while (p < stop && nt < BLOCK) {
+            I64 best = 0;
+            I64 bdist = 0;
+            if (stop - p >= 3) {
+                I64 h = hash(src, p);
+                I64 room = stop - p;
+                if (room > MATCH_MAX) { room = MATCH_MAX; }
+                I64 c = head[h];
+                I64 tries = CHAIN;
+                while (c > 0 && tries > 0) {
+                    I64 q = c - 1;
+                    if (p - q > WINDOW) { break; }
+                    if (src[q + best] == src[p + best]) {
+                        I64 k = 0;
+                        while (k < room && src[q + k] == src[p + k]) { k = k + 1; }
+                        if (k > best) {
+                            best = k;
+                            bdist = p - q;
+                            if (k == room) { break; }
+                        }
+                    }
+                    I64 nx = prev[q % WINDOW];
+                    if (nx >= c) { break; }
+                    c = nx;
+                    tries = tries - 1;
+                }
+                prev[p % WINDOW] = head[h];
+                head[h] = p + 1;
+            }
+            if (best >= 3) {
+                tok[nt] = (best << 16) | bdist;
+                nt = nt + 1;
+                I64 lc = 257 + lcode_of[best];
+                lfreq[lc] = lfreq[lc] + 1;
+                I64 dc = dist_code(bdist);
+                dfreq[dc] = dfreq[dc] + 1;
+                for q in p + 1..p + best {
+                    if (stop - q >= 3) {
+                        I64 h2 = hash(src, q);
+                        prev[q % WINDOW] = head[h2];
+                        head[h2] = q + 1;
+                    }
+                }
+                p = p + best;
+            } else {
+                I64 lit = src[p] as I64;
+                tok[nt] = lit;
+                nt = nt + 1;
+                lfreq[lit] = lfreq[lit] + 1;
+                p = p + 1;
+            }
+        }
+        last = p == stop;
+        block(src, start, p, tok, nt, last, dst);
+    }
+    align(dst);
+    I64 a = 1;
+    I64 b = 0;
+    I64 k = from;
+    while (k < stop) {
+        I64 e = k + 5552;                           // zlib's NMAX: b stays below 2^32 before the modulus
+        if (e > stop) { e = stop; }
+        while (k < e) {
+            a = a + (src[k] as I64);
+            b = b + a;
+            k = k + 1;
+        }
+        a = a % 65521;
+        b = b % 65521;
+    }
+    put(dst, b >> 8, 8);
+    put(dst, b & 255, 8);
+    put(dst, a >> 8, 8);
+    put(dst, a & 255, 8);
+    if (full) { return E_ROOM; }
+    return out_at;
+}
+// SPDX-License-Identifier: Apache-2.0

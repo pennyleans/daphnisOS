@@ -1,0 +1,33 @@
+{
+  "id": "status-lines-partial-last",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "ab\ncd",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b431b5b313b3242"
+  ],
+  "expect": {
+    "text": "ab\ncd",
+    "sel": [
+      1,
+      4
+    ],
+    "screen": [
+      "ab",
+      "cd",
+      "",
+      "",
+      " x  2 lines selected                2:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

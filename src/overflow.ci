@@ -1,0 +1,10 @@
+// src/overflow.ci: the deliberate checked overflow of the FAULT=1 flavor, in a function of
+// its own so the fault record carries a call stack. The hosted twin, tests/fault_probe.ci,
+// imports this same module, so the fault position is the same file, line and column.
+
+export I64 max_plus_one() {
+    I64 big = 9223372036854775807;
+    I64 wrapped = big + 1;
+    return wrapped;
+}
+// SPDX-License-Identifier: Apache-2.0

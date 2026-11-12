@@ -1,0 +1,16 @@
+// user/ci/cvim/cap.ci: cvim's capacities (docs/specs/2026-11-07-cv-cvim.md section 12, CV-R3 A), the one module a
+// port replaces. Every table is a local of the program's main, passed inout; none is module state.
+
+// Bytes of the files read, all open buffers together; the largest file.
+export const I64 ORIG = 67108864;
+// Bytes typed, pasted and replaced in a session; append only.
+export const I64 ADD = 33554432;
+// Blocks of the piece index; each holds up to buf.BLOCK pieces, so 262,144 pieces.
+export const I64 BLOCKS = 4096;
+// The longest piece: a line lookup scans at most this many bytes.
+export const I64 CHUNK = 65536;
+// Undo spans of three words each (source, offset, length).
+export const I64 SPANS = 262144;
+// Elements of a buffer table at these capacities (buf.need(BLOCKS), checked by test_buf.ci).
+export const I64 TABLE = 16 + BLOCKS * 5 + BLOCKS * 64 * 4;
+// SPDX-License-Identifier: Apache-2.0

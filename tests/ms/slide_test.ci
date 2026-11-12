@@ -1,0 +1,134 @@
+// tests/ms/slide_test.ci: hosted model tests of MS-7's slide (user/ci/kit/slide.ci; DN-54). Run by check.sh:
+// cint test --root . tests/ms/slide_test.ci
+
+import user.ci.kit.slide;
+import user.ci.kit.anim;
+import user.ci.kit.cmark;
+
+test "240 ms on the out curve; at rest the old desk fills the screen, at the end the new one" {
+    assert(slide.SLIDE_MS == 240);
+    assert(slide.at(1, 2, 1, 1920, 0) == 0 && slide.shows(1, 2, 1, 1920, 0) && !slide.shows(1, 2, 2, 1920, 0));
+    assert(slide.at(1, 2, 2, 1920, 1000) == 0 && slide.shows(1, 2, 2, 1920, 1000) && !slide.shows(1, 2, 1, 1920, 1000));
+    assert(anim.progress(anim.OUT, anim.steps(24), anim.ms(slide.SLIDE_MS)) == 1000);   // 24 stepped frames
+}
+
+test "a higher number comes in from the right, a lower one from the left; the two meet edge to edge" {
+    for p in 1..1000 {
+        assert(slide.at(1, 2, 2, 1920, p) == slide.at(1, 2, 1, 1920, p) + 1920);
+        assert(slide.at(1, 2, 1, 1920, p) <= 0);
+        assert(slide.at(5, 4, 4, 1920, p) == slide.at(5, 4, 5, 1920, p) - 1920);
+        assert(slide.at(5, 4, 5, 1920, p) >= 0);
+        assert(slide.shows(1, 2, 1, 1920, p) && slide.shows(1, 2, 2, 1920, p));
+    }
+}
+
+test "four desktops away: 240 ms still, passing over the ones between, never more than two at once" {
+    for p in 0..1001 {
+        I64 n = 0;
+        for d in 1..10 {
+            if (slide.shows(2, 6, d, 1080, p)) { n = n + 1; }
+            if (d < 2 || d > 6) { assert(!slide.shows(2, 6, d, 1080, p)); }
+        }
+        assert(n >= 1 && n <= 2);
+    }
+    assert(slide.shows(2, 6, 4, 1080, 500) && slide.at(2, 6, 4, 1080, 500) == 0);   // halfway, desktop 4 alone
+    assert(slide.moved(2, 6, 1080, 1000) == 4 * 1080 && slide.moved(6, 2, 1080, 1000) == 0 - 4 * 1080);
+}
+
+test "a switch back mirrors the switch out to the pixel" {
+    for p in 0..1001 {
+        assert(slide.at(2, 1, 1, 1920, p) == 0 - slide.at(1, 2, 2, 1920, p));
+        assert(slide.at(2, 1, 2, 1920, p) == 0 - slide.at(1, 2, 1, 1920, p));
+        assert(slide.moved(7, 3, 1080, p) == 0 - slide.moved(3, 7, 1080, p));
+    }
+    assert(slide.at(2, 1, 1, 1920, 946) == 0 - 104 && slide.at(2, 1, 2, 1920, 946) == 1816);   // the gate's frame
+}
+
+test "the slide cache gives a row back as it was kept, pixel for pixel (MS-R5)" {
+    slide.clear();
+    assert(slide.held(1) == -1 && slide.held(2) == -1);
+    I64 s = slide.take(1, 0, 1920);
+    assert(slide.held(1) == s);
+    U32[3840] a;
+    U32[3840] b;
+    for y in 0..40 {
+        for x in 0..1920 { a[x] = (((x / (y + 1)) * 40503 + y * 977) % 16777216) as U32; }
+        slide.store(s, y, a, 1920);
+        for x in 0..1920 { b[x] = 0xABCDEF; }
+        assert(slide.load(s, y, b, 1920));
+        for x in 0..1920 { assert(b[x] == a[x]); }
+    }
+    for y in 0..40 {                       // each row again, after the rows below it were kept
+        for x in 0..1920 { a[x] = (((x / (y + 1)) * 40503 + y * 977) % 16777216) as U32; }
+        assert(slide.load(s, y, b, 1920));
+        for x in 0..1920 { assert(b[x] == a[x]); }
+    }
+    assert(!slide.load(s, 40, b, 1920) && !slide.load(s, 0, b, 1080));   // a row not kept; another width
+}
+
+test "a row above 24 bits is kept as it is; equal rows share their words; a row past CACHE_WORDS is not kept" {
+    slide.clear();
+    I64 s = slide.take(3, 0, 1080);
+    U32[3840] a;
+    U32[3840] b;
+    for x in 0..1080 { a[x] = 0x112233; }
+    a[500] = 0x81112233;
+    for x in 1000..1080 { a[x] = 0xFF000000; }
+    slide.store(s, 0, a, 1080);
+    assert(slide.load(s, 0, b, 1080));
+    for x in 0..1080 { assert(b[x] == a[x]); }
+    for x in 0..1080 { a[x] = (x as U32) & 1; }     // every segment its pixels: 34 tags and 1080 pixels a row
+    for y in 0..3840 { slide.store(s, y, a, 1080); }   // equal rows: one row's words for all of them
+    for y in 0..3840 { assert(slide.load(s, y, b, 1080) && b[1079] == 1); }
+    s = slide.take(3, 0, 1080);
+    for y in 0..3840 {                     // each row its own
+        a[0] = (y as U32) + 2;
+        slide.store(s, y, a, 1080);
+    }
+    assert(slide.CACHE_WORDS == 131072);
+    I64 n = 0;
+    for y in 0..3840 {
+        if (slide.load(s, y, b, 1080)) {
+            n = n + 1;
+            assert(b[0] == (y as U32) + 2 && b[1079] == 1);
+        }
+    }
+    assert(n == 2 * (65536 / 1114));       // 58 rows of 1114 words a bank, two banks
+}
+
+test "two slots, one for each desktop that shows; a third takes the one the other does not hold" {
+    slide.clear();
+    I64 s1 = slide.take(1, 0, 1920);
+    I64 s2 = slide.take(2, 1, 1920);
+    assert(s1 != s2 && slide.held(1) == s1 && slide.held(2) == s2);
+    I64 s3 = slide.take(3, 2, 1920);        // 2 and 3 show: 1's slot goes
+    assert(s3 == s1 && slide.held(1) == -1 && slide.held(2) == s2);
+    I64 s0 = slide.take(1, 2, 1920);        // back: 1 and 2 show
+    assert(s0 == s1 && slide.held(2) == s2);
+    slide.clear();
+    assert(slide.held(1) == -1 && slide.held(2) == -1);
+}
+
+test "the mark's rows as runs are its pixels, at the desk's sizes and after a change of size (MS-R5)" {
+    U32[64] er;
+    I64[3] sizes = [37, 440, 37];
+    for q in 0..3 {
+        I64 n = sizes[q];
+        for y in 0..n {
+            I64 m = cmark.runs(n, y, er);
+            assert(m > 0);
+            I64 x = 0;
+            for k in 0..m {
+                I64 e = (er[k] >> 16) as I64;
+                I64 t = ((er[k] & 0xFFFF) as I64) - 1;
+                assert(e > x);
+                for xx in x..e { assert(cmark.at(n, xx, y) == t); }
+                x = e;
+            }
+            assert(x == n);
+            assert(cmark.runs(n, y, er) == m);   // kept: the same runs again
+        }
+    }
+    assert(cmark.runs(440, 440, er) == -1 && cmark.runs(0, 0, er) == -1);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,80 @@
+$ 
+TZ=UTC0
+status 0
+$ -i
+status 0
+$ A=1 B=2
+TZ=UTC0
+A=1
+B=2
+status 0
+$ -i A=1 B=x=y
+A=1
+B=x=y
+status 0
+$ A=1 A=2 B=3 A=4
+TZ=UTC0
+A=4
+B=3
+status 0
+$ - A=1
+A=1
+status 0
+$ -- A=1
+TZ=UTC0
+A=1
+status 0
+$ -i -- A=1
+A=1
+status 0
+$ A= B=
+TZ=UTC0
+A=
+B=
+status 0
+$ A=1 printenv A
+1
+status 0
+$ -i A=1 env
+A=1
+status 0
+$ A=1 /usr/bin/env
+TZ=UTC0
+A=1
+status 0
+$ A=1 sh -c 'echo $A'
+1
+status 0
+$ -i PATH=/usr/bin printenv PATH
+/usr/bin
+status 0
+$ nosuch
+-- stderr
+env: nosuch: No such file or directory
+status 127
+$ ./nosuch
+-- stderr
+env: ./nosuch: No such file or directory
+status 127
+$ /
+-- stderr
+env: /: Permission denied
+status 126
+$ A=1 false
+status 1
+$ -i PATH=/nowhere echo hi
+-- stderr
+env: echo: No such file or directory
+status 127
+$ -u A
+-- stderr
+env: not supported: -u
+status 2
+$ -0
+-- stderr
+env: not supported: -0
+status 2
+$ -x
+-- stderr
+env: not supported: -x
+status 2

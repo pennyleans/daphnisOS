@@ -1,0 +1,27 @@
+{
+  "id": "undo-typed-group",
+  "rules": [
+    "UNDO-2",
+    "KEY-6"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "616263",
+    "1a"
+  ],
+  "expect": {
+    "text": "",
+    "sel": [
+      0,
+      0
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+// user/ci/sigctl.ci: what a signal does, the one row of user/ci/host.c under CI_ROWS_SIG (K-10,
+// docs/specs/2026-11-07-k-kit2.md section 3a); cish imports it, and nothing else does.
+//   sig_set(sig, ignore): signal(sig, SIG_IGN) for ignore 1, signal(sig, SIG_DFL) for 0; 0, or -errno
+export extern unrestricted I64 sig_set(I64 sig, I64 ignore);
+// SPDX-License-Identifier: Apache-2.0

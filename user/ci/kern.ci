@@ -1,0 +1,37 @@
+// user/ci/kern.ci: `kern CMD [ARG...]`, R0-R1 (docs/specs/2026-11-07-r0-ring-zero.md): asks for ring 0 and runs CMD
+// in it. The kernel never sets the bit on a request: it tells the desk, which draws its prompt over the plane naming
+// CMD, its arguments and the asking window; Super+Enter confirms (R0-R3 A), Esc or a click off the prompt refuses.
+// In a window that holds ring 0 (R0-R4 B, 5 minutes from a confirmation) the call returns at once, with no prompt.
+// CMD is a path, or a name looked up in PATH and then taken as it is (BU-2c), as with grant. Status 2 for a usage
+// error, 1 when ring 0 was refused or could not be asked, 127 when CMD could not be run. `kern -s` asks nothing and
+// prints the caller's ring, `ring 0` or `ring 3`.
+import user.ci.dev;
+import user.ci.grantcall;
+import user.ci.kerncall;
+
+const I64 EPERM = 1;
+
+void main(in U8[_] args) {
+    if (len(args) == 0) {
+        "kern: usage: kern CMD [ARG...]\n";
+        dev.exit_now(2);
+    }
+    if (len(args) == 3 && args[0] == 45 && args[1] == 115 && args[2] == 0) {
+        I64 h = kerncall.kern_held();
+        if (h == 1) { "ring 0\n"; } else { "ring 3\n"; }
+        dev.exit_now(0);
+    }
+    I64 r = kerncall.kern_ask(args, 0);
+    if (r == 0 - EPERM) {
+        "kern: refused\n";
+        dev.exit_now(1);
+    }
+    if (r < 0) {
+        "kern: ring 0 could not be asked: error {0 - r}\n";
+        dev.exit_now(1);
+    }
+    I64 e = grantcall.exec_from(args, 0);
+    "kern: cannot run the command: error {0 - e}\n";
+    dev.exit_now(127);
+}
+// SPDX-License-Identifier: Apache-2.0

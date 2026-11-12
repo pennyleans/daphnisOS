@@ -1,0 +1,97 @@
+// user/ci/kit/homeuse.ci: what a home holds, for the Storage page (RS-SET6; frame 38): Documents, Downloads, Pictures,
+// the Trash and the rest, in KiB, from one walk by `du -k -s` (user/ci/du.ci) run AS THE ACCOUNT, so the walk reads
+// only what the account may read and the desk never opens a home with its own rights (U-SET section 3).
+//
+// The host (user/ci/runas.h RUN_DU) names the parts the home has first and the home last. du counts a directory once,
+// so each part is its own line and the home's line is what is left: Other. A folder du never lists is not there
+// (RS-HOME: its row does not show), except the Trash, which then reads empty.
+//
+// The host calls start(home), then line() with each line of du's output, then done(); part_kib(k) and other() read
+// the result.
+
+export const I64 DOCUMENTS = 0;
+export const I64 DOWNLOADS = 1;
+export const I64 PICTURES = 2;
+export const I64 TRASH = 3;            // $HOME/.trash (the per-person Trash store, PR 287)
+export const I64 PARTS = 4;
+
+U8[256] home;
+I64 hn = 0;
+I64[4] kib;
+I64 total = -1;
+Bool ended = false;
+
+// A new walk of the home at h[0..n] (no trailing slash).
+export void start(in U8[_] h, I64 n) {
+    hn = min(n, len(home));
+    for k in 0..hn { home[k] = h[k]; }
+    for k in 0..PARTS { kib[k] = -1; }
+    total = -1;
+    ended = false;
+}
+
+export void done() { ended = true; }
+
+// Whether the walk has finished.
+export Bool finished() { return ended; }
+
+// Part k's name under the home.
+I64 part(I64 k, inout U8[_] t) {
+    if (k == DOCUMENTS) { return put(t, b"Documents"); }
+    if (k == DOWNLOADS) { return put(t, b"Downloads"); }
+    if (k == PICTURES) { return put(t, b"Pictures"); }
+    return put(t, b".trash");
+}
+
+I64 put(inout U8[_] t, in U8[_] s) {
+    for k in 0..len(s) { t[k] = s[k]; }
+    return len(s);
+}
+
+// One line of du's output, `N<tab>path`, without its newline; whether it was one of the five.
+export Bool line(in U8[_] l, I64 n) {
+    I64 v = 0;
+    I64 i = 0;
+    while (i < n && l[i] >= '0' && l[i] <= '9') {
+        if (v < 1000000000000000) { v = v * 10 + (l[i] as I64) - ('0' as I64); }
+        i = i + 1;
+    }
+    if (i == 0 || i >= n || l[i] != '\t') { return false; }
+    I64 p = i + 1;
+    I64 pl = n - p;
+    if (pl < hn) { return false; }
+    for k in 0..hn {
+        if (l[p + k] != home[k]) { return false; }
+    }
+    if (pl == hn) {                    // the home, after its parts: the rest
+        total = v;
+        return true;
+    }
+    if (l[p + hn] != '/') { return false; }
+    U8[16] t;
+    for k in 0..PARTS {
+        I64 tn = part(k, t);
+        if (pl == hn + 1 + tn) {
+            Bool same = true;
+            for q in 0..tn {
+                if (l[p + hn + 1 + q] != t[q]) { same = false; }
+            }
+            if (same) {
+                kib[k] = v;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Part k's KiB, or -1 when du listed no such folder. A home walked with no .trash has an empty Trash: 0 (a new home
+// has none until the first delete).
+export I64 part_kib(I64 k) {
+    if (k == TRASH && kib[k] < 0 && total >= 0) { return 0; }
+    return kib[k];
+}
+
+// The rest of the home: the home's line, its parts already counted; -1 before du listed the home.
+export I64 other() { return total; }
+// SPDX-License-Identifier: Apache-2.0

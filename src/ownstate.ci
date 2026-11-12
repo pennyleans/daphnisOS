@@ -1,0 +1,12 @@
+// src/ownstate.ci: a module variable, for the K4.5 test of shared memory. Each context has its
+// own copy (rt/task.c gives every task a module-state table of its own), so every task that
+// calls bump() counts from 1 whatever the other tasks do. If the copies were shared the counts
+// would interleave with the schedule.
+
+I64 bumps = 0;
+
+export I64 bump() {
+    bumps += 1;
+    return bumps;
+}
+// SPDX-License-Identifier: Apache-2.0

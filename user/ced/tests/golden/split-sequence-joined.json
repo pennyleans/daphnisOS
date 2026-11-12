@@ -1,0 +1,28 @@
+{
+  "id": "split-sequence-joined",
+  "rules": [
+    "KEY-2",
+    "KEY-1"
+  ],
+  "text": "ab",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b",
+    "43",
+    "58"
+  ],
+  "expect": {
+    "text": "aXb",
+    "sel": [
+      2,
+      2
+    ]
+  }
+}

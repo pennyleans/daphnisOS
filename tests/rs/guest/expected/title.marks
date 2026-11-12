@@ -1,0 +1,22 @@
+# AC-T (PR 321), AC-Tw (PR 323) and AC-V: three asks for ring 0 from ada's terminals, each refused with Esc.
+# The first from `kern true`; the second from a copy of kern named ced (Edit's program), run with exec, so the
+# window's first process carries the name of an app; the third from `kern true` after printf titled the window
+# "Parent approved" (OSC 2). The prompt's left part (title, command) is one picture in all three (guest.py card):
+# the name a program carries never reaches the title, and the title a program sets never reaches the prompt.
+hdesk: screen 1920x1080 plane 1920x
+hdesk: login ada uid 1000
+hdesk: terminal 1 slot 1
+hdesk: approval ask want 8 uid 1000
+hdesk: kern refused pid
+hdesk: terminal 2 slot 2
+hdesk: approval ask want 8 uid 1000
+hdesk: kern refused pid
+=hdesk: terminal 2 ended, status 256
+hdesk: terminal 2 slot 2
+hdesk: approval ask want 8 uid 1000
+hdesk: kern refused pid
+=hdesk: terminal 2 ended, status 0
+hdesk: logout ada
+!hdesk: kern 1 pid
+!hdesk: kern 2 pid
+!hdesk: approved by

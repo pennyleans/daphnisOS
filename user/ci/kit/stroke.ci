@@ -1,0 +1,137 @@
+// user/ci/kit/stroke.ci: stroked lines on draw.ci's row contract (stage RS: Calc's erase key, View's wedge chevron,
+// Monitor's part symbols and graphs). A drawing is a list of segments in its own units (an SVG viewBox), four I64 a
+// segment (ax, ay, ex, ey) in sixteenths of a unit, put on the screen from device point (x0, y0) at num / den device
+// pixels a unit. A stroke w16 sixteenths wide is the set of points within w16 / 2 of a segment: round caps and round
+// joins, as SVG's round linecap and linejoin draw them. A pixel takes 16 samples, 4 x 4 at (8 x + 2 i + 1) / 8, each
+// tested exactly in integers, and moves toward the color by the one blend (MS-1, kit/blend.ci) at 16 a sample, the
+// samples of every segment counted once. area_row fills under a polyline the same way, for a graph's wash.
+import user.ci.kit.blend;
+
+U32[4096] mk;         // the samples of each pixel of the row being drawn, 16 bits
+
+I64 lo_of(I64 a, I64 b) {
+    if (a < b) { return a; }
+    return b;
+}
+
+I64 hi_of(I64 a, I64 b) {
+    if (a > b) { return a; }
+    return b;
+}
+
+// Device pixel of a coordinate v (sixteenths of a unit) from origin o: floor(o + v * num / (16 * den)).
+I64 dev(I64 o, I64 v, I64 num, I64 den) {
+    I64 t = v * num;
+    I64 d = 16 * den;
+    if (t >= 0) { return o + t / d; }
+    return o - (0 - t + d - 1) / d;
+}
+
+// Sample (u, v) lies within the stroke of segment (ax, ay) to (ex, ey): all in one unit, its square within r2.
+Bool near(I64 u, I64 v, I64 ax, I64 ay, I64 ex, I64 ey, I64 r2) {
+    I64 dx = ex - ax;
+    I64 dy = ey - ay;
+    I64 px = u - ax;
+    I64 py = v - ay;
+    I64 l2 = dx * dx + dy * dy;
+    I64 pr = px * dx + py * dy;
+    if (l2 == 0 || pr <= 0) { return px * px + py * py <= r2; }
+    if (pr >= l2) {
+        I64 qx = u - ex;
+        I64 qy = v - ey;
+        return qx * qx + qy * qy <= r2;
+    }
+    I64 cr = px * dy - py * dx;
+    return cr * cr <= r2 * l2;
+}
+
+// Row y of the segments seg[4 k .. 4 k + 3], k from 0 to n - 1, stroked w16 wide in c.
+export void path_row(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 num, I64 den, in I64[_] seg, I64 n, I64 w16, U32 c) {
+    I64 h = w16 / 2 + 1;
+    I64 lo = len(row);
+    I64 hi = 0;
+    for k in 0..n {
+        I64 ya = dev(y0, lo_of(seg[4 * k + 1], seg[4 * k + 3]) - h, num, den);
+        I64 yb = dev(y0, hi_of(seg[4 * k + 1], seg[4 * k + 3]) + h, num, den);
+        if (y >= ya && y <= yb) {
+            lo = lo_of(lo, dev(x0, lo_of(seg[4 * k], seg[4 * k + 2]) - h, num, den));
+            hi = hi_of(hi, dev(x0, hi_of(seg[4 * k], seg[4 * k + 2]) + h, num, den) + 1);
+        }
+    }
+    if (lo < 0) { lo = 0; }
+    if (hi > len(row)) { hi = len(row); }
+    if (hi - lo > 4096) { hi = lo + 4096; }
+    if (lo >= hi) { return; }
+    for x in lo..hi { mk[x - lo] = 0; }
+    // one unit for samples and segments: a sixteenth of a drawing unit times num, so a sample at eighth s of the
+    // device row is s * 2 * den of them
+    I64 r = w16 * num;
+    I64 r2 = r * r / 4;
+    for k in 0..n {
+        I64 ax = seg[4 * k] * num;
+        I64 ay = seg[4 * k + 1] * num;
+        I64 ex = seg[4 * k + 2] * num;
+        I64 ey = seg[4 * k + 3] * num;
+        I64 ya = dev(y0, lo_of(seg[4 * k + 1], seg[4 * k + 3]) - h, num, den);
+        I64 yb = dev(y0, hi_of(seg[4 * k + 1], seg[4 * k + 3]) + h, num, den);
+        if (y >= ya && y <= yb) {
+            I64 xa = hi_of(lo, dev(x0, lo_of(seg[4 * k], seg[4 * k + 2]) - h, num, den));
+            I64 xb = lo_of(hi, dev(x0, hi_of(seg[4 * k], seg[4 * k + 2]) + h, num, den) + 1);
+            for x in xa..xb {
+                U32 bits = mk[x - lo];
+                for j in 0..4 {
+                    I64 v = ((y - y0) * 8 + 2 * j + 1) * 2 * den;
+                    for i in 0..4 {
+                        I64 u = ((x - x0) * 8 + 2 * i + 1) * 2 * den;
+                        if (near(u, v, ax, ay, ex, ey, r2)) { bits = bits | ((1 as U32) << ((4 * j + i) as U32)); }
+                    }
+                }
+                mk[x - lo] = bits;
+            }
+        }
+    }
+    for x in lo..hi {
+        U32 b = mk[x - lo];
+        I64 cnt = 0;
+        while (b != 0) {
+            cnt = cnt + (b & (1 as U32)) as I64;
+            b = b >> 1;
+        }
+        if (cnt > 0) { row[x] = blend.mix_px(row[x], c, cnt * 16); }
+    }
+}
+
+// Row y of the area under the polyline through pts[2 k], pts[2 k + 1] (sixteenths, x rising), down to bottom (the
+// same units), moved toward c by a / 256 where it covers a pixel whole and by its share where it covers part.
+export void area_row(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 num, I64 den, in I64[_] pts, I64 n, I64 bottom, U32 c,
+                     I64 a) {
+    if (n < 2) { return; }
+    I64 xa = dev(x0, pts[0], num, den);
+    I64 xb = dev(x0, pts[2 * (n - 1)], num, den);
+    if (xa < 0) { xa = 0; }
+    if (xb > len(row)) { xb = len(row); }
+    I64 k = 0;
+    for x in xa..xb {
+        // the column's center in sixteenths: (x - x0 + 1/2) * 16 * den / num
+        I64 cx2 = ((x - x0) * 2 + 1) * 16 * den;      // twice the center, times num
+        while (k + 2 < n && pts[2 * (k + 1)] * num * 2 < cx2) { k = k + 1; }
+        I64 ux = pts[2 * k] * num * 2;
+        I64 vx = pts[2 * (k + 1)] * num * 2;
+        I64 uy = pts[2 * k + 1];
+        I64 vy = pts[2 * (k + 1) + 1];
+        I64 ly = uy;
+        if (vx > ux) { ly = uy + (vy - uy) * (cx2 - ux) / (vx - ux); }
+        // the pixel row [y, y + 1) in sixteenths: (y - y0) * 16 * den / num to (y - y0 + 1) * ...; covered below ly
+        I64 top16 = (y - y0) * 16 * den;
+        I64 bot16 = (y - y0 + 1) * 16 * den;
+        I64 l = ly * num;
+        I64 bm = bottom * num;
+        I64 t = hi_of(top16, l);
+        I64 b2 = lo_of(bot16, bm);
+        if (b2 > t) {
+            I64 share = a * (b2 - t) / (bot16 - top16);
+            row[x] = blend.mix_px(row[x], c, share);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

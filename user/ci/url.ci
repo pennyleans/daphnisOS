@@ -1,0 +1,226 @@
+// HTTP(S) URLs for the native client. RFC 3986 section 5.2 resolution,
+// with percent-encoded dot segments recognized as in the URL Standard.
+// ASCII DNS/IPv4 only: no userinfo, IPv6, IDNA or backslash conversion.
+// Encodings are validated and retained; encoded slashes stay encoded.
+// Explicit ports and empty queries are retained. Fragments are validated,
+// then excluded. Inputs and output must be distinct. No ambient state.
+export const I64 URL_MAX = 4096;
+export struct Parts {
+    Bool valid;
+    Bool secure;
+    I64 host_start;
+    I64 host_end;
+    I64 authority_end;
+    I64 path_end;
+    I64 port;
+    I64 err;
+}
+U8 folded(U8 c) {
+    if (c >= 'A' && c <= 'Z') { return c + 32; }
+    return c;
+}
+Bool alpha(U8 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+Bool digit(U8 c) { return c >= '0' && c <= '9'; }
+Bool hex(U8 c) { return digit(c) || (folded(c) >= 'a' && folded(c) <= 'f'); }
+Bool bytes_ok(in U8[_] s) {
+    for i in 0..len(s) {
+        U8 c = s[i];
+        if (c <= 32 || c >= 127 || c == '\\' || c == '"' || c == '<' || c == '>'
+            || c == '`' || c == '{' || c == '}' || c == '|' || c == '^' || c == '[' || c == ']') { return false; }
+        if (c == '%') {
+            if (len(s) - i < 3 || !hex(s[i + 1]) || !hex(s[i + 2])) { return false; }
+        }
+    }
+    return true;
+}
+I64 end(in U8[_] s) {
+    I64 n = 0;
+    while (n < len(s) && s[n] != '#') { n = n + 1; }
+    return n;
+}
+// A colon in the first segment means an absolute scheme, even if malformed.
+I64 scheme(in U8[_] s) {
+    for i in 0..len(s) {
+        if (s[i] == ':') { return i; }
+        if (s[i] == '/' || s[i] == '?' || s[i] == '#') { return -1; }
+    }
+    return -1;
+}
+Bool host_ok(in U8[_] s) {
+    I64 n = len(s);
+    if (n == 0 || n > 253) { return false; }
+    I64 stop = n;
+    if (s[n - 1] == '.') { stop = n - 1; }
+    if (stop == 0) { return false; }
+    Bool numeric = true;
+    I64 label = 0;
+    for i in 0..stop {
+        U8 c = s[i];
+        if (c == '.') {
+            if (label == 0 || s[i - 1] == '-') { return false; }
+            label = 0;
+        } else {
+            if (!alpha(c) && !digit(c) && c != '-') { return false; }
+            if (label == 0 && c == '-') { return false; }
+            label = label + 1;
+            if (label > 63) { return false; }
+            if (!digit(c)) { numeric = false; }
+        }
+    }
+    if (label == 0 || s[stop - 1] == '-') { return false; }
+    if (!numeric) { return true; }
+    // Numeric hosts use four decimal octets, never shortened forms.
+    I64 octets = 0;
+    I64 octet = 0;
+    I64 digits = 0;
+    for i in 0..stop + 1 {
+        if (i == stop || s[i] == '.') {
+            if (digits == 0 || octet > 255) { return false; }
+            octets = octets + 1;
+            octet = 0;
+            digits = 0;
+        } else {
+            if (digits == 3) { return false; }
+            octet = 10 * octet + (s[i] - '0') as I64;
+            digits = digits + 1;
+        }
+    }
+    return octets == 4;
+}
+export Parts parse(in U8[_] absolute) {
+    Parts p;
+    p.valid = false;
+    p.secure = false;
+    p.host_start = 0;
+    p.host_end = 0;
+    p.authority_end = 0;
+    p.path_end = 0;
+    p.port = 0;
+    p.err = -1;
+    if (len(absolute) > URL_MAX) { p.err = -3; return p; }
+    if (!bytes_ok(absolute)) { return p; }
+    I64 sc = scheme(absolute);
+    if (sc != 4 && sc != 5) { return p; }
+    if (folded(absolute[0]) != 'h' || folded(absolute[1]) != 't'
+        || folded(absolute[2]) != 't' || folded(absolute[3]) != 'p') { return p; }
+    if (sc == 5) {
+        if (folded(absolute[4]) != 's') { return p; }
+        p.secure = true;
+    }
+    if (len(absolute) < sc + 3 || absolute[sc + 1] != '/' || absolute[sc + 2] != '/') { return p; }
+    p.host_start = sc + 3;
+    I64 at = p.host_start;
+    while (at < len(absolute) && absolute[at] != '/' && absolute[at] != '?' && absolute[at] != '#') { at = at + 1; }
+    p.authority_end = at;
+    I64 he = p.host_start;
+    while (he < at && absolute[he] != ':') { he = he + 1; }
+    p.host_end = he;
+    if (!host_ok(absolute[p.host_start..he])) { return p; }
+    p.port = 80;
+    if (p.secure) { p.port = 443; }
+    if (he < at) {
+        p.err = -2;
+        I64 ps = he + 1;
+        if (ps == at) { return p; }
+        p.port = 0;
+        for i in ps..at {
+            if (!digit(absolute[i])) { return p; }
+            I64 d = (absolute[i] - '0') as I64;
+            if (p.port > (65535 - d) / 10) { return p; }
+            p.port = p.port * 10 + d;
+        }
+        if (p.port == 0) { return p; }
+    }
+    p.path_end = p.authority_end;
+    while (p.path_end < len(absolute) && absolute[p.path_end] != '?' && absolute[p.path_end] != '#') {
+        p.path_end = p.path_end + 1;
+    }
+    p.valid = true;
+    p.err = 0;
+    return p;
+}
+I64 dots(in U8[_] s) {
+    I64 n = 0;
+    I64 i = 0;
+    while (i < len(s)) {
+        if (s[i] == '.') { i = i + 1; }
+        else if (len(s) - i >= 3 && s[i] == '%' && s[i + 1] == '2' && folded(s[i + 2]) == 'e') { i = i + 3; }
+        else { return 0; }
+        n = n + 1;
+        if (n > 2) { return 0; }
+    }
+    return n;
+}
+I64 parent(in U8[_] s, I64 floor, I64 n) {
+    I64 at = n;
+    while (at > floor && s[at - 1] != '/') { at = at - 1; }
+    if (at > floor) { at = at - 1; }
+    return at;
+}
+export I64 normalize(in U8[_] absolute, inout U8[_] result) {
+    Parts p = parse(absolute);
+    if (!p.valid) { return p.err; }
+    U8[4096] work;
+    I64 n = p.authority_end;
+    for i in 0..n {
+        work[i] = absolute[i];
+        if (i < p.host_end) { work[i] = folded(absolute[i]); }
+    }
+    I64 floor = n;
+    I64 at = p.authority_end;
+    if (at == p.path_end) {
+        if (n == URL_MAX) { return -3; }
+        work[n] = '/'; n = n + 1;
+    }
+    while (at < p.path_end) {
+        I64 stop = at + 1;
+        while (stop < p.path_end && absolute[stop] != '/') { stop = stop + 1; }
+        I64 d = dots(absolute[at + 1..stop]);
+        if (d != 0) {
+            if (d == 2) { n = parent(work, floor, n); }
+            if (stop == p.path_end) {
+                if (n == URL_MAX) { return -3; }
+                work[n] = '/'; n = n + 1;
+            }
+        } else {
+            if (stop - at > URL_MAX - n) { return -3; }
+            for i in at..stop { work[n] = absolute[i]; n = n + 1; }
+        }
+        at = stop;
+    }
+    I64 e = end(absolute);
+    if (e - p.path_end > URL_MAX - n) { return -3; }
+    for i in p.path_end..e { work[n] = absolute[i]; n = n + 1; }
+    if (n > len(result)) { return -3; }
+    for i in 0..n { result[i] = work[i]; }
+    return n;
+}
+export I64 resolve(in U8[_] base, in U8[_] reference, inout U8[_] result) {
+    Parts p = parse(base);
+    if (!p.valid) { return p.err; }
+    if (len(reference) > URL_MAX) { return -3; }
+    if (!bytes_ok(reference)) { return -1; }
+    if (scheme(reference) >= 0) { return normalize(reference, result); }
+    U8[4096] work;
+    I64 re = end(reference);
+    I64 n = 0;
+    I64 keep = p.authority_end;
+    if (re >= 2 && reference[0] == '/' && reference[1] == '/') {
+        keep = p.host_start - 2;
+    } else if (re == 0 || reference[0] == '?') {
+        keep = p.path_end;
+        if (re == 0) { keep = end(base); }
+    } else if (reference[0] != '/') {
+        keep = p.path_end;
+        while (keep > p.authority_end && base[keep - 1] != '/') { keep = keep - 1; }
+    }
+    for i in 0..keep { work[n] = base[i]; n = n + 1; }
+    if (re > 0 && reference[0] != '/' && reference[0] != '?' && keep == p.authority_end) {
+        if (n == URL_MAX) { return -3; }
+        work[n] = '/'; n = n + 1;
+    }
+    if (re > URL_MAX - n) { return -3; }
+    for i in 0..re { work[n] = reference[i]; n = n + 1; }
+    return normalize(work[0..n], result);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,15 @@
+// tests/hosted/trash/corectl.ci: user/ci/corectl.ci's calls that user/ci/trashfs.ci makes, over the memfs.
+import user.ci.memfs;
+
+export I64 co_mkdir(in U8[_] path, I64 mode) {
+    if (mode < 0) { return 0 - 22; }
+    return memfs.mkdir(path);
+}
+export I64 co_rename(in U8[_] from, in U8[_] to) { return memfs.rename(from, to); }
+export I64 co_unlink(in U8[_] path) { return memfs.unlink(path); }
+export I64 co_rmdir(in U8[_] path) { return memfs.rmdir(path); }
+export I64 co_clock(I64 which) {
+    if (which != 0) { return 0 - 22; }
+    return memfs.now_ns();
+}
+// SPDX-License-Identifier: Apache-2.0

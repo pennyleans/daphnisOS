@@ -1,0 +1,350 @@
+// tests/ac/acctask_test.ci: RS-AQ (docs/specs/2026-11-11-rs-accounts-page.md), hosted: user/ci/acctask.ci over
+// user/ci/acct.ci. Each operation of the Accounts page from the page's action to the line authd reads, byte for
+// byte, and each of authd's answers to what the desk does; what could never work opens no prompt; no passphrase is
+// held after the request, an answer or a cancel. Run by check.sh: cint test --root . tests/ac/acctask_test.ci
+import user.ci.acct;
+import user.ci.authreq;
+import user.ci.acctask;
+
+const I64 ADD = 16;                    // kit/stacct.ci's actions
+const I64 ROLE = 17;
+const I64 PASSWORD = 18;
+const I64 CEILING = 19;
+const I64 REMOVE = 20;
+
+U8[640] o;
+
+// ci a parent (0), sam a child (1) with Disk and Sound, pat a parent (2), kid a child (3) with a short passphrase.
+void four() {
+    acct.clear();
+    I64 a = acct.add("ci", 2, acct.PARENT, 1000, 1000, 65536, 3, "000102030405060708090a0b0c0d0e0f",
+                     "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386", 7,
+                     "000102030405060708090a0b0c0d0e0f");
+    I64 b = acct.add("sam", 3, acct.CHILD, 1001, 1001, 65536, 3, "f0e0d0c0b0a090807060504030201000",
+                     "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 5,
+                     "f0e0d0c0b0a090807060504030201000");
+    I64 c = acct.add("pat", 3, acct.PARENT, 1002, 1002, 65536, 3, "101112131415161718191a1b1c1d1e1f",
+                     "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386", 7,
+                     "101112131415161718191a1b1c1d1e1f");
+    I64 d = acct.add("kid", 3, acct.CHILD, 1003, 1003, 65536, 3, "202122232425262728292a2b2c2d2e2f",
+                     "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 0,
+                     "202122232425262728292a2b2c2d2e2f");
+    assert(a == 0 && b == 1 && c == 2 && d == 3);
+    acct.pass_len(0, 14);
+    acct.pass_len(1, 12);                                     // sam's passphrase is of a parent's length
+    acct.pass_len(2, 14);
+    acct.pass_len(3, 4);
+    acctask.cancel();
+}
+
+Bool is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (o[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+Bool at(I64 a, in U8[_] want) {
+    for k in 0..len(want) {
+        if (o[a + k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+void typed(in U8[_] s) {
+    for k in 0..len(s) { acctask.form_put(s[k] as I64); }
+}
+
+test "role, ceiling and remove: the prompt at once, then authd's line byte for byte" {
+    four();
+    assert(acctask.begin(ROLE, 1, acct.PARENT, 0) == acctask.PROMPT);
+    assert(acctask.approver() == 0);
+    assert(is(acctask.request(o, "parentpass12", 12), "role ci sam parent\nparentpass12"));
+    assert(acctask.phase() == acctask.SENT);
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE && acctask.phase() == acctask.IDLE);
+
+    assert(acctask.begin(CEILING, 1, 1, 0) == acctask.PROMPT);
+    assert(is(acctask.request(o, "pw", 2), "ceil ci sam 1\npw"));
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE);
+
+    assert(acctask.begin(REMOVE, 3, 0, 2) == acctask.PROMPT);
+    assert(acctask.approver() == 2 && !acctask.ends_first());
+    assert(is(acctask.request(o, "pw", 2), "remove pat kid\npw"));
+}
+
+test "what could never work opens no prompt" {
+    four();
+    assert(acctask.begin(ROLE, 1, acct.CHILD, 0) == acctask.IDLE);      // sam is a child already
+    assert(acctask.begin(ROLE, 3, acct.PARENT, 0) == acctask.IDLE);     // kid's passphrase is short (RS-R1)
+    assert(acctask.begin(ROLE, 1, 9, 0) == acctask.IDLE);
+    assert(acctask.begin(CEILING, 0, 1, 0) == acctask.IDLE);            // a parent's ceiling is every grant
+    assert(acctask.begin(CEILING, 1, 5, 0) == acctask.IDLE);            // unchanged
+    assert(acctask.begin(CEILING, 1, 8, 0) == acctask.IDLE);
+    assert(acctask.begin(REMOVE, 9, 0, 0) == acctask.IDLE);
+    assert(acctask.begin(REMOVE, 1, 0, -1) == acctask.IDLE);            // no session
+    assert(acctask.begin(7, 1, 0, 0) == acctask.IDLE);
+    assert(acctask.operation() == 0);
+    // the last parent: pat demoted, ci can be neither demoted nor removed
+    assert(acct.set_role(2, acct.CHILD) == 0);
+    assert(acctask.begin(ROLE, 0, acct.CHILD, 0) == acctask.IDLE);
+    assert(acctask.begin(REMOVE, 0, 0, 0) == acctask.IDLE);
+    assert(acctask.begin(REMOVE, 2, 0, 0) == acctask.PROMPT);
+}
+
+test "the approver: the signed-in parent, else the first parent; Tab goes through the parents only" {
+    four();
+    assert(acctask.begin(CEILING, 3, 2, 1) == acctask.PROMPT);           // sam signed in, a child: a parent asked
+    I64 a = acctask.approver();
+    assert(acct.role_of(a) == acct.PARENT);
+    I64 b = acctask.next_approver();
+    assert(b != a && acct.role_of(b) == acct.PARENT);
+    assert(acctask.next_approver() == a);
+    assert(a == acct.next_parent(-1));
+    I64 n = acctask.request(o, "pw", 2);
+    I64 an = acct.name_len(a);
+    assert(n == 5 + an + 9 && at(0, "ceil ") && at(5 + an, " kid 2\npw"));
+    for k in 0..an { assert(o[5 + k] == acct.name_byte(a, k)); }
+    acctask.cancel();
+    assert(acctask.begin(ROLE, 1, acct.PARENT, 2) == acctask.PROMPT && acctask.approver() == 2);
+    assert(acctask.next_approver() == 0 && acctask.next_approver() == 2);
+}
+
+test "Change Password: the account itself or a parent approves; Tab reaches both" {
+    four();
+    assert(acctask.begin(PASSWORD, 1, 0, 1) == acctask.FORM);            // sam's own
+    assert(acctask.approver() == 1 && acctask.field() == acctask.F_NEW);
+    typed("newpass-1");
+    acctask.form_next();
+    typed("newpass-1");
+    assert(acctask.form_done() == acctask.PROMPT && acctask.own());
+    I64 p = acctask.next_approver();
+    assert(acct.role_of(p) == acct.PARENT && !acctask.own());
+    I64 q = acctask.next_approver();
+    assert(acct.role_of(q) == acct.PARENT && q != p);
+    assert(acctask.next_approver() == 1 && acctask.own());
+    assert(is(acctask.request(o, "old", 3), "passwd sam sam 3\noldnewpass-1"));
+    assert(acctask.held() == 18);                                        // until authd answers
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE && acctask.held() == 0);
+    // another child's passphrase, sam signed in: the first parent approves; Tab reaches kid itself too
+    assert(acctask.begin(PASSWORD, 3, 0, 1) == acctask.FORM);
+    assert(acctask.approver() == acct.next_parent(-1));
+}
+
+test "Add Account: the form, its faults, then the line" {
+    four();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM && acctask.field() == acctask.F_NAME);
+    typed("Sa m!");                                   // a capital folds to its small letter; space and ! drop
+    assert(acctask.name_len() == 3 && acctask.name_byte(0) == 115 && acctask.name_byte(1) == 97);
+    assert(acctask.name_byte(2) == 109 && !acctask.form_ready());
+    acctask.form_back();
+    acctask.form_back();
+    acctask.form_back();
+    typed("Ada");
+    assert(acctask.name_len() == 3 && acctask.name_byte(0) == 97 && acctask.name_byte(1) == 100);
+    acctask.form_back();
+    acctask.form_back();
+    acctask.form_back();
+    typed("sam");
+    acctask.form_next();
+    typed("four");
+    acctask.form_next();
+    typed("four");
+    assert(acctask.form_done() == acctask.FORM && acctask.fault() == acctask.NAME_TAKEN);
+    assert(acctask.field() == acctask.F_NAME);
+    acctask.form_back();
+    acctask.form_back();
+    acctask.form_back();
+    assert(acctask.form_done() == acctask.FORM && acctask.fault() == acctask.NAME_BAD);
+    typed("-x");
+    assert(acctask.form_done() == acctask.FORM && acctask.fault() == acctask.NAME_BAD);
+    acctask.form_back();
+    acctask.form_back();
+    typed("eve");
+    acctask.form_focus(acctask.F_AGAIN);
+    typed("x");
+    assert(acctask.form_done() == acctask.FORM && acctask.fault() == acctask.DIFFER);
+    assert(acctask.field() == acctask.F_AGAIN);
+    acctask.form_back();
+    acctask.form_set_role(acct.PARENT);              // a parent's passphrase is 12 at least
+    assert(acctask.form_done() == acctask.FORM && acctask.fault() == acctask.SHORT);
+    assert(!acctask.form_ready());
+    acctask.form_set_role(acct.CHILD);
+    assert(acctask.form_ready());
+    assert(acctask.form_done() == acctask.PROMPT && acctask.approver() == 0 && !acctask.form_ready());
+    U8[32] t;
+    assert(acctask.target(t) == 3 && t[0] == 101);
+    assert(is(acctask.request(o, "pw", 2), "add ci eve child 2\npwfour"));
+    assert(acctask.answer(authreq.R_FULL) == acctask.O_FAIL && acctask.held() == 0);
+}
+
+test "a full store opens no form" {
+    four();
+    U8[3] nm = b"aa0";
+    for k in 0..12 {
+        nm[2] = (97 + k) as U8;
+        I64 i = acct.add(nm, 3, acct.CHILD, 1100 + k, 1100 + k, 65536, 3, "202122232425262728292a2b2c2d2e2f",
+                         "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 0,
+                         "202122232425262728292a2b2c2d2e2f");
+        assert(i == 4 + k);
+    }
+    assert(acct.accounts() == acct.MAX);
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.IDLE);
+}
+
+test "authd's answers: wrong keeps the prompt, taken and short go back to the form, the rest end it" {
+    four();
+    assert(acctask.begin(REMOVE, 1, 0, 0) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.WRONG) == acctask.O_WRONG && acctask.phase() == acctask.PROMPT);
+    assert(acctask.request(o, "pw2", 3) > 0);
+    assert(acctask.answer(authreq.R_HOME) == acctask.O_FAIL && acctask.phase() == acctask.IDLE);
+
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    typed("eve");
+    acctask.form_next();
+    typed("four");
+    acctask.form_next();
+    typed("four");
+    assert(acctask.form_done() == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.R_TAKEN) == acctask.O_FORM && acctask.field() == acctask.F_NAME);
+    assert(acctask.fault() == acctask.NAME_TAKEN && acctask.new_len() == 0 && acctask.again_len() == 0);
+    acctask.form_next();
+    typed("five");
+    acctask.form_next();
+    typed("five");
+    assert(acctask.form_done() == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.R_PASS) == acctask.O_FORM && acctask.field() == acctask.F_NEW);
+    acctask.cancel();
+
+    I64[9] codes = [authreq.E_REQUEST, authreq.E_STORE, authreq.E_WRITE, authreq.E_RANDOM, authreq.R_APPROVER,
+                    authreq.R_ACCOUNT, authreq.R_LAST, authreq.R_PARENT, authreq.R_FULL];
+    for c in 0..9 {
+        assert(acctask.begin(CEILING, 1, 0, 0) == acctask.PROMPT);
+        assert(acctask.request(o, "pw", 2) > 0);
+        assert(acctask.answer(codes[c]) == acctask.O_FAIL && acctask.phase() == acctask.IDLE);
+    }
+    assert(acctask.answer(authreq.DONE) == acctask.O_FAIL);                // nothing was sent
+}
+
+test "the session: its own removal ends it first, a cut of its own ceiling or its own demotion after (RS-R2, RS-DM1)" {
+    four();
+    assert(acct.set_role(1, acct.PARENT) == 0);
+    assert(acctask.begin(REMOVE, 1, 0, 1) == acctask.PROMPT && acctask.ends_first());
+    assert(acctask.begin(REMOVE, 1, 0, 0) == acctask.PROMPT && !acctask.ends_first());
+    four();
+    // sam signed in, sam's ceiling 5 (Disk, Sound): a cut ends the session, a raise does not
+    assert(acctask.begin(CEILING, 1, 4, 1) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_END);
+    assert(acctask.begin(CEILING, 1, 7, 1) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE);
+    // another account's cut, and a wrong passphrase on a cut, end nothing
+    assert(acctask.begin(CEILING, 1, 0, 0) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE);
+    assert(acctask.begin(CEILING, 1, 0, 1) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.WRONG) == acctask.O_WRONG);
+    // RS-DM1: pat signed in, made a Child: the session ends once authd has written it, after a wrong passphrase too
+    assert(acctask.begin(ROLE, 2, acct.CHILD, 2) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_END);
+    assert(acctask.begin(ROLE, 2, acct.CHILD, 2) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.WRONG) == acctask.O_WRONG);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_END);
+    // nothing written, nothing ended: a refusal or an error of authd
+    I64[4] codes = [authreq.R_LAST, authreq.R_APPROVER, authreq.E_WRITE, authreq.E_STORE];
+    for c in 0..4 {
+        assert(acctask.begin(ROLE, 2, acct.CHILD, 2) == acctask.PROMPT);
+        assert(acctask.request(o, "pw", 2) > 0);
+        assert(acctask.answer(codes[c]) == acctask.O_FAIL);
+    }
+    // a cancel at the prompt forgets it
+    assert(acctask.begin(ROLE, 2, acct.CHILD, 2) == acctask.PROMPT);
+    acctask.cancel();
+    assert(acctask.begin(CEILING, 3, 1, 2) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE);
+    // another account's demotion, and a promotion of the account in session, end nothing
+    assert(acctask.begin(ROLE, 0, acct.CHILD, 2) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE);
+    assert(acctask.begin(ROLE, 1, acct.PARENT, 1) == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE);
+}
+
+test "no passphrase is held after an answer but a wrong one, or after a cancel; nothing is sent from the form" {
+    four();
+    assert(acctask.begin(PASSWORD, 3, 0, 0) == acctask.FORM);
+    typed("abcd");
+    acctask.form_next();
+    typed("abcd");
+    assert(acctask.held() == 8);
+    assert(acctask.request(o, "pw", 2) == -1);                           // still the form
+    acctask.cancel();
+    assert(acctask.held() == 0 && acctask.phase() == acctask.IDLE);
+    assert(acctask.begin(PASSWORD, 3, 0, 0) == acctask.FORM);
+    typed("abcd");
+    acctask.form_next();
+    typed("abcd");
+    assert(acctask.form_done() == acctask.PROMPT && acctask.held() == 8);
+    assert(acctask.request(o, "", 0) == -1 && acctask.held() == 8);       // no approver's passphrase: nothing done
+    assert(acctask.phase() == acctask.PROMPT);
+    assert(acctask.request(o, "pw", 2) > 0 && acctask.held() == 8);       // held while authd works
+    assert(acctask.answer(authreq.WRONG) == acctask.O_WRONG && acctask.held() == 8);
+    acctask.cancel();                                                    // the prompt's every other way out
+    assert(acctask.held() == 0 && acctask.phase() == acctask.IDLE);
+}
+
+test "a wrong approver's passphrase, then the right one: Add Account and Change Password send the same line again" {
+    four();
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM);
+    typed("eve");
+    acctask.form_next();
+    typed("four");
+    acctask.form_next();
+    typed("four");
+    assert(acctask.form_done() == acctask.PROMPT);
+    assert(is(acctask.request(o, "bad", 3), "add ci eve child 3\nbadfour"));
+    assert(acctask.answer(authreq.WRONG) == acctask.O_WRONG && acctask.phase() == acctask.PROMPT);
+    assert(is(acctask.request(o, "good", 4), "add ci eve child 4\ngoodfour"));
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE && acctask.held() == 0);
+
+    assert(acctask.begin(PASSWORD, 3, 0, 0) == acctask.FORM);
+    typed("abcd");
+    acctask.form_next();
+    typed("abcd");
+    assert(acctask.form_done() == acctask.PROMPT);
+    assert(is(acctask.request(o, "bad", 3), "passwd ci kid 3\nbadabcd"));
+    assert(acctask.answer(authreq.WRONG) == acctask.O_WRONG);
+    assert(is(acctask.request(o, "good", 4), "passwd ci kid 4\ngoodabcd"));
+    assert(acctask.answer(authreq.DONE) == acctask.O_DONE && acctask.held() == 0);
+
+    assert(acctask.begin(PASSWORD, 3, 0, 0) == acctask.FORM);           // and back to the form: wiped there
+    typed("abcd");
+    acctask.form_next();
+    typed("abcd");
+    assert(acctask.form_done() == acctask.PROMPT && acctask.request(o, "pw", 2) > 0);
+    assert(acctask.answer(authreq.R_PASS) == acctask.O_FORM && acctask.held() == 0);
+}
+
+test "the prompt's words are frame 34's" {
+    four();
+    U8[24] d;
+    assert(acctask.begin(ROLE, 1, acct.PARENT, 0) == acctask.PROMPT);
+    I64 n = acctask.subject(d);
+    assert(n == 6 && d[0] == 80);
+    assert(acctask.target(d) == 3 && d[0] == 115);
+    assert(acctask.begin(CEILING, 1, 1, 0) == acctask.PROMPT && acctask.subject(d) == 7);
+    assert(acctask.begin(REMOVE, 1, 0, 0) == acctask.PROMPT && acctask.subject(d) == 14);
+    assert(acctask.begin(PASSWORD, 1, 0, 0) == acctask.FORM && acctask.subject(d) == 15);
+    assert(acctask.begin(ADD, -1, 0, 0) == acctask.FORM && acctask.subject(d) == 11 && acctask.target(d) == 0);
+}
+// SPDX-License-Identifier: Apache-2.0

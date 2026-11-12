@@ -1,0 +1,65 @@
+# approved-words.tsv: words an approved frame or note puts on screen; each must be in the bytes of the named
+# program of the release image (RG-1). program<TAB>word<TAB>approved where. Checked against batch/l-3 90055086 source.
+hdesk	Search files, programs and windows	frame 1, DN-49
+hdesk	No recent files	frame 1, DN-41
+hdesk	All Apps	frame 7, DN-51
+hdesk	Switch User	frame 1, DN-52 (d)
+hdesk	Sleep	frame 1, DN-52 (d)
+hdesk	Shut Down	frame 1, DN-47
+hdesk	Welcome to Daphnis	frame 12, DN-52 (c)
+hdesk	You are creating a Parent account	frame 12, DN-52 (c)
+hdesk	that has approval rights	frame 12, DN-52 (c)
+hdesk	Type Password again	frame 12, DN-52 (c)
+hdesk	Wrong password, try again in 	frame 12, DN-52 (b)
+hdesk	Your password runs this once	frame 17, DN-52 (a)
+hdesk	Couldn't open 	DN-62
+hdesk	Index|/bin/finder	DN-28, note 71 (order)
+hdesk	Console|/bin/cish	DN-28, note 71
+hdesk	Edit|/bin/ced	DN-28, note 71
+hdesk	CVim|/bin/cvim	DN-30, note 71
+hdesk	Read|/bin/cless	DN-28, note 71
+hdesk	View|/bin/cview	DN-28, note 71
+hdesk	Calc|/bin/calc|	DN-28, frame 39 (the Calc window, not ccalc)	NOT IN SOURCE AT 90055086
+hdesk	Monitor|/bin/monitor	DN-59, note 71
+hdesk	Fetch|/bin/fetch	DN-28, note 71
+hdesk	Web Browser	DN-31
+hdesk	Date and Time	frame 36, DN-58
+hdesk	Time Zone	frame 47, DN-61
+hdesk	24-Hour Time	frame 36, DN-58
+hdesk	Week Starts On	frame 36, DN-58
+hdesk	Add Account	frame 49, DN-66
+hdesk	Change Password	frame 49, DN-66
+hdesk	Remove Account	frame 34, DN-58
+hdesk	That name is taken.	frame 49, DN-66
+hdesk	That name cannot be used.	frame 49, DN-66
+hdesk	The passwords do not match.	frame 49, DN-66
+hdesk	 characters or more.	frame 12, DN-52 (c)
+hdesk	Repeat Delay	frame 37, DN-58
+hdesk	Repeat Rate	frame 37, DN-58
+hdesk	Subnet Mask	frame 35, DN-58
+hdesk	Hardware Address	frame 35, DN-58
+hdesk	Copy Details	frame 35, DN-58
+hdesk	 used of 	frame 38, DN-58
+hdesk	Empty Trash	frame 38, DN-58
+hdesk	permanently?	frame 23, DN-69 (1)
+hdesk	TASKBAR	frame 33, DN-58
+hdesk	NOW PLAYING	frame 9, DN-24
+hdesk	Sound Settings	frame 9, DN-25
+hdesk	Unpin from Taskbar	frame 7, DN-51
+hdesk	Copy as Path	frame 20, DN-33
+hdesk	Open Console Here	frame 20, DN-33
+hdesk	Restore Defaults	frame 11, DN-10
+finder	permanently?	frame 23, DN-69 (1)
+finder	Delete Forever	frame 32, DN-69 (4)
+finder	Empty Trash	frame 32, DN-58
+finder	Folder is empty	frame 32, DN-58
+finder	MODIFIED	frame 3, DN-55
+finder	Copy as Path	frame 20, DN-33
+cview	No picture is open.	frame 25, DN-64
+cview	This picture cannot be opened.	note 64, DN-66
+cview	Set as Background	frame 39, DN-58
+cview	Show in Index	frame 39, DN-58
+monitor	Graphics Memory	frame 42, DN-58
+monitor	Not connected	frame 51, DN-69
+monitor	Processor	frame 42, DN-58
+cless	Couldn't open 	DN-62

@@ -1,0 +1,480 @@
+// tests/rs/stbox_test.ci: hosted tests of frame 48 (DN-66), the Settings window in any box (user/ci/kit/stbox.ci):
+// the wide and narrow columns, the button before the title, the laid sidebar and its shadow, the keys, the page and
+// sidebar scrolling under a fixed head, the sidebar's thumb, the keyboard's row kept whole under the head (Accounts,
+// a long page, from its last row to its first), the desk's Tab order through the frame, as the host contract
+// reads, for each of the six pages, with the keyboard's row in view after each key and each entry, and where the
+// keyboard is when Settings opens (ST-K1). Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.stside;
+import user.ci.kit.stpage;
+import user.ci.kit.stbox;
+import user.ci.kit.stacct;
+import user.ci.kit.stdesk;
+import user.ci.kit.stnet;
+import user.ci.kit.sttime;
+import user.ci.kit.stkeys;
+import user.ci.kit.ststore;
+import user.ci.kit.blend;
+import user.ci.kit.homeuse;
+
+U32[1600] row;
+I64 box_h = 0;                                       // the box's height, for the host's view check
+
+void ground(I64 n, U32 c) { for x in 0..n { row[x] = c; } }
+
+// Settings opens in a box at (10, 40) w x h on its first page: the sidebar at the top, nothing laid.
+void box(I64 w, I64 h) {
+    stbox.open(10, 40, 10 + w, 40 + h, stside.DESK);
+    stbox.set_tall(0);
+    box_h = h;
+}
+
+test "frame 48: wide, the sidebar inline and one column at most 640, centered, 32 from each side" {
+    box(718, 447);                                   // the 720 x 480 window's body
+    assert(!stbox.narrow() && !stpage.is_folded());
+    assert(stbox.cx() == 10 + 200 + 32 && stbox.cr() == 10 + 718 - 32);
+    box(974, 367);                                   // 976 wide: the column at its widest
+    assert(stbox.cr() - stbox.cx() == stbox.COL);
+    assert(stbox.cx() - (10 + 200) == (10 + 974) - stbox.cr());
+    box(1600, 600);
+    assert(stbox.cr() - stbox.cx() == stbox.COL && stbox.cx() - 210 == 1610 - stbox.cr());
+}
+
+test "frame 48: under 640 the sidebar folds, the page runs 20 from each side, the title after a 28 px button" {
+    box(639, 367);
+    assert(stbox.narrow() && stpage.is_folded());
+    assert(stbox.cx() == 30 && stbox.cr() == 10 + 639 - 20);
+    box(640, 367);
+    assert(!stbox.narrow());
+    box(478, 367);
+    I64 cx = stbox.cx();
+    assert(stbox.on_button(cx, 40 + stpage.TOP - 4) && stbox.on_button(cx + 27, 40 + stpage.TOP + 23));
+    assert(!stbox.on_button(cx + 28, 40 + stpage.TOP) && !stbox.on_button(cx, 40 + stpage.TOP + 24));
+    tokens.set_theme(0);
+    I64 y = 40 + stpage.TOP + 10;
+    ground(600, tokens.word(tokens.PAPER));
+    pen.at(0, 0, 1, y);
+    stpage.title(row, cx, 40, stbox.cr(), b"Desk", 4, y);
+    assert(row[cx + 1] == tokens.word(tokens.SURF1) && row[cx + 26] == tokens.word(tokens.SURF1));
+    assert(row[cx + 29] == tokens.word(tokens.PAPER) && row[cx + 39] == tokens.word(tokens.PAPER));
+    Bool ink = false;
+    for x in cx + 40..cx + 60 { if (row[x] != tokens.word(tokens.PAPER)) { ink = true; } }
+    assert(ink);                                     // the title starts 40 in
+    box(718, 447);
+    ground(600, tokens.word(tokens.PAPER));
+    stpage.title(row, stbox.cx(), 40, stbox.cr(), b"Desk", 4, y);
+    for x in stbox.cx()..stbox.cx() + 28 { assert(row[x] != tokens.word(tokens.SURF1)); }   // wide: no button
+}
+
+test "frame 48: the button lays the sidebar; a pill shows its page and closes it; a click outside only closes" {
+    box(478, 367);
+    assert(stbox.click(stbox.cx() + 4, 40 + stpage.TOP) == stbox.DRAW && stbox.is_laid() && stbox.in_side());
+    I64 py = stside.row_y(40, stside.NETWORK) + 16;
+    assert(stbox.click(10 + 100, py) == stbox.PAGE && stbox.page() == stside.NETWORK);
+    assert(!stbox.is_laid() && !stbox.in_side());
+    I64 c = stbox.click(stbox.cx() + 4, 40 + stpage.TOP);
+    assert(stbox.click(10 + 100, stside.row_y(40, 3) + 34) == stbox.DRAW && stbox.is_laid());   // between pills
+    assert(stbox.click(10 + 300, 200) == stbox.DRAW && !stbox.is_laid() && stbox.page() == stside.NETWORK);
+    c = stbox.click(stbox.cx() + 4, 40 + stpage.TOP);
+    stbox.place(10, 40, 10 + 718, 40 + 447);         // the box grows past 640: nothing lies over the page
+    assert(!stbox.is_laid());
+}
+
+test "frame 48: a page's BACK lays the sidebar when narrow; Up and Down show pages; Esc closes; Right and Enter go in" {
+    box(478, 367);
+    stbox.back();
+    assert(stbox.is_laid() && stbox.in_side());
+    assert(stbox.key(stpage.K_DOWN) == stbox.PAGE && stbox.page() == stside.SOUND && stbox.is_laid());
+    assert(stbox.key(stpage.K_ESC) == stbox.DRAW && !stbox.is_laid() && !stbox.in_side());   // as a click outside
+    assert(stbox.key(stpage.K_DOWN) == stbox.NONE);  // the keyboard is the page's
+    stbox.back();
+    assert(stbox.key(stpage.K_RIGHT) == stbox.ENTER && !stbox.is_laid());
+    box(718, 447);
+    stbox.back();
+    assert(!stbox.is_laid() && stbox.in_side());     // wide: the sidebar is already there
+    assert(stbox.key(stpage.K_UP) == stbox.PAGE && stbox.page() == stside.DISPLAY);
+    assert(stbox.key(stpage.K_ESC) == stbox.NONE && stbox.in_side());   // Esc closes only a laid sidebar
+    assert(stbox.key(stpage.K_LEFT) == stbox.DRAW && stbox.in_side() && stbox.page() == stside.DISPLAY);
+    assert(stbox.key(stpage.K_ENTER) == stbox.ENTER && !stbox.in_side());
+}
+
+test "frame 48: a box that folds with the keyboard in the sidebar lays it; one that opens out sets it inline" {
+    box(718, 447);
+    assert(stbox.in_side() && !stbox.is_laid());
+    stbox.place(10, 40, 10 + 478, 40 + 447);
+    assert(stbox.is_laid() && stbox.in_side());      // Up and Down change a page the sidebar shows
+    stbox.place(10, 40, 10 + 718, 40 + 447);
+    assert(!stbox.is_laid() && stbox.in_side());
+    I64 c = stbox.click(10 + 300, 40 + 200);         // the keyboard in the page: folding lays nothing
+    stbox.place(10, 40, 10 + 478, 40 + 447);
+    assert(!stbox.is_laid() && !stbox.in_side());
+}
+
+test "ST-K1: Settings opens wide with the keyboard in the sidebar, narrow in the page, the ring hidden either way" {
+    box(718, 447);
+    stbox.back();
+    Bool b = stbox.key(stpage.K_DOWN) == stbox.PAGE;   // a ring, and the keyboard left on a page
+    stbox.open(10, 40, 10 + 718, 40 + 447, stside.ACCOUNTS);
+    assert(stbox.in_side() && !stbox.keyed() && !stbox.is_laid() && stbox.page() == stside.ACCOUNTS);
+    assert(stbox.key(stpage.K_DOWN) == stbox.PAGE && stbox.keyed() && stbox.page() == stside.GRANTS);
+    stbox.open(10, 40, 10 + 718, 40 + 447, stside.ACCOUNTS);
+    assert(stbox.key(stpage.K_TAB) == stbox.ENTER && stbox.keyed() && !stbox.in_side());   // the page's first stop
+    stbox.open(10, 40, 10 + 478, 40 + 447, stside.ACCOUNTS);
+    assert(!stbox.in_side() && !stbox.keyed() && !stbox.is_laid());
+    assert(stbox.key(stpage.K_TAB) == stbox.NONE && stbox.keyed());                        // the page's own Tab
+    stbox.back();
+    stbox.open(10, 40, 10 + 478, 40 + 447, stside.DESK);   // narrow: opens on the page, nothing laid
+    assert(!stbox.in_side() && !stbox.is_laid());
+}
+
+test "frame 48: the laid sidebar is SURF2 over the page, its High shadow on the page only" {
+    tokens.set_theme(0);
+    box(478, 367);
+    I64 y = 40 + 200;
+    U32 paper = tokens.word(tokens.PAPER);
+    ground(600, paper);
+    pen.at(0, 0, 1, y);
+    stbox.over_row(row, 0, 600, y, false);
+    assert(row[10 + 100] == paper && row[10 + 210] == paper);   // not laid: nothing
+    I64 c = stbox.click(stbox.cx() + 4, 40 + stpage.TOP);
+    ground(600, paper);
+    stbox.over_row(row, 0, 600, y, false);
+    assert(row[10 + 4] == tokens.word(tokens.SURF2) && row[10 + 199] == tokens.word(tokens.SURF2));
+    assert(row[10 + 200] != paper && row[10 + 300] == paper);    // the shadow, then the page
+    assert(row[9] == paper);                                     // none left of the box
+    ground(600, paper);
+    pen.at(0, 0, 1, 40 + 367);
+    stbox.over_row(row, 0, 600, 40 + 367, false);
+    assert(row[10 + 4] == paper);                                // none under the box
+}
+
+test "frame 48: a page taller than the box lifts under its fixed head, a row a notch, to its top on a new page" {
+    box(478, 300);
+    stbox.set_tall(433);
+    assert(stbox.y0_at(40 + 10) == 40 && stbox.yb_at(40 + 10) == 340);
+    assert(stbox.scroll(300, 1) && stbox.lifted() == stbox.STEP);
+    assert(stbox.scroll(300, 5) && stbox.lifted() == 133);      // at most what the box cannot hold
+    assert(!stbox.scroll(300, 1));
+    assert(stbox.y0_at(40 + stbox.BAND - 1) == 40);             // the head stays
+    assert(stbox.y0_at(40 + stbox.BAND) == 40 - 133 && stbox.yb_at(40 + stbox.BAND) == 40 - 133 + 433);
+    assert(stbox.scroll(300, -9) && stbox.lifted() == 0);
+    I64 l = 0;
+    if (stbox.scroll(300, 2)) { l = stbox.lifted(); }
+    assert(l == 98);
+    stbox.show(stside.KEYBOARD);
+    assert(stbox.lifted() == 0);
+    stbox.set_tall(200);
+    assert(!stbox.scroll(300, 1) && stbox.yb_at(40 + 100) == 340);   // a short page: the box's own bottom
+}
+
+test "frame 48: a sidebar taller than the box scrolls under the pointer and keeps the shown pill whole" {
+    box(718, 300);
+    stbox.set_tall(0);
+    assert(stbox.side_lifted() == 0);
+    assert(stbox.scroll(10 + 100, 3) && stbox.side_lifted() == 404 - 300);   // its 404, the box's 300
+    assert(stbox.click(10 + 100, stside.row_y(40 - 104, stside.ABOUT) + 16) == stbox.PAGE);
+    assert(stbox.page() == stside.ABOUT);
+    assert(stbox.key(stpage.K_DOWN) == stbox.PAGE && stbox.page() == stside.DISPLAY && stbox.side_lifted() == 0);
+    assert(stbox.key(stpage.K_UP) == stbox.PAGE && stbox.page() == stside.ABOUT && stbox.side_lifted() == 104);
+    assert(!stbox.scroll(10 + 300, 1) && stbox.side_lifted() == 104);       // the page's, which is short
+    box(478, 300);
+    assert(!stbox.scroll(10 + 100, -1));             // folded: the wheel is the page's
+}
+
+test "frame 48: a scrolling sidebar wears a 4 px thumb in its gutter that follows the scroll; one that fits, none" {
+    tokens.set_theme(0);
+    U32 thumb = blend.mix_px(tokens.word(tokens.SURF1), tokens.word(tokens.INK_DIM), 128);
+    U32 surf2 = tokens.word(tokens.SURF2);
+    I64 gx = 10 + stside.W - 4;
+    box(718, 300);                                   // 292 of track, the thumb 292 * 300 / 404 = 216 at the top
+    ground(800, 0 as U32);
+    pen.at(0, 0, 1, 50);
+    stbox.under_row(row, 50, false);
+    assert(row[gx] == thumb && row[gx - 3] == surf2 && row[gx + 3] == surf2);
+    ground(800, 0 as U32);
+    pen.at(0, 0, 1, 44 + 216 + 2);
+    stbox.under_row(row, 44 + 216 + 2, false);
+    assert(row[gx] == surf2);
+    I64 c = stbox.click(10 + 100, stside.row_y(40, stside.DESK) + 16);
+    Bool m = stbox.scroll(10 + 100, 3);
+    assert(stbox.side_lifted() == 104);
+    ground(800, 0 as U32);
+    pen.at(0, 0, 1, 100);
+    stbox.under_row(row, 100, false);
+    assert(row[gx] == surf2);                        // the thumb went down: 120 to 336
+    ground(800, 0 as U32);
+    pen.at(0, 0, 1, 330);
+    stbox.under_row(row, 330, false);
+    assert(row[gx] == thumb);
+    box(718, 447);
+    for y in 40..487 {
+        ground(800, 0 as U32);
+        pen.at(0, 0, 1, y);
+        stbox.under_row(row, y, false);
+        assert(row[gx] != thumb);
+    }
+}
+
+test "frame 48: the keyboard's row stays whole under the head, Accounts' last row to its first" {
+    box(478, 300);                                   // Accounts is 433 tall: 133 below the box
+    stacct.accounts_clear();
+    Bool b = stacct.account(b"ci", 2, 1000, stacct.PARENT, stacct.ALL, true);
+    b = stacct.account(b"sam", 3, 1001, stacct.CHILD, stacct.DISK, false);
+    stacct.open();
+    stbox.show(stside.ACCOUNTS);
+    stbox.set_tall(stacct.tall());
+    assert(stacct.focus_top() == -1 && !stbox.reveal(stacct.focus_top(), stacct.focus_bottom()));
+    assert(stacct.enter());                          // Add Account, in the head
+    assert(stacct.focus_top() == 18 && !stbox.reveal(stacct.focus_top(), stacct.focus_bottom()));
+    I64[8] keys = [stpage.K_TAB, stpage.K_DOWN, stpage.K_TAB, stpage.K_TAB, stpage.K_TAB, stpage.K_TAB, stpage.K_TAB,
+                   stpage.K_TAB];                    // the list (ci, then sam), Role, Password, May Use's three, Remove
+    for k in 0..8 {
+        I64 r = stacct.key(keys[k]);
+        b = stbox.reveal(stacct.focus_top(), stacct.focus_bottom());
+    }
+    assert(stacct.focused() == stacct.F_REMOVE && stacct.focus_bottom() == 409);
+    assert(stbox.lifted() == 125 && 40 - 125 + 409 + stbox.CLEAR == 340);   // the ring, then 12 of ground
+    for k in 0..6 {                                  // May Use's three, Password, Role: in view; then sam's pill
+        I64 r = stacct.key(stpage.K_BACKTAB);
+        b = stbox.reveal(stacct.focus_top(), stacct.focus_bottom());
+    }
+    assert(stacct.focused() == stacct.F_LIST && stacct.chosen() == 1 && stbox.lifted() == 38);
+    assert(40 - 38 + stacct.focus_top() - stbox.CLEAR == 40 + stbox.BAND);   // 12 of ground under the head
+    I64 r = stacct.key(stpage.K_UP);                 // ci, the first row: the page at its top
+    assert(stbox.reveal(stacct.focus_top(), stacct.focus_bottom()) && stbox.lifted() == 0);
+    r = stacct.key(stpage.K_BACKTAB);                // Add Account: the head, nothing moves
+    assert(!stbox.reveal(stacct.focus_top(), stacct.focus_bottom()) && stbox.lifted() == 0);
+    box(478, 447);                                   // a box that holds the page: nothing to lift
+    stbox.show(stside.ACCOUNTS);
+    stbox.set_tall(stacct.tall());
+    assert(stacct.enter_last() && stacct.focused() == stacct.F_PASS);   // ci: Remove, May Use and Role cannot work
+    assert(!stbox.reveal(stacct.focus_top(), stacct.focus_bottom()) && stbox.lifted() == 0);
+}
+
+test "frame 48: each page names its keyboard row where it draws the ring, none before the keyboard comes in" {
+    stdesk.open();
+    assert(stdesk.focus_top() == -1);
+    assert(stdesk.enter());                          // the swatches, then Choose Picture, Recent Files
+    assert(stdesk.focus_top() == stpage.BODY && stdesk.focus_bottom() == stpage.BODY + stpage.ROW);
+    I64 r = stdesk.key(stpage.K_TAB);
+    r = stdesk.key(stpage.K_TAB);
+    assert(stdesk.focus_top() == stpage.BODY + stpage.PITCH);
+    stnet.open();
+    assert(stnet.focus_top() == -1);
+    stnet.set_record(true, b"\x52\x54\x00\x12\x34\x56", b"\x0a\x00\x02\x0f", b"\xff\xff\xff\x00", b"\x0a\x00\x02\x02",
+                     b"\x0a\x00\x02\x03", stnet.DHCP);
+    assert(stnet.enter());                           // Copy Details, in the head
+    assert(stnet.focus_top() == 18 && stnet.focus_bottom() == 18 + stpage.BTN && stnet.focus_bottom() < stbox.BAND);
+    stkeys.open();
+    assert(stkeys.enter());                          // Layout, then Repeat Delay, Repeat Rate, Shortcuts
+    assert(stkeys.focus_top() == stpage.BODY && stkeys.focus_bottom() == stpage.BODY + stpage.ROW);
+    for k in 0..3 { r = stkeys.key(stpage.K_TAB); }
+    assert(stkeys.focus_top() == stpage.BODY + 3 * stpage.PITCH);
+    assert(stkeys.focus_bottom() + stpage.FOOT == stkeys.tall());   // the last row ends the page
+    sttime.open();
+    assert(sttime.enter());                          // Set, then Time Zone, 24-Hour Time, Week Starts On
+    assert(sttime.focus_top() == stpage.BODY && sttime.focus_bottom() == stpage.BODY + stpage.ROW);
+    r = sttime.key(stpage.K_TAB);
+    assert(sttime.focus_top() == stpage.BODY + stpage.ROW + stpage.GAP);
+    r = sttime.key(stpage.K_TAB);
+    r = sttime.key(stpage.K_TAB);
+    assert(sttime.focus_bottom() + stpage.FOOT == sttime.tall());
+    ststore.open();
+    trash();
+    assert(ststore.enter());                         // Empty Trash, the page's one stop
+    assert(ststore.focus_top() > stbox.BAND && ststore.focus_bottom() - ststore.focus_top() == ststore.SMALL_H);
+    assert(ststore.focus_bottom() + stpage.FOOT <= ststore.tall());
+}
+Bool fed(in U8[_] l) { return homeuse.line(l, len(l)); }
+
+// Storage with a volume and three entries in its Trash, so Empty Trash can work.
+void trash() {
+    ststore.set_volume(b"Daphnis", 7, 67108864, 60000000);
+    ststore.walk_started();
+    homeuse.start(b"/home/sam", 9);
+    Bool b = fed(b"64\t/home/sam/.trash");
+    b = fed(b"80\t/home/sam");
+    homeuse.done();
+    ststore.walk_done();
+    ststore.set_trash_entries(3);
+}
+
+// The host, as stbox.ci's contract reads: every key to the frame first, then the shown page; ENTER and ENTER_LAST to
+// the page's enter() and enter_last(), and a page with no stop, or its BACK, gives the sidebar back; after an entry or
+// a key the page takes, the keyboard's row revealed, and here checked in view.
+Bool page_enter(I64 p, Bool last) {
+    if (p == stside.DESK && !last) { return stdesk.enter(); }
+    if (p == stside.DESK) { return stdesk.enter_last(); }
+    if (p == stside.ACCOUNTS && !last) { return stacct.enter(); }
+    if (p == stside.ACCOUNTS) { return stacct.enter_last(); }
+    if (p == stside.NETWORK && !last) { return stnet.enter(); }
+    if (p == stside.NETWORK) { return stnet.enter_last(); }
+    if (p == stside.DATETIME && !last) { return sttime.enter(); }
+    if (p == stside.DATETIME) { return sttime.enter_last(); }
+    if (p == stside.KEYBOARD && !last) { return stkeys.enter(); }
+    if (p == stside.KEYBOARD) { return stkeys.enter_last(); }
+    if (p == stside.STORAGE && !last) { return ststore.enter(); }
+    return ststore.enter_last();
+}
+
+I64 page_top(I64 p) {
+    if (p == stside.DESK) { return stdesk.focus_top(); }
+    if (p == stside.ACCOUNTS) { return stacct.focus_top(); }
+    if (p == stside.NETWORK) { return stnet.focus_top(); }
+    if (p == stside.DATETIME) { return sttime.focus_top(); }
+    if (p == stside.KEYBOARD) { return stkeys.focus_top(); }
+    return ststore.focus_top();
+}
+
+I64 page_bottom(I64 p) {
+    if (p == stside.DESK) { return stdesk.focus_bottom(); }
+    if (p == stside.ACCOUNTS) { return stacct.focus_bottom(); }
+    if (p == stside.NETWORK) { return stnet.focus_bottom(); }
+    if (p == stside.DATETIME) { return sttime.focus_bottom(); }
+    if (p == stside.KEYBOARD) { return stkeys.focus_bottom(); }
+    return ststore.focus_bottom();
+}
+
+// The keyboard's row whole in the box: in the head, or under it and above the foot as lifted.
+Bool in_view(I64 p) {
+    I64 t = page_top(p);
+    if (t < stbox.BAND) { return true; }
+    return t - stbox.lifted() >= stbox.BAND && page_bottom(p) - stbox.lifted() <= box_h;
+}
+
+void reveal(I64 p) {
+    Bool m = stbox.reveal(page_top(p), page_bottom(p));
+    assert(in_view(p));
+}
+
+I64 page_key(I64 p, I64 c) {
+    if (p == stside.DESK) { return stdesk.key(c); }
+    if (p == stside.ACCOUNTS) { return stacct.key(c); }
+    if (p == stside.NETWORK) { return stnet.key(c); }
+    if (p == stside.DATETIME) { return sttime.key(c); }
+    if (p == stside.KEYBOARD) { return stkeys.key(c); }
+    return ststore.key(c);
+}
+
+// The page's stop as one number: its focus, with May Use's box on Accounts.
+I64 page_stop(I64 p) {
+    if (p == stside.DESK) { return stdesk.focused(); }
+    if (p == stside.ACCOUNTS) { return stacct.focused() * 4 + stacct.focused_box(); }
+    if (p == stside.NETWORK) { return stnet.focused(); }
+    if (p == stside.DATETIME) { return sttime.focused(); }
+    if (p == stside.KEYBOARD) { return stkeys.focused(); }
+    return ststore.focused();
+}
+
+void host_key(I64 c) {
+    I64 r = stbox.key(c);
+    I64 p = stbox.page();
+    if (r == stbox.ENTER || r == stbox.ENTER_LAST) {
+        if (page_enter(p, r == stbox.ENTER_LAST)) { reveal(p); } else { stbox.back(); }
+        return;
+    }
+    if (r != stbox.NONE) { return; }
+    if (page_key(p, c) == stpage.BACK) { stbox.back(); } else { reveal(p); }
+}
+
+test "the desk's Tab order through the frame: each page's controls once from the sidebar, then the sidebar again" {
+    box(718, 600);
+    Bool b = stdesk.pin(b"Index", 5, 0);
+    stacct.accounts_clear();
+    b = stacct.account(b"ci", 2, 1000, stacct.PARENT, stacct.ALL, false);
+    b = stacct.account(b"sam", 3, 1001, stacct.CHILD, stacct.DISK, true);   // sam signed in, a Child: every stop
+    stnet.set_record(true, b"\x52\x54\x00\x12\x34\x56", b"\x0a\x00\x02\x0f", b"\xff\xff\xff\x00", b"\x0a\x00\x02\x02",
+                     b"\x0a\x00\x02\x03", stnet.DHCP);
+    trash();
+    I64[6] pages = [stside.DESK, stside.ACCOUNTS, stside.NETWORK, stside.DATETIME, stside.KEYBOARD, stside.STORAGE];
+    I64[6] want = [4, 8, 1, 4, 4, 1];  // swatches, Choose Picture, Recent Files, pins; Add, list, Role, Password,
+                                       // three boxes, Remove; Copy Details; Set, Time Zone, 24-Hour, Week; Layout,
+                                       // two sliders, Show All; Empty Trash
+    I64[16] seen;
+    for k in 0..6 {
+        I64 p = pages[k];
+        stbox.show(p);
+        stdesk.open();
+        stacct.open();
+        stnet.open();
+        sttime.open();
+        stkeys.open();
+        ststore.open();
+        stbox.back();                                // the keyboard in the sidebar
+        for pass in 0..2 {
+            I64 tab = stpage.K_TAB;
+            if (pass == 1) { tab = stpage.K_BACKTAB; }
+            I64 n = 0;
+            host_key(tab);
+            while (!stbox.in_side() && n < 16) {
+                seen[n] = page_stop(p);
+                for m in 0..n { assert(seen[m] != seen[n]); }                       // each control once
+                n = n + 1;
+                host_key(tab);
+            }
+            assert(n == want[k] && stbox.in_side() && stbox.page() == p);           // then the sidebar again
+            assert(page_stop(p) == 0);                                              // no ring left in the page
+        }
+    }
+    stbox.show(stside.NETWORK);
+    stnet.no_record();
+    stnet.open();
+    stbox.back();
+    host_key(stpage.K_TAB);                          // a page with no stop: the sidebar keeps the keyboard
+    assert(stbox.in_side() && stbox.page() == stside.NETWORK);
+    host_key(stpage.K_BACKTAB);
+    assert(stbox.in_side());
+}
+
+test "the host reveals the keyboard's row when it enters a long page, at its last stop or its first" {
+    box(478, 300);                                   // narrow: Accounts, 433 tall, is 133 below the box
+    stacct.accounts_clear();
+    Bool b = stacct.account(b"ci", 2, 1000, stacct.PARENT, stacct.ALL, false);
+    b = stacct.account(b"sam", 3, 1001, stacct.CHILD, stacct.DISK, true);
+    stbox.show(stside.ACCOUNTS);
+    stacct.open();
+    stbox.set_tall(stacct.tall());
+    stbox.back();                                    // the sidebar laid, the keyboard on it
+    host_key(stpage.K_BACKTAB);                      // Remove, at 409: the page lifts
+    assert(stacct.focused() == stacct.F_REMOVE && stbox.lifted() == 125 && !stbox.is_laid());
+    box(478, 120);                                   // Desk, 254 tall, in a box it overflows by 134
+    stdesk.open();
+    stbox.set_tall(stdesk.tall());
+    b = stbox.scroll(300, 9);                        // the page at its foot, the swatches under the head
+    assert(stbox.lifted() > stpage.BODY);
+    stbox.back();
+    host_key(stpage.K_TAB);                          // the swatches, 68 down: the page comes down to its top
+    assert(stdesk.focus_top() == stpage.BODY && stbox.lifted() == 0);
+}
+
+test "the laid sidebar over a page with no stop: Esc shows the page, and the page's Tab lays the sidebar again" {
+    box(478, 447);
+    stnet.no_record();
+    stnet.open();
+    stbox.show(stside.NETWORK);
+    stbox.back();
+    host_key(stpage.K_TAB);                          // no stop: the sidebar stays laid
+    assert(stbox.is_laid() && stbox.in_side());
+    host_key(stpage.K_ESC);
+    assert(!stbox.is_laid() && !stbox.in_side() && stbox.page() == stside.NETWORK);
+    host_key(stpage.K_TAB);
+    assert(stbox.is_laid() && stbox.in_side());
+}
+
+test "the desk's rule: the sidebar's ring shows after the first Tab or arrow, never after a click" {
+    box(718, 447);
+    I64 c = stbox.click(10 + 100, stside.row_y(40, stside.DESK) + 16);
+    assert(stbox.in_side() && !stbox.keyed());
+    c = stbox.key(stpage.K_ENTER);                   // a press: the page, still no ring
+    assert(!stbox.keyed());
+    stbox.back();
+    c = stbox.key(stpage.K_DOWN);
+    assert(stbox.keyed() && stbox.page() == stside.SOUND);
+    c = stbox.click(10 + 300, 40 + 200);
+    assert(!stbox.keyed());
+    c = stbox.key(stpage.K_TAB);                     // the page's Tab: the frame still notes it
+    assert(stbox.keyed() && c == stbox.NONE);
+}
+
+// SPDX-License-Identifier: Apache-2.0

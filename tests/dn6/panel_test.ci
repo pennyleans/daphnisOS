@@ -1,0 +1,394 @@
+// tests/dn6/panel_test.ci: hosted tests of DN-6 frame 9, the system panel and the bar message (design note 6, l
+// 2026-11-10 04:48Z; docs/specs/2026-11-08-sp-system-panel.md, as built). hdesk.ci is a program, so cint test
+// cannot import it: expand_by, keep_at, chan, corners_at, txt_w, ptxt, ptxt_mid, grants_text, sp_hit, panel_at, seg_d2,
+// glyph_at, seg_at and msg_at below
+// are hdesk.ci's, copied verbatim; plate is win_row's order for the OV window. The sums are tools/check-hdesk.py's
+// (dn_panel_plate and dn_msg_plate, the twin) at UI scale 1, 2 and 3 in both themes. Run by check.sh.
+
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.draw;
+import user.ci.kit.pen;
+import user.ci.kit.shape;
+import user.ci.kit.icons3;
+import user.ci.kit.symbols;
+
+const I64 TBASE = 13;       // hdesk.ci's
+const I64 SP_W = 304;
+const I64 MSG_W = 320;
+const I64 MSG_H = 36;
+const I64 R_PLATE = 12;
+
+U32[3840] row;
+U32[256] under;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+void expand_by(I64 x0, I64 n, I64 m) {
+    if (m == 1) { return; }
+    for qq in 0..n {
+        I64 q = n - 1 - qq;
+        U32 v = row[x0 + q];
+        for t in 0..m { row[x0 + m * q + t] = v; }
+    }
+}
+
+void keep_at(I64 x0, I64 x1, I64 r) {
+    for k in 0..r {
+        under[k] = row[x0 + k];
+        under[r + k] = row[x1 - r + k];
+    }
+}
+
+I64 chan(in U32[_] b, I64 k, I64 c) { return ((b[k] >> ((8 * c) as U32)) & 255) as I64; }
+
+void corners_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 r, I64 b, U32 e, I64 y) {
+    if (y < y0 || y >= y1 || (y >= y0 + r && y < y1 - r)) { return; }
+    I64 py = y - y0;
+    if (y >= y1 - r) { py = y1 - 1 - y; }
+    U32[1] ec;
+    ec[0] = e;
+    for px in 0..r {
+        I64 nu = 0;
+        I64 no = 0;
+        for s in 0..4 {
+            for t in 0..4 {
+                I64 dx = 8 * r - (8 * px + 2 * s + 1);
+                I64 dy = 8 * r - (8 * py + 2 * t + 1);
+                I64 d2 = dx * dx + dy * dy;
+                if (d2 > 64 * r * r) {
+                    nu = nu + 1;
+                } else if (d2 > 64 * (r - b) * (r - b)) {
+                    no = no + 1;
+                }
+            }
+        }
+        I64 ni = 16 - nu - no;
+        for side in 0..2 {
+            I64 x = x0 + px;
+            I64 k = px;
+            if (side == 1) {
+                x = x1 - 1 - px;
+                k = 2 * r - 1 - px;
+            }
+            I64 c = 0;
+            for ch in 0..3 {
+                I64 v = (nu * chan(under, k, ch) + no * chan(ec, 0, ch) + ni * chan(row, x, ch) + 8) / 16;
+                c = c | (v << (8 * ch));
+            }
+            draw.put(row, x, c as U32);
+        }
+    }
+}
+
+I64 txt_w(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+
+I64 ptxt(I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text(row, x0, y0 + TBASE, x1, s, n, c, f);
+}
+
+I64 ptxt_mid(I64 x0, I64 span, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text_mid(row, x0, span, y0 + TBASE, x1, s, n, c, f);
+}
+
+I64 grants_text(I64 n, inout U8[_] t) {
+    if (n <= 0) { return put_text(t, 0, b"None"); }
+    I64 k = digits(t, 0, n);
+    if (n == 1) { return put_text(t, k, b" app"); }
+    return put_text(t, k, b" apps");
+}
+
+I64 sp_hit(I64 lx, I64 ly, I64 lw) {
+    if (lx < 16 || lx >= SP_W - 16) { return 0; }
+    if (ly >= 16 && ly < 48) { return 1; }
+    if (ly >= 66 && ly < 86 && lx >= SP_W - 16 - lw) { return 2; }
+    if (ly >= 170 && ly < 190) { return 3; }
+    if (ly >= 234 && ly < 266) { return 4; }
+    return 0;
+}
+
+I64 put_text(inout U8[_] dst, I64 at, in U8[_] t) {
+    for q in 0..len(t) { dst[at + q] = t[q]; }
+    return at + len(t);
+}
+
+I64 digits(inout U8[_] dst, I64 at, I64 v) {
+    U8[20] dg;
+    I64 n = 0;
+    I64 q = v;
+    if (q == 0) { dg[0] = '0'; n = 1; }
+    while (q > 0) {
+        dg[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { dst[at + k] = dg[n - 1 - k]; }
+    return at + n;
+}
+
+void panel_at(I64 x0, I64 y0, I64 n, I64 lv, I64 th, I64 np, in U8[_] pn, I64 ic, in U8[_] pd, I64 ctl, I64 y) {
+    I64 x1 = x0 + SP_W;
+    I64 e = 0;
+    if (y >= y0 + 16 && y < y0 + 48) {             // DN-34 (frame 9): the Grants pill
+        pen.round(row, x0 + 16, y0 + 16, x1 - 16, y0 + 48, 16, tok(tokens.PAPER));
+        symbols.row_at(row, pen.row_y(), pen.x(x0 + 28), pen.y(y0 + 24), symbols.KEY, pen.zoom(), tok(tokens.INK), th,
+                       256);
+        U8[16] t;
+        I64 tn = grants_text(n, t);
+        I64 tw = txt_w(t, tn, faces.BODY);
+        e = ptxt(x0 + 54, y0 + 24, x1 - 58 - tw, b"Grants", 6, tok(tokens.INK), faces.NAME);
+        e = pen.text_right(row, x1 - 48, y0 + 24 + TBASE, t, tn, tok(tokens.INK_DIM), faces.BODY);
+        glyph_at(y, x1 - 32, y0 + 32, 5, tok(tokens.INK_DIM));
+    }
+    I64 ny = y0 + 68;                               // DN-24: NOW PLAYING
+    e = ptxt(x0 + 16, ny, x1 - 16, b"NOW PLAYING", 11, tok(tokens.INK_DIM), faces.LABEL);
+    // right aligned at the pen's own zoom: a width measured at 1x clipped the last glyph at 2x
+    e = pen.text_right(row, x1 - 30, ny + 1 + TBASE, b"Sound Settings", 14, tok(tokens.INK_DIM), faces.SMALL);
+    if (y >= ny + 3 && y < ny + 13) { glyph_at(y, x1 - 21, ny + 8, 4, tok(tokens.INK_DIM)); }   // the 10 px chevron
+    I64 py = ny + 24;
+    if (y >= py && y < py + 32) {
+        pen.round(row, x0 + 16, py, x1 - 16, py + 32, 16, tok(tokens.PAPER));
+        if (np < 1) {
+            if (np == 0) {
+                e = ptxt(x0 + 28, py + 8, x1 - 28, b"Nothing playing", 15, tok(tokens.INK_DIM), faces.BODY);
+            } else {
+                e = ptxt(x0 + 28, py + 8, x1 - 28, b"Not available", 13, tok(tokens.INK_DIM), faces.BODY);
+            }
+        } else {
+            if (y >= py + 8 && y < py + 24) {
+                icons3.icon_at(row, pen.row_y(), pen.x(x0 + 28), pen.y(py + 8), ic, 16, pen.zoom(), tok(tokens.PAPER));
+            }
+            I64 bx = x1 - 20;
+            if ((ctl & 4) != 0) { bx = bx - 24; }
+            if ((ctl & 2) != 0) { bx = bx - 24; }
+            if ((ctl & 1) != 0) { bx = bx - 24; }
+            I64 tx = ptxt(x0 + 52, py + 8, bx - 8, pn, len(pn), tok(tokens.INK), faces.NAME);
+            e = ptxt(x0 + 60 + txt_w(pn, len(pn), faces.NAME), py + 9, bx - 8, pd, len(pd), tok(tokens.INK_DIM),
+                     faces.PATH);
+            if ((ctl & 1) != 0) {
+                glyph_at(y, bx + 12, py + 16, 0, tok(tokens.INK));
+                bx = bx + 24;
+            }
+            if ((ctl & 2) != 0) {
+                pen.round(row, bx, py + 4, bx + 24, py + 28, 12, tok(tokens.FILL));
+                I64 g = 2;
+                if ((ctl & 8) != 0) { g = 1; }
+                glyph_at(y, bx + 12, py + 16, g, tok(tokens.ON_FILL));
+                bx = bx + 24;
+            }
+            if ((ctl & 4) != 0) { glyph_at(y, bx + 12, py + 16, 3, tok(tokens.INK)); }
+        }
+    }
+    I64 vy = ny + 76;
+    I64 vt = tokens.INK_DIM;
+    e = ptxt(x0 + 16, vy, x1 - 16, b"VOLUME", 6, tok(vt), faces.LABEL);
+    if (lv < 0) {
+        e = pen.text_right(row, x1 - 16, vy + TBASE, b"Not available", 13, tok(tokens.INK_DIM), faces.BODY);
+    }
+    if (y >= vy + 26 && y < vy + 46) {
+        pen.round(row, x0 + 16, vy + 26, x1 - 16, vy + 46, 10, tok(tokens.PAPER));
+        if (lv >= 0) {
+            I64 fw = 20 + (SP_W - 52) * lv / 100;
+            pen.round(row, x0 + 16, vy + 26, x0 + 16 + fw, vy + 46, 10, tok(tokens.ULTRAMARINE));
+            pen.round(row, x0 + fw - 2, vy + 28, x0 + fw + 14, vy + 44, 8, tok(tokens.ON_FILL));
+        }
+    }
+    I64 ty = vy + 66;
+    e = ptxt(x0 + 16, ty, x1 - 16, b"THEME", 5, tok(tokens.INK_DIM), faces.LABEL);
+    if (y >= ty + 24 && y < ty + 56) { seg_at(x0 + 16, ty + 24, SP_W - 32, b"Dark|Light", 2, th); }
+    I64 wy = ty + 76;
+    e = ptxt(x0 + 16, wy, x1 - 16, b"Wi-Fi", 5, tok(tokens.INK_DIM), faces.BODY);
+    e = pen.text_right(row, x1 - 16, wy + TBASE, b"Not available", 13, tok(tokens.INK_DIM), faces.BODY);
+    e = ptxt(x0 + 16, wy + 28, x1 - 16, b"Bluetooth", 9, tok(tokens.INK_DIM), faces.BODY);
+    e = pen.text_right(row, x1 - 16, wy + 28 + TBASE, b"Not available", 13, tok(tokens.INK_DIM), faces.BODY);
+}
+
+I64[64] GLYPH_SEG = [28, -28, -12, 0, -12, 0, 28, 28, 28, 28, 28, -28, -28, -28, -28, 28,
+                     -14, -28, -14, 28, 14, -28, 14, 28, 0, 0, 0, 0, 0, 0, 0, 0,
+                     -16, -28, 28, 0, 28, 0, -16, 28, -16, 28, -16, -28, 0, 0, 0, 0,
+                     -28, -28, 12, 0, 12, 0, -28, 28, -28, 28, -28, -28, 28, -28, 28, 28];
+I64[5] GLYPH_N = [4, 2, 3, 4, 2];
+
+I64 seg_d2(I64 u, I64 v, I64 ax, I64 ay, I64 ex, I64 ey) {
+    I64 dx = ex - ax;
+    I64 dy = ey - ay;
+    I64 l2 = dx * dx + dy * dy;
+    I64 t = (u - ax) * dx + (v - ay) * dy;
+    if (t <= 0) { return (u - ax) * (u - ax) + (v - ay) * (v - ay); }
+    if (t >= l2) { return (u - ex) * (u - ex) + (v - ey) * (v - ey); }
+    I64 px = u - ax;
+    I64 py = v - ay;
+    return px * px + py * py - t * t / l2;
+}
+
+void glyph_at(I64 y, I64 cx, I64 cy, I64 gk, U32 ink) {
+    if (y < cy - 6 || y >= cy + 6) { return; }
+    U32[1] ic;
+    ic[0] = ink;
+    I64 z = pen.zoom();
+    I64 ox = pen.x(cx);
+    I64 oy = pen.y(cy);
+    for px in pen.x(cx - 6)..pen.x(cx + 6) {
+        I64 cov = 0;
+        for s in 0..4 {
+            for t in 0..4 {
+                I64 u = 8 * (px - ox) + 2 * s + 1 - 4 * z;
+                I64 v = 8 * (pen.row_y() - oy) + 2 * t + 1 - 4 * z;
+                Bool hit = false;
+                if (gk == 4) {
+                    hit = seg_d2(u, v, -20 * z, -28 * z, 4 * z, 0) <= 36 * z * z ||
+                          seg_d2(u, v, 4 * z, 0, -20 * z, 28 * z) <= 36 * z * z;
+                } else if (gk == 5) {          // DN-34: the Grants pill's 12 px forward chevron, M4 2L8 6L4 10
+                    hit = seg_d2(u, v, -16 * z, -32 * z, 16 * z, 0) <= 36 * z * z ||
+                          seg_d2(u, v, 16 * z, 0, -16 * z, 32 * z) <= 36 * z * z;
+                } else {
+                    for q in 0..GLYPH_N[gk] {
+                        I64 b = 16 * gk + 4 * q;
+                        if (seg_d2(u, v, GLYPH_SEG[b] * z, GLYPH_SEG[b + 1] * z, GLYPH_SEG[b + 2] * z,
+                                   GLYPH_SEG[b + 3] * z) <= 36 * z * z) { hit = true; }
+                    }
+                }
+                if (hit) { cov = cov + 1; }
+            }
+        }
+        if (cov > 0) {
+            I64 c = 0;
+            for ch in 0..3 {
+                I64 o = (cov * chan(ic, 0, ch) + (16 - cov) * chan(row, px, ch) + 8) / 16;
+                c = c | (o << (8 * ch));
+            }
+            draw.put(row, px, c as U32);
+        }
+    }
+}
+
+void seg_at(I64 x0, I64 y0, I64 wd, in U8[_] labs, I64 n, I64 sel) {
+    pen.round(row, x0, y0, x0 + wd, y0 + 32, 16, tok(tokens.MANTLE));
+    I64 sw = (wd - 4) / n;
+    I64 at = 0;
+    for k in 0..n {
+        I64 b = at;
+        while (b < len(labs) && labs[b] != '|') { b = b + 1; }
+        U8[24] t;
+        for q in at..b { t[q - at] = labs[q]; }
+        I64 sx = x0 + 2 + sw * k;
+        I64 e = 0;
+        if (k == sel) {
+            pen.round(row, sx, y0 + 2, sx + sw, y0 + 30, 14, tok(tokens.FILL));
+            e = ptxt_mid(sx, sw, y0 + 8, sx + sw, t, b - at, tok(tokens.ON_FILL), faces.NAME);
+        } else {
+            e = ptxt_mid(sx, sw, y0 + 8, sx + sw, t, b - at, tok(tokens.INK_DIM), faces.BODY);
+        }
+        at = b + 1;
+    }
+}
+
+void msg_at(I64 x0, I64 y0, in U8[_] t, I64 n, I64 y) {
+    I64 tw = pen.width(t, n, faces.NAME);
+    I64 z = pen.zoom();
+    I64 dx = pen.x(x0) + (MSG_W * z - (16 * z + tw)) / 2;
+    if (y >= y0 + 15 && y < y0 + 21) {
+        shape.rounded(row, pen.row_y(), dx, pen.y(y0 + 15), dx + 6 * z, pen.y(y0 + 21), 3 * z, tok(tokens.INK));
+    }
+    I64 e = ctext.text(row, pen.row_y(), dx + 16 * z, pen.y(y0 + 10 + TBASE), pen.x(x0 + MSG_W - 16), t, n,
+                       tok(tokens.INK), faces.NAME, z);
+}
+
+// win_row and win_body for the OV window: which 0 the panel (n grant rows of a fixed pair, level lv, theme th),
+// 1 the message, its 1x top left at device (x0, y0), UI scale s.
+void plate(I64 which, I64 x0, I64 y0, I64 s, I64 n, I64 lv, I64 th, I64 np, I64 ctl, I64 y) {
+    I64 pw = SP_W;
+    I64 ph = 346;                       // hdesk.ci sp_h (DN-34)
+    I64 r = R_PLATE * s;
+    U32 g = tok(tokens.SURF2);
+    if (which == 1) {
+        pw = MSG_W;
+        ph = MSG_H;
+        r = MSG_H / 2 * s;
+        g = tok(tokens.SURF1);
+    }
+    I64 x1 = x0 + pw * s;
+    I64 y1 = y0 + ph * s;
+    if (y < y0 || y >= y1) { return; }
+    Bool rnd = y < y0 + r || y >= y1 - r;
+    if (rnd) { keep_at(x0, x1, r); }
+    draw.paint(row, x0, x1, g);
+    I64 z = 1;
+    if (s % 2 == 0) { z = 2; }
+    pen.at(x0, y0, z, y0 + (y - y0) / (s / z));
+    if (which == 1) {
+        msg_at(x0, y0, b"No free Console. 8 of 8 are open.", 33, y0 + (y - y0) / s);
+    } else {
+        panel_at(x0, y0, n, lv, th, np, b"cat", icons3.PROGRAM, b"pid 14", ctl, y0 + (y - y0) / s);
+    }
+    expand_by(x0, pw * z, s / z);
+    if (rnd) { corners_at(x0, y0, x1, y1, r, 0, tok(tokens.RULE), y); }
+}
+
+// tools/check-hdesk.py's dn_test_frame9, a 944 x 480 frame (MANTLE): the panel with two grants at level 64, cat
+// playing with every control (pause shown), theme segment th, at (8, 8); none, no audio device, the other segment,
+// at (320, 8); none at level 30, nothing playing, at (632, 8); the message at (8, 430); UI scale s.
+I64 frame9_sum(I64 s) {
+    I64 th = tokens.theme();
+    I64 h = 0;
+    for y in 0..480 * s {
+        draw.paint(row, 0, 944 * s, tok(tokens.MANTLE));
+        plate(0, 8 * s, 8 * s, s, 2, 64, th, 1, 15, y);
+        plate(0, 320 * s, 8 * s, s, 0, -1, 1 - th, -1, 0, y);
+        plate(0, 632 * s, 8 * s, s, 0, 30, th, 0, 0, y);
+        plate(1, 8 * s, 430 * s, s, 0, 0, 0, 0, 0, y);
+        for x in 0..944 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "the system panel (DN-24's NOW PLAYING) and the bar message at UI scale 1, 2 and 3 equal the twin's, both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(frame9_sum(1) == 738358412);
+    assert(frame9_sum(2) == 919807407);
+    assert(frame9_sum(3) == 836546345);
+    tokens.set_theme(tokens.LIGHT);
+    assert(frame9_sum(1) == 727182219);
+    assert(frame9_sum(2) == 412394697);
+    assert(frame9_sum(3) == 821299027);
+    tokens.set_theme(tokens.DARK);
+}
+
+test "DN-34: the Grants pill's count: None at 0, 1 app, N apps" {
+    U8[16] t;
+    I64 n = grants_text(0, t);
+    assert(n == 4 && t[0] == 'N' && t[3] == 'e');
+    n = grants_text(1, t);
+    assert(n == 5 && t[0] == '1' && t[1] == ' ' && t[4] == 'p');
+    n = grants_text(3, t);
+    assert(n == 6 && t[0] == '3' && t[5] == 's');
+    n = grants_text(12, t);
+    assert(n == 7 && t[0] == '1' && t[1] == '2' && t[6] == 's');
+}
+
+test "DN-34: a click on the Grants pill routes to Settings' Grants; the link, the slider and the theme keep theirs" {
+    I64 lw = txt_w(b"Sound Settings", 14, faces.SMALL) + 14;
+    assert(sp_hit(16, 16, lw) == 1 && sp_hit(SP_W - 17, 47, lw) == 1 && sp_hit(150, 30, lw) == 1);
+    assert(sp_hit(15, 30, lw) == 0 && sp_hit(150, 15, lw) == 0 && sp_hit(150, 48, lw) == 0);
+    assert(sp_hit(SP_W - 20, 70, lw) == 2 && sp_hit(40, 70, lw) == 0);
+    assert(sp_hit(100, 180, lw) == 3 && sp_hit(100, 250, lw) == 4);
+}
+test "the panel's Sound Settings link is whole at UI scale 1, 2 and 3: its ink runs to its box's end" {
+    // The link ends 30 px from the panel's right edge at 1x (xr), 3 px before the chevron's box. Its rightmost ink
+    // must reach within 3 px (times the scale) of xr: a width measured at 1x and drawn at zoom 2 dropped the last
+    // glyph, `s`, and left the ink ending a glyph short (the clip of PR 247's 2x proof).
+    for s in 1..4 {
+        I64 xr = (8 + SP_W - 30) * s;
+        I64 last = -1;
+        for y in (8 + 68) * s..(8 + 68 + 16) * s {
+            draw.paint(row, 0, 944 * s, tok(tokens.MANTLE));
+            plate(0, 8 * s, 8 * s, s, 2, 64, 0, 1, 15, y);
+            for x in xr - 120 * s..xr + 2 * s {
+                if (row[x] != tok(tokens.SURF2) && x > last) { last = x; }
+            }
+        }
+        assert(last >= xr - 3 * s && last < xr + 2 * s);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

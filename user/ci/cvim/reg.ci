@@ -1,0 +1,309 @@
+// user/ci/cvim/reg.ci: the registers (docs/specs/2026-11-07-cv-cvim.md section 5, CV-2b): "a to "z (an uppercase name
+// appends), "0 the last yank, "1 to "9 the deletes that hold a line break (rotating), "- the small delete, "_ none,
+// and the unnamed register, which shows the register written last (Vim's y_previous). A register is spans of sp, so a
+// yank or delete copies no text: several registers can share one span list. The rules are Vim's op_delete and
+// op_yank. A macro (q) is recorded into a register as the bytes Vim keeps for its keys, and run (@) from them.
+import user.ced.keys;
+import user.ci.cvim.buf;
+import user.ci.cvim.state;
+
+I64 slot(I64 i) {
+    return state.R_REG0 + i * state.REG_W;
+}
+
+// The register a name writes or reads: 0 to 36; -1 for none ('"' and 0 are the unnamed register).
+export I64 index(I64 name) {
+    if (name >= '0' && name <= '9') { return name - '0'; }
+    if (name >= 'a' && name <= 'z') { return 10 + name - 'a'; }
+    if (name >= 'A' && name <= 'Z') { return 10 + name - 'A'; }
+    if (name == '-') { return state.REG_MINUS; }
+    return -1;
+}
+
+// A name after '"': a register, '"' itself or '_'.
+export Bool valid(I64 name) {
+    return index(name) >= 0 || name == '"' || name == '_';
+}
+
+export Bool appends(I64 name) {
+    return name >= 'A' && name <= 'Z';
+}
+
+export I64 from_of(in I64[_] r, I64 i) { return r[slot(i)]; }
+export I64 to_of(in I64[_] r, I64 i) { return r[slot(i) + 1]; }
+export I64 kind_of(in I64[_] r, I64 i) { return r[slot(i) + 2]; }
+export I64 width_of(in I64[_] r, I64 i) { return r[slot(i) + 3]; }
+
+void set(inout I64[_] r, I64 i, I64 from, I64 to, I64 kind, I64 width) {
+    r[slot(i)] = from;
+    r[slot(i) + 1] = to;
+    r[slot(i) + 2] = kind;
+    r[slot(i) + 3] = width;
+}
+
+// The unnamed register shows register i (R_REG_FROM, R_REG_TO, R_REG_LINE, as CV-2a reads it).
+export void sync(inout I64[_] r) {
+    I64 i = r[state.R_PREV];
+    r[state.R_REG_FROM] = from_of(r, i);
+    r[state.R_REG_TO] = to_of(r, i);
+    r[state.R_REG_LINE] = 0;
+    if (kind_of(r, i) == state.KIND_LINE) { r[state.R_REG_LINE] = 1; }
+}
+
+// The register a read (p, P, @) takes: the named one, or the unnamed register's.
+export I64 reading(in I64[_] r, I64 name) {
+    I64 i = index(name);
+    if (i < 0) { return r[state.R_PREV]; }
+    return i;
+}
+
+Bool full(inout I64[_] r) {
+    r[state.R_FULL] = 1;
+    r[state.R_BELL] = 1;
+    return false;
+}
+
+// One line feed in add, for an append that turns characters into lines; its offset, or -1 when add is full.
+I64 line_feed(inout I64[_] r, inout U8[_] add) {
+    I64 off = r[state.R_ST_ADD];
+    if (off >= len(add)) { return -1; }
+    add[off] = '\n';
+    r[state.R_ST_ADD] = off + 1;
+    return off;
+}
+
+void copy_span(inout I64[_] r, inout I64[_] sp, I64 s) {
+    I64 at = r[state.R_SPTOP];
+    for f in 0..buf.SPAN { sp[at * buf.SPAN + f] = sp[s * buf.SPAN + f]; }
+    r[state.R_SPTOP] = at + 1;
+}
+
+void lf_span(inout I64[_] r, inout I64[_] sp, I64 off) {
+    I64 at = r[state.R_SPTOP];
+    sp[at * buf.SPAN] = buf.SRC_ADD;
+    sp[at * buf.SPAN + 1] = off;
+    sp[at * buf.SPAN + 2] = 1;
+    r[state.R_SPTOP] = at + 1;
+}
+
+// Register i takes [from, to) of kind after what it holds (Vim's op_yank with y_append): characters after characters
+// join; lines make the whole register lines.
+Bool append(inout I64[_] r, inout U8[_] add, inout I64[_] sp, I64 i, I64 from, I64 to, I64 kind0, I64 width) {
+    I64 of = from_of(r, i);
+    I64 ot = to_of(r, i);
+    I64 kind = kind0;
+    if (kind == state.KIND_BLOCK) { kind = state.KIND_CHAR; }
+    if (of == ot) { set(r, i, from, to, kind0, width); return true; }
+    I64 ok = kind_of(r, i);
+    if (ok == state.KIND_BLOCK) { ok = state.KIND_CHAR; }
+    I64 nk = ok;
+    if (kind == state.KIND_LINE) { nk = state.KIND_LINE; }
+    Bool lf_old = ok == state.KIND_CHAR && nk == state.KIND_LINE;
+    Bool lf_new = kind == state.KIND_CHAR && nk == state.KIND_LINE;
+    I64 need = ot - of + to - from + 2;
+    if (need > len(sp) / buf.SPAN - r[state.R_SPTOP]) { return full(r); }
+    I64 off = -1;
+    if (lf_old || lf_new) {
+        off = line_feed(r, add);
+        if (off < 0) { return full(r); }
+    }
+    I64 at = r[state.R_SPTOP];
+    for s in of..ot { copy_span(r, sp, s); }
+    if (lf_old) { lf_span(r, sp, off); }
+    for s in from..to { copy_span(r, sp, s); }
+    if (lf_new) { lf_span(r, sp, off); }
+    set(r, i, at, r[state.R_SPTOP], nk, 0);
+    return true;
+}
+
+void shift_deletes(inout I64[_] r) {
+    for j in 0..8 {
+        I64 k = 9 - j;
+        set(r, k, from_of(r, k - 1), to_of(r, k - 1), kind_of(r, k - 1), width_of(r, k - 1));
+    }
+}
+
+// After a yank (cmd 'y') or a delete or change of [from, to) of kind: the registers op_yank and op_delete write. multi:
+// the text crossed a line; one: the motion always uses "1 (Vim's use_reg_one: % { } and the marks).
+export void store(inout I64[_] r, inout U8[_] add, inout I64[_] sp, I64 cmd, I64 from, I64 to, I64 kind, I64 width,
+                  Bool multi, Bool one) {
+    I64 name = r[state.R_REGNAME];
+    if (name == '"') { name = 0; }
+    if (name == '_') { sync(r); return; }
+    I64 i = index(name);
+    Bool app = appends(name);
+    if (cmd == 'y') {
+        if (i < 0) { set(r, 0, from, to, kind, width); r[state.R_PREV] = 0; }
+        else {
+            if (app) { if (!append(r, add, sp, i, from, to, kind, width)) { sync(r); return; } }
+            else { set(r, i, from, to, kind, width); }
+            r[state.R_PREV] = i;
+        }
+        sync(r);
+        return;
+    }
+    if (i >= 0) {
+        if (app) { if (!append(r, add, sp, i, from, to, kind, width)) { sync(r); return; } }
+        else { set(r, i, from, to, kind, width); }
+        r[state.R_PREV] = i;
+    }
+    // Vim's op_delete (9.1.1752, CV-R7 A): a delete that is linewise, crosses a line, or uses a use_reg_one motion
+    // shifts the numbered registers and goes to "1, a named register or not; a named delete within one line leaves
+    // them. shift_delete_registers points the unnamed register at "1 unless the name appends ("A): then it stays on
+    // the named register.
+    if (kind == state.KIND_LINE || multi || one) {
+        shift_deletes(r);
+        set(r, 1, from, to, kind, width);
+        if (!(i >= 0 && app)) { r[state.R_PREV] = 1; }
+    }
+    if (i < 0 && kind != state.KIND_LINE && !multi) {
+        set(r, state.REG_MINUS, from, to, kind, width);
+        r[state.R_PREV] = state.REG_MINUS;
+    }
+    sync(r);
+}
+
+// The bytes Vim records for key k into s; their count.
+I64 encode(I64 k, inout U8[_] s) {
+    if (k == keys.K_ESC || k == keys.M_CTRL + '[') { s[0] = 27; return 1; }
+    // K_IGNORE (K_SPECIAL KS_EXTRA KE_IGNORE), which a run skips.
+    if (k == state.K_REC_IGNORE) { s[0] = 128; s[1] = 253; s[2] = 53; return 3; }
+    if (k == keys.K_ENTER) { s[0] = 13; return 1; }
+    if (k == keys.K_TAB) { s[0] = 9; return 1; }
+    I64 code = 0;
+    I64 a = 'k';
+    if (k == keys.K_BACKSPACE) { code = 'b'; }
+    else if (k == keys.K_DELETE) { code = 'D'; }
+    else if (k == keys.K_UP) { code = 'u'; }
+    else if (k == keys.K_DOWN) { code = 'd'; }
+    else if (k == keys.K_LEFT) { code = 'l'; }
+    else if (k == keys.K_RIGHT) { code = 'r'; }
+    else if (k == keys.K_HOME) { code = 'h'; }
+    else if (k == keys.K_END) { code = '7'; a = '@'; }
+    if (code != 0) {
+        s[0] = 128;
+        s[1] = a as U8;
+        s[2] = code as U8;
+        return 3;
+    }
+    if (k >= keys.M_CTRL + 'a' && k <= keys.M_CTRL + 'z') { s[0] = (k - keys.M_CTRL - 'a' + 1) as U8; return 1; }
+    if (k < 0 || k > 1114111) { return 0; }
+    if (k < 128) { s[0] = k as U8; return 1; }
+    if (k < 2048) { s[0] = (192 + k / 64) as U8; s[1] = (128 + k % 64) as U8; return 2; }
+    if (k < 65536) {
+        s[0] = (224 + k / 4096) as U8; s[1] = (128 + k / 64 % 64) as U8; s[2] = (128 + k % 64) as U8;
+        return 3;
+    }
+    s[0] = (240 + k / 262144) as U8; s[1] = (128 + k / 4096 % 64) as U8;
+    s[2] = (128 + k / 64 % 64) as U8; s[3] = (128 + k % 64) as U8;
+    return 4;
+}
+
+// The recording (R_REC0, R_REC_N keys) into register i, after what it holds when app (qA).
+export Bool record(inout I64[_] r, inout U8[_] add, inout I64[_] sp, I64 i, Bool app) {
+    I64 bytes = 0;
+    U8[4] s;
+    for j in 0..r[state.R_REC_N] { bytes += encode(r[state.R_REC0 + j], s); }
+    I64 chunk = max(r[state.R_CHUNK], 1);
+    I64 spans = (bytes + chunk - 1) / chunk + 1;
+    if (bytes > len(add) - r[state.R_ST_ADD] - 1) { return full(r); }
+    if (spans + to_of(r, i) - from_of(r, i) + 2 > len(sp) / buf.SPAN - r[state.R_SPTOP]) { return full(r); }
+    I64 start = r[state.R_ST_ADD];
+    I64 at = start;
+    for j in 0..r[state.R_REC_N] {
+        I64 n = encode(r[state.R_REC0 + j], s);
+        for b in 0..n { add[at + b] = s[b]; }
+        at += n;
+    }
+    r[state.R_ST_ADD] = at;
+    I64 from = r[state.R_SPTOP];
+    I64 off = start;
+    while (off < at) {
+        I64 n = min(chunk, at - off);
+        I64 t = r[state.R_SPTOP];
+        sp[t * buf.SPAN] = buf.SRC_ADD;
+        sp[t * buf.SPAN + 1] = off;
+        sp[t * buf.SPAN + 2] = n;
+        r[state.R_SPTOP] = t + 1;
+        off += n;
+    }
+    I64 to = r[state.R_SPTOP];
+    if (app) { return append(r, add, sp, i, from, to, state.KIND_CHAR, 0); }
+    set(r, i, from, to, state.KIND_CHAR, 0);
+    return true;
+}
+
+U8 byte(in U8[_] orig, in U8[_] add, in I64[_] sp, I64 s, I64 j) {
+    I64 off = sp[s * buf.SPAN + 1] + j;
+    if (sp[s * buf.SPAN] == buf.SRC_ORIG) { return orig[off]; }
+    return add[off];
+}
+
+// Register i's bytes as keys onto the typeahead's front, count times (Vim's do_execreg, ins_typebuf); false when the
+// typeahead cannot hold them.
+export Bool run(inout I64[_] r, in U8[_] orig, in U8[_] add, in I64[_] sp, I64 i, I64 cnt) {
+    I64 from = from_of(r, i);
+    I64 to = to_of(r, i);
+    for c in 0..cnt {
+        I64 base = r[state.R_TA_N];
+        I64 n = base;
+        I64 pend = 0;
+        I64 sp_bytes = 0;
+        for s in from..to { sp_bytes += sp[s * buf.SPAN + 2]; }
+        if (base + sp_bytes + 1 > state.TA_MAX) { return false; }
+        // Decode in order after the stack's top, then reverse that run so its first key is on top.
+        I64 s = from;
+        I64 j = 0;
+        while (s < to) {
+            if (j >= sp[s * buf.SPAN + 2]) { s += 1; j = 0; continue; }
+            I64 b = byte(orig, add, sp, s, j) as I64;
+            j += 1;
+            I64 k = b;
+            if (b == 128) {
+                I64 b1 = 0; I64 b2 = 0;
+                for q in 0..2 {
+                    while (s < to && j >= sp[s * buf.SPAN + 2]) { s += 1; j = 0; }
+                    I64 v = 0;
+                    if (s < to) { v = byte(orig, add, sp, s, j) as I64; j += 1; }
+                    if (q == 0) { b1 = v; } else { b2 = v; }
+                }
+                k = keys.K_NONE;
+                if (b1 == 'k') {
+                    if (b2 == 'b') { k = keys.K_BACKSPACE; }
+                    else if (b2 == 'D') { k = keys.K_DELETE; }
+                    else if (b2 == 'u') { k = keys.K_UP; }
+                    else if (b2 == 'd') { k = keys.K_DOWN; }
+                    else if (b2 == 'l') { k = keys.K_LEFT; }
+                    else if (b2 == 'r') { k = keys.K_RIGHT; }
+                    else if (b2 == 'h') { k = keys.K_HOME; }
+                } else if (b1 == '@' && b2 == '7') { k = keys.K_END; }
+                else if (b1 == 253) { continue; }
+            } else if (b >= 192) {
+                I64 more = 1;
+                if (b >= 240) { more = 3; } else if (b >= 224) { more = 2; }
+                if (more == 1) { k = b % 32; } else if (more == 2) { k = b % 16; } else { k = b % 8; }
+                for q in 0..more {
+                    while (s < to && j >= sp[s * buf.SPAN + 2]) { s += 1; j = 0; }
+                    I64 v = 128;
+                    if (s < to) { v = byte(orig, add, sp, s, j) as I64; j += 1; }
+                    k = k * 64 + v % 64;
+                }
+            } else if (b == 27) { k = keys.K_ESC; }
+            else if (b == 13) { k = keys.K_ENTER; }
+            else if (b == 10) { k = keys.M_CTRL + 'j'; }
+            else if (b == 9) { k = keys.K_TAB; }
+            else if (b >= 1 && b <= 26) { k = keys.M_CTRL + 'a' + b - 1; }
+            r[state.R_TA0 + n] = k;
+            n += 1;
+            pend += 1;
+        }
+        for q in 0..pend / 2 {
+            I64 a = state.R_TA0 + base + q;
+            I64 z = state.R_TA0 + n - 1 - q;
+            I64 t = r[a]; r[a] = r[z]; r[z] = t;
+        }
+        r[state.R_TA_N] = n;
+    }
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

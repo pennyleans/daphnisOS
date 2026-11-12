@@ -1,0 +1,35 @@
+// kernel/serial.ci: the COM1 driver (16550 UART, 115200 8N1, polled).
+
+import src.portio;
+
+const U16 COM1 = 0x3F8;
+U8 last = 10;       // the last byte written: a journal record starts its own line (src/rng.ci, RS-CLK2)
+
+export void serial_init() {
+    portio.port_out8((COM1 + 1) as U16, 0 as U8);
+    portio.port_out8((COM1 + 3) as U16, 0x80 as U8);
+    portio.port_out8(COM1, 1 as U8);
+    portio.port_out8((COM1 + 1) as U16, 0 as U8);
+    portio.port_out8((COM1 + 3) as U16, 3 as U8);
+    portio.port_out8((COM1 + 2) as U16, 0xC7 as U8);
+    portio.port_out8((COM1 + 4) as U16, 0x0B as U8);
+}
+
+export void serial_putc(U8 c) {
+    while ((portio.port_in8((COM1 + 5) as U16) & 0x20) == 0) {
+    }
+    portio.port_out8(COM1, c);
+    last = c;
+}
+
+// True when the next byte starts a line: nothing written yet, or a line end last.
+export Bool at_line_start() {
+    return last == 10;
+}
+
+export void serial_write[n](in U8[n] s) {
+    for i in 0..n {
+        serial_putc(s[i]);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

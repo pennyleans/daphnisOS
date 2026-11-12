@@ -1,0 +1,47 @@
+// user/ci/kit/taskbar.ci: DN-46 (c), the one pin store. The desk owns the Taskbar's pins (kit/plane.ci); every Index
+// window holds a copy of the pinned paths as keys, which the desk sends it as input records of type EV_PIN: code
+// PIN_CLEAR, then code PIN_ADD with each pinned path's key, when Index's window binds and after any pin changes
+// anywhere (the plane, Super+P, Index's own menu). So a pin made anywhere reads Unpin from Taskbar everywhere.
+// Index changes a pin by asking the desk (the open ask, first byte 1 pin, 2 unpin); the desk's push follows.
+
+export const I64 EV_PIN = 8;           // an input record's type (EV_MENU is 7, AM-2)
+export const I64 PIN_CLEAR = 0;
+export const I64 PIN_ADD = 1;
+export const I64 HELD = 28;            // keys a copy holds (the desk pins at most kit/plane.ci's PINS, 28, DN-49)
+export const I64 PATH = 96;            // the longest path the desk pins (kit/plane.ci's TEXT, P1 on PR 373)
+
+I64[28] keys;
+I64 n_keys = 0;
+
+// Path p's key: a 31-bit sum of its bytes (an input record's value is an i32), the same on both sides.
+export I64 key(in U8[_] p) {
+    I64 h = 5381;
+    for i in 0..len(p) { h = (h * 33 + p[i] as I64) % 2147483647; }
+    return h;
+}
+
+// An EV_PIN record (code, value) into the copy.
+export void apply(I64 code, I64 v) {
+    if (code == PIN_CLEAR) {
+        n_keys = 0;
+        return;
+    }
+    if (code == PIN_ADD && n_keys < HELD && !has(v)) {
+        keys[n_keys] = v;
+        n_keys = n_keys + 1;
+    }
+}
+
+// DN-49: whether the copy holds every pin the Taskbar can (Pin to Taskbar dims).
+export Bool full() { return n_keys >= HELD; }
+
+// Whether the copy holds key k.
+export Bool has(I64 k) {
+    for i in 0..n_keys {
+        if (keys[i] == k) { return true; }
+    }
+    return false;
+}
+
+export I64 held() { return n_keys; }
+// SPDX-License-Identifier: Apache-2.0

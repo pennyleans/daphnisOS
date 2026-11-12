@@ -1,0 +1,77 @@
+// user/ci/kit/plate.ci: MS-5 (docs/specs/2026-11-10-ms-motion-shadows.md, section 4), a plate's open and close and
+// the bar message's in and out as numbers: a progress p in thousandths (0 shut, 1000 open), from MS-2's kit/anim.ci,
+// and what p means on the screen. This file reads no clock; hdesk.ci passes CLOCK_BOOTTIME or the gates' stepped
+// clock, so the hosted tests run it as it is. tools/check-hdesk.py's plate_* functions are the twin.
+//
+// Section 4: a plate (the system panel, the switcher, the prompts) opens over 160 ms on the curve out, opacity 0 to
+// 100 percent and scale 96 to 100 percent about its center; it closes over 100 ms on the curve in, back to 0 and 96.
+// The bar message comes in over 160 ms on the curve out, fading in with an 8 px drop; after its 4 s hold it fades out
+// over 200 ms on the curve in. With animations off every change is at its end at once (law 4).
+
+import user.ci.kit.anim;
+
+export const I64 OPEN_MS = 160;
+export const I64 CLOSE_MS = 100;
+export const I64 MSG_IN_MS = 160;
+export const I64 MSG_OUT_MS = 200;
+export const I64 MSG_DROP = 8;       // px at 1x the message falls through as it comes in
+export const I64 SCALE_SHUT = 960;   // a shut plate's scale, in thousandths
+export const I64 MOVE_MS = 200;      // MS-8: a window's move or new frame, position and size together
+
+// A plate opening at t, from where an stands (section 4: a new motion starts where the old one is).
+export anim.Anim open(anim.Anim an, I64 t, Bool on) {
+    return anim.toward(an, t, 1000, anim.ms(OPEN_MS), anim.OUT, on);
+}
+
+// A plate closing at t.
+export anim.Anim close(anim.Anim an, I64 t, Bool on) {
+    return anim.toward(an, t, 0, anim.ms(CLOSE_MS), anim.IN, on);
+}
+
+// The bar message coming in, and going out after its hold.
+export anim.Anim msg_in(anim.Anim an, I64 t, Bool on) {
+    return anim.toward(an, t, 1000, anim.ms(MSG_IN_MS), anim.OUT, on);
+}
+
+export anim.Anim msg_out(anim.Anim an, I64 t, Bool on) {
+    return anim.toward(an, t, 0, anim.ms(MSG_OUT_MS), anim.IN, on);
+}
+
+// MS-8: a window going to a new frame at t, from where an stands.
+export anim.Anim move(anim.Anim an, I64 t, Bool on) {
+    return anim.toward(an, t, 1000, anim.ms(MOVE_MS), anim.OUT, on);
+}
+
+// MS-8: a frame coordinate between a (where it came from) and b (where it goes) at progress p, rounded down (cint's
+// division floors).
+export I64 between(I64 a, I64 b, I64 p) {
+    return a + (b - a) * p / 1000;
+}
+
+// Progress p (0 to 1000) as an opacity in 256ths for kit/blend.ci's mix, rounded half up: 0 at 0, 256 at 1000.
+export I64 alpha(I64 p) {
+    return (256 * p + 500) / 1000;
+}
+
+// Progress p as the plate's scale in thousandths, rounded half up: 960 at 0, 1000 at 1000.
+export I64 scale(I64 p) {
+    return SCALE_SHUT + ((1000 - SCALE_SHUT) * p + 500) / 1000;
+}
+
+// How far each side of a span n device pixels long moves in at progress p, so the scaled span stays centered:
+// n times (1000 - scale) over 2000, rounded half up; 0 at p = 1000.
+export I64 inset(I64 n, I64 p) {
+    return (n * (1000 - scale(p)) + 1000) / 2000;
+}
+
+// A corner radius of r device pixels at progress p, rounded half up: r at 1000.
+export I64 radius(I64 r, I64 p) {
+    return (r * scale(p) + 500) / 1000;
+}
+
+// The bar message's offset down at progress p and UI scale sc, in device pixels: MSG_DROP * sc above its place at 0,
+// at its place at 1000, rounded toward its place.
+export I64 drop(I64 p, I64 sc) {
+    return 0 - (MSG_DROP * sc * (1000 - p)) / 1000;
+}
+// SPDX-License-Identifier: Apache-2.0

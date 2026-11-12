@@ -1,0 +1,117 @@
+// src/ip.ci: IPv4 and ICMP echo (N-2, docs/specs/2026-11-05-n-net.md section 2; NW-5,
+// docs/specs/2026-11-07-nw-window.md section 3). No fragments and no options: a packet that has
+// either is dropped, as is one whose header checksum or lengths are wrong. Packets leave with a
+// 20-byte header, TTL 64, DF, and an identification that counts from 1. An ICMP echo request to
+// eth.our_ip() is answered. Every checksum is the RFC 1071 sum in checked arithmetic.
+
+import src.eth;
+
+export const I64 AT = 14;              // the IPv4 header's offset in a frame
+export const I64 DATA = 34;            // the payload's
+export const I64 PROTO_ICMP = 1;
+export const I64 PROTO_UDP = 17;
+export const I64 PAYLOAD_MAX = 1480;
+
+I64 next_id = 1;
+I64 in_src = 0;        // the packet input() accepted last: its source, destination and payload length
+I64 in_dst = 0;
+I64 in_len = 0;
+I64 bad = 0;           // packets dropped
+
+// The ones' complement sum of f[at..at + n) folded to 16 bits, starting from init (a partial sum).
+export I64 csum(in U8[1514] f, I64 at, I64 n, I64 init) {
+    I64 s = init;
+    I64 i = 0;
+    while (i + 1 < n) {
+        s += eth.get16(f, at + i);
+        i += 2;
+    }
+    if (i < n) {
+        s += (f[at + i] as I64) << 8;
+    }
+    while (s > 0xFFFF) {
+        s = (s & 0xFFFF) + (s >> 16);
+    }
+    return s;
+}
+
+// Fills the IPv4 header from src_ip to dst_ip for a payload of n bytes already at f[DATA..DATA + n)
+// and sends the packet. False when the next hop's address is not known yet (eth.output asked for it).
+export Bool output_from(I64 src_ip, I64 dst_ip, I64 proto, inout U8[1514] f, I64 n) {
+    f[AT] = 0x45;
+    f[AT + 1] = 0;
+    eth.put16(f, AT + 2, 20 + n);
+    eth.put16(f, AT + 4, next_id);
+    eth.put16(f, AT + 6, 0x4000);      // DF
+    f[AT + 8] = 64;
+    f[AT + 9] = proto as U8;
+    eth.put16(f, AT + 10, 0);
+    eth.put32(f, AT + 12, src_ip);
+    eth.put32(f, AT + 16, dst_ip);
+    eth.put16(f, AT + 10, 0xFFFF - csum(f, AT, 20, 0));
+    if (!eth.output(eth.hop(dst_ip), eth.TYPE_IPV4, f, DATA + n)) {
+        return false;
+    }
+    next_id = next_id % 65535 + 1;
+    return true;
+}
+
+export Bool output(I64 dst_ip, I64 proto, inout U8[1514] f, I64 n) {
+    return output_from(eth.our_ip(), dst_ip, proto, f, n);
+}
+
+// The source and destination addresses of the packet input() accepted last, and its payload's length.
+export I64 src() {
+    return in_src;
+}
+
+export I64 dst() {
+    return in_dst;
+}
+
+export I64 payload_len() {
+    return in_len;
+}
+
+export I64 dropped() {
+    return bad;
+}
+
+// An IPv4 frame of n bytes. Returns its protocol when a layer above must take it (the payload at
+// DATA, src(), dst() and payload_len() set), or -1 when it was dropped or handled here (an echo request).
+export I64 input(inout U8[1514] f, I64 n) {
+    if (n < DATA || f[AT] != 0x45) {
+        bad += 1;
+        return -1;
+    }
+    I64 total = eth.get16(f, AT + 2);
+    if (total < 20 || AT + total > n || (eth.get16(f, AT + 6) & 0x3FFF) != 0 || csum(f, AT, 20, 0) != 0xFFFF) {
+        bad += 1;
+        return -1;
+    }
+    I64 d = eth.get32(f, AT + 16);
+    I64 me = eth.our_ip();
+    I64 proto = f[AT + 9] as I64;
+    Bool for_me = me != 0 && d == me;
+    Bool for_bcast = d == eth.BROADCAST;
+    Bool for_dhcp = me == 0 && proto == PROTO_UDP;
+    if (!for_me && !for_bcast && !for_dhcp) {
+        return -1;
+    }
+    in_src = eth.get32(f, AT + 12);
+    in_dst = d;
+    in_len = total - 20;
+    if (proto == PROTO_ICMP) {
+        if (for_me && in_len >= 8 && f[DATA] == 8 && f[DATA + 1] == 0 && csum(f, DATA, in_len, 0) == 0xFFFF) {
+            f[DATA] = 0;                    // echo reply: the same identifier, sequence and data
+            eth.put16(f, DATA + 2, 0);
+            eth.put16(f, DATA + 2, 0xFFFF - csum(f, DATA, in_len, 0));
+            if (!output(in_src, PROTO_ICMP, f, in_len)) {
+                bad += 1;                   // the sender's address is not known yet: the reply is not sent
+            }
+        }
+        return -1;
+    }
+    return proto;
+}
+// SPDX-License-Identifier: Apache-2.0

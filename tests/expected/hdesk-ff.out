@@ -1,0 +1,62 @@
+hdesk: ff programs 51 index false ring false
+hdesk: ff open pins 4 recent 0 grants 0 windows 2
+hdesk: ff || machine sel 0 of 2, window 0
+hdesk: ff |s| rows 17 sel 0
+hdesk: ff row 0 win |sh - /| |pid N|
+hdesk: ff row 1 win |sh - /| |pid N|
+hdesk: ff row 2 prog |/bin/sh| |/bin|
+hdesk: ff row 3 prog |settings| |Super+,|
+hdesk: ff row 4 prog |/bin/seq| |/bin|
+hdesk: ff row 5 prog |/bin/sort| |/bin|
+hdesk: ff row 6 prog |/bin/stat| |/bin|
+hdesk: ff row 7 prog |/bin/sync| |/bin|
+hdesk: ff row 8 prog |/bin/sleep| |/bin|
+hdesk: ff row 9 prog |/bin/sha256sum| |/bin|
+hdesk: ff row 10 prog |/bin/ls| |/bin|
+hdesk: ff row 11 prog |/bin/test| |/bin|
+hdesk: ff row 12 prog |/bin/false| |/bin|
+hdesk: ff row 13 prog |/bin/xargs| |/bin|
+hdesk: ff row 14 prog |/bin/md5sum| |/bin|
+hdesk: ff row 15 prog |/bin/accounts| |/bin|
+hdesk: ff row 16 prog |/bin/basename| |/bin|
+hdesk: ff |sh| rows 4 sel 0
+hdesk: ff row 0 win |sh - /| |pid N|
+hdesk: ff row 1 win |sh - /| |pid N|
+hdesk: ff row 2 prog |/bin/sh| |/bin|
+hdesk: ff row 3 prog |/bin/sha256sum| |/bin|
+hdesk: ff |sh| rows 4 sel 1
+hdesk: ff row 0 win |sh - /| |pid N|
+hdesk: ff row 1 win |sh - /| |pid N|
+hdesk: ff row 2 prog |/bin/sh| |/bin|
+hdesk: ff row 3 prog |/bin/sha256sum| |/bin|
+hdesk: ff chose win |sh - /| window 0
+hdesk: ff open pins 4 recent 0 grants 0 windows 1
+hdesk: ff || machine sel 0 of 1, window 0
+hdesk: ff |s| rows 16 sel 0
+hdesk: ff row 0 win |sh - /| |pid N|
+hdesk: ff row 1 prog |/bin/sh| |/bin|
+hdesk: ff row 2 prog |settings| |Super+,|
+hdesk: ff row 3 prog |/bin/seq| |/bin|
+hdesk: ff row 4 prog |/bin/sort| |/bin|
+hdesk: ff row 5 prog |/bin/stat| |/bin|
+hdesk: ff row 6 prog |/bin/sync| |/bin|
+hdesk: ff row 7 prog |/bin/sleep| |/bin|
+hdesk: ff row 8 prog |/bin/sha256sum| |/bin|
+hdesk: ff row 9 prog |/bin/ls| |/bin|
+hdesk: ff row 10 prog |/bin/test| |/bin|
+hdesk: ff row 11 prog |/bin/false| |/bin|
+hdesk: ff row 12 prog |/bin/xargs| |/bin|
+hdesk: ff row 13 prog |/bin/md5sum| |/bin|
+hdesk: ff row 14 prog |/bin/accounts| |/bin|
+hdesk: ff row 15 prog |/bin/basename| |/bin|
+hdesk: ff |se| rows 5 sel 0
+hdesk: ff row 0 prog |settings| |Super+,|
+hdesk: ff row 1 prog |/bin/seq| |/bin|
+hdesk: ff row 2 prog |/bin/sleep| |/bin|
+hdesk: ff row 3 prog |/bin/false| |/bin|
+hdesk: ff row 4 prog |/bin/basename| |/bin|
+hdesk: ff |set| rows 1 sel 0
+hdesk: ff row 0 prog |settings| |Super+,|
+hdesk: ff |sett| rows 1 sel 0
+hdesk: ff row 0 prog |settings| |Super+,|
+hdesk: ff chose prog |settings|

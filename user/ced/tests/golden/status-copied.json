@@ -1,0 +1,34 @@
+{
+  "id": "status-copied",
+  "rules": [
+    "KEY-5"
+  ],
+  "text": "ab",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b3243",
+    "03"
+  ],
+  "expect": {
+    "text": "ab",
+    "sel": [
+      0,
+      1
+    ],
+    "screen": [
+      "ab",
+      "",
+      "",
+      "",
+      " x  copied                          1:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

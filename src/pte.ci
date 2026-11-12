@@ -1,0 +1,44 @@
+// src/pte.ci: x86-64 page-table entries (SDM vol. 3, 4.5), pure so the hosted tests run them.
+// Bit 0 present, bit 1 writable, bit 63 no-execute, bits 12 to 51 the frame's address.
+
+export const U64 FLAG_P = 1;
+export const U64 FLAG_W = 2;
+export const U64 FLAG_NX = 0x8000000000000000;
+export const U64 ADDR_MASK = 0x000FFFFFFFFFF000;
+export const U64 REGION_BASE = 0x40000000;
+export const U64 REGION_END = 0x80000000;
+
+export U64 make(U64 pa, U64 flags) {
+    return (pa & ADDR_MASK) | flags;
+}
+
+export U64 addr(U64 e) {
+    return e & ADDR_MASK;
+}
+
+export Bool present(U64 e) {
+    return (e & FLAG_P) != 0;
+}
+
+export Bool writable(U64 e) {
+    return (e & FLAG_W) != 0;
+}
+
+export Bool no_exec(U64 e) {
+    return (e & FLAG_NX) != 0;
+}
+
+// The index into the page directory and the page table of a virtual address.
+export I64 pd_index(U64 va) {
+    return ((va >> 21) & 511) as I64;
+}
+
+export I64 pt_index(U64 va) {
+    return ((va >> 12) & 511) as I64;
+}
+
+// The region the kernel maps: one gigabyte under slot 1 of the boot PDPT, page aligned.
+export Bool usable(U64 va) {
+    return va >= REGION_BASE && va < REGION_END && (va & 4095) == 0;
+}
+// SPDX-License-Identifier: Apache-2.0

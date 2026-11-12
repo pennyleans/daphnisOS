@@ -1,0 +1,427 @@
+// user/ci/acctask.ci: the Accounts page's requests to authd, desk side (RS-AQ,
+// docs/specs/2026-11-11-rs-accounts-page.md). Pure, over user/ci/acct.ci as the desk last read the store.
+//
+// One operation at a time, from the page's action (kit/stacct.ci) to authd's answer: what the page asked is checked
+// against the store, a form takes a new name and passphrase where the operation needs them, the frame 17 prompt
+// takes an approver's passphrase, `request` writes the line authd reads (user/ci/authreq.ci), and `answer` says what
+// the desk does with authd's code. The desk decides no right: authd does (RS-ROLE). What is refused here is only
+// what could never work, so that no prompt asks for it (DN-58 item 12: such a row is drawn at 40 percent).
+
+import user.ci.acct;
+import user.ci.authreq;
+
+// The page's actions (kit/stacct.ci ADD to REMOVE), taken as they come.
+export const I64 ADD = 16;
+export const I64 ROLE = 17;
+export const I64 PASSWORD = 18;
+export const I64 CEILING = 19;
+export const I64 REMOVE = 20;
+
+// Where the operation stands.
+export const I64 IDLE = 0;
+export const I64 FORM = 1;             // the form takes a name (Add Account) and the new passphrase twice
+export const I64 PROMPT = 2;           // the frame 17 prompt takes the approver's passphrase
+export const I64 SENT = 3;             // authd holds the request
+
+// The form's fields.
+export const I64 F_NAME = 1;
+export const I64 F_NEW = 2;
+export const I64 F_AGAIN = 3;
+
+// What is wrong in the form (`fault`), 0 for nothing.
+export const I64 NAME_BAD = 1;         // not 1 to 32 of a-z, 0-9 and -, or starting with -
+export const I64 NAME_TAKEN = 2;
+export const I64 SHORT = 3;            // under the role's length (AC-D3), or over 256
+export const I64 DIFFER = 4;           // the two new passphrases differ
+
+// What the desk does with authd's answer.
+export const I64 O_DONE = 1;           // read the store again and feed the page
+export const I64 O_END = 2;            // the same, then end the session: it lost a right (RS-R2, RS-DM1)
+export const I64 O_WRONG = 3;          // not the approver's passphrase: AC-D2's delay; the prompt stays
+export const I64 O_FORM = 4;           // back to the form, `field` and `fault` set; nothing was written
+export const I64 O_FAIL = 5;           // nothing was written; read the store again; the operation ends
+
+I64 op = 0;
+I64 ph = IDLE;
+U8[32] tname;                          // the account the operation is for (Add Account: none until the form)
+I64 tnl = 0;
+U8[32] mname;                          // the account signed in when the page asked
+I64 mnl = 0;
+I64 want = 0;                          // ROLE: the role asked; CEILING: the ceiling word asked
+Bool ends = false;                     // the signed-in account loses a right: a bit of its own ceiling (CEILING,
+                                       // RS-R2) or its own Parent role (ROLE, RS-DM1)
+I64 appr = -1;                         // the account whose passphrase the prompt takes
+
+U8[32] fname;
+I64 fnl = 0;
+I64 frole = 2;                         // Add Account's role, acct.CHILD until the form says
+U8[256] fnew;
+I64 fnn = 0;
+U8[256] fagain;
+I64 fan = 0;
+I64 ffield = 0;
+I64 ffault = 0;
+
+export I64 phase() { return ph; }
+export I64 operation() { return op; }
+export I64 approver() { return appr; }
+export I64 field() { return ffield; }
+export I64 fault() { return ffault; }
+export I64 role_asked() { return want; }
+export I64 new_len() { return fnn; }
+export I64 again_len() { return fan; }
+export I64 name_len() { return fnl; }
+export U8 name_byte(I64 k) { return fname[k]; }
+export I64 form_role() { return frole; }
+
+// Every byte of a passphrase the module holds, wiped; the operation ends.
+export void cancel() {
+    wipe_new();
+    fnl = 0;
+    tnl = 0;
+    mnl = 0;
+    op = 0;
+    ph = IDLE;
+    appr = -1;
+    ends = false;
+    ffield = 0;
+    ffault = 0;
+}
+
+I64 copy_name(I64 i, inout U8[_] dst) {
+    I64 n = acct.name_len(i);
+    for k in 0..n { dst[k] = acct.name_byte(i, k); }
+    return n;
+}
+
+// The account named dst[0..n) in the store now, or -1.
+I64 index_of(in U8[_] s, I64 n) {
+    if (n < 1) { return -1; }
+    return acct.find(s[0..n], n);
+}
+
+// Whether account a may approve: a parent, or for Change Password the account itself with its current passphrase.
+Bool may(I64 a) {
+    if (a < 0 || a >= acct.accounts()) { return false; }
+    if (acct.role_of(a) == acct.PARENT) { return true; }
+    return op == PASSWORD && a == index_of(tname, tnl);
+}
+
+// The approver after a in the store's shown order that may approve, wrapping; -1 for none.
+I64 after(I64 a) {
+    I64 n = acct.accounts();
+    I64 start = 0;
+    for k in 0..n {
+        if (acct.shown(k) == a) { start = k + 1; }
+    }
+    for j in 0..n {
+        I64 i = acct.shown((start + j) % n);
+        if (may(i)) { return i; }
+    }
+    return -1;
+}
+
+// The page asked action a for account k (the store's index, as the host fed the page) with v (ROLE: the role;
+// CEILING: the ceiling word), signed in as me. The phase it opens at, or IDLE when it could never work: no
+// session, no such account, nothing to change, the last parent's role or removal, a promotion without a parent's
+// length of passphrase (RS-R1), a parent's ceiling, a full store, or no one who may approve.
+export I64 begin(I64 a, I64 k, I64 v, I64 me) {
+    cancel();
+    I64 n = acct.accounts();
+    if (me < 0 || me >= n) { return IDLE; }
+    op = a;
+    mnl = copy_name(me, mname);
+    if (a == ADD) {
+        if (n >= acct.MAX) { return refuse(); }
+        frole = acct.CHILD;
+        ffield = F_NAME;
+        ph = FORM;
+    } else {
+        if (k < 0 || k >= n) { return refuse(); }
+        tnl = copy_name(k, tname);
+        Bool last = acct.role_of(k) == acct.PARENT && acct.parents() == 1;
+        if (a == ROLE) {
+            if ((v != acct.PARENT && v != acct.CHILD) || v == acct.role_of(k)) { return refuse(); }
+            if (v == acct.CHILD && last) { return refuse(); }
+            if (v == acct.PARENT && !acct.parent_pass(k)) { return refuse(); }
+            want = v;
+            ends = k == me && v == acct.CHILD;   // RS-DM1: its own demotion
+            ph = PROMPT;
+        } else if (a == CEILING) {
+            if (acct.role_of(k) != acct.CHILD || v < 0 || v > 7 || (v as U64) == acct.ceil_of(k)) { return refuse(); }
+            want = v;
+            ends = k == me && (acct.ceil_of(k) & ~(v as U64)) != 0;   // RS-R2: a cut of its own ceiling
+            ph = PROMPT;
+        } else if (a == REMOVE) {
+            if (last) { return refuse(); }
+            ph = PROMPT;
+        } else if (a == PASSWORD) {
+            ffield = F_NEW;
+            ph = FORM;
+        } else {
+            return refuse();
+        }
+    }
+    if (may(me)) {                                             // the one signed in, else the first parent
+        appr = me;
+    } else {
+        appr = acct.next_parent(-1);
+        if (appr < 0) { appr = after(me); }
+    }
+    if (appr < 0) { return refuse(); }
+    return ph;
+}
+
+I64 refuse() {
+    cancel();
+    return IDLE;
+}
+
+// The prompt's Tab: the next account that may approve.
+export I64 next_approver() {
+    if (ph != PROMPT) { return appr; }
+    I64 b = after(appr);
+    if (b >= 0) { appr = b; }
+    return appr;
+}
+
+// Whether the prompt asks the account's own passphrase: Change Password approved by the account itself.
+export Bool own() { return ph != IDLE && op == PASSWORD && appr >= 0 && appr == index_of(tname, tnl); }
+
+// --- the form ---
+
+// One typed byte into the form's field: printable ASCII; a name takes a-z, 0-9 and - only, a capital folded to its
+// small letter as typed (design note 66), every other byte dropped.
+export void form_put(I64 typed) {
+    if (ph != FORM || typed < 32 || typed > 126) { return; }
+    ffault = 0;
+    I64 b = typed;
+    if (ffield == F_NAME && b >= 65 && b <= 90) { b = b + 32; }
+    if (ffield == F_NAME) {
+        if (!((b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 45) || fnl >= 32) { return; }
+        fname[fnl] = b as U8;
+        fnl = fnl + 1;
+    } else if (ffield == F_NEW && fnn < 256) {
+        fnew[fnn] = b as U8;
+        fnn = fnn + 1;
+    } else if (ffield == F_AGAIN && fan < 256) {
+        fagain[fan] = b as U8;
+        fan = fan + 1;
+    }
+}
+
+export void form_back() {
+    if (ph != FORM) { return; }
+    ffault = 0;
+    if (ffield == F_NAME && fnl > 0) {
+        fnl = fnl - 1;
+        fname[fnl] = 0;
+    } else if (ffield == F_NEW && fnn > 0) {
+        fnn = fnn - 1;
+        fnew[fnn] = 0;
+    } else if (ffield == F_AGAIN && fan > 0) {
+        fan = fan - 1;
+        fagain[fan] = 0;
+    }
+}
+
+// Tab or Enter on a field before the last: the next field, wrapping.
+export void form_next() {
+    if (ph != FORM) { return; }
+    if (ffield == F_NAME) {
+        ffield = F_NEW;
+    } else if (ffield == F_NEW) {
+        ffield = F_AGAIN;
+    } else if (op == ADD) {
+        ffield = F_NAME;
+    } else {
+        ffield = F_NEW;
+    }
+}
+
+export void form_focus(I64 f) {
+    if (ph != FORM || (f == F_NAME && op != ADD) || f < F_NAME || f > F_AGAIN) { return; }
+    ffield = f;
+}
+
+// Add Account's role, Parent or Child.
+export void form_set_role(I64 r) {
+    if (ph == FORM && op == ADD && (r == acct.PARENT || r == acct.CHILD)) { frole = r; }
+}
+
+I64 role_new() {
+    if (op == ADD) { return frole; }
+    I64 k = index_of(tname, tnl);
+    if (k < 0) { return acct.CHILD; }
+    return acct.role_of(k);
+}
+
+// Enter on the last field: the form checked as authd will check it; PROMPT when it holds, else FORM with `field`
+// on the first field at fault and `fault` saying what. The new passphrases stay until `request`.
+export I64 form_done() {
+    if (ph != FORM) { return ph; }
+    ffault = check();
+    if (ffault == NAME_BAD || ffault == NAME_TAKEN) { ffield = F_NAME; }
+    if (ffault == SHORT) { ffield = F_NEW; }
+    if (ffault == DIFFER) { ffield = F_AGAIN; }
+    if (ffault != 0) { return ph; }
+    if (op == ADD) {
+        for k in 0..fnl { tname[k] = fname[k]; }
+        tnl = fnl;
+    }
+    ph = PROMPT;
+    return ph;
+}
+
+// The form's first fault, 0 for none; nothing changes.
+I64 check() {
+    if (op == ADD && !acct.name_ok(fname[0..fnl], fnl)) { return NAME_BAD; }
+    if (op == ADD && acct.find(fname[0..fnl], fnl) >= 0) { return NAME_TAKEN; }
+    if (!acct.pass_ok(role_new(), fnn) || fnn < 1) { return SHORT; }
+    if (fan != fnn || !same()) { return DIFFER; }
+    return 0;
+}
+
+// What is wrong in field f alone, 0 for nothing: what frame 49 rings in red once the focus has left it.
+export I64 fault_at(I64 f) {
+    if (ph != FORM) { return 0; }
+    if (f == F_NAME && op == ADD) {
+        if (!acct.name_ok(fname[0..fnl], fnl)) { return NAME_BAD; }
+        if (acct.find(fname[0..fnl], fnl) >= 0) { return NAME_TAKEN; }
+    }
+    if (f == F_NEW && (!acct.pass_ok(role_new(), fnn) || fnn < 1)) { return SHORT; }
+    if (f == F_AGAIN && (fan != fnn || !same())) { return DIFFER; }
+    return 0;
+}
+
+// The role the new passphrase is judged by: Add Account's choice, else the account's own.
+export I64 role_for_new() { return role_new(); }
+
+// The account the form is for (Change Password), as the store holds it now; -1 for Add Account.
+export I64 account() {
+    if (op == ADD) { return -1; }
+    return index_of(tname, tnl);
+}
+
+// Whether every entry passes: frame 49's Create and Change are at 40 percent until it does.
+export Bool form_ready() { return ph == FORM && check() == 0; }
+
+Bool same() {
+    Bool d = false;
+    for k in 0..fnn {
+        if (fnew[k] != fagain[k]) { d = true; }
+    }
+    return !d;
+}
+
+// --- the request ---
+
+// Whether the desk ends the session before it sends the request: the account removed is the one signed in.
+export Bool ends_first() { return op == REMOVE && tnl == mnl && same_name(); }
+
+Bool same_name() {
+    for k in 0..tnl {
+        if (tname[k] != mname[k]) { return false; }
+    }
+    return true;
+}
+
+// The request for authd into o (authreq.REQ_MAX bytes or more), pass[0..pl) the approver's passphrase from the
+// prompt; its length and SENT, or -1 with the phase kept. Not at the prompt, or no passphrase typed: -1 and nothing
+// changes. The new passphrase stays until authd answers (a wrong approver's passphrase asks the prompt again, and
+// the line is built again from it); `answer` wipes it on every code but WRONG, and `cancel` on every other way out.
+// The caller wipes pass and o once o is sent.
+export I64 request(inout U8[_] o, in U8[_] pass, I64 pl) {
+    if (ph != PROMPT || appr < 0 || appr >= acct.accounts() || pl < 1) { return -1; }
+    U8[32] w;
+    I64 wl = copy_name(appr, w);
+    I64 n = -1;
+    if (op == ROLE) {
+        n = authreq.role(o, w, wl, tname, tnl, want, pass, pl);
+    } else if (op == CEILING) {
+        n = authreq.ceil(o, w, wl, tname, tnl, want, pass, pl);
+    } else if (op == REMOVE) {
+        n = authreq.remove(o, w, wl, tname, tnl, pass, pl);
+    } else if (op == ADD) {
+        n = authreq.add(o, w, wl, tname, tnl, frole, pass, pl, fnew, fnn);
+    } else if (op == PASSWORD) {
+        n = authreq.passwd(o, w, wl, tname, tnl, pass, pl, fnew, fnn);
+    }
+    if (n < 0) { return -1; }
+    ph = SENT;
+    return n;
+}
+
+// authd's answer, as authreq.code_of reads it: what the desk does next.
+export I64 answer(I64 code) {
+    if (ph != SENT) { return O_FAIL; }
+    if (code == authreq.DONE) {
+        Bool end = ends;
+        cancel();
+        if (end) { return O_END; }
+        return O_DONE;
+    }
+    if (code == authreq.WRONG) {
+        ph = PROMPT;
+        return O_WRONG;
+    }
+    wipe_new();
+    if (code == authreq.R_TAKEN && op == ADD) {
+        ph = FORM;
+        ffield = F_NAME;
+        ffault = NAME_TAKEN;
+        return O_FORM;
+    }
+    if (code == authreq.R_PASS && (op == ADD || op == PASSWORD)) {
+        ph = FORM;
+        ffield = F_NEW;
+        ffault = SHORT;
+        return O_FORM;
+    }
+    cancel();
+    return O_FAIL;
+}
+
+void wipe_new() {
+    for k in 0..256 {
+        fnew[k] = 0;
+        fagain[k] = 0;
+    }
+    fnn = 0;
+    fan = 0;
+}
+
+// --- the prompt's words, all of them frame 34's ---
+
+I64 put(inout U8[_] d, in U8[_] s) {
+    for k in 0..len(s) { d[k] = s[k]; }
+    return len(s);
+}
+
+// The prompt's subject: the control the person pressed, as frame 34 names it (Role: the role chosen).
+export I64 subject(inout U8[_] d) {
+    if (op == ROLE && want == acct.PARENT) { return put(d, "Parent"); }
+    if (op == ROLE) { return put(d, "Child"); }
+    if (op == CEILING) { return put(d, "May Use"); }
+    if (op == REMOVE) { return put(d, "Remove Account"); }
+    if (op == ADD) { return put(d, "Add Account"); }
+    if (op == PASSWORD) { return put(d, "Change Password"); }
+    return 0;
+}
+
+// The account the operation is for, at the subject's right (Add Account: the new name once the form holds).
+export I64 target(inout U8[_] d) {
+    for k in 0..tnl { d[k] = tname[k]; }
+    return tnl;
+}
+
+// The secret bytes the module holds now (tests: 0 after `cancel` and after any answer but WRONG).
+export I64 held() {
+    I64 h = 0;
+    for k in 0..256 {
+        if (fnew[k] != 0) { h = h + 1; }
+        if (fagain[k] != 0) { h = h + 1; }
+    }
+    return h;
+}
+// SPDX-License-Identifier: Apache-2.0

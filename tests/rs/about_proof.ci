@@ -1,0 +1,44 @@
+// tests/rs/about_proof.ci: the About page's proof, frame 31: the frame's facts (a 64 GiB volume with 3.2 GiB used,
+// 31 GiB, 1920 x 1080, an i7-8700K on 12 threads), Copy Details at 40 percent until the desk has a clipboard. Theme TH
+// (0 dark, 1 light) at zoom Z (1 or 2); a third argument sizes the window (tests/rs/stwin.ci size_of: N 480 x 400,
+// W 976 x 400).
+// Run: cint run --root . tests/rs/about_proof.ci -- TH Z [N|W]
+import user.ci.kit.tokens;
+import user.ci.kit.stside;
+import user.ci.kit.stabout;
+import user.ci.kit.stbox;
+import tests.rs.stwin;
+
+U32[2048] row;
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    I64 z = 1;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    if (len(a) > 2 && a[2] == '2') { z = 2; }
+    tokens.set_theme(th);
+    U8 sz = '-';
+    if (len(a) > 4) { sz = a[4]; }
+    stwin.size_of(sz);
+    stbox.show(stside.ABOUT);
+    stabout.open();
+    stabout.set_row(stabout.R_VERSION, b"0.1.0", 5);
+    stabout.set_row(stabout.R_BUILD, b"7eb1c92, 2026-11-10", 19);
+    stabout.set_row(stabout.R_COMPILER, b"cint 0.2.18", 11);
+    stabout.set_processor(b"Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz", 12);
+    stabout.set_memory(33285996544);
+    stabout.set_display(1920, 1080);
+    stabout.set_disk(67108864, 67108864 - 3355443);
+    stabout.set_licenses_live(true);
+    stbox.set_tall(stabout.tall());
+    "frame {stwin.fw() * z} {stwin.fh() * z}\n";
+    for dy in 0..stwin.fh() * z {
+        I64 y = dy / z;
+        stwin.frame_row(row, dy, z);
+        if (stwin.in_body(dy, z)) { stabout.row_at(row, stwin.cx(), stbox.y0_at(y), stwin.cr(), stbox.yb_at(y), y); }
+        stwin.over_row(row, dy, z);
+        stwin.corners_row(row, dy, z);
+        stwin.emit(row, stwin.fw() * z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

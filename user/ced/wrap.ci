@@ -1,0 +1,457 @@
+const I64 TAB = 4;
+const U8 LF = 10;
+export const I64 WRAP_MAX = 400;
+
+// the text is tx less [gs, ge); flat: gs == ge
+// *_gap read around the gap and never move it
+
+I64 text_len(in U8[_] tx, I64 gs, I64 ge) {
+    return len(tx) - (ge - gs);
+}
+
+U8 byte_at(in U8[_] tx, I64 gs, I64 ge, I64 p) {
+    if (p < gs) {
+        return tx[p];
+    }
+    return tx[p + (ge - gs)];
+}
+
+Bool cont(U8 b) {
+    return b >= 128 && b < 192;
+}
+
+I64 next_cp(in U8[_] tx, I64 gs, I64 ge, I64 p) {
+    I64 n = text_len(tx, gs, ge);
+    if (p >= n) {
+        return n;
+    }
+    I64 q = p + 1;
+    while (q < n && cont(byte_at(tx, gs, ge, q))) {
+        q += 1;
+    }
+    return q;
+}
+
+I64 prev_cp(in U8[_] tx, I64 gs, I64 ge, I64 p) {
+    if (p <= 0) {
+        return 0;
+    }
+    I64 q = p - 1;
+    while (q > 0 && cont(byte_at(tx, gs, ge, q))) {
+        q -= 1;
+    }
+    return q;
+}
+
+I64 line_start(in U8[_] tx, I64 gs, I64 ge, I64 p) {
+    I64 q = p;
+    while (q > 0 && byte_at(tx, gs, ge, q - 1) != LF) {
+        q -= 1;
+    }
+    return q;
+}
+
+export Bool on(I64 flag) {
+    return flag == 1;
+}
+
+export I64 cap(I64 cols) {
+    return max(min(cols, WRAP_MAX) - 1, 1);
+}
+
+export I64 toggle(I64 flag) {
+    return 1 - flag;
+}
+
+Bool blank(U8 b) {
+    return b == ' ' || b == 9;
+}
+
+I64 width(in U8[_] tx, I64 gs, I64 ge, I64 q, I64 c) {
+    U8 b = byte_at(tx, gs, ge, q);
+    if (b == 9) {
+        return (c / TAB + 1) * TAB - c;
+    }
+    if (b == 13) {
+        if (q + 1 < text_len(tx, gs, ge) && byte_at(tx, gs, ge, q + 1) == LF) {
+            return 0;
+        }
+        return 2;
+    }
+    return 1;
+}
+
+export Bool continued_gap(in U8[_] tx, I64 gs, I64 ge, I64 q) {
+    return q < text_len(tx, gs, ge) && byte_at(tx, gs, ge, q) != LF;
+}
+
+export Bool continued(in U8[_] tx, I64 q) {
+    return continued_gap(tx, len(tx), len(tx), q);
+}
+
+// the next row's start, or the line end
+export I64 row_next_gap(in U8[_] tx, I64 gs, I64 ge, I64 p, I64 w) {
+    I64 n = text_len(tx, gs, ge);
+    I64 q = p;
+    I64 c = 0;
+    I64 brk = p;
+    while (q < n && byte_at(tx, gs, ge, q) != LF) {
+        U8 b = byte_at(tx, gs, ge, q);
+        I64 d = width(tx, gs, ge, q, c);
+        if (c + d > w && q > p) {
+            if (blank(b)) {
+                return q + 1;
+            }
+            if (brk > p) {
+                return brk;
+            }
+            return q;
+        }
+        c += d;
+        q = next_cp(tx, gs, ge, q);
+        if (blank(b)) {
+            brk = q;
+        }
+    }
+    return q;
+}
+
+export I64 row_next(in U8[_] tx, I64 p, I64 w) {
+    return row_next_gap(tx, len(tx), len(tx), p, w);
+}
+
+I64 row_start_gap(in U8[_] tx, I64 gs, I64 ge, I64 p, I64 w) {
+    I64 s = line_start(tx, gs, ge, p);
+    I64 nx = row_next_gap(tx, gs, ge, s, w);
+    while (nx <= p && continued_gap(tx, gs, ge, nx)) {
+        s = nx;
+        nx = row_next_gap(tx, gs, ge, s, w);
+    }
+    return s;
+}
+
+export I64 row_start(in U8[_] tx, I64 p, I64 w) {
+    return row_start_gap(tx, len(tx), len(tx), p, w);
+}
+
+I64 row_after_gap(in U8[_] tx, I64 gs, I64 ge, I64 s, I64 w) {
+    I64 nx = row_next_gap(tx, gs, ge, s, w);
+    if (continued_gap(tx, gs, ge, nx)) {
+        return nx;
+    }
+    if (nx < text_len(tx, gs, ge)) {
+        return nx + 1;
+    }
+    return -1;
+}
+
+export I64 row_after(in U8[_] tx, I64 s, I64 w) {
+    return row_after_gap(tx, len(tx), len(tx), s, w);
+}
+
+I64 last_index(in U8[_] tx, I64 gs, I64 ge, I64 ls, I64 w) {
+    I64 i = 0;
+    I64 nx = row_next_gap(tx, gs, ge, ls, w);
+    while (continued_gap(tx, gs, ge, nx)) {
+        nx = row_next_gap(tx, gs, ge, nx, w);
+        i += 1;
+    }
+    return i;
+}
+
+// each line is walked at most twice
+I64 rows_up_gap(in U8[_] tx, I64 gs, I64 ge, I64 s, I64 k, I64 w) {
+    I64 ls = line_start(tx, gs, ge, s);
+    I64 i = 0;
+    I64 p = ls;
+    while (p < s) {
+        p = row_next_gap(tx, gs, ge, p, w);
+        i += 1;
+    }
+    I64 need = k;
+    while (need > i) {
+        if (ls == 0) {
+            return -1;
+        }
+        need -= i + 1;
+        ls = line_start(tx, gs, ge, ls - 1);
+        i = last_index(tx, gs, ge, ls, w);
+    }
+    p = ls;
+    for j in 0..i - need {
+        p = row_next_gap(tx, gs, ge, p, w);
+    }
+    return p;
+}
+
+export I64 rows_up(in U8[_] tx, I64 s, I64 k, I64 w) {
+    return rows_up_gap(tx, len(tx), len(tx), s, k, w);
+}
+
+export I64 row_before(in U8[_] tx, I64 s, I64 w) {
+    return rows_up(tx, s, 1, w);
+}
+
+I64 column(in U8[_] tx, I64 gs, I64 ge, I64 s, I64 p) {
+    I64 q = s;
+    I64 c = 0;
+    while (q < p) {
+        c += width(tx, gs, ge, q, c);
+        q = next_cp(tx, gs, ge, q);
+    }
+    return c;
+}
+
+I64 at_column(in U8[_] tx, I64 gs, I64 ge, I64 s, I64 goal, I64 w) {
+    I64 nx = row_next_gap(tx, gs, ge, s, w);
+    I64 q = s;
+    I64 c = 0;
+    while (q < nx && c + width(tx, gs, ge, q, c) <= goal) {
+        c += width(tx, gs, ge, q, c);
+        q = next_cp(tx, gs, ge, q);
+    }
+    if (q == nx && continued_gap(tx, gs, ge, nx)) {
+        q = prev_cp(tx, gs, ge, nx);
+    }
+    return q;
+}
+
+export I64 goal_col_gap(in U8[_] tx, I64 gs, I64 ge, I64 head, I64 cols) {
+    I64 s = row_start_gap(tx, gs, ge, head, cap(cols));
+    return column(tx, gs, ge, s, head);
+}
+
+export I64 goal_col(in U8[_] tx, I64 head, I64 cols) {
+    return goal_col_gap(tx, len(tx), len(tx), head, cols);
+}
+
+// where a move by rows lands
+export I64 vertical_gap(in U8[_] tx, I64 gs, I64 ge, I64 head, I64 goal, I64 cols, I64 rows) {
+    I64 w = cap(cols);
+    I64 s = row_start_gap(tx, gs, ge, head, w);
+    I64 k = rows;
+    if (k < 0) {
+        s = rows_up_gap(tx, gs, ge, s, -k, w);
+        if (s < 0) {
+            return 0;
+        }
+    }
+    while (k > 0) {
+        I64 a = row_after_gap(tx, gs, ge, s, w);
+        if (a < 0) {
+            return text_len(tx, gs, ge);
+        }
+        s = a;
+        k -= 1;
+    }
+    return at_column(tx, gs, ge, s, goal, w);
+}
+
+export I64 vertical(in U8[_] tx, I64 head, I64 goal, I64 cols, I64 rows) {
+    return vertical_gap(tx, len(tx), len(tx), head, goal, cols, rows);
+}
+
+// the first row of the view
+export I64 scroll_gap(in U8[_] tx, I64 gs, I64 ge, I64 head, I64 top0, I64 cols, I64 text_rows) {
+    I64 w = cap(cols);
+    I64 hr = row_start_gap(tx, gs, ge, head, w);
+    I64 top = row_start_gap(tx, gs, ge, min(top0, text_len(tx, gs, ge)), w);
+    if (hr < top) {
+        top = hr;
+    } else {
+        I64 n = 0;
+        I64 p = top;
+        while (p >= 0 && p < hr && n < text_rows) {
+            p = row_after_gap(tx, gs, ge, p, w);
+            n += 1;
+        }
+        if (p < hr || n == text_rows) {
+            top = max(rows_up_gap(tx, gs, ge, hr, text_rows - 1, w), 0);
+        }
+    }
+    return top;
+}
+
+export I64 scroll(in U8[_] tx, I64 head, I64 top0, I64 cols, I64 text_rows) {
+    return scroll_gap(tx, len(tx), len(tx), head, top0, cols, text_rows);
+}
+
+test "a row breaks after the last space that fits" {
+    U8[11] s = b"aaa bbb ccc";
+    I64 w = cap(6);
+    assert(row_next(s, 0, w) == 4);
+    assert(row_next(s, 4, w) == 8);
+    assert(row_next(s, 8, w) == 11);
+    assert(!continued(s, 11));
+}
+
+test "a space that does not fit ends its row" {
+    U8[11] s = b"aaa bbb ccc";
+    I64 w = cap(8);
+    assert(row_next(s, 0, w) == 8);
+    assert(row_next(s, 8, w) == 11);
+}
+
+test "a word longer than a row breaks at the edge" {
+    U8[9] s = b"abcdefg h";
+    I64 w = cap(4);
+    assert(row_next(s, 0, w) == 3);
+    assert(row_next(s, 3, w) == 6);
+    assert(row_next(s, 6, w) == 9);
+}
+
+test "a position on a break belongs to the later row" {
+    U8[13] s = b"aaa bbb ccc\nd";
+    I64 w = cap(6);
+    assert(row_start(s, 3, w) == 0);
+    assert(row_start(s, 4, w) == 4);
+    assert(row_start(s, 11, w) == 8);
+    assert(row_start(s, 12, w) == 12);
+    assert(row_after(s, 8, w) == 12);
+    assert(row_after(s, 12, w) == -1);
+    assert(row_before(s, 12, w) == 8);
+    assert(row_before(s, 4, w) == 0);
+    assert(row_before(s, 0, w) == -1);
+    assert(rows_up(s, 12, 3, w) == 0);
+    assert(rows_up(s, 12, 4, w) == -1);
+}
+
+test "up and down move by rows and keep the goal column" {
+    U8[13] s = b"aaa bbb ccc\nd";
+    I64 g = goal_col(s, 2, 6);
+    I64 h = vertical(s, 2, g, 6, 1);
+    assert(h == 6);
+    h = vertical(s, h, g, 6, 1);
+    assert(h == 10);
+    h = vertical(s, h, g, 6, 1);
+    assert(h == 13);
+    h = vertical(s, h, g, 6, -2);
+    assert(h == 6);
+    h = vertical(s, h, g, 6, -5);
+    assert(h == 0);
+}
+
+test "up stays on a row that ends in a break" {
+    U8[9] s = b"ab cdefgh";
+    I64 g = goal_col(s, 9, 4);
+    I64 h = vertical(s, 9, g, 4, -1);
+    assert(h == 5);
+    h = vertical(s, h, g, 4, -1);
+    assert(h == 2);
+}
+
+test "the view scrolls by rows" {
+    U8[11] s = b"aaa bbb ccc";
+    I64 top = scroll(s, 11, 0, 6, 2);
+    assert(top == 4);
+    top = scroll(s, 0, top, 6, 2);
+    assert(top == 0);
+}
+
+test "ctrl w turns wrap on, then off" {
+    I64 flag = 0;
+    flag = toggle(flag);
+    assert(on(flag));
+    flag = toggle(flag);
+    assert(!on(flag));
+}
+
+test "a tab and a code point count as the columns they take" {
+    U8[5] s = b"a\tb\xc3\xa9";
+    I64 n = len(s);
+    assert(width(s, n, n, 1, 1) == 3);
+    assert(next_cp(s, n, n, 3) == 5);
+    assert(prev_cp(s, n, n, 5) == 3);
+    assert(line_start(s, n, n, 4) == 0);
+}
+
+// s in tx, a gap of junk bytes at g
+void gapped(in U8[_] s, I64 g, inout U8[_] tx) {
+    I64 k = len(tx) - len(s);
+    for i in 0..g {
+        tx[i] = s[i];
+    }
+    for i in 0..k {
+        U8 junk = 10;
+        if (i % 4 == 1) {
+            junk = 128;
+        } else if (i % 4 == 2) {
+            junk = 13;
+        } else if (i % 4 == 3) {
+            junk = 9;
+        }
+        tx[g + i] = junk;
+    }
+    for i in g..len(s) {
+        tx[i + k] = s[i];
+    }
+}
+
+// at every gap, each *_gap gives the flat result
+void agrees(in U8[_] s, inout U8[_] tx) {
+    I64 n = len(s);
+    I64 k = len(tx) - n;
+    for g in 0..n + 1 {
+        gapped(s, g, tx);
+        I64 ge = g + k;
+        assert(text_len(tx, g, ge) == n);
+        for p in 0..n + 1 {
+            assert(continued_gap(tx, g, ge, p) == continued(s, p));
+            assert(next_cp(tx, g, ge, p) == next_cp(s, n, n, p));
+            assert(prev_cp(tx, g, ge, p) == prev_cp(s, n, n, p));
+            assert(line_start(tx, g, ge, p) == line_start(s, n, n, p));
+            for cols in 2..7 {
+                I64 w = cap(cols);
+                assert(row_next_gap(tx, g, ge, p, w) == row_next(s, p, w));
+                assert(row_start_gap(tx, g, ge, p, w) == row_start(s, p, w));
+                assert(row_after_gap(tx, g, ge, p, w) == row_after(s, p, w));
+                for up in 0..4 {
+                    assert(rows_up_gap(tx, g, ge, p, up, w) == rows_up(s, p, up, w));
+                }
+                I64 goal = goal_col_gap(tx, g, ge, p, cols);
+                assert(goal == goal_col(s, p, cols));
+                for rows in -3..4 {
+                    assert(vertical_gap(tx, g, ge, p, goal, cols, rows) == vertical(s, p, goal, cols, rows));
+                    assert(vertical_gap(tx, g, ge, p, 1, cols, rows) == vertical(s, p, 1, cols, rows));
+                }
+                for text_rows in 1..4 {
+                    for top in 0..n + 1 {
+                        assert(scroll_gap(tx, g, ge, p, top, cols, text_rows) == scroll(s, p, top, cols, text_rows));
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "rows read around the gap: tab, CRLF, lone CR and a 2-byte code point" {
+    U8[17] s = b"ab c\tde\r\nf\xc3\xa9 g\rh\n";
+    U8[21] tx;
+    agrees(s, tx);
+}
+
+test "rows read around the gap: 3- and 4-byte code points, an empty line, no final LF" {
+    U8[13] s = b"\xe2\x82\xac\xf0\x9f\x98\x80 x\n\ny ";
+    U8[16] tx;
+    agrees(s, tx);
+}
+
+test "rows read around the gap: a long word, trailing blanks, a CR split from its LF" {
+    U8[16] s = b"abcdefghij  \t\r\nz";
+    U8[19] tx;
+    agrees(s, tx);
+}
+
+test "an empty text behind a gap has one empty row" {
+    U8[3] tx;
+    for i in 0..3 {
+        tx[i] = 10;
+    }
+    assert(text_len(tx, 0, 3) == 0);
+    assert(!continued_gap(tx, 0, 3, 0));
+    assert(row_next_gap(tx, 0, 3, 0, cap(6)) == 0);
+    assert(goal_col_gap(tx, 0, 3, 0, 6) == 0);
+    assert(vertical_gap(tx, 0, 3, 0, 0, 6, 1) == 0);
+    assert(vertical_gap(tx, 0, 3, 0, 0, 6, -1) == 0);
+    assert(scroll_gap(tx, 0, 3, 0, 0, 6, 2) == 0);
+}

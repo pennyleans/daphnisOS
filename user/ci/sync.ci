@@ -1,0 +1,17 @@
+// user/ci/sync.ci: sync (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C; XCU sync): every file's data to its
+// device; status 0. Operands are not taken (busybox's -d and -f FILE are refused, D-1).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+void main(in U8[_] a) {
+    msg.name(b"sync");
+    args.parse(a, b"", b"");
+    if (args.operands() > 0) { msg.usage(b"extra operand"); }
+    _ = corectl.co_sync();
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

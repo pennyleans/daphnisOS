@@ -1,0 +1,43 @@
+// user/ci/factsctl.ci: the rows of stage KF (user/ci/host.c, CI_ROWS_FACTS with CI_ROWS_CORE;
+// docs/specs/2026-11-11-kf-facts.md section 2), one per call; each returns the call's value or -errno.
+//   co_statfs(path, rec): statfs into rec, at least SF_WORDS words in the order of the SF_ names below; 0, or
+//     -errno. KF-1.
+export extern unrestricted I64 co_statfs(in U8[_] path, out I64[_] rec);
+//   co_facts(kind, id, buf): Daphnis's facts (1007) into buf, at most len(buf) bytes of the record; the record's
+//     full size, or -errno (-ENOSYS on Linux, which has no such call). KF-3.
+export extern unrestricted I64 co_facts(I64 kind, I64 id, out U8[_] buf);
+
+// The words of co_statfs's record: Linux's struct statfs without f_fsid, f_flags and the spare words.
+export const I64 SF_TYPE = 0;
+export const I64 SF_BSIZE = 1;
+export const I64 SF_BLOCKS = 2;
+export const I64 SF_BFREE = 3;
+export const I64 SF_BAVAIL = 4;
+export const I64 SF_FILES = 5;
+export const I64 SF_FFREE = 6;
+export const I64 SF_NAMELEN = 7;
+export const I64 SF_WORDS = 8;
+
+// facts kind 2, a process (src/facts.ci): the record's size, the offsets of its words and its states.
+export const I64 PROCESS = 2;
+export const I64 P_BYTES = 88;
+export const I64 P_PID = 0;
+export const I64 P_PPID = 8;
+export const I64 P_UID = 16;
+export const I64 P_STATE = 24;
+export const I64 P_COMM = 32;              // 16 bytes
+export const I64 P_FRAMES = 48;
+export const I64 P_QUOTA = 56;
+export const I64 P_CPU_NS = 64;
+export const I64 P_GRANTS = 72;
+export const I64 P_STARTED = 80;
+export const I64 S_EMPTY = 0;
+export const I64 S_READY = 1;
+export const I64 S_WAITING = 2;
+export const I64 S_ENDED = 3;
+
+// f_type: the file systems df names.
+export const I64 EXT = 0xEF53;             // ext2, and ext3 and ext4 on a Linux host
+export const I64 RAMFS = 0x858458F6;       // Daphnis's image tree
+export const I64 TMPFS = 0x01021994;
+// SPDX-License-Identifier: Apache-2.0

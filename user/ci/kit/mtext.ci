@@ -1,0 +1,134 @@
+// user/ci/kit/mtext.ci: the terminal's cells in JetBrains Mono (FONT-1, F4; docs/specs/2026-11-07-k-kit2.md section
+// 3e): 400, and 600 for SGR bold, in the 8 x 16 cell at 1x and 16 x 32 at 2x (tools/glyphs.py's jbm modules). A
+// cell is its ground with the glyph's coverage laid toward its ink by the one blend (MS-1, kit/blend.ci): a whole
+// pixel is the ink, a clear one the ground. A code point the face lacks draws as U+FFFD.
+import user.ci.kit.jbm_r1;
+import user.ci.kit.jbm_r2;
+import user.ci.kit.jbm_b1;
+import user.ci.kit.jbm_b2;
+import user.ci.kit.blend;
+
+I64[16] alpha15 = [0, 17, 34, 51, 68, 85, 102, 119, 137, 154, 171, 188, 205, 222, 239, 256];
+U64[16384] cov_row;
+Bool[16384] cov_ready;
+
+// The cell's width and height at scale z.
+export I64 cell_w(I64 z) { return 8 * z; }
+export I64 cell_h(I64 z) { return 16 * z; }
+
+// The glyph of code point cp; the regular and bold faces hold the same code points in the same order.
+export I64 index(I64 cp) {
+    if (cp >= 0x20 && cp <= 0x7E) { return cp - 0x20; }
+    if (cp >= 0xA0 && cp <= 0xFF) { return 95 + (cp - 0xA0); }
+    return jbm_r1.index(cp);
+}
+
+// Coverage 0 to 15 of pixel (x, y) of glyph g, bold or not, at scale z.
+export I64 at(I64 g, Bool bold, I64 z, I64 x, I64 y) {
+    if (z == 2) {
+        if (bold) { return jbm_b2.at(g, x, y); }
+        return jbm_r2.at(g, x, y);
+    }
+    if (bold) { return jbm_b1.at(g, x, y); }
+    return jbm_r1.at(g, x, y);
+}
+
+U64 pack_row(I64 g, Bool bold, I64 z, I64 cy) {
+    U64 w = 0;
+    for i in 0..8 * z {
+        U64 v = (at(g, bold, z, i, cy) & 15) as U64;
+        w = w | (v << ((4 * i) as U64));
+    }
+    return w;
+}
+
+U64 row_bits(I64 g, Bool bold, I64 z, I64 cy) {
+    if (g >= 0 && g < 128 && (z == 1 || z == 2) && cy >= 0 && cy < 16 * z) {
+        I64 b = 0;
+        if (bold) { b = 1; }
+        I64 idx = ((g * 2 + b) * 2 + (z - 1)) * 32 + cy;
+        if (!cov_ready[idx]) {
+            cov_row[idx] = pack_row(g, bold, z, cy);
+            cov_ready[idx] = true;
+        }
+        return cov_row[idx];
+    }
+    return pack_row(g, bold, z, cy);
+}
+
+// Row cy of glyph g's cell over a slice already filled with bg & 0xFFFFFF.
+export void cell_row_over(inout U32[_] row, I64 x, I64 cy, I64 g, Bool bold, U32 fg, U32 bg, I64 z) {
+    U32 bgc = bg & 0xFFFFFF;
+    U32 fgc = fg & 0xFFFFFF;
+    if (g == 0 || bgc == fgc) { return; }
+    I64 i0 = 0;
+    I64 i1 = 8 * z;
+    if (x < 0) { i0 = 0 - x; }
+    if (x + i1 > len(row)) { i1 = len(row) - x; }
+    if (i0 >= i1) { return; }
+    if (z == 1 || z == 2) {
+        U64 bits = row_bits(g, bold, z, cy);
+        if (bits == 0) { return; }
+        for i in i0..i1 {
+            I64 v = ((bits >> ((4 * i) as U64)) & 15) as I64;
+            if (v >= 15) {
+                row[x + i] = fgc;
+            } else if (v > 0) {
+                row[x + i] = blend.mix_px(bgc, fgc, alpha15[v]);
+            }
+        }
+        return;
+    }
+    for i in i0..i1 {
+        I64 v = at(g, bold, z, i, cy);
+        if (v >= 15) {
+            row[x + i] = fgc;
+        } else if (v > 0) {
+            row[x + i] = blend.mix_px(bgc, fgc, alpha15[v]);
+        }
+    }
+}
+
+// Row cy of glyph g's cell (0 <= cy < cell_h(z)) at x on the row: ground bg, ink fg; pixels off the row are cut.
+export void cell_row(inout U32[_] row, I64 x, I64 cy, I64 g, Bool bold, U32 fg, U32 bg, I64 z) {
+    I64 i0 = 0;
+    I64 i1 = 8 * z;
+    if (x < 0) { i0 = 0 - x; }
+    if (x + i1 > len(row)) { i1 = len(row) - x; }
+    if (i0 >= i1) { return; }
+    U32 bgc = bg & 0xFFFFFF;
+    U32 fgc = fg & 0xFFFFFF;
+    if (g == 0 || bgc == fgc) {
+        for i in i0..i1 { row[x + i] = bgc; }
+        return;
+    }
+    if (z == 1 || z == 2) {
+        U64 bits = row_bits(g, bold, z, cy);
+        if (bits == 0) {
+            for i in i0..i1 { row[x + i] = bgc; }
+            return;
+        }
+        for i in i0..i1 {
+            I64 v = ((bits >> ((4 * i) as U64)) & 15) as I64;
+            if (v <= 0) {
+                row[x + i] = bgc;
+            } else if (v >= 15) {
+                row[x + i] = fgc;
+            } else {
+                row[x + i] = blend.mix_px(bgc, fgc, alpha15[v]);
+            }
+        }
+        return;
+    }
+    for i in i0..i1 {
+        I64 v = at(g, bold, z, i, cy);
+        if (v <= 0) {
+            row[x + i] = bgc;
+        } else if (v >= 15) {
+            row[x + i] = fgc;
+        } else {
+            row[x + i] = blend.mix_px(bgc, fgc, alpha15[v]);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

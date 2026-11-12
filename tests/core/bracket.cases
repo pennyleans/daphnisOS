@@ -1,0 +1,14 @@
+# tests/core/bracket.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6, CT-5). The tool is /bin/[,
+# cish's own `[` (user/ci/cish/cond.ci); its last operand must be `]`.
+ ] | - | -
+x ] | - | -
+-n x ] | - | -
+-z x ] | - | -
+a = a ] | - | -
+a != a ] | - | -
+3 -gt 2 ] | - | -
+-f text.txt ] | - | -
+-d text.txt ] | - | -
+! -e missing ] | - | -
+-f text.txt | - | -
+ | - | -

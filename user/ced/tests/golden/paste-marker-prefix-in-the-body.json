@@ -1,0 +1,28 @@
+{
+  "id": "paste-marker-prefix-in-the-body",
+  "rules": [
+    "KEY-1",
+    "KEY-2",
+    "KEY-4"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b3230307e611b5b3230",
+    "621b5b3230317e"
+  ],
+  "expect": {
+    "text": "a\u001b[20b",
+    "sel": [
+      6,
+      6
+    ]
+  }
+}

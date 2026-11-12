@@ -1,0 +1,109 @@
+// user/ci/trashfs.ci: the file calls of the Trash store (user/ci/trash.ci, FF spec section 3h), one place, so the
+// store's logic runs hosted over a stand-in of this module (tests/hosted/trash/). Paths are absolute byte strings.
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.dirctl;
+
+U8[16] st;
+
+// 1 a directory, 2 anything else (a symlink is never followed), 0 nothing there, or -errno.
+export I64 kind(in U8[_] p) {
+    I64 r = shctl.sh_stat(p, 0, st);
+    if (r == 0 - 2) { return 0; }
+    if (r < 0) { return r; }
+    I64 m = (st[0] as I64) | ((st[1] as I64) << 8);
+    if ((m & 0xF000) == 0x4000) { return 1; }
+    return 2;
+}
+
+// The kind of p as kind() says it, with a symbolic link followed to what it names (a link to a folder is a folder).
+export I64 kind_through(in U8[_] p) {
+    I64 r = shctl.sh_stat(p, 1, st);
+    if (r == 0 - 2) { return 0; }
+    if (r < 0) { return r; }
+    I64 m = (st[0] as I64) | ((st[1] as I64) << 8);
+    if ((m & 0xF000) == 0x4000) { return 1; }
+    return 2;
+}
+
+export I64 mkdir(in U8[_] p, I64 mode) { return corectl.co_mkdir(p, mode); }
+export I64 rename(in U8[_] a, in U8[_] b) { return corectl.co_rename(a, b); }
+export I64 unlink(in U8[_] p) { return corectl.co_unlink(p); }
+export I64 rmdir(in U8[_] p) { return corectl.co_rmdir(p); }
+
+// The names in directory p but . and .., each ended by a 0 byte, into buf, the first ones that fit (dirctl.dir_names:
+// never -E2BIG, so a caller frees a folder of any size by reading again); the bytes, or -errno.
+export I64 names(in U8[_] p, inout U8[_] buf) {
+    U8[16384] raw;
+    I64 got = dirctl.dir_names(p, raw);
+    if (got < 0) { return got; }
+    I64 n = 0;
+    I64 s = 0;
+    while (s < got) {
+        I64 e = s;
+        while (e < got && raw[e] != 0) { e = e + 1; }
+        I64 l = e - s;
+        Bool dots = (l == 1 && raw[s] == '.') || (l == 2 && raw[s] == '.' && raw[s + 1] == '.');
+        if (l > 0 && !dots && n + l + 1 <= len(buf)) {
+            for k in 0..l { buf[n + k] = raw[s + k]; }
+            buf[n + l] = 0;
+            n = n + l + 1;
+        }
+        s = e + 1;
+    }
+    return n;
+}
+
+// File p's first len(buf) bytes into buf; the count, or -errno.
+export I64 read_file(in U8[_] p, inout U8[_] buf) {
+    I64 fd = shctl.sh_open(p, 0, 0);
+    if (fd < 0) { return fd; }
+    I64 n = 0;
+    Bool more = true;
+    while (more && n < len(buf)) {
+        I64 r = shctl.fd_read(fd, buf[n..len(buf)]);
+        if (r <= 0) { more = false; } else { n = n + r; }
+    }
+    I64 c = shctl.fd_close(fd);
+    return n;
+}
+
+// File p made anew (mode 0600) with data[0..n]; 0, or -errno.
+export I64 write_file(in U8[_] p, in U8[_] data, I64 n) {
+    I64 fd = shctl.sh_open(p, 0x241, 0x180);   // O_WRONLY | O_CREAT | O_TRUNC, rw-------
+    if (fd < 0) { return fd; }
+    I64 w = 0;
+    while (w < n) {
+        I64 r = shctl.fd_write(fd, data[w..n]);
+        if (r <= 0) {
+            I64 c = shctl.fd_close(fd);
+            return 0 - 5;                          // EIO
+        }
+        w = w + r;
+    }
+    return shctl.fd_close(fd);
+}
+
+// The seconds since 1970 of CLOCK_REALTIME (the boot's RTC date, src/rtc.ci); 0 when it cannot be read.
+export I64 now_s() {
+    I64 ns = corectl.co_clock(0);
+    if (ns < 0) { return 0; }
+    return ns / 1000000000;
+}
+
+// The value of HOME into buf; its length, 0 when unset.
+export I64 home(inout U8[_] buf) {
+    U8[512] e;
+    for i in 0..256 {
+        I64 n = shctl.sh_environ(i, e);
+        if (n <= 0) { return 0; }
+        if (n > 5 && e[0] == 'H' && e[1] == 'O' && e[2] == 'M' && e[3] == 'E' && e[4] == '=') {
+            I64 m = n - 5;
+            if (m > len(buf)) { m = len(buf); }
+            for k in 0..m { buf[k] = e[5 + k]; }
+            return m;
+        }
+    }
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

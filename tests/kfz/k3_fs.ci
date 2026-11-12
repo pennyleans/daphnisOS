@@ -1,0 +1,275 @@
+// tests/kfz/k3_fs.ci: the file calls added since main at their edges, on the image tree: statfs (137) and fstatfs
+// (138) of KF-1, open with O_NOFOLLOW (FS-5, docs/specs/2026-11-07-bu2-meta.md section 4.9) and rename's FS-2 rule
+// (who may rename what; FSP-1 A: as on Linux). The answers asserted are Linux's, as this host's kernel gave them to
+// the same calls (2026-11-11); where Daphnis answers otherwise the case is in tests/kfz/defects/ instead.
+
+const U64 NR_OPEN = 2;
+const U64 NR_STAT = 4;
+const U64 NR_RENAME = 82;
+const U64 NR_MKDIR = 83;
+const U64 NR_UNLINK = 87;
+const U64 NR_SYMLINK = 88;
+const U64 NR_CHMOD = 90;
+const U64 NR_STATFS = 137;
+const U64 NR_FSTATFS = 138;
+
+I64 kz_trees = 0;
+
+// The address of s, NUL-terminated, in path slot k of p.
+U64 kz_path[m](I64 p, I64 k, in U8[m] s) {
+    U64 va = PATHS + (256 * k) as U64;
+    kz_put(p, va, s);
+    return va;
+}
+
+// A tree number of its own for each test, 1 to 26: its tree is "/kz" and one letter.
+I64 kz_tree() {
+    kz_trees += 1;
+    assert(kz_trees <= 26);
+    return kz_trees;
+}
+
+// Path text "/kzX/rest" of tree t.
+I64 kz_tpath[m](I64 p, I64 k, I64 t, in U8[m] rest) {
+    U8[200] b;
+    b[0] = '/';
+    b[1] = 'k';
+    b[2] = 'z';
+    b[3] = (96 + t) as U8;
+    I64 n = 4;
+    if (m > 0) {
+        b[4] = '/';
+        n = 5;
+        for i in 0..m {
+            b[n + i] = rest[i];
+        }
+        n += m;
+    }
+    kz_put(p, PATHS + (256 * k) as U64, b[0..n]);
+    return n;
+}
+
+U64 kz_at(I64 k) {
+    return PATHS + (256 * k) as U64;
+}
+
+// The tree T of a test, as r (uid 0) makes it:
+//   T/d       0755, uid 0     T/d/f  "abc", 0644     T/d/lf -> f    T/d/ln -> nothing
+//   T/dl -> d                 T/s    01777, uid 0    T/s/root 0666, uid 0
+I64 kz_make_tree(I64 r) {
+    I64 t = kz_tree();
+    _ = kz_tpath(r, 0, t, "");
+    assert(kz_call(r, NR_MKDIR, kz_at(0), 0x1ED, 0, 0, 0, 0) == 0);
+    _ = kz_tpath(r, 0, t, "d");
+    assert(kz_call(r, NR_MKDIR, kz_at(0), 0x1ED, 0, 0, 0, 0) == 0);
+    _ = kz_tpath(r, 0, t, "d/f");
+    I64 fd = kz_call(r, NR_OPEN, kz_at(0), 0x41, 0x1A4, 0, 0, 0);    // O_WRONLY|O_CREAT, 0644
+    assert(fd >= 3);
+    kz_put(r, kz_at(1), "abc");
+    assert(kz_call(r, 1, fd as U64, kz_at(1), 3, 0, 0, 0) == 3);
+    assert(kz_call(r, 3, fd as U64, 0, 0, 0, 0, 0) == 0);
+    _ = kz_tpath(r, 0, t, "d/lf");
+    assert(kz_call(r, NR_SYMLINK, kz_path(r, 1, "f"), kz_at(0), 0, 0, 0, 0) == 0);
+    _ = kz_tpath(r, 0, t, "d/ln");
+    assert(kz_call(r, NR_SYMLINK, kz_path(r, 1, "nothing"), kz_at(0), 0, 0, 0, 0) == 0);
+    _ = kz_tpath(r, 0, t, "dl");
+    assert(kz_call(r, NR_SYMLINK, kz_path(r, 1, "d"), kz_at(0), 0, 0, 0, 0) == 0);
+    _ = kz_tpath(r, 0, t, "s");
+    assert(kz_call(r, NR_MKDIR, kz_at(0), 0x3FF, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_CHMOD, kz_at(0), 0x3FF, 0, 0, 0, 0) == 0);              // 01777
+    _ = kz_tpath(r, 0, t, "s/root");
+    fd = kz_call(r, NR_OPEN, kz_at(0), 0x41, 0x1B6, 0, 0, 0);
+    assert(fd >= 3);
+    assert(kz_call(r, 3, fd as U64, 0, 0, 0, 0, 0) == 0);
+    return t;
+}
+
+// open(T/rest, flags) as p: the descriptor is closed again; the answer.
+I64 kz_open[m](I64 p, I64 t, in U8[m] rest, U64 flags) {
+    _ = kz_tpath(p, 0, t, rest);
+    I64 fd = kz_call(p, NR_OPEN, kz_at(0), flags, 0x1A4, 0, 0, 0);
+    if (fd >= 0) {
+        assert(kz_call(p, 3, fd as U64, 0, 0, 0, 0, 0) == 0);
+        return 0;
+    }
+    return fd;
+}
+
+// The size stat gives T/rest, or the error.
+I64 kz_size[m](I64 p, I64 t, in U8[m] rest) {
+    _ = kz_tpath(p, 0, t, rest);
+    I64 r = kz_call(p, NR_STAT, kz_at(0), KZ_RW, 0, 0, 0, 0);
+    if (r < 0) {
+        return r;
+    }
+    return kz_u64(p, KZ_RW + 48) as I64;
+}
+
+I64 kz_rename[m, q](I64 p, I64 t, in U8[m] from, in U8[q] to) {
+    _ = kz_tpath(p, 0, t, from);
+    _ = kz_tpath(p, 1, t, to);
+    return kz_call(p, NR_RENAME, kz_at(0), kz_at(1), 0, 0, 0, 0);
+}
+
+test "statfs: a bad path is -EFAULT, a name not there -ENOENT before buf; a bad buf -EFAULT; 120 bytes, no frame" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_strings(p);
+    I64 pool = kz_pool();
+    for b in 0..KZ_BAD_PTRS {
+        U64 path = kz_bad_ptr(b, 1);
+        I64 r = kz_call(p, NR_STATFS, path, KZ_RW, 0, 0, 0, 0);
+        assert(r == E_FAULT || ((path == KZ_RO || path == KZ_GAP - 1) && (r == -36 || r == E_FAULT)));
+        assert(kz_kept_outside(p, 0, 0));
+    }
+    _ = kz_path(p, 0, "/nothing");
+    for b in 0..KZ_BAD_PTRS {
+        assert(kz_call(p, NR_STATFS, kz_at(0), kz_bad_ptr(b, 120), 0, 0, 0, 0) == E_NOENT);
+    }
+    _ = kz_path(p, 0, "/");
+    for b in 0..KZ_BAD_PTRS {
+        U64 buf = kz_bad_ptr(b, 120);
+        assert(kz_call(p, NR_STATFS, kz_at(0), buf, 0, 0, 0, 0) == E_FAULT);
+        assert(kz_kept_outside(p, buf, kz_upto(buf, 120)));
+        kz_fill(p);
+        _ = kz_path(p, 0, "/");
+    }
+    _ = kz_path(p, 0, "/dev/fb0");
+    assert(kz_call(p, NR_STATFS, kz_at(0), KZ_RW, 0, 0, 0, 0) == 0);
+    assert(kz_changed(p, KZ_RW, KZ_RW + 120) > 0 && kz_kept_outside(p, KZ_RW, PATHS + 256));
+    assert(kz_pool() == pool && machine.kfz_refused() == 0);
+    kz_end(p);
+}
+
+test "fstatfs: a descriptor that is not open is -EBADF before buf is looked at; a bad buf is -EFAULT" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    U64[9] fds = [3, 255, 256, 1024, 0x7FFFFFFF, 0x80000000, 0x100000000, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF];
+    for f in 0..9 {
+        for b in 0..KZ_BAD_PTRS {
+            assert(kz_call(p, NR_FSTATFS, fds[f], kz_bad_ptr(b, 120), 0, 0, 0, 0) == E_BADF);
+        }
+    }
+    assert(kz_kept_outside(p, 0, 0));
+    for f in 0..3 {
+        for b in 0..KZ_BAD_PTRS {
+            U64 buf = kz_bad_ptr(b, 120);
+            assert(kz_call(p, NR_FSTATFS, f as U64, buf, 0, 0, 0, 0) == E_FAULT);
+            assert(kz_kept_outside(p, buf, kz_upto(buf, 120)));
+            kz_fill(p);
+        }
+        assert(kz_call(p, NR_FSTATFS, f as U64, KZ_HI - 120, 0, 0, 0, 0) == 0);
+        assert(kz_kept_outside(p, KZ_HI - 120, KZ_HI));
+        kz_fill(p);
+    }
+    assert(kz_pool() == pool);
+    kz_end(p);
+}
+
+test "open O_NOFOLLOW: the answers of tests/expected/fs-mnofollow.out on the image tree" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    assert(kz_open(r, t, "d/f", KZ_O_NOFOLLOW) == 0);
+    assert(kz_open(r, t, "d/lf", 0) == 0);
+    assert(kz_open(r, t, "d/lf", KZ_O_NOFOLLOW) == E_LOOP);
+    assert(kz_open(r, t, "d/lf", KZ_O_NOFOLLOW | 1) == E_LOOP);
+    assert(kz_open(r, t, "d/lf", KZ_O_NOFOLLOW | KZ_O_CREAT) == E_LOOP);
+    assert(kz_open(r, t, "d/lf", KZ_O_NOFOLLOW | KZ_O_CREAT | KZ_O_EXCL) == E_EXIST);
+    assert(kz_open(r, t, "d/ln", KZ_O_NOFOLLOW) == E_LOOP);
+    assert(kz_open(r, t, "d/ln", 0) == E_NOENT);
+    assert(kz_open(r, t, "dl/f", KZ_O_NOFOLLOW) == 0);
+    assert(kz_open(r, t, "dl", KZ_O_NOFOLLOW | KZ_O_DIRECTORY) == E_NOTDIR);
+    assert(kz_open(r, t, "d/none", KZ_O_NOFOLLOW) == E_NOENT);
+    kz_end(r);
+}
+
+test "open O_NOFOLLOW: a refused open truncates nothing and creates nothing; bits past 32 of flags" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    I64 made = fs.created_count();
+    assert(kz_open(r, t, "d/lf", KZ_O_NOFOLLOW | KZ_O_TRUNC | 1) == E_LOOP);
+    assert(kz_size(r, t, "d/f") == 3);
+    assert(kz_open(r, t, "d/ln", KZ_O_NOFOLLOW | KZ_O_CREAT | 1) == E_LOOP);
+    assert(kz_size(r, t, "d/nothing") == E_NOENT && fs.created_count() == made);
+    assert(kz_open(r, t, "d/ln", KZ_O_NOFOLLOW | KZ_O_CREAT | KZ_O_TRUNC | KZ_O_DIRECTORY | 2) == E_NOTDIR);
+    assert(fs.created_count() == made);
+    // Linux reads flags as an int: a bit past 32 changes nothing, and O_NOFOLLOW still holds beside one
+    assert(kz_open(r, t, "d/lf", 0x100000000 | KZ_O_NOFOLLOW) == E_LOOP);
+    assert(kz_open(r, t, "d/lf", 0x100000000) == 0);
+    assert(kz_open(r, t, "d/f/", KZ_O_NOFOLLOW) == E_NOTDIR);
+    assert(kz_open(r, t, "d/lf/", KZ_O_NOFOLLOW) == E_NOTDIR);
+    kz_end(r);
+}
+
+test "open O_NOFOLLOW: a bad path pointer is -EFAULT with every flag beside it, and creates nothing" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 made = fs.created_count();
+    U64[5] fl = [KZ_O_NOFOLLOW, KZ_O_NOFOLLOW | KZ_O_CREAT | 2, KZ_O_NOFOLLOW | KZ_O_CREAT | KZ_O_EXCL | 2,
+                 KZ_O_NOFOLLOW | KZ_O_DIRECTORY, KZ_O_NOFOLLOW | KZ_O_TRUNC | 1];
+    for f in 0..5 {
+        for b in 0..KZ_BAD_PTRS {
+            U64 path = kz_bad_ptr(b, 1);
+            if (path != KZ_RO && path != KZ_GAP - 1) {
+                assert(kz_call(r, NR_OPEN, path, fl[f], 0x1A4, 0, 0, 0) == E_FAULT);
+                assert(kz_call(r, 257, AT_FDCWD as U64, path, fl[f], 0x1A4, 0, 0) == E_FAULT);
+            }
+        }
+    }
+    assert(fs.created_count() == made && kz_kept_outside(r, 0, 0));
+    kz_end(r);
+}
+
+test "rename FS-2: Linux's answers for a directory into itself, the same name, a dot, and kinds that differ" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    _ = kz_tpath(r, 0, t, "d/sub");
+    assert(kz_call(r, NR_MKDIR, kz_at(0), 0x1ED, 0, 0, 0, 0) == 0);
+    assert(kz_rename(r, t, "d", "d/sub/x") == E_INVAL);
+    assert(kz_rename(r, t, "d/lf", "d/lf") == 0);
+    assert(kz_rename(r, t, ".", "x") == E_BUSY);
+    assert(kz_rename(r, t, "d/f", "d/sub") == E_ISDIR);
+    assert(kz_rename(r, t, "d/sub", "d/f") == E_NOTDIR);
+    assert(kz_rename(r, t, "d/f/", "d/g") == E_NOTDIR);
+    assert(kz_rename(r, t, "d/none", "d/g") == E_NOENT);
+    assert(kz_size(r, t, "d/f") == 3);
+    kz_end(r);
+}
+
+test "rename FS-2: no write on a directory is -EACCES; in a sticky directory only the entry's uid or the directory's" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    I64 u = kz_proc(1000, fs.GRANT_ALL, 0);
+    _ = kz_tpath(u, 0, t, "s/mine");
+    I64 fd = kz_call(u, NR_OPEN, kz_at(0), 0x41, 0x1A4, 0, 0, 0);
+    assert(fd >= 3);
+    assert(kz_call(u, 3, fd as U64, 0, 0, 0, 0, 0) == 0);
+    assert(kz_rename(u, t, "d/f", "d/g") == E_ACCES);                 // d is uid 0's, 0755
+    I64 a = kz_rename(u, t, "s/root", "s/x");                         // not its entry, not its directory
+    I64 b = kz_rename(u, t, "s/mine", "s/root");                      // over another's entry
+    assert((a == E_PERM || a == E_ACCES) && (b == E_PERM || b == E_ACCES));
+    assert(kz_size(u, t, "s/root") == 0 && kz_size(u, t, "s/x") == E_NOENT && kz_size(u, t, "s/mine") == 0);
+    assert(kz_rename(u, t, "s/mine", "s/mine2") == 0);                // its own entry
+    assert(kz_rename(r, t, "s/mine2", "s/r2") == 0);                  // the directory's uid
+    kz_end(u);
+    kz_end(r);
+}
+
+test "rename FS-2: a bad pointer on either side is -EFAULT, a device on either side -EXDEV, and nothing moves" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    _ = kz_tpath(r, 2, t, "d/f");
+    for b in 0..KZ_BAD_PTRS {
+        U64 bad = kz_bad_ptr(b, 1);
+        if (bad != KZ_RO && bad != KZ_GAP - 1) {
+            assert(kz_call(r, NR_RENAME, bad, kz_at(2), 0, 0, 0, 0) == E_FAULT);
+            assert(kz_call(r, NR_RENAME, kz_at(2), bad, 0, 0, 0, 0) == E_FAULT);
+            assert(kz_call(r, 316, AT_FDCWD as U64, kz_at(2), AT_FDCWD as U64, bad, 0, 0) == E_FAULT);
+        }
+    }
+    _ = kz_path(r, 3, "/dev/fb0");
+    assert(kz_call(r, NR_RENAME, kz_at(2), kz_at(3), 0, 0, 0, 0) == E_XDEV);
+    assert(kz_call(r, NR_RENAME, kz_at(3), kz_at(2), 0, 0, 0, 0) == E_XDEV);
+    assert(kz_call(r, 316, AT_FDCWD as U64, kz_at(2), AT_FDCWD as U64, kz_at(3), 1, 0) == E_INVAL);   // flags
+    assert(kz_size(r, t, "d/f") == 3);
+    kz_end(r);
+}
+// SPDX-License-Identifier: Apache-2.0

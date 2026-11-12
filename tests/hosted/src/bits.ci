@@ -1,0 +1,25 @@
+// tests/hosted/src/bits.ci: src/bits.ci for the hosted builds (unit FB, docs/specs/2026-11-08-fb-frame-bitmap.md,
+// ruling FB-2 A). The same two functions over words in module state, so tests/src_test.ci and tests/mem_twin.ci run
+// src/frames.ci with no extern; check.sh builds them from a copy of the tree with this file at src/bits.ci. The
+// kernel's bitmap lies at physical address `at`; here there is one store, which src/frames.ci writes whole whenever
+// it places the bitmap, so `at` changes nothing.
+
+U64[32640] words;
+
+export U64 word(U64 at, I64 i) {
+    _ = at;
+    return words[i];
+}
+
+export void read(U64 at, I64 i, inout U64[_] dst) {
+    _ = at;
+    for k in 0..len(dst) {
+        dst[k] = words[i + k];
+    }
+}
+
+export void set(U64 at, I64 i, U64 v) {
+    _ = at;
+    words[i] = v;
+}
+// SPDX-License-Identifier: Apache-2.0

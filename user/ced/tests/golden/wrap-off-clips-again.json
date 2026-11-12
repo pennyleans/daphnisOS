@@ -1,0 +1,35 @@
+{
+  "id": "wrap-off-clips-again",
+  "rules": [
+    "KEY-10",
+    "VIEW-2"
+  ],
+  "text": "the quick brown fox jumps over\nend",
+  "size": [
+    6,
+    20
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "17",
+    "17"
+  ],
+  "expect": {
+    "text": "the quick brown fox jumps over\nend",
+    "sel": [
+      0,
+      0
+    ],
+    "screen": [
+      "the quick brown fox",
+      "end",
+      "",
+      "",
+      " x  wrap off    1:1",
+      "^S save  ^Q quit"
+    ]
+  }
+}

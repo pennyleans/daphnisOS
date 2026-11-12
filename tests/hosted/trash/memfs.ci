@@ -1,0 +1,278 @@
+// tests/hosted/trash/memfs.ci: an in-memory volume for the hosted Trash test, under the stand-ins of shctl, corectl
+// and dirctl, so the real user/ci/trashfs.ci and user/ci/trash.ci run over it. Up to N entries, each a directory, a
+// file (320 of its bytes kept) or a link (a name only), under paths of up to L bytes. Paths outside /home act as the
+// image tree: a rename across is -EXDEV and a write there -EROFS. The test sets HOME, the clock, a rename failure.
+
+const I64 N = 200;
+const I64 L = 300;
+U8[60000] pth;
+I64[200] pl;
+I64[200] kd;                          // 0 free, 1 directory, 2 file, 3 link
+U8[64000] dat;
+I64[200] dl;
+U8[512] hm;
+I64 hmn = 0;
+I64 clock = 0;
+Bool fail_rename = false;
+I64[8] fd_ent;                        // an open file's entry, -1 free
+I64[8] fd_at;                         // its read offset
+
+Bool eq(I64 i, in U8[_] p) {
+    if (pl[i] != len(p)) { return false; }
+    for k in 0..len(p) {
+        if (pth[L * i + k] != p[k]) { return false; }
+    }
+    return true;
+}
+
+export I64 find(in U8[_] p) {
+    if (len(p) == 1 && p[0] == '/') { return N; }        // the root, always a directory
+    for i in 0..N {
+        if (kd[i] != 0 && eq(i, p)) { return i; }
+    }
+    return 0 - 1;
+}
+
+Bool on_volume(in U8[_] p) {
+    if (len(p) < 5) { return false; }
+    for k in 0..5 {
+        if (p[k] != b"/home"[k]) { return false; }
+    }
+    return len(p) == 5 || p[5] == '/';
+}
+
+I64 parent_len(in U8[_] p) {
+    I64 k = len(p);
+    while (k > 0 && p[k - 1] != '/') { k = k - 1; }
+    if (k <= 1) { return 1; }
+    return k - 1;
+}
+
+// Whether p's parent is a directory, a link to one followed as the kernel resolves a path (one level here).
+Bool parent_dir(in U8[_] p) {
+    I64 q = parent_len(p);
+    I64 i = find(p[0..q]);
+    return i == N || (i >= 0 && (kd[i] == 1 || (kd[i] == 3 && through(p[0..q]) == 1)));
+}
+
+I64 slot() {
+    for i in 0..N {
+        if (kd[i] == 0) { return i; }
+    }
+    return 0 - 1;
+}
+
+export void reset() {
+    for i in 0..N { kd[i] = 0; }
+    for f in 0..8 { fd_ent[f] = 0 - 1; }
+    fail_rename = false;
+    clock = 0;
+    hmn = 0;
+}
+
+export void set_home(in U8[_] h) {
+    hmn = len(h);
+    for k in 0..hmn { hm[k] = h[k]; }
+}
+
+export I64 home(inout U8[_] buf) {
+    for k in 0..hmn { buf[k] = hm[k]; }
+    return hmn;
+}
+
+export void set_clock(I64 s) { clock = s; }
+export I64 now_ns() { return clock * 1000000000; }
+export void set_fail_rename(Bool on) { fail_rename = on; }
+
+// A test's entry: a directory (k 1), a file (k 2) holding d, or a link (k 3), at p.
+export void add(in U8[_] p, I64 k, in U8[_] d) {
+    I64 i = slot();
+    pl[i] = len(p);
+    for q in 0..len(p) { pth[L * i + q] = p[q]; }
+    kd[i] = k;
+    dl[i] = len(d);
+    for q in 0..len(d) { dat[320 * i + q] = d[q]; }
+}
+
+// What a link at p names, one level (its data is its target's path): 0 nothing, 1 a directory, 2 a file, 3 a link;
+// what p is when it is no link.
+export I64 through(in U8[_] p) {
+    I64 i = find(p);
+    if (i < 0 || i == N || kd[i] != 3) { return kind(p); }
+    if (dl[i] == 0) { return 0; }
+    return kind(dat[320 * i..320 * i + dl[i]]);
+}
+
+// 0 nothing, 1 a directory, 2 a file, 3 a link (never followed).
+export I64 kind(in U8[_] p) {
+    I64 i = find(p);
+    if (i == N) { return 1; }
+    if (i < 0) { return 0; }
+    return kd[i];
+}
+
+export I64 mkdir(in U8[_] p) {
+    if (!on_volume(p)) { return 0 - 30; }
+    if (find(p) >= 0) { return 0 - 17; }
+    if (!parent_dir(p)) { return 0 - 2; }
+    add(p, 1, b"");
+    return 0;
+}
+
+Bool under(I64 i, in U8[_] p) {
+    I64 n = len(p);
+    if (pl[i] < n) { return false; }
+    for k in 0..n {
+        if (pth[L * i + k] != p[k]) { return false; }
+    }
+    return pl[i] == n || pth[L * i + n] == '/';
+}
+
+export I64 rename(in U8[_] a, in U8[_] b) {
+    if (fail_rename) { return 0 - 13; }
+    if (!on_volume(a) || !on_volume(b)) { return 0 - 18; }
+    I64 i = find(a);
+    if (i < 0) { return 0 - 2; }
+    if (!parent_dir(b)) { return 0 - 2; }
+    if (len(b) > L) { return 0 - 36; }
+    I64 t = find(b);
+    if (t >= 0) {
+        if (kd[t] == 1 || kd[i] == 1) { return 0 - 39; }
+        kd[t] = 0;                                         // a file replaced, as POSIX does
+    }
+    I64 an = len(a);
+    for j in 0..N {
+        if (kd[j] != 0 && under(j, a)) {
+            I64 m = len(b) + pl[j] - an;
+            if (m > L) { return 0 - 36; }
+        }
+    }
+    for j in 0..N {
+        if (kd[j] != 0 && under(j, a)) {
+            U8[300] np;
+            I64 m = len(b) + pl[j] - an;
+            for q in 0..len(b) { np[q] = b[q]; }
+            for q in an..pl[j] { np[len(b) + q - an] = pth[L * j + q]; }
+            for q in 0..m { pth[L * j + q] = np[q]; }
+            pl[j] = m;
+        }
+    }
+    return 0;
+}
+
+export I64 unlink(in U8[_] p) {
+    I64 i = find(p);
+    if (i < 0) { return 0 - 2; }
+    if (kd[i] == 1) { return 0 - 21; }
+    kd[i] = 0;
+    return 0;
+}
+
+export I64 rmdir(in U8[_] p) {
+    I64 i = find(p);
+    if (i < 0) { return 0 - 2; }
+    if (kd[i] != 1) { return 0 - 20; }
+    for j in 0..N {
+        if (j != i && kd[j] != 0 && under(j, p)) { return 0 - 39; }
+    }
+    kd[i] = 0;
+    return 0;
+}
+
+// p's names as readdir gives them, . and .. first, each ended by a 0 byte. whole: all of them or -E2BIG (shctl's
+// sh_dirents), else the first ones that fit (dirctl's dir_names).
+export I64 names(in U8[_] p, inout U8[_] buf, Bool whole) {
+    I64 d = find(p);
+    if (d < 0) { return 0 - 2; }
+    if (d != N && kd[d] != 1) { return 0 - 20; }
+    I64 n = 0;
+    if (len(buf) < 5) { return 0 - 7; }
+    buf[0] = '.';
+    buf[1] = 0;
+    buf[2] = '.';
+    buf[3] = '.';
+    buf[4] = 0;
+    n = 5;
+    I64 pn = len(p);
+    for j in 0..N {
+        if (kd[j] != 0 && j != d && under(j, p)) {
+            Bool child = true;
+            for q in pn + 1..pl[j] {
+                if (pth[L * j + q] == '/') { child = false; }
+            }
+            I64 l = pl[j] - pn - 1;
+            if (child) {
+                if (n + l + 1 > len(buf)) {
+                    if (whole) { return 0 - 7; }   // E2BIG
+                    return n;
+                }
+                for q in 0..l { buf[n + q] = pth[L * j + pn + 1 + q]; }
+                buf[n + l] = 0;
+                n = n + l + 1;
+            }
+        }
+    }
+    return n;
+}
+
+export I64 open(in U8[_] p, I64 flags) {
+    I64 i = find(p);
+    if (flags != 0) {
+        if (!on_volume(p)) { return 0 - 30; }
+        if (i < 0) {
+            if (!parent_dir(p)) { return 0 - 2; }
+            add(p, 2, b"");
+            i = find(p);
+        }
+        dl[i] = 0;                                         // O_TRUNC
+    }
+    if (i < 0 || i == N) { return 0 - 2; }
+    if (kd[i] != 2) { return 0 - 21; }
+    for f in 0..8 {
+        if (fd_ent[f] < 0) {
+            fd_ent[f] = i;
+            fd_at[f] = 0;
+            return 3 + f;
+        }
+    }
+    return 0 - 24;
+}
+
+export I64 read(I64 fd, inout U8[_] buf) {
+    I64 f = fd - 3;
+    if (f < 0 || f >= 8 || fd_ent[f] < 0) { return 0 - 9; }
+    I64 i = fd_ent[f];
+    I64 n = dl[i] - fd_at[f];
+    if (n > len(buf)) { n = len(buf); }
+    for k in 0..n { buf[k] = dat[320 * i + fd_at[f] + k]; }
+    fd_at[f] = fd_at[f] + n;
+    return n;
+}
+
+export I64 write(I64 fd, in U8[_] data) {
+    I64 f = fd - 3;
+    if (f < 0 || f >= 8 || fd_ent[f] < 0) { return 0 - 9; }
+    I64 i = fd_ent[f];
+    if (dl[i] + len(data) > 320) { return 0 - 27; }
+    for k in 0..len(data) { dat[320 * i + dl[i] + k] = data[k]; }
+    dl[i] = dl[i] + len(data);
+    return len(data);
+}
+
+export I64 close(I64 fd) {
+    I64 f = fd - 3;
+    if (f < 0 || f >= 8 || fd_ent[f] < 0) { return 0 - 9; }
+    fd_ent[f] = 0 - 1;
+    return 0;
+}
+
+// The test's look at a file's bytes.
+export I64 content(in U8[_] p, inout U8[_] buf) {
+    I64 i = find(p);
+    if (i < 0 || i == N) { return 0 - 2; }
+    I64 n = dl[i];
+    if (n > len(buf)) { n = len(buf); }
+    for k in 0..n { buf[k] = dat[320 * i + k]; }
+    return n;
+}
+// SPDX-License-Identifier: Apache-2.0

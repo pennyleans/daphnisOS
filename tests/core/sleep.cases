@@ -1,0 +1,11 @@
+# tests/core/sleep.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6).
+0 | - | -
+1 | - | -
+00 | - | -
+4294967296 | - | D-3
+x | - | D-3
++1 | - | D-3
+ | - | D-3
+-- 0 | - | D-43
+0 1 | - | D-43
+-1 | - | D-1

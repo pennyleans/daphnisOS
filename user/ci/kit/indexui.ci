@@ -1,0 +1,631 @@
+// user/ci/kit/indexui.ci: Index's chrome as design note 51 draws it (DN-55, frames 3 and 4): the toolbar, the sidebar
+// and the status bar, a row at a time at 1x (the desk shows Index's surface at its scale), and which part a point is
+// on. It keeps what the program tells it (the set_ calls), reads no file and no device, so tests/ff/index_proof.ci
+// draws it hosted. The body between the three is the program's.
+//
+// Toolbar, 48 high: Back, Forward and Up (32 px, SURF1, radius 6, at 40 percent when they cannot act); the crumbs
+// pill (MANTLE, radius 6): the root's symbol, then the crumbs split by 10 px chevrons, the last in NAME_BOLD and
+// the others dim, or with the keyboard (Ctrl+L) the path to edit; the view switch (Grid, List: a 2 segment pill,
+// FILL on the active one); Sort (the grid only: its key's word); Search (180 wide). Controls are 4 apart, 12 in from
+// each side; a 4 px space stands between Up and the pill and between the pill and the switch. Sidebar, 184 wide,
+// SURF2: 32 px pill rows of 16 px symbols, 2 apart, its groups (home, the disk, the Trash) 12 apart; the place shown
+// FILL with its name in NAME_BOLD and its symbol mono, both ON_FILL. Status bar, 28 high, SURF2: the count in SMALL, dim, 16 in.
+// Narrow, a surface under 640 (DN-55, design note 65, frame 48): the sidebar folds behind a 28 x 28 sidebar button
+// (SURF1, radius 6) at the toolbar's left, which lays it over the body with the High shadow (the program draws it
+// there, side_row then laid_row's shadow); the body starts at x 0; Sort and Empty Trash hide; Search becomes a 32 px
+// button, and a typed query shows in the crumbs pill's place, the button FILL while it does.
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.symbols;
+import user.ci.kit.shade;
+import user.ci.kit.indextrash;   // frame 32: Empty Trash in Sort's slot, in the Trash
+
+export const I64 BAR_H = 48;        // the toolbar
+export const I64 SIDE_W = 184;      // the sidebar
+export const I64 STATUS_H = 28;     // the status bar
+const I64 C = 32;                   // a control's side
+const I64 G = 4;                    // between controls
+const I64 PAD = 12;                 // the toolbar's sides
+const I64 CY = 8;                   // a control's top
+const I64 SEARCH_W = 180;
+const I64 SEG = 36;                 // a segment of the view switch
+const I64 ROW = 32;                 // a sidebar row
+const I64 DIM = 102;                // 40 percent: a control that cannot act
+const I64 BASE = 21;                // a 13 px line's baseline under the top of its 32 px control
+const I64 CRUMBS = 32;
+const I64 PLACES = 8;
+const I64 FOLD = 28;                // the narrow form's sidebar button
+const I64 SHADOW = 3;               // High: the laid sidebar's shadow (frame 48's SH)
+export const I64 NARROW = 640;      // a surface narrower than this folds the sidebar
+
+// What a point is on (hit).
+export const I64 NOTHING = 0;
+export const I64 BACK = 1;
+export const I64 FORWARD = 2;
+export const I64 UP = 3;
+export const I64 PILL = 4;          // the pill's space past the crumbs: Ctrl+L's edit
+export const I64 GRID = 5;
+export const I64 LIST = 6;
+export const I64 SORT = 7;
+export const I64 SEARCH = 8;
+export const I64 BODY = 9;
+export const I64 STATUS = 10;
+export const I64 SIDE = 11;         // the sidebar's space past its rows
+export const I64 EMPTY_TRASH = 12;  // frame 32: the Trash's Empty Trash button, in Sort's slot
+export const I64 SIDEBAR = 13;      // the narrow form's sidebar button
+export const I64 CRUMB = 100;       // CRUMB + k: crumb k, 0 the root
+export const I64 PLACE = 200;       // PLACE + k: sidebar row k
+
+// A root of the crumbs and a place: each its symbol.
+export const I64 HOME = 0;
+export const I64 DOCUMENTS = 1;
+export const I64 DOWNLOADS = 2;
+export const I64 PICTURES = 3;
+export const I64 DISK = 4;          // Daphnis: the whole tree
+export const I64 TRASH = 5;
+
+I64 sw = 0;
+I64 sh = 0;
+Bool live_b = false;
+Bool live_f = false;
+Bool live_u = false;
+I64 root = HOME;
+U8[2048] cr_text;                   // crumb 0 is the root's word
+I64[32] cr_at;
+I64[32] cr_len;
+I64 crn = 0;
+Bool listing = false;
+Bool trash_on = false;              // frame 32: the Trash is shown: Empty Trash in Sort's slot, in both views
+Bool trash_live = false;            // and the Trash holds an item (else the button is at 40 percent)
+U8[16] sort_word;
+I64 sort_n = 0;
+U8[160] qt;
+I64 qn = 0;
+Bool editing = false;
+Bool edit_all = false;
+U8[256] et;
+I64 en = 0;
+U8[512] pl_text;
+I64[8] pl_at;
+I64[8] pl_len;
+I64[8] pl_kind;
+I64 pln = 0;
+I64 psel = -1;
+I64 items = 0;
+I64 chosen = 0;
+Bool laid = false;                  // narrow: the sidebar lies over the body
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- what the program tells it ---
+
+export void set_size(I64 w, I64 h) {
+    sw = w;
+    sh = h;
+    if (!narrow()) { laid = false; }
+}
+
+// The narrow form: the sidebar folded behind its button.
+export Bool narrow() { return sw < NARROW; }
+
+// Narrow: whether the sidebar lies over the body (the button, a place chosen, Esc or a click off it say).
+export void set_laid(Bool on) { laid = on && narrow(); }
+export Bool is_laid() { return laid; }
+
+// The body's left edge: past the sidebar, or 0 when it folds.
+export I64 body_x() {
+    if (narrow()) { return 0; }
+    return SIDE_W;
+}
+
+// Whether Back, Forward and Up can act.
+export void set_nav(Bool b, Bool f, Bool u) {
+    live_b = b;
+    live_f = f;
+    live_u = u;
+}
+
+// The crumbs: root r (HOME, TRASH or DISK) with its word, then each name added in order.
+export void crumbs(I64 r, in U8[_] word) {
+    root = r;
+    crn = 0;
+    lost = 0;
+    crumb(word);
+}
+
+// A crumb past CRUMBS names, or past the store's 2048 bytes, drops the first name after the root, so the folder shown
+// is always the last crumb (Index audit); dropped() says how many went, for a click's path.
+export void crumb(in U8[_] name) {
+    I64 n = len(name);
+    if (n > 2048 - 64) { n = 2048 - 64; }
+    while (crn > 1 && (crn == CRUMBS || cr_at[crn - 1] + cr_len[crn - 1] + n > 2048)) { drop_first(); }
+    I64 at = 0;
+    if (crn > 0) { at = cr_at[crn - 1] + cr_len[crn - 1]; }
+    if (at + n > 2048) { return; }
+    for k in 0..n { cr_text[at + k] = name[k]; }
+    cr_at[crn] = at;
+    cr_len[crn] = n;
+    crn = crn + 1;
+}
+
+I64 lost = 0;
+
+// The first name after the root out of the store, the others moved down.
+void drop_first() {
+    I64 w = cr_len[1];
+    I64 end = cr_at[crn - 1] + cr_len[crn - 1];
+    for k in cr_at[1] + w..end { cr_text[k - w] = cr_text[k]; }
+    for k in 1..crn - 1 {
+        cr_at[k] = cr_at[k + 1] - w;
+        cr_len[k] = cr_len[k + 1];
+    }
+    crn = crn - 1;
+    lost = lost + 1;
+}
+
+// How many names after the root crumbs() and crumb() dropped (crumb k past the root is name k + dropped()).
+export I64 dropped() { return lost; }
+
+// The path pill has the keyboard (Ctrl+L): its text, selected whole or not; off with set_edit(false, ...).
+export void set_edit(Bool on, Bool all, in U8[_] t) {
+    editing = on;
+    edit_all = all;
+    en = len(t);
+    if (en > 256) { en = 256; }
+    for k in 0..en { et[k] = t[k]; }
+}
+
+// List view or Grid, and the Sort button's word (Name, Type, Size).
+export void set_view(Bool list, in U8[_] word) {
+    listing = list;
+    sort_n = len(word);
+    if (sort_n > 16) { sort_n = 16; }
+    for k in 0..sort_n { sort_word[k] = word[k]; }
+}
+
+// Search's text; empty shows the word Search, dim.
+export void set_query(in U8[_] q) {
+    qn = len(q);
+    if (qn > 160) { qn = 160; }
+    for k in 0..qn { qt[k] = q[k]; }
+}
+
+export void places_clear() {
+    pln = 0;
+    psel = -1;
+}
+
+// A sidebar row: its kind (HOME .. TRASH: the symbol and the group) and its name.
+export void place(I64 kind, in U8[_] name) {
+    if (pln == PLACES) { return; }
+    I64 at = 0;
+    if (pln > 0) { at = pl_at[pln - 1] + pl_len[pln - 1]; }
+    I64 n = len(name);
+    if (at + n > 512) { return; }
+    for k in 0..n { pl_text[at + k] = name[k]; }
+    pl_at[pln] = at;
+    pl_len[pln] = n;
+    pl_kind[pln] = kind;
+    pln = pln + 1;
+}
+
+// The place shown (FILL), or -1.
+export void set_place(I64 k) { psel = k; }
+
+// The status bar's count: the items shown and how many are chosen.
+export void set_status(I64 n, I64 sel) {
+    items = n;
+    chosen = sel;
+}
+
+// Frame 32: whether the folder shown is the Trash (on), and whether it holds an item (live): the toolbar's Sort slot
+// then holds Empty Trash, in the Grid and the List alike.
+export void set_trash(Bool on, Bool live) {
+    trash_on = on;
+    trash_live = live;
+}
+
+// --- the toolbar's places ---
+
+I64 btn_x(I64 b) {
+    if (narrow()) { return PAD + FOLD + G + (C + G) * b; }
+    return PAD + (C + G) * b;
+}
+I64 search_w() {
+    if (narrow()) { return C; }
+    return SEARCH_W;
+}
+I64 search_x0() { return sw - PAD - search_w(); }
+I64 sort_w() {
+    if (trash_on) { return indextrash.button_w(); }
+    return 10 + 16 + 8 + ctext.width(sort_word, sort_n, faces.BODY, 1) + 10;
+}
+Bool slot_shown() { return !narrow() && (trash_on || !listing); }   // the List sorts by its headers; the Trash's
+                                                                    // button stays; narrow, both hide
+I64 sort_x0() {
+    if (!slot_shown()) { return search_x0(); }
+    return search_x0() - G - sort_w();
+}
+I64 view_x0() {
+    if (!slot_shown()) { return search_x0() - G - (2 * SEG + 4); }
+    return sort_x0() - G - (2 * SEG + 4);
+}
+I64 pill_x0() { return btn_x(2) + C + 3 * G; }
+I64 pill_x1() { return view_x0() - 3 * G; }
+
+// A place's symbol: in color, or mono on the chosen row (an accent would sink into FILL in the light theme).
+I64 sym_of(I64 kind, Bool mono) {
+    if (kind == HOME) { return symbols.HOME_MONO; }
+    if (kind == DOCUMENTS && mono) { return symbols.FILE_TEXT_MONO; }
+    if (kind == DOCUMENTS) { return symbols.FILE_TEXT; }
+    if (kind == DOWNLOADS && mono) { return symbols.DOWNLOAD_MONO; }
+    if (kind == DOWNLOADS) { return symbols.DOWNLOAD; }
+    if (kind == PICTURES && mono) { return symbols.IMAGE_MONO; }
+    if (kind == PICTURES) { return symbols.IMAGE; }
+    if (kind == DISK && mono) { return symbols.DISK_MONO; }
+    if (kind == DISK) { return symbols.DISK; }
+    if (mono) { return symbols.TRASH_MONO; }
+    return symbols.TRASH;
+}
+
+I64 crumb_w(I64 k) {
+    I64 f = faces.BODY;
+    if (k == crn - 1) { f = faces.NAME_BOLD; }
+    return ctext.width(cr_text[cr_at[k]..cr_at[k] + cr_len[k]], cr_len[k], f, 1);
+}
+
+// The first crumb drawn: the last crumbs that fit after the root's symbol, the root's word first when all fit.
+I64 first_crumb() {
+    I64 room = pill_x1() - 12 - (pill_x0() + 12 + 16 + 8);
+    I64 used = 0;
+    I64 k = crn;
+    while (k > 0) {
+        I64 w = crumb_w(k - 1);
+        if (k < crn) { w = w + 8 + 10 + 8; }
+        if (used + w > room && k < crn) { return k; }
+        used = used + w;
+        k = k - 1;
+    }
+    if (lost > 0 && crn > 1) { return 1; }   // names were dropped: the root's word goes, a chevron says so
+    return 0;
+}
+
+// Crumb k's left edge, or -1 when it is not drawn.
+I64 crumb_x(I64 k) {
+    I64 f = first_crumb();
+    if (k < f) { return -1; }
+    I64 x = pill_x0() + 12 + 16 + 8;
+    for j in f..k { x = x + crumb_w(j) + 8 + 10 + 8; }
+    return x;
+}
+
+// The place k's top in the sidebar: its groups (home, the disk, the Trash) 12 apart.
+I64 place_y(I64 k) {
+    I64 y = BAR_H + 12;
+    for j in 0..k {
+        y = y + ROW + 2;
+        if (group(pl_kind[j + 1]) != group(pl_kind[j])) { y = y + 12; }
+    }
+    return y;
+}
+
+I64 group(I64 kind) {
+    if (kind == DISK) { return 1; }
+    if (kind == TRASH) { return 2; }
+    return 0;
+}
+
+// --- drawing ---
+
+// The 10 px chevron between crumbs (frame 3: from (3.5, 2) to (6.5, 5) to (3.5, 8), stroked 1.5 with round ends)
+// in c from (x0, y0): each pixel's 16 samples within 3/4 of a segment, in eighths.
+void chevron(inout U32[_] row, I64 y, I64 x0, I64 y0, U32 c) {
+    if (y < y0 || y >= y0 + 10) { return; }
+    I64 py = y - y0;
+    for px in 0..10 {
+        I64 n = 0;
+        for j in 0..4 {
+            for i in 0..4 {
+                I64 sx = 8 * px + 2 * i + 1;
+                I64 sy = 8 * py + 2 * j + 1;
+                if (near(sx, sy, 28, 16, 52, 40) || near(sx, sy, 52, 40, 28, 64)) { n = n + 1; }
+            }
+        }
+        if (n > 0 && x0 + px >= 0 && x0 + px < len(row)) {
+            row[x0 + px] = blend.mix_px(row[x0 + px], c, n * 16);
+        }
+    }
+}
+
+// Whether (px, py) is within 6 (3/4 of a pixel, in eighths) of the segment from (ux, uy) to (vx, vy).
+Bool near(I64 px, I64 py, I64 ux, I64 uy, I64 vx, I64 vy) {
+    I64 dx = vx - ux;
+    I64 dy = vy - uy;
+    I64 wx = px - ux;
+    I64 wy = py - uy;
+    I64 c1 = wx * dx + wy * dy;
+    I64 c2 = dx * dx + dy * dy;
+    if (c1 <= 0) { return wx * wx + wy * wy <= 36; }
+    if (c1 >= c2) { return (px - vx) * (px - vx) + (py - vy) * (py - vy) <= 36; }
+    return (wx * wx + wy * wy) * c2 - c1 * c1 <= 36 * c2;
+}
+
+void sym(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 k, I64 t, I64 a) {
+    symbols.row_at(row, y, x0, y0, k, 1, tok(t), tokens.theme(), a);
+}
+
+void button(inout U32[_] row, I64 y, I64 b, I64 k, Bool live) {
+    I64 x = btn_x(b);
+    U32 bg = tok(tokens.SURF1);
+    I64 a = 256;
+    if (!live) {
+        bg = blend.mix_px(tok(tokens.PAPER), bg, DIM);
+        a = DIM;
+    }
+    shape.rounded(row, y, x, CY, x + C, CY + C, 6, bg);
+    sym(row, y, x + 8, CY + 8, k, tokens.INK, a);
+}
+
+void pill_row(inout U32[_] row, I64 y) {
+    I64 x0 = pill_x0();
+    I64 x1 = pill_x1();
+    shape.rounded(row, y, x0, CY, x1, CY + C, 6, tok(tokens.MANTLE));
+    if (editing) {
+        I64 te = x1 - 12;
+        if (edit_all && en > 0) {
+            I64 pw = ctext.width(et, en, faces.PATH, 1);
+            if (x0 + 12 + pw > te) { pw = te - x0 - 12; }
+            shape.rounded(row, y, x0 + 10, CY + 6, x0 + 14 + pw, CY + 26, 4, tok(tokens.FILL));
+            I64 e = ctext.text(row, y, x0 + 12, CY + BASE, te, et, en, tok(tokens.ON_FILL), faces.PATH, 1);
+        } else {
+            I64 e = ctext.text(row, y, x0 + 12, CY + BASE, te, et, en, tok(tokens.INK), faces.PATH, 1);
+            draw.rect(row, y, e + 1, CY + 7, e + 2, CY + 25, tok(tokens.INK));
+        }
+        shape.ring(row, y, x0, CY, x1, CY + C, 6, 2, tok(tokens.ULTRAMARINE));
+        return;
+    }
+    I64 rk = symbols.HOME_MONO;
+    if (root == TRASH) { rk = symbols.TRASH_MONO; }
+    if (root == DISK) { rk = symbols.DISK_MONO; }
+    sym(row, y, x0 + 12, CY + 8, rk, tokens.INK_DIM, 256);
+    I64 f = first_crumb();
+    I64 x = x0 + 12 + 16 + 8;
+    if (f > 0) {
+        chevron(row, y, x, CY + 11, tok(tokens.INK_DIM));
+        x = x + 10 + 8;
+    }
+    for k in f..crn {
+        I64 t = tokens.INK_DIM;
+        I64 fc = faces.BODY;
+        if (k == crn - 1) {
+            t = tokens.INK;
+            fc = faces.NAME_BOLD;
+        }
+        I64 e = ctext.text(row, y, x, CY + BASE, x1 - 12, cr_text[cr_at[k]..cr_at[k] + cr_len[k]], cr_len[k], tok(t),
+                           fc, 1);
+        x = x + crumb_w(k);
+        if (k < crn - 1) {
+            chevron(row, y, x + 8, CY + 11, tok(tokens.INK_DIM));
+            x = x + 8 + 10 + 8;
+        }
+    }
+}
+
+void switch_row(inout U32[_] row, I64 y) {
+    I64 x = view_x0();
+    shape.rounded(row, y, x, CY, x + 2 * SEG + 4, CY + C, 16, tok(tokens.MANTLE));
+    for s in 0..2 {
+        I64 sx = x + 2 + SEG * s;
+        Bool on = (s == 1) == listing;
+        I64 t = tokens.INK;
+        if (on) {
+            shape.rounded(row, y, sx, CY + 2, sx + SEG, CY + 30, 14, tok(tokens.FILL));
+            t = tokens.ON_FILL;
+        }
+        I64 k = symbols.GRID_MONO;
+        if (s == 1) { k = symbols.LIST_MONO; }
+        sym(row, y, sx + 10, CY + 8, k, t, 256);
+    }
+}
+
+// The toolbar's row y (0 to BAR_H) across the surface.
+export void toolbar_row(inout U32[_] row, I64 y) {
+    draw.paint(row, 0, sw, tok(tokens.PAPER));
+    if (y < CY || y >= CY + C) { return; }
+    if (narrow()) {
+        I64 fy = CY + (C - FOLD) / 2;
+        U32 fb = tok(tokens.SURF1);
+        I64 ft = tokens.INK;
+        if (laid) {
+            fb = tok(tokens.FILL);
+            ft = tokens.ON_FILL;
+        }
+        shape.rounded(row, y, PAD, fy, PAD + FOLD, fy + FOLD, 6, fb);
+        sym(row, y, PAD + 6, fy + 6, symbols.SIDEBAR_MONO, ft, 256);
+    }
+    button(row, y, 0, symbols.BACK, live_b);
+    button(row, y, 1, symbols.FORWARD, live_f);
+    button(row, y, 2, symbols.UP, live_u);
+    if (narrow() && qn > 0) { query_row(row, y, pill_x0(), pill_x1()); } else { pill_row(row, y); }
+    switch_row(row, y);
+    if (slot_shown() && trash_on) {
+        indextrash.button_row(row, y, sort_x0(), CY, trash_live);
+    } else if (slot_shown()) {
+        I64 x = sort_x0();
+        shape.rounded(row, y, x, CY, x + sort_w(), CY + C, 6, tok(tokens.SURF1));
+        sym(row, y, x + 10, CY + 8, symbols.SORT_MONO, tokens.INK, 256);
+        I64 e = ctext.text(row, y, x + 34, CY + BASE, x + sort_w() - 10, sort_word, sort_n, tok(tokens.INK),
+                           faces.BODY, 1);
+    }
+    I64 s0 = search_x0();
+    if (narrow()) {
+        U32 sb = tok(tokens.MANTLE);
+        I64 st = tokens.INK_DIM;
+        if (qn > 0) {
+            sb = tok(tokens.FILL);
+            st = tokens.ON_FILL;
+        }
+        shape.rounded(row, y, s0, CY, s0 + C, CY + C, 6, sb);
+        sym(row, y, s0 + 8, CY + 8, symbols.SEARCH_MONO, st, 256);
+        return;
+    }
+    query_row(row, y, s0, s0 + SEARCH_W);
+}
+
+// The Search field from x0 to x1: the symbol dim, then the query, or the word Search dim.
+void query_row(inout U32[_] row, I64 y, I64 x0, I64 x1) {
+    shape.rounded(row, y, x0, CY, x1, CY + C, 6, tok(tokens.MANTLE));
+    sym(row, y, x0 + 10, CY + 8, symbols.SEARCH_MONO, tokens.INK_DIM, 256);
+    if (qn > 0) {
+        I64 e = ctext.text(row, y, x0 + 34, CY + BASE, x1 - 10, qt, qn, tok(tokens.INK), faces.BODY, 1);
+    } else {
+        I64 e = ctext.text(row, y, x0 + 34, CY + BASE, x1 - 10, b"Search", 6, tok(tokens.INK_DIM), faces.BODY, 1);
+    }
+}
+
+// Narrow, the laid sidebar's row y over the body: its High shadow on the body (square: radius 1, the least
+// kit/shade.ci draws; radius 0 draws none), then the sidebar (side_row).
+export void laid_row(inout U32[_] row, I64 y) {
+    if (!laid) { return; }
+    I64 th = tokens.theme();
+    I64 sd = shade.reach_side(SHADOW, th, 1);
+    shade.shade_row(row, 0, min(SIDE_W + sd, sw), y, 0, 0 - 64, SIDE_W, sh + 64, 1, SHADOW, th, 1);
+    side_row(row, y);
+}
+
+// The sidebar's row y (BAR_H to the status bar), x 0 to SIDE_W.
+export void side_row(inout U32[_] row, I64 y) {
+    draw.paint(row, 0, SIDE_W, tok(tokens.SURF2));
+    for k in 0..pln {
+        I64 t0 = place_y(k);
+        if (y >= t0 && y < t0 + ROW) {
+            I64 t = tokens.INK;
+            I64 f = faces.BODY;
+            if (k == psel) {
+                shape.rounded(row, y, 8, t0, SIDE_W - 8, t0 + ROW, 16, tok(tokens.FILL));
+                t = tokens.ON_FILL;
+                f = faces.NAME_BOLD;
+            }
+            sym(row, y, 20, t0 + 8, sym_of(pl_kind[k], k == psel), t, 256);
+            I64 e = ctext.text(row, y, 46, t0 + BASE, SIDE_W - 20, pl_text[pl_at[k]..pl_at[k] + pl_len[k]], pl_len[k],
+                               tok(t), f, 1);
+        }
+    }
+}
+
+// The status bar's row y (its last STATUS_H rows) across the surface: `N items` or `N items, M selected`.
+export void status_row(inout U32[_] row, I64 y) {
+    draw.paint(row, 0, sw, tok(tokens.SURF2));
+    U8[48] s;
+    I64 n = digits(s, 0, items);
+    n = words(s, n, b" item");
+    if (items != 1) { n = words(s, n, b"s"); }
+    if (chosen > 0) {
+        n = words(s, n, b", ");
+        n = digits(s, n, chosen);
+        n = words(s, n, b" selected");
+    }
+    I64 e = ctext.text(row, y, 16, sh - STATUS_H + 18, sw - 16, s, n, tok(tokens.INK_DIM), faces.SMALL, 1);
+}
+
+I64 words(inout U8[_] s, I64 n, in U8[_] w) {
+    for k in 0..len(w) { s[n + k] = w[k]; }
+    return n + len(w);
+}
+
+I64 digits(inout U8[_] s, I64 n, I64 v) {
+    U8[20] d;
+    I64 c = 0;
+    I64 x = v;
+    if (x < 0) { x = 0; }
+    while (c == 0 || x > 0) {
+        d[c] = ('0' as I64 + x % 10) as U8;
+        x = x / 10;
+        c = c + 1;
+    }
+    for k in 0..c { s[n + k] = d[c - 1 - k]; }
+    return n + c;
+}
+
+// --- the window's name ---
+
+I64 put(in U8[_] w, inout U8[_] dst) {
+    I64 n = len(w);
+    if (n > len(dst)) { n = len(dst); }
+    for k in 0..n { dst[k] = w[k]; }
+    return n;
+}
+
+Bool starts(in U8[_] p, I64 n, in U8[_] h) {
+    if (n < len(h)) { return false; }
+    for k in 0..len(h) {
+        if (p[k] != h[k]) { return false; }
+    }
+    return true;
+}
+
+// DN-55: the window bar's name for folder p (hdesk names an Index window by it): Daphnis for /, Home for the home h,
+// Trash for its Trash (h/.trash/items), else p's last name; into dst, its length.
+export I64 folder_name(in U8[_] p, in U8[_] h, inout U8[_] dst) {
+    I64 n = len(p);
+    while (n > 1 && p[n - 1] == '/') { n = n - 1; }
+    if (n == 1 && p[0] == '/') { return put(b"Daphnis", dst); }
+    I64 hn = len(h);
+    if (hn > 1 && starts(p, n, h)) {
+        if (n == hn) { return put(b"Home", dst); }
+        U8[13] t = b"/.trash/items";
+        if (n == hn + 13 && starts(p[hn..n], 13, t)) { return put(b"Trash", dst); }
+    }
+    I64 s = n;
+    while (s > 0 && p[s - 1] != '/') { s = s - 1; }
+    return put(p[s..n], dst);
+}
+
+// --- where a point is ---
+
+Bool in_box(I64 x, I64 y, I64 x0, I64 y0, I64 x1, I64 y1) { return x >= x0 && x < x1 && y >= y0 && y < y1; }
+
+// What (x, y) of the surface is on: a control, a crumb (CRUMB + k), a place (PLACE + k), the body or NOTHING.
+export I64 hit(I64 x, I64 y) {
+    if (y >= 0 && y < BAR_H) {
+        if (y < CY || y >= CY + C) { return NOTHING; }
+        if (narrow() && in_box(x, y, PAD, CY + (C - FOLD) / 2, PAD + FOLD, CY + (C - FOLD) / 2 + FOLD)) {
+            return SIDEBAR;
+        }
+        if (in_box(x, y, btn_x(0), 0, btn_x(0) + C, sh)) { return BACK; }
+        if (in_box(x, y, btn_x(1), 0, btn_x(1) + C, sh)) { return FORWARD; }
+        if (in_box(x, y, btn_x(2), 0, btn_x(2) + C, sh)) { return UP; }
+        if (x >= pill_x0() && x < pill_x1()) {
+            if (narrow() && qn > 0) { return SEARCH; }
+            if (editing) { return PILL; }
+            if (x < pill_x0() + 12 + 16 + 8) { return CRUMB; }
+            for k in 0..crn {
+                I64 cx = crumb_x(k);
+                if (cx >= 0 && x >= cx && x < cx + crumb_w(k)) { return CRUMB + k; }
+            }
+            return PILL;
+        }
+        I64 v = view_x0();
+        if (x >= v + 2 && x < v + 2 + SEG) { return GRID; }
+        if (x >= v + 2 + SEG && x < v + 2 + 2 * SEG) { return LIST; }
+        if (slot_shown() && trash_on && x >= sort_x0() && x < sort_x0() + sort_w()) { return EMPTY_TRASH; }
+        if (slot_shown() && !trash_on && x >= sort_x0() && x < sort_x0() + sort_w()) { return SORT; }
+        if (x >= search_x0() && x < search_x0() + search_w()) { return SEARCH; }
+        return NOTHING;
+    }
+    if (y >= sh - STATUS_H && y < sh) { return STATUS; }
+    if (y >= BAR_H && x >= 0 && x < SIDE_W && (!narrow() || laid)) {
+        for k in 0..pln {
+            I64 t0 = place_y(k);
+            if (y >= t0 && y < t0 + ROW && x >= 8 && x < SIDE_W - 8) { return PLACE + k; }
+        }
+        return SIDE;
+    }
+    if (y >= BAR_H && x >= body_x() && x < sw) { return BODY; }
+    return NOTHING;
+}
+// SPDX-License-Identifier: Apache-2.0

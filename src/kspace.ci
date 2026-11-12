@@ -1,0 +1,315 @@
+// src/kspace.ci: the address spaces of the K5 tasks, built by the kernel in cint through the view shim.
+//
+// Every task has page tables of its own: a PML4, a PDPT, a PD for the low 4 MiB whose two entries
+// point at boot.S's page tables pt and pt_high (so the image, both its windows, the stacks, the IDT and
+// the guard pages are exactly what the kernel maps, and shared), and a PD and PT for a private region at 0x40000000 with 8 page
+// slots. The tables live in frames of the pool. A task's space does not contain the pool or the rest
+// of RAM: a page is in it only if the kernel put it there, and a page is put in one space at a time.
+//
+// The invariant, checked by walk() after every turn: no frame of the pool is mapped writable in two
+// task spaces, no entry is both writable and executable, each space holds exactly the entries its
+// five tables are supposed to, and the pages the page tables show are the pages the kernel's own
+// table says the task owns. The kernel's own space is not a task space: it maps all of RAM, and the
+// tasks are ring 0 threads that cannot form a pointer, so a task cannot reach a page except through
+// page_load and page_store, which go through its tables. Ring 3 is U1's.
+
+import src.frames;
+import src.phys;
+import src.trap;
+import src.pte;
+import src.stepapi;
+import src.serial;
+import src.report;
+
+export const I64 SLOTS = 8;
+const U64 TABLE = 3;                  // present, writable
+const U64 LEAF = 0x8000000000000003;  // present, writable, no-execute
+const U64 NO_AD = 0xFFFFFFFFFFFFFF9F; // the accessed and dirty bits are the CPU's to set, not part of what a table says
+
+I64[15] tbl;    // per task the frames of its pml4, pdpt, pd0, pd1, pt1 (frame index + 1)
+I64[24] own;    // per task and slot: the frame of the page (index + 1), 0 if none
+
+U64 frame_pa(I64 f1) {
+    return frames.frame_addr(f1 - 1) as U64;
+}
+
+void write_word(U64 pa, U64 v) {
+    U64[1] w;
+    w[0] = v;
+    phys.phys_write64(pa, w);
+}
+
+U64 read_word(U64 pa) {
+    U64[1] w;
+    phys.phys_read64(pa, w);
+    return w[0];
+}
+
+void zero_frame(U64 pa) {
+    U64[64] z;
+    for i in 0..64 {
+        z[i] = 0;
+    }
+    for k in 0..8 {
+        phys.phys_write64(pa + (512 * k) as U64, z);
+    }
+}
+
+// The physical address of the PML4 of task t: what rt loads into CR3 for its steps.
+export U64 root_of(I64 t) {
+    return frame_pa(tbl[5 * t]);
+}
+
+U64 pt1_of(I64 t) {
+    return frame_pa(tbl[5 * t + 4]);
+}
+
+// Builds the five tables of task t's space and gives rt its root. 0, or a frame status.
+export I64 make_space(I64 t) {
+    for i in 0..5 {
+        I64 f = frames.alloc(1);
+        if (f < 0) {
+            return f;
+        }
+        tbl[5 * t + i] = f + 1;
+        zero_frame(frame_pa(f + 1));
+    }
+    write_word(frame_pa(tbl[5 * t]), pte.make(frame_pa(tbl[5 * t + 1]), TABLE));
+    write_word(frame_pa(tbl[5 * t + 1]), pte.make(frame_pa(tbl[5 * t + 2]), TABLE));
+    write_word(frame_pa(tbl[5 * t + 1]) + 8, pte.make(frame_pa(tbl[5 * t + 3]), TABLE));
+    write_word(frame_pa(tbl[5 * t + 2]), pte.make(trap.vm_root() + 12288, TABLE));
+    write_word(frame_pa(tbl[5 * t + 2]) + 8, pte.make(trap.vm_root() + 16384, TABLE));
+    write_word(frame_pa(tbl[5 * t + 3]), pte.make(frame_pa(tbl[5 * t + 4]), TABLE));
+    stepapi.task_space(t, root_of(t) as I64);
+    return 0;
+}
+
+void map_leaf(I64 t, I64 slot, I64 f1) {
+    write_word(pt1_of(t) + (8 * slot) as U64, pte.make(frame_pa(f1), LEAF));
+}
+
+// A new zeroed page in slot `slot` of task t. 0, or a status.
+export I64 page_new(I64 t, I64 slot) {
+    if (slot < 0 || slot >= SLOTS || own[8 * t + slot] != 0) {
+        return -30;
+    }
+    I64 f = frames.alloc(1);
+    if (f < 0) {
+        return f;
+    }
+    zero_frame(frame_pa(f + 1));
+    own[8 * t + slot] = f + 1;
+    map_leaf(t, slot, f + 1);
+    return 0;
+}
+
+// Moves the page in slot sf of task `from` to slot st of task `to`: it is unmapped from the giver
+// before it is mapped into the receiver, and is in no space in between. 0, or -31.
+export I64 page_give(I64 from, I64 sf, I64 to, I64 st) {
+    if (sf < 0 || sf >= SLOTS || st < 0 || st >= SLOTS || own[8 * from + sf] == 0 || own[8 * to + st] != 0) {
+        return -31;
+    }
+    I64 f1 = own[8 * from + sf];
+    write_word(pt1_of(from) + (8 * sf) as U64, 0);
+    own[8 * from + sf] = 0;
+    map_leaf(to, st, f1);
+    own[8 * to + st] = f1;
+    return 0;
+}
+
+// The slots of task t that hold a page, one bit each.
+export I64 own_mask(I64 t) {
+    I64 m = 0;
+    for s in 0..SLOTS {
+        if (own[8 * t + s] != 0) {
+            m += 1 << s;
+        }
+    }
+    return m;
+}
+
+// Words 64 * c to 64 * c + 63 of the page in slot `slot` of task t (the kernel reads them through the shim).
+export void page_words(I64 t, I64 slot, I64 c, inout U64[64] w) {
+    phys.phys_read64(frame_pa(own[8 * t + slot]) + (512 * c) as U64, w);
+}
+
+// Sets word i of the page in slot `slot` of task t (a restore does it).
+export void page_set(I64 t, I64 slot, I64 i, U64 v) {
+    write_word(frame_pa(own[8 * t + slot]) + (8 * i) as U64, v);
+}
+
+// Word i of the page in slot `slot` of task t.
+export U64 page_word(I64 t, I64 slot, I64 i) {
+    return read_word(frame_pa(own[8 * t + slot]) + (8 * i) as U64);
+}
+
+// ---- the boot tables ----
+
+// How many leaf entries of the boot tables (the 4 KiB pages of the first 6 MiB, the 2 MiB pages above;
+// pd[0], pd[1] and pd[2] point at pt, pt_high and pt_high2, whose leaves carry the rights) are both writable and executable: 0 once rt_wx_init has run. boot.S's pml4, pdpt, pd, pt, pt_high and pt_high2 are
+// contiguous and the kernel may read them (docs/memory.md).
+export I64 boot_rwx() {
+    U64[64] chunk;
+    I64 n = 0;
+    for table in 2..6 {
+        for c in 0..8 {
+            phys.phys_read64(trap.vm_root() + (4096 * table + 512 * c) as U64, chunk);
+            for j in 0..64 {
+                if (pte.present(chunk[j]) && pte.writable(chunk[j]) && !pte.no_exec(chunk[j]) && (table >= 3 || (64 * c + j) > 2)) {
+                    n += 1;
+                }
+            }
+        }
+    }
+    return n;
+}
+
+// ---- the walk ----
+
+// The index of the first entry of table `pa` that is not what it must be (0 everywhere, except v0 at
+// index i0 and v1 at index i1), or -1 if the table is as it must be.
+I64 table_bad(U64 pa, I64 i0, U64 v0, I64 i1, U64 v1) {
+    U64[64] chunk;
+    for c in 0..8 {
+        phys.phys_read64(pa + (512 * c) as U64, chunk);
+        for j in 0..64 {
+            I64 k = 64 * c + j;
+            U64 want = 0;
+            if (k == i0) {
+                want = v0;
+            }
+            if (k == i1) {
+                want = v1;
+            }
+            if ((chunk[j] & NO_AD) != want) {
+                return k;
+            }
+        }
+    }
+    return -1;
+}
+
+// Checks the four upper tables of task t's space; prints which one is wrong and where.
+Bool upper_ok(I64 t) {
+    I64 bad = table_bad(frame_pa(tbl[5 * t]), 0, pte.make(frame_pa(tbl[5 * t + 1]), TABLE), -1, 0);
+    I64 which = 0;
+    if (bad < 0) {
+        bad = table_bad(frame_pa(tbl[5 * t + 1]), 0, pte.make(frame_pa(tbl[5 * t + 2]), TABLE), 1, pte.make(frame_pa(tbl[5 * t + 3]), TABLE));
+        which = 1;
+    }
+    if (bad < 0) {
+        bad = table_bad(frame_pa(tbl[5 * t + 2]), 0, pte.make(trap.vm_root() + 12288, TABLE), 1, pte.make(trap.vm_root() + 16384, TABLE));
+        which = 2;
+    }
+    if (bad < 0) {
+        bad = table_bad(frame_pa(tbl[5 * t + 3]), 0, pte.make(frame_pa(tbl[5 * t + 4]), TABLE), -1, 0);
+        which = 3;
+    }
+    if (bad >= 0) {
+        serial.serial_write("walk: task ");
+        report.print_dec(t);
+        serial.serial_write(" has table ");
+        report.print_dec(which);
+        serial.serial_write(" wrong at entry ");
+        report.print_dec(bad);
+        serial.serial_write("\n");
+        return false;
+    }
+    return true;
+}
+
+Bool in_pool(U64 pa) {
+    return pa >= (frames.POOL_BASE as U64) && pa < ((frames.POOL_BASE + frames.covered() * frames.FRAME_BYTES) as U64);
+}
+
+// Walks every task space. Returns 0 if the invariant holds, else a code after printing a line that
+// says which task and slot: 1 a frame mapped writable in two spaces, 2 an entry both writable and
+// executable, 3 a table that holds anything but what it should, 4 pages that differ from the kernel's table.
+export I64 walk() {
+    U64[24] seen;       // the frame of each task and slot as the page tables show it (0: none)
+    U64[64] chunk;
+    for t in 0..3 {
+        if (tbl[5 * t] != 0) {
+            if (!upper_ok(t)) {
+                return 3;
+            }
+            for c in 0..8 {
+                phys.phys_read64(pt1_of(t) + (512 * c) as U64, chunk);
+                for j in 0..64 {
+                    I64 k = 64 * c + j;
+                    U64 e = chunk[j];
+                    if (pte.present(e)) {
+                        if (k >= SLOTS) {
+                            serial.serial_write("walk: a page outside the slots\n");
+                            return 3;
+                        }
+                        if (pte.writable(e) && !pte.no_exec(e)) {
+                            serial.serial_write("walk: task ");
+                            report.print_dec(t);
+                            serial.serial_write(" slot ");
+                            report.print_dec(k);
+                            serial.serial_write(" is writable and executable\n");
+                            return 2;
+                        }
+                        if (!in_pool(pte.addr(e))) {
+                            serial.serial_write("walk: a page outside the pool\n");
+                            return 3;
+                        }
+                        seen[8 * t + k] = pte.addr(e);
+                    } else if (e != 0) {
+                        serial.serial_write("walk: an entry that is not present but not empty\n");
+                        return 3;
+                    }
+                }
+            }
+        }
+    }
+    for a in 0..24 {
+        for b in a + 1..24 {
+            if (seen[a] != 0 && seen[a] == seen[b]) {
+                serial.serial_write("walk: one frame is mapped writable by task ");
+                report.print_dec(a / 8);
+                serial.serial_write(" slot ");
+                report.print_dec(a % 8);
+                serial.serial_write(" and by task ");
+                report.print_dec(b / 8);
+                serial.serial_write(" slot ");
+                report.print_dec(b % 8);
+                serial.serial_write("\n");
+                return 1;
+            }
+        }
+    }
+    for i in 0..24 {
+        U64 want = 0;
+        if (own[i] != 0) {
+            want = frame_pa(own[i]);
+        }
+        if (seen[i] != want) {
+            serial.serial_write("walk: the pages of task ");
+            report.print_dec(i / 8);
+            serial.serial_write(" are not the pages the kernel says\n");
+            return 4;
+        }
+    }
+    return 0;
+}
+
+// Test controls (net 2 and 3): corrupt a space on purpose, so that the walk must say so.
+export void corrupt_share(I64 from, I64 sf, I64 to, I64 st) {
+    write_word(pt1_of(to) + (8 * st) as U64, pte.make(frame_pa(own[8 * from + sf]), LEAF));
+}
+
+export void corrupt_upper(I64 t) {
+    write_word(frame_pa(tbl[5 * t + 2]) + 40, pte.make(frame_pa(tbl[5 * t + 4]), TABLE));
+}
+
+export void corrupt_unknown(I64 t, I64 slot) {
+    I64 f = frames.alloc(1);
+    write_word(pt1_of(t) + (8 * slot) as U64, pte.make(frames.frame_addr(f) as U64, LEAF));
+}
+
+export void corrupt_rwx(I64 t, I64 slot) {
+    write_word(pt1_of(t) + (8 * slot) as U64, pte.make(frame_pa(own[8 * t + slot]), TABLE));
+}
+// SPDX-License-Identifier: Apache-2.0

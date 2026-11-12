@@ -1,0 +1,7 @@
+# the trash leg's volume (no accounts: the shell is uid 0, HOME=/home): the trash made 0700 at Move to Trash
+# (user/ci/trash.ci make_dirs), the link gone from where it was
+dir /.trash 0700 0 0
+dir /.trash/items 0700 0 0
+dir /.trash/records 0700 0 0
+gone /rs/link
+fsck

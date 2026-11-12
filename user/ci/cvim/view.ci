@@ -1,0 +1,404 @@
+// user/ci/cvim/view.ci: the screen of cvim (docs/specs/2026-11-07-cv-cvim.md sections 6 and 14, CV-3), as cells.
+// Top to bottom: the buffer line, the text rows (a two-cell diagnostic column, the number gutter, the line), the
+// status line and the message line. A cell is a code point plus its role times ROLE; term.ci turns roles into SGR.
+// The roles and words follow the S1 screen sheet (the design's cvim sheet).
+// Pure: the grid is a function of the session tables, the window's size and the file's name.
+import user.ced.keys;
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.blk;
+import user.ci.cvim.hl;
+
+export const I64 ROLE = 2097152;
+export const I64 R_TEXT = 0;
+export const I64 R_GUTTER = 1;
+export const I64 R_GUTTER_CUR = 2;
+export const I64 R_BUF_CUR = 3;
+export const I64 R_BUF_OTHER = 4;
+export const I64 R_STATUS = 5;
+export const I64 R_STATUS_MOD = 6;
+export const I64 R_MODE_NORMAL = 7;
+export const I64 R_MODE_INSERT = 8;
+export const I64 R_MODE_VISUAL = 9;
+export const I64 R_MODE_REPLACE = 10;
+export const I64 R_MESSAGE = 11;
+export const I64 R_REFUSAL = 12;
+export const I64 R_SELECTION = 13;
+export const I64 R_EOB = 14;
+export const I64 R_SYN0 = 15;           // CV-6: R_SYN0 + an hl.ci role, the text's highlighting (theme.ci)
+// CV-7: the completion menu's cells (comp.ci): a row, the chosen row, a row's kind and source.
+export const I64 R_MENU = 27;
+export const I64 R_MENU_SEL = 28;
+export const I64 R_MENU_DIM = 29;
+export const I64 R_DIAG_E = 30;         // CV-8: the margin's E and W, and the status line's counts (DN-45)
+export const I64 R_DIAG_W = 31;
+export const I64 ROLES = 32;
+// CV-6: the highlighting's cache: [0] the language plus 1 (0: none yet), [1] how many lines from the top have a
+// known start state, [2] the lines the last syntax() lexed, then the state at the start of every 256th line.
+export const I64 HC = 4112;
+const I64 HC_STATES = 16;
+const I64 EVERY = 256;
+
+// The text area's rows for a screen of rows rows: the core's window height (key.window).
+export I64 text_rows(I64 rows) {
+    return max(rows - 3, 1);
+}
+
+// The gutter's digits: the line count's, at least three (the sheet's "three digits or the file's width").
+export I64 gutter_width(in I64[_] x) {
+    I64 n = text.nlines(x);
+    I64 d = 1;
+    while (n >= 10) { d += 1; n = n / 10; }
+    return max(d, 3);
+}
+
+// Cells before a line's text: the diagnostic column (2), the gutter's digits and a blank.
+export I64 text_left(in I64[_] x) {
+    return 2 + gutter_width(x) + 1;
+}
+
+// CV-4a: the cells before a line's text in session r: text_left's, or the diagnostic column alone under :set
+// nonumber.
+export I64 left_of(in I64[_] r, in I64[_] x) {
+    if (r[state.R_NONUM] != 0) { return 2; }
+    return text_left(x);
+}
+
+void cell(inout I64[_] g, I64 cols, I64 row, I64 col, I64 cp, I64 role) {
+    if (col < 0 || col >= cols) { return; }
+    g[row * cols + col] = cp + role * ROLE;
+}
+
+void blank_run(inout I64[_] g, I64 cols, I64 row, I64 from, I64 to, I64 role) {
+    for c in max(from, 0)..min(to, cols) { cell(g, cols, row, c, ' ', role); }
+}
+
+// Bytes s at row, col; the column after them.
+I64 words(inout I64[_] g, I64 cols, I64 row, I64 col, in U8[_] s, I64 role) {
+    I64 c = col;
+    I64 i = 0;
+    while (i < len(s)) {
+        I64 b = s[i] as I64;
+        I64 n = 1;
+        I64 cp = b;
+        if (b >= 240) { n = 4; cp = b % 8; } else if (b >= 224) { n = 3; cp = b % 16; } else if (b >= 192) { n = 2; cp = b % 32; }
+        for j in 1..n { if (i + j < len(s)) { cp = cp * 64 + (s[i + j] as I64) % 64; } }
+        cell(g, cols, row, c, cp, role);
+        c += 1;
+        i += n;
+    }
+    return c;
+}
+
+I64 number(inout I64[_] g, I64 cols, I64 row, I64 col, I64 v, I64 role) {
+    U8[20] d;
+    I64 n = 0;
+    I64 t = v;
+    if (t == 0) { d[0] = '0'; n = 1; }
+    while (t > 0) { d[n] = ('0' + t % 10) as U8; n += 1; t = t / 10; }
+    for i in 0..n { cell(g, cols, row, col + i, d[n - 1 - i] as I64, role); }
+    return col + n;
+}
+
+I64 digits(I64 v) {
+    I64 d = 1;
+    I64 t = v;
+    while (t >= 10) { d += 1; t = t / 10; }
+    return d;
+}
+
+// The key a refusal names: itself, or its name (section 4: "not in cvim: g?").
+I64 key_name(inout I64[_] g, I64 cols, I64 row, I64 col, I64 k, I64 role) {
+    if (k == keys.K_ENTER) { return words(g, cols, row, col, b"Enter", role); }
+    if (k == keys.K_TAB) { return words(g, cols, row, col, b"Tab", role); }
+    if (k == keys.K_BACKSPACE) { return words(g, cols, row, col, b"Backspace", role); }
+    if (k == keys.K_DELETE) { return words(g, cols, row, col, b"Delete", role); }
+    if (k == keys.K_UP) { return words(g, cols, row, col, b"Up", role); }
+    if (k == keys.K_DOWN) { return words(g, cols, row, col, b"Down", role); }
+    if (k == keys.K_LEFT) { return words(g, cols, row, col, b"Left", role); }
+    if (k == keys.K_RIGHT) { return words(g, cols, row, col, b"Right", role); }
+    if (k == keys.K_HOME) { return words(g, cols, row, col, b"Home", role); }
+    if (k == keys.K_END) { return words(g, cols, row, col, b"End", role); }
+    if (k == keys.K_PGUP) { return words(g, cols, row, col, b"PageUp", role); }
+    if (k == keys.K_PGDN) { return words(g, cols, row, col, b"PageDown", role); }
+    if (k >= keys.M_CTRL && k < keys.M_CTRL + 128) {
+        I64 c = words(g, cols, row, col, b"Ctrl+", role);
+        cell(g, cols, row, c, k - keys.M_CTRL, role);
+        return c + 1;
+    }
+    if (k == ' ') { return words(g, cols, row, col, b"Space", role); }
+    if (k > 32 && k < 1114112) { cell(g, cols, row, col, k, role); return col + 1; }
+    return words(g, cols, row, col, b"key", role);
+}
+
+// The file type the status line names.
+I64 file_type(inout I64[_] g, I64 cols, I64 row, I64 col, in U8[_] name, I64 role) {
+    I64 n = len(name);
+    if (n >= 3 && name[n - 3] == '.' && name[n - 2] == 'c' && name[n - 1] == 'i') { return words(g, cols, row, col, b"cint", role); }
+    if (n >= 3 && name[n - 3] == '.' && name[n - 2] == 's' && name[n - 1] == 'h') { return words(g, cols, row, col, b"sh", role); }
+    return words(g, cols, row, col, b"text", role);
+}
+
+// Whether the text at p (on line l, screen column vc) is selected in Visual mode.
+Bool selected(in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 l, I64 vc) {
+    if (r[state.R_MODE] != state.MODE_VISUAL) { return false; }
+    I64 a = r[state.R_VSTART];
+    I64 b = r[state.R_CUR];
+    I64 s = min(a, b);
+    I64 e = max(a, b);
+    I64 m = r[state.R_VMODE];
+    if (m == 'v') { return p >= s && p <= e; }
+    I64 l0 = text.lineof(x, orig, add, s);
+    I64 l1 = text.lineof(x, orig, add, e);
+    if (l < l0 || l > l1) { return false; }
+    if (m == 'V') { return true; }
+    I64 c0 = min(text.vcol(x, orig, add, a), text.vcol(x, orig, add, b));
+    I64 c1 = max(text.vcol(x, orig, add, a), text.vcol(x, orig, add, b));
+    if (r[state.R_WANT] == state.WANT_END) { c1 = blk.END; }
+    return vc >= c0 && vc <= c1;
+}
+
+// The first screen column shown: the cursor's column stays in the text area (Vim's nowrap with 'sidescroll' 0: a
+// cursor off either edge puts its column in the middle).
+export void follow_column(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 cols) {
+    I64 width = max(cols - left_of(r, x), 1);
+    I64 vc = text.vcol(x, orig, add, r[state.R_CUR]);
+    if (vc < r[state.R_LEFT] || vc >= r[state.R_LEFT] + width) { r[state.R_LEFT] = max(vc - width / 2, 0); }
+}
+
+// The screen into g (rows times cols cells); name is the file's name (empty: no file). The cursor's cell is
+// R_CUR's, and cursor_at() gives it.
+export void compose(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 rows, I64 cols, in U8[_] name,
+                    inout I64[_] g) {
+    for i in 0..rows * cols { g[i] = ' '; }
+    follow_column(r, x, orig, add, cols);
+    Bool modified = r[state.R_U_AT] != r[state.R_SAVED_AT];
+    // The buffer line: the open buffer, marked current.
+    I64 c = 0;
+    c = words(g, cols, 0, c, b" 1 ", R_BUF_CUR);
+    if (len(name) == 0) { c = words(g, cols, 0, c, b"[No Name]", R_BUF_CUR); }
+    else { c = words(g, cols, 0, c, name, R_BUF_CUR); }
+    if (modified) { c = words(g, cols, 0, c, b" +", R_BUF_CUR); }
+    c = words(g, cols, 0, c, b" ", R_BUF_CUR);
+    blank_run(g, cols, 0, c, cols, R_BUF_OTHER);
+    // The text rows.
+    I64 th = text_rows(rows);
+    I64 nl = text.nlines(x);
+    I64 gw = gutter_width(x);
+    I64 tl = left_of(r, x);
+    I64 cl = text.lineof(x, orig, add, r[state.R_CUR]);
+    I64 left = r[state.R_LEFT];
+    for row in 0..th {
+        I64 l = r[state.R_TOP] + row;
+        I64 sr = 1 + row;
+        if (sr >= rows - 2) { break; }
+        if (l >= nl) {
+            cell(g, cols, sr, 0, '~', R_EOB);
+            continue;
+        }
+        I64 role = R_GUTTER;
+        if (l == cl) { role = R_GUTTER_CUR; }
+        if (r[state.R_NONUM] == 0) { _ = number(g, cols, sr, 2 + gw - digits(l + 1), l + 1, role); }
+        I64 p = text.lstart(x, orig, add, l);
+        I64 e = text.lend(x, orig, add, l);
+        I64 vc = 0;
+        while (p < e && vc < left + cols) {
+            I64 cp = text.code_at(x, orig, add, p);
+            I64 w = 1;
+            if (cp == '\t') { w = text.TS - vc % text.TS; cp = ' '; }
+            if (cp < 32 || cp == 127) { cp = '?'; }
+            for j in 0..w {
+                I64 sc = tl + vc + j - left;
+                if (vc + j >= left && sc < cols) {
+                    I64 cr = R_TEXT;
+                    if (selected(r, x, orig, add, p, l, vc + j)) { cr = R_SELECTION; }
+                    cell(g, cols, sr, sc, cp, cr);
+                }
+            }
+            vc += w;
+            p = text.nextc(x, orig, add, p);
+        }
+        // A selection that takes the line's end shows one cell there, as Vim does.
+        I64 sc = tl + vc - left;
+        if (sc >= tl && sc < cols && selected(r, x, orig, add, e, l, vc)
+            && (r[state.R_VMODE] != keys.M_CTRL + 'v' || e == text.lstart(x, orig, add, l))) {
+            cell(g, cols, sr, sc, ' ', R_SELECTION);
+        }
+    }
+    // The status line: mode, file, [+], file type, line:col and percent.
+    I64 sr = rows - 2;
+    if (sr >= 1) {
+        blank_run(g, cols, sr, 0, cols, R_STATUS);
+        I64 mrole = R_MODE_NORMAL;
+        c = 0;
+        I64 md = r[state.R_MODE];
+        if (md == state.MODE_INSERT) { mrole = R_MODE_INSERT; c = words(g, cols, sr, 0, b" INSERT ", mrole); }
+        else if (md == state.MODE_REPLACE) { mrole = R_MODE_REPLACE; c = words(g, cols, sr, 0, b" REPLACE ", mrole); }
+        else if (md == state.MODE_VISUAL) {
+            mrole = R_MODE_VISUAL;
+            if (r[state.R_VMODE] == 'V') { c = words(g, cols, sr, 0, b" V-LINE ", mrole); }
+            else if (r[state.R_VMODE] == 'v') { c = words(g, cols, sr, 0, b" VISUAL ", mrole); }
+            else { c = words(g, cols, sr, 0, b" V-BLOCK ", mrole); }
+        } else { c = words(g, cols, sr, 0, b" NORMAL ", mrole); }
+        c = words(g, cols, sr, c, b" ", R_STATUS);
+        if (len(name) == 0) { c = words(g, cols, sr, c, b"no file", R_STATUS); }
+        else { c = words(g, cols, sr, c, name, R_STATUS); }
+        if (modified) { c = words(g, cols, sr, c, b" [+]", R_STATUS_MOD); }
+        if (r[state.R_DIAG_EN] > 0) {           // CV-8: the last build's errors and the rest in this file
+            c = words(g, cols, sr, c, b" E", R_DIAG_E);
+            c = number(g, cols, sr, c, r[state.R_DIAG_EN], R_DIAG_E);
+        }
+        if (r[state.R_DIAG_WN] > 0) {
+            c = words(g, cols, sr, c, b" W", R_DIAG_W);
+            c = number(g, cols, sr, c, r[state.R_DIAG_WN], R_DIAG_W);
+        }
+        I64 col = text.vcol(x, orig, add, r[state.R_CUR]) + 1;
+        I64 pct = ((cl + 1) * 100 + nl - 1) / nl;
+        I64 ft = 4;
+        I64 n = len(name);
+        if (n >= 3 && name[n - 3] == '.' && name[n - 2] == 's' && name[n - 1] == 'h') { ft = 2; }
+        I64 right = 1 + ft + 2 + digits(cl + 1) + 1 + digits(col) + 2 + digits(pct) + 2;
+        I64 rc = max(cols - right, c + 1);
+        rc = words(g, cols, sr, rc, b" ", R_STATUS);
+        rc = file_type(g, cols, sr, rc, name, R_STATUS);
+        rc = words(g, cols, sr, rc, b"  ", R_STATUS);
+        rc = number(g, cols, sr, rc, cl + 1, R_STATUS);
+        rc = words(g, cols, sr, rc, b":", R_STATUS);
+        rc = number(g, cols, sr, rc, col, R_STATUS);
+        rc = words(g, cols, sr, rc, b"  ", R_STATUS);
+        rc = number(g, cols, sr, rc, pct, R_STATUS);
+        rc = words(g, cols, sr, rc, b"% ", R_STATUS);
+    }
+    // The message line: a refusal, a full table, or a recording.
+    I64 ml = rows - 1;
+    if (ml >= 1) {
+        blank_run(g, cols, ml, 0, cols, R_MESSAGE);
+        if (r[state.R_FULL] != 0) {
+            _ = words(g, cols, ml, 0, b"full: :w and :e start a fresh table", R_REFUSAL);
+        } else if (r[state.R_BELL] != 0 && r[state.R_MSG] != 0) {
+            I64 mc = words(g, cols, ml, 0, b"not in cvim: ", R_REFUSAL);
+            if (r[state.R_MSG_PRE] != 0) { mc = key_name(g, cols, ml, mc, r[state.R_MSG_PRE], R_REFUSAL); }
+            _ = key_name(g, cols, ml, mc, r[state.R_MSG], R_REFUSAL);
+        } else if (r[state.R_REC] != 0) {
+            I64 mc = words(g, cols, ml, 0, b"recording @", R_MESSAGE);
+            cell(g, cols, ml, mc, r[state.R_REC], R_MESSAGE);
+        }
+    }
+}
+
+// CV-6: the text rows of g (as compose left them) highlighted: each cell still plain text takes its token's role.
+// The lexer runs from the last known state at or above the window's top: a state is kept at every 256th line, and an
+// edit forgets the states below the line it touched (buf.dirty), so a keystroke lexes at most 256 lines above the
+// window and the window's. A line past 64 KiB is left plain, its state carried as it came in.
+export void syntax(inout I64[_] r, inout I64[_] x, in U8[_] orig, in U8[_] add, I64 rows, I64 cols, in U8[_] name,
+                   inout I64[_] g, inout I64[_] hc) {
+    I64 lang = hl.lang_of(name);
+    I64 d = buf.dirty(x);
+    buf.clean(x);
+    if (hc[0] != lang + 1) {
+        hc[0] = lang + 1;
+        hc[1] = 0;
+        hc[HC_STATES] = 0;
+    }
+    I64 total = buf.total(x);
+    if (d <= total) {
+        I64 dl = text.lineof(x, orig, add, min(d, max(total - 1, 0)));
+        hc[1] = min(hc[1], dl);
+    }
+    hc[2] = 0;
+    if (lang == hl.LANG_TEXT) { return; }
+    I64 nl = text.nlines(x);
+    I64 top = r[state.R_TOP];
+    I64 known = min(hc[1], top);
+    I64 ci = min(known / EVERY, len(hc) - HC_STATES - 1);
+    I64 l = ci * EVERY;
+    I64 st = hc[HC_STATES + ci];
+    U8[65536] lb;
+    I64[16385] sp;
+    while (l < top && l < nl) {
+        st = lex_line(x, orig, add, l, lang, st, lb, sp);
+        hc[2] += 1;
+        l += 1;
+        keep_state(hc, l, st);
+    }
+    I64 th = text_rows(rows);
+    I64 gw = gutter_width(x);
+    I64 tl = left_of(r, x);
+    I64 left = r[state.R_LEFT];
+    for row in 0..th {
+        I64 ln = top + row;
+        I64 sr = 1 + row;
+        if (sr >= rows - 2 || ln >= nl) { break; }
+        I64 p0 = text.lstart(x, orig, add, ln);
+        I64 e = text.lend(x, orig, add, ln);
+        I64 n = e - p0;
+        st = lex_line(x, orig, add, ln, lang, st, lb, sp);
+        hc[2] += 1;
+        keep_state(hc, ln + 1, st);
+        if (n > len(lb)) { continue; }
+        // walk the line as compose does, each byte's screen column, and recolor its plain cells
+        I64 k = 0;
+        I64 ns = hl.n_spans(sp);
+        I64 p = p0;
+        I64 vc = 0;
+        while (p < e && vc < left + cols) {
+            I64 off = p - p0;
+            while (k < ns && hl.span_start(sp, k) + hl.span_len(sp, k) <= off) { k += 1; }
+            I64 role = hl.NORMAL;
+            if (k < ns && hl.span_start(sp, k) <= off) { role = hl.span_role(sp, k); }
+            I64 cp = text.code_at(x, orig, add, p);
+            I64 w = 1;
+            if (cp == '\t') { w = text.TS - vc % text.TS; }
+            if (role != hl.NORMAL) {
+                for j in 0..w {
+                    I64 sc = tl + vc + j - left;
+                    if (vc + j >= left && sc < cols) {
+                        I64 at = sr * cols + sc;
+                        if (g[at] / ROLE == R_TEXT) { g[at] = g[at] % ROLE + (R_SYN0 + role) * ROLE; }
+                    }
+                }
+            }
+            vc += w;
+            p = text.nextc(x, orig, add, p);
+        }
+    }
+}
+
+// Line l lexed from state st (its bytes into lb, its spans into sp); the state after it. A line past lb's size is
+// not lexed and keeps st.
+I64 lex_line(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l, I64 lang, I64 st, inout U8[_] lb, inout I64[_] sp) {
+    I64 s = text.lstart(x, orig, add, l);
+    I64 e = text.lend(x, orig, add, l);
+    if (e - s > len(lb)) {
+        sp[0] = 0;
+        return st;
+    }
+    if (e > s) { buf.copy_out(x, orig, add, s, lb[0..e - s]); }
+    return hl.line(lb[0..e - s], lang, st, sp);
+}
+
+// The state at the start of line l kept when l is a 256th line, and the lines known grown to l.
+void keep_state(inout I64[_] hc, I64 l, I64 st) {
+    if (l % EVERY == 0 && l / EVERY < len(hc) - HC_STATES) { hc[HC_STATES + l / EVERY] = st; }
+    if (l > hc[1] && (l - 1) / EVERY < len(hc) - HC_STATES) { hc[1] = l; }
+}
+
+// CV-6: the lines the last syntax() lexed (its cost, for the relex measure).
+export I64 lexed(in I64[_] hc) { return hc[2]; }
+
+// The cursor's screen row and column (row * 65536 + column).
+export I64 cursor_at(in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 rows, I64 cols) {
+    I64 cl = text.lineof(x, orig, add, r[state.R_CUR]);
+    I64 row = min(max(1 + cl - r[state.R_TOP], 1), max(rows - 3, 1));
+    I64 col = min(max(left_of(r, x) + text.vcol(x, orig, add, r[state.R_CUR]) - r[state.R_LEFT], 0), max(cols - 1, 0));
+    return row * 65536 + col;
+}
+
+// The cursor's form for the mode (DECSCUSR's parameter: 2 block, 6 bar, 4 underline; the sheet's section 4).
+export I64 shape(in I64[_] r) {
+    if (r[state.R_MODE] == state.MODE_INSERT) { return 6; }
+    if (r[state.R_MODE] == state.MODE_REPLACE) { return 4; }
+    return 2;
+}
+// SPDX-License-Identifier: Apache-2.0

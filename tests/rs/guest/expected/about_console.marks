@@ -1,0 +1,13 @@
+# DN-43, review on PR 272: the About sheet over Console, from the App pill (Down, Enter: About is the menu's first
+# row). Console runs `sleep 15; ls -l /bin` under it (guest.py sheet ... moved reads the screendumps). A line typed
+# while it is up and its Enter are the sheet's: Enter closes it, and the shell never made /tmp/leak, so the check
+# line typed after it ends terminal 1 with status 0.
+hdesk: screen 1920x1080 plane 1920x
+hdesk: terminal 1 slot 1
+hdesk: app menu open
+~hdesk: app menu chose [0-9]+ \|About .+\|
+=hdesk: about 1
+-hdesk: terminal 1 ended
+=hdesk: about closed
+=hdesk: terminal 1 ended, status 0
+=hdesk: shell ended, status 0

@@ -1,0 +1,357 @@
+// user/ci/cvim/undo.ci: u and Ctrl+R (docs/specs/2026-11-07-cv-cvim.md section 5, CV-2a). One normal command, or one
+// Insert session up to an arrow key, is one step, as Vim groups them. A step is the cursor when its first change was
+// made (Vim's uh_cursor) and the edits in order: typed text (one span of add), text put back (spans) and text taken
+// out (spans). The bytes never move: undo and redo put spans back or take them out again.
+//
+// Where the cursor lands follows Vim's u_undoredo(): the changed lines form one block in the text after the step;
+// the cursor goes back to uh_cursor when that line is in or next to the block, else to the block's first line, at
+// uh_cursor's column when that is the line, else at its first non-blank.
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+
+export const I64 STEPS = 4096;
+export const I64 OPS = 65536;
+const I64 SW = 4;
+const I64 OW = 4;
+const I64 OPS0 = 16384;
+// Elements of u.
+export const I64 TABLE = 278528;
+export const I64 K_INS = 1;
+export const I64 K_PUT = 2;
+export const I64 K_DEL = 3;
+
+I64 sa(I64 s) {
+    return s * SW;
+}
+
+I64 oa(I64 k) {
+    return OPS0 + k * OW;
+}
+
+// A replay can restore these source pieces and split two endpoints. Recorded spans are nonempty
+// and no longer than a chunk. Repeated traversal revisits the same recorded intervals and endpoints.
+I64 potential(in I64[_] r, in I64[_] u, I64 k) {
+    I64 a = oa(k);
+    if (u[a] == K_INS) { return (u[a+3]+r[state.R_CHUNK]-1)/r[state.R_CHUNK]+2; }
+    return u[a+3]-u[a+2]+2;
+}
+
+I64 step_potential(in I64[_] r, in I64[_] u, I64 s) {
+    I64 debt = 0;
+    for k in u[sa(s)]..u[sa(s)]+u[sa(s)+1] { debt += potential(r,u,k); }
+    return debt;
+}
+
+// Read-only projection of the history prepare/open_step will retain before the first edit.
+// Whole-command operation estimates never cause eviction here: only the existing immediate policies do.
+export I64 bound(in I64[_] r, in I64[_] x, in I64[_] u) {
+    I64 ops = r[state.R_U_OPS];
+    I64 pot = r[state.R_U_POT];
+    I64 at = r[state.R_U_AT];
+    if (r[state.R_U_OPEN] == 0) {
+        ops = 0;
+        if (at > 0) { ops = u[sa(at-1)]+u[sa(at-1)+1]; }
+        pot = r[state.R_U_APOT];
+    }
+    I64 drop = 0;
+    while (ops >= OPS && drop+1 < at) {
+        ops -= u[sa(drop)+1]; pot -= step_potential(r,u,drop); drop += 1;
+    }
+    if (r[state.R_U_OPEN] == 0 && at-drop == STEPS) { pot -= step_potential(r,u,drop); }
+    return min(r[state.R_PBOUND],buf.pieces(x)+pot);
+}
+
+// Current pieces retain every still-live boundary, even when its originating step was dropped.
+void rebase(inout I64[_] r, in I64[_] x) {
+    r[state.R_PBOUND] = min(r[state.R_PBOUND],buf.pieces(x)+r[state.R_U_POT]);
+}
+
+// The oldest step goes, to make room.
+void drop_oldest(inout I64[_] r, inout I64[_] u) {
+    I64 n = r[state.R_U_N];
+    I64 shift = r[state.R_U_OPS];
+    if (n > 1) {
+        shift = u[sa(1)];
+    }
+    I64 removed = step_potential(r,u,0);
+    r[state.R_U_POT] -= removed;
+    if (r[state.R_U_AT] > 0) { r[state.R_U_APOT] -= removed; }
+    for k in shift..r[state.R_U_OPS] {
+        for f in 0..OW {
+            u[oa(k - shift) + f] = u[oa(k) + f];
+        }
+    }
+    for s in 1..n {
+        u[sa(s - 1)] = u[sa(s)] - shift;
+        for f in 1..SW {
+            u[sa(s - 1) + f] = u[sa(s) + f];
+        }
+    }
+    r[state.R_U_N] = n - 1;
+    r[state.R_U_AT] = max(r[state.R_U_AT] - 1, 0);
+    r[state.R_U_OPS] -= shift;
+    // The text as read or saved was the state before step 0: once that step goes, no undo reaches it.
+    if (r[state.R_SAVED_AT] > 0) { r[state.R_SAVED_AT] -= 1; } else { r[state.R_SAVED_AT] = -1; }
+}
+
+// Admission is read only: a refused buffer edit must keep the redo branch and oldest step.
+export Bool capacity(in I64[_] r, in I64[_] u, I64 more) {
+    I64 ops = r[state.R_U_OPS];
+    I64 at = r[state.R_U_AT];
+    if (r[state.R_U_OPEN] == 0) {
+        ops = 0;
+        if (at > 0) { ops = u[sa(at-1)] + u[sa(at-1)+1]; }
+    }
+    I64 drop = 0;
+    while (ops + more > OPS && drop + 1 < at) {
+        ops -= u[sa(drop)+1]; drop += 1;
+    }
+    return ops + more <= OPS;
+}
+export Bool room(in I64[_] r, in I64[_] u) { return capacity(r,u,1); }
+
+// Called only after all command resources have been admitted.
+export void prepare(inout I64[_] r, inout I64[_] u) {
+    while (r[state.R_U_OPEN] != 0 && r[state.R_U_OPS] >= OPS && r[state.R_U_AT] > 1) {
+        drop_oldest(r,u);
+    }
+}
+
+// Opens a step before the first change of a command; the steps undone are dropped (u and Ctrl+R keep no branches).
+export void open_step(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, inout I64[_] u) {
+    if (r[state.R_U_OPEN] == 1) {
+        rebase(r,x);
+        return;
+    }
+    I64 at = r[state.R_U_AT];
+    I64 ops = 0;
+    if (at > 0) {
+        ops = u[sa(at - 1)] + u[sa(at - 1) + 1];
+    }
+    r[state.R_U_N] = at;
+    // A saved state on the redo branch this step drops can no longer be reached.
+    if (r[state.R_SAVED_AT] > at) { r[state.R_SAVED_AT] = -1; }
+    r[state.R_U_OPS] = ops;
+    r[state.R_U_POT] = r[state.R_U_APOT];
+    while (r[state.R_U_OPS] >= OPS && r[state.R_U_AT] > 1) {
+        drop_oldest(r,u); at = r[state.R_U_AT];
+    }
+    if (at == STEPS) {
+        drop_oldest(r, u);
+        at = r[state.R_U_AT];
+    }
+    rebase(r,x);
+    I64 p = r[state.R_CUR];
+    I64 l = text.lineof(x, orig, add, p);
+    u[sa(at)] = r[state.R_U_OPS];
+    u[sa(at) + 1] = 0;
+    u[sa(at) + 2] = l;
+    u[sa(at) + 3] = p - text.lstart(x, orig, add, l);
+    r[state.R_U_AT] = at + 1;
+    r[state.R_U_N] = at + 1;
+    r[state.R_U_OPEN] = 1;
+}
+
+// Steps from s to the last applied one become one step (the changes of one register run); nothing when their
+// operations are not contiguous (the oldest steps were dropped meanwhile).
+export void merge(inout I64[_] r, inout I64[_] u, I64 s) {
+    I64 at = r[state.R_U_AT];
+    if (s < 0 || at - s < 2 || r[state.R_U_N] != at) { return; }
+    for t in s + 1..at {
+        if (u[sa(t)] != u[sa(t - 1)] + u[sa(t - 1) + 1]) { return; }
+    }
+    I64 n = 0;
+    for t in s..at { n += u[sa(t) + 1]; }
+    u[sa(s) + 1] = n;
+    if (r[state.R_SAVED_AT] >= s + 1 && r[state.R_SAVED_AT] < at) { r[state.R_SAVED_AT] = -1; }
+    else if (r[state.R_SAVED_AT] == at) { r[state.R_SAVED_AT] = s + 1; }
+    r[state.R_U_AT] = s + 1;
+    r[state.R_U_N] = s + 1;
+}
+
+export void close_step(inout I64[_] r) {
+    r[state.R_U_OPEN] = 0;
+}
+
+// Only a joined operation can extend a source interval without admitting another undo endpoint.
+export Bool joins(in I64[_] r, in I64[_] u, I64 pos, I64 off) {
+    if (r[state.R_U_OPEN] == 0 || r[state.R_U_AT] <= 0 || r[state.R_U_OPS] <= 0) { return false; }
+    I64 s = r[state.R_U_AT]-1;
+    if (u[sa(s)+1] == 0) { return false; }
+    I64 q = oa(r[state.R_U_OPS]-1);
+    return u[q] == K_INS && u[q+1]+u[q+3] == pos && u[q+2]+u[q+3] == off;
+}
+
+// One edit of the open step; typed text right after typed text joins it.
+export void note(inout I64[_] r, inout I64[_] u, I64 kind, I64 pos, I64 a, I64 b) {
+    I64 s = r[state.R_U_AT] - 1;
+    I64 n = u[sa(s) + 1];
+    I64 k = r[state.R_U_OPS];
+    if (kind == K_INS && n > 0) {
+        I64 q = oa(k - 1);
+        if (u[q] == K_INS && u[q + 1] + u[q + 3] == pos && u[q + 2] + u[q + 3] == a) {
+            I64 before = potential(r,u,k-1);
+            u[q + 3] += b;
+            I64 gain = potential(r,u,k-1)-before;
+            r[state.R_U_POT] += gain; r[state.R_U_APOT] += gain;
+            return;
+        }
+    }
+    u[oa(k)] = kind;
+    u[oa(k) + 1] = pos;
+    u[oa(k) + 2] = a;
+    u[oa(k) + 3] = b;
+    r[state.R_U_OPS] = k + 1;
+    u[sa(s) + 1] = n + 1;
+    I64 gain = potential(r,u,k);
+    r[state.R_U_POT] += gain; r[state.R_U_APOT] += gain;
+}
+
+I64 span_len(in I64[_] sp, I64 from, I64 to) {
+    I64 n = 0;
+    for s in from..to {
+        n += sp[s * buf.SPAN + 2];
+    }
+    return n;
+}
+
+I64 op_len(in I64[_] u, in I64[_] sp, I64 k) {
+    if (u[oa(k)] == K_INS) {
+        return u[oa(k) + 3];
+    }
+    return span_len(sp, u[oa(k) + 2], u[oa(k) + 3]);
+}
+
+// Undoes (redo false) or redoes one step; false when there is none. The cursor goes to R_CUR.
+export Bool apply(inout I64[_] r, inout I64[_] x, in U8[_] orig, in U8[_] add, inout I64[_] sp, inout I64[_] u,
+                  Bool redo) {
+    I64 s = r[state.R_U_AT] - 1;
+    if (redo) {
+        s = r[state.R_U_AT];
+    }
+    if (s < 0 || s >= r[state.R_U_N]) {
+        return false;
+    }
+    // No inverse operation introduces a boundary outside the retained interval and endpoint bound.
+    // Packing needs no new pieces, and the two transient split endpoints have dedicated room.
+    // Check this invariant once before any prefix of a multi-operation inverse can run.
+    if (buf.pieces(x) > r[state.R_PBOUND] || r[state.R_PBOUND] > buf.piece_limit(x)) {
+        r[state.R_FULL] = 1; r[state.R_BELL] = 1; return false;
+    }
+    I64 first = u[sa(s)];
+    I64 n = u[sa(s) + 1];
+    // The region the step changes, in the text after it: [lo, hi).
+    I64 lo = -1;
+    I64 hi = 0;
+    I64 delta = 0;
+    I64 replay_potential = 0;
+    for j in 0..n {
+        I64 k = first + n - 1 - j;
+        if (redo) {
+            k = first + j;
+        }
+        replay_potential += potential(r,u,k);
+        I64 kind = u[oa(k)];
+        I64 pos = u[oa(k) + 1];
+        I64 m = op_len(u, sp, k);
+        Bool grows = kind == K_DEL;
+        if (redo) {
+            grows = kind != K_DEL;
+        }
+        if (grows) {
+            if (lo < 0) {
+                lo = pos;
+                hi = pos + m;
+            } else if (pos < lo) {
+                lo = pos;
+                hi += m;
+            } else if (pos <= hi) {
+                hi += m;
+            } else {
+                hi = pos + m;
+            }
+            delta += m;
+        } else {
+            if (lo < 0) {
+                lo = pos;
+                hi = pos;
+            } else {
+                if (hi >= pos + m) {
+                    hi -= m;
+                } else {
+                    hi = pos;
+                }
+                lo = min(lo, pos);
+                hi = max(hi, lo);
+            }
+            delta -= m;
+        }
+    }
+    I64 hib = hi - delta;
+    Bool at_b = hib <= 0 || text.ch(x, orig, add, hib - 1) == '\n';
+    for j in 0..n {
+        I64 k = first + n - 1 - j;
+        if (redo) {
+            k = first + j;
+        }
+        I64 kind = u[oa(k)];
+        I64 pos = u[oa(k) + 1];
+        I64 a = u[oa(k) + 2];
+        I64 b = u[oa(k) + 3];
+        Bool grows = kind == K_DEL;
+        if (redo) {
+            grows = kind != K_DEL;
+        }
+        if (grows && kind == K_INS) {
+            assert(buf.put_span(x, orig, add, pos, buf.SRC_ADD, a, b));
+        } else if (grows) {
+            assert(buf.restore(x, orig, add, pos, sp, a, b));
+        } else {
+            assert(buf.erase(x, orig, add, pos, op_len(u, sp, k)));
+        }
+    }
+    if (redo) { r[state.R_U_APOT] += replay_potential; }
+    else { r[state.R_U_APOT] -= replay_potential; }
+    r[state.R_U_AT] = s;
+    if (redo) {
+        r[state.R_U_AT] = s + 1;
+    }
+    if (lo < 0) {
+        lo = 0;
+        hi = 0;
+    }
+    I64 t = buf.total(x);
+    Bool at_a = hi <= 0 || text.ch(x, orig, add, hi - 1) == '\n';
+    I64 end = hi;
+    if (!(at_a && at_b)) {
+        I64 q = hi;
+        while (q < t && text.ch(x, orig, add, q) != '\n') {
+            q += 1;
+        }
+        end = min(q + 1, t);
+    }
+    I64 top = text.lf_before(x, orig, add, lo);
+    I64 span_lines = text.lf_before(x, orig, add, end) - top;
+    I64 uh = u[sa(s) + 2];
+    I64 uc = u[sa(s) + 3];
+    I64 cl = top;
+    if (uh >= top - 1 && uh <= top + span_lines) {
+        cl = uh;
+    } else if (uh + 1 == cl && cl > 0) {
+        cl -= 1;
+    }
+    I64 nl = text.nlines(x);
+    I64 p = 0;
+    if (cl >= nl) {
+        p = text.lstart(x, orig, add, nl - 1);
+    } else if (uh == cl) {
+        p = min(text.lstart(x, orig, add, cl) + uc, text.lend(x, orig, add, cl));
+    } else {
+        p = text.first_nonblank(x, orig, add, cl, true);
+    }
+    r[state.R_CUR] = text.normal_pos(x, orig, add, p);
+    r[state.R_WANT] = -1;
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

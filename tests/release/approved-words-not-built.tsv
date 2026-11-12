@@ -1,0 +1,9 @@
+# approved-words-not-built.tsv: approved words with no source at batch/l-3 90055086 (the audit's MISSING items).
+# Move a row to approved-words.tsv when its unit lands. program<TAB>word<TAB>approved where.
+hdesk	Licenses	frame 31, DN-53: the Settings About page
+hdesk	THIS MACHINE	frame 31, DN-53
+hdesk	Compiler	frame 31, DN-53
+hdesk	Open the Super plane	frame 27, DN-51: the shortcut sheet
+hdesk	 is not answering.	frame 25, DN-51
+hdesk	 stopped on a fault.	frame 23, DN-51: the Fault window
+hdesk	Screenshot 	frame 43, DN-58 (in shot, once the desk runs it)

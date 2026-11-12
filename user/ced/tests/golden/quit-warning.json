@@ -1,0 +1,30 @@
+{
+  "id": "quit-warning",
+  "rules": [
+    "KEY-7"
+  ],
+  "text": "hi",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "58",
+    "11"
+  ],
+  "expect": {
+    "text": "Xhi",
+    "screen": [
+      "Xhi",
+      "",
+      "",
+      "",
+      " x [+]  ^Q again discards changes   1:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

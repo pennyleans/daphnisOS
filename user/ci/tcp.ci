@@ -1,0 +1,16 @@
+// user/ci/tcp.ci: a TCP socket of a cint program in ring 3 (user/ci/host.c, CI_ROWS_TCP), stage N-3.
+//   tcp_listen(port): socket(AF_INET, SOCK_STREAM, 0), bound to port on every address, listening; the
+//     descriptor, or -errno
+//   tcp_accept(fd): accept; the new descriptor, or -errno
+//   tcp_connect(ip, port): socket(AF_INET, SOCK_STREAM, 0) connected to ip:port, ip as a word (10.0.2.2 is
+//     0x0A000202); the descriptor, or -errno (A-0)
+//   fd_read(fd, buf): read; the count, 0 at the end, or -errno
+//   fd_write(fd, bytes): write until all are written; the count, or -errno
+//   fd_close(fd): close; 0, or -errno
+export extern unrestricted I64 tcp_listen(I64 port);
+export extern unrestricted I64 tcp_accept(I64 fd);
+export extern unrestricted I64 tcp_connect(U64 ip, I64 port);
+export extern unrestricted I64 fd_read(I64 fd, out U8[_] buf);
+export extern unrestricted I64 fd_write(I64 fd, in U8[_] bytes);
+export extern unrestricted I64 fd_close(I64 fd);
+// SPDX-License-Identifier: Apache-2.0

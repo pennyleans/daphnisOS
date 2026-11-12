@@ -1,0 +1,28 @@
+{
+  "id": "paste-at-the-replace-question-does-nothing",
+  "rules": [
+    "KEY-4",
+    "FIND-4"
+  ],
+  "text": "alpha beta gamma",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "62657461",
+    "0d",
+    "5858",
+    "0d",
+    "1b5b3230307e6161611b5b3230317e",
+    "1b"
+  ],
+  "expect": {
+    "text": "alpha beta gamma"
+  }
+}

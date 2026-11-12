@@ -1,0 +1,28 @@
+{
+  "id": "find-next",
+  "rules": [
+    "FIND-2"
+  ],
+  "text": "abc abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "6263",
+    "1b5b31337e",
+    "1b"
+  ],
+  "expect": {
+    "text": "abc abc",
+    "sel": [
+      5,
+      7
+    ]
+  }
+}

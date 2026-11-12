@@ -1,0 +1,2489 @@
+[
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 0,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36
+    ],
+    "points": [
+      65533,
+      36
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 1,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      80
+    ],
+    "points": [
+      65533,
+      36,
+      80
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 2,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      66,
+      80
+    ],
+    "points": [
+      80
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 3,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      66,
+      27,
+      40,
+      66,
+      80
+    ],
+    "points": [
+      65533,
+      80
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 4,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      40,
+      66,
+      80
+    ],
+    "points": [
+      80,
+      80
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 5,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      92,
+      93,
+      126
+    ],
+    "points": [
+      92,
+      93,
+      126
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 6,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      13,
+      14,
+      15,
+      16
+    ],
+    "points": [
+      13,
+      65533,
+      65533,
+      16
+    ],
+    "faults": 2
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 7,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      74,
+      92,
+      93,
+      126
+    ],
+    "points": [
+      165,
+      93,
+      8254
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 8,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      74,
+      13,
+      14,
+      15,
+      16
+    ],
+    "points": [
+      13,
+      65533,
+      65533,
+      16
+    ],
+    "faults": 2
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 9,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      74,
+      27,
+      27,
+      40,
+      73,
+      80
+    ],
+    "points": [
+      65533,
+      65424
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 10,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      73,
+      80
+    ],
+    "points": [
+      65424
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 11,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      73,
+      27,
+      36,
+      64,
+      80,
+      80
+    ],
+    "points": [
+      65533,
+      20329
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 12,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      73,
+      27,
+      80
+    ],
+    "points": [
+      65533,
+      65424
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 13,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      73,
+      27,
+      36,
+      80
+    ],
+    "points": [
+      65533,
+      65380,
+      65424
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 14,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      73,
+      80,
+      27,
+      40,
+      73,
+      80
+    ],
+    "points": [
+      65424,
+      65424
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 15,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      40,
+      73,
+      13,
+      14,
+      15,
+      16
+    ],
+    "points": [
+      65533,
+      65533,
+      65533,
+      65533
+    ],
+    "faults": 4
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 16,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      80,
+      80
+    ],
+    "points": [
+      20329
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 17,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      66,
+      80,
+      80
+    ],
+    "points": [
+      20329
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 18,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      66,
+      27,
+      80,
+      80
+    ],
+    "points": [
+      65533,
+      20329
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 19,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      27,
+      36,
+      64
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 20,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      27,
+      36,
+      64,
+      80,
+      80
+    ],
+    "points": [
+      65533,
+      20329
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 21,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      27,
+      36,
+      66,
+      80,
+      80
+    ],
+    "points": [
+      65533,
+      20329
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 22,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      27,
+      36,
+      80,
+      80
+    ],
+    "points": [
+      65533,
+      12400,
+      65533
+    ],
+    "faults": 2
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 23,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      80,
+      27,
+      36,
+      64,
+      80,
+      80
+    ],
+    "points": [
+      65533,
+      20329
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 24,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      32,
+      80
+    ],
+    "points": [
+      65533,
+      65533
+    ],
+    "faults": 2
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 25,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      27,
+      36,
+      64,
+      80,
+      32
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 26,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27
+    ],
+    "points": [
+      80,
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 27,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      36
+    ],
+    "points": [
+      80,
+      65533,
+      36
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 28,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      80
+    ],
+    "points": [
+      80,
+      65533,
+      80
+    ],
+    "faults": 1
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 29,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      40,
+      66
+    ],
+    "points": [
+      80
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 30,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      40,
+      74
+    ],
+    "points": [
+      80
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 31,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      40,
+      73
+    ],
+    "points": [
+      80
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 32,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      36,
+      64
+    ],
+    "points": [
+      80
+    ],
+    "faults": 0
+  },
+  {
+    "source": "iso-2022-jp-decoder.any.js",
+    "case": 33,
+    "encoding": "ISO-2022-JP",
+    "data": [
+      80,
+      27,
+      36,
+      66
+    ],
+    "points": [
+      80
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 0,
+    "encoding": "GBK",
+    "data": [
+      115
+    ],
+    "points": [
+      115
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 0,
+    "encoding": "gb18030",
+    "data": [
+      115
+    ],
+    "points": [
+      115
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 1,
+    "encoding": "GBK",
+    "data": [
+      128
+    ],
+    "points": [
+      8364
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 1,
+    "encoding": "gb18030",
+    "data": [
+      128
+    ],
+    "points": [
+      8364
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 2,
+    "encoding": "GBK",
+    "data": [
+      255
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 2,
+    "encoding": "gb18030",
+    "data": [
+      255
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 3,
+    "encoding": "GBK",
+    "data": [
+      129
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 3,
+    "encoding": "gb18030",
+    "data": [
+      129
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 4,
+    "encoding": "GBK",
+    "data": [
+      129,
+      40
+    ],
+    "points": [
+      65533,
+      40
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 4,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      40
+    ],
+    "points": [
+      65533,
+      40
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 5,
+    "encoding": "GBK",
+    "data": [
+      129,
+      64
+    ],
+    "points": [
+      19970
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 5,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      64
+    ],
+    "points": [
+      19970
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 6,
+    "encoding": "GBK",
+    "data": [
+      129,
+      126
+    ],
+    "points": [
+      20106
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 6,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      126
+    ],
+    "points": [
+      20106
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 7,
+    "encoding": "GBK",
+    "data": [
+      129,
+      127
+    ],
+    "points": [
+      65533,
+      127
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 7,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      127
+    ],
+    "points": [
+      65533,
+      127
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 8,
+    "encoding": "GBK",
+    "data": [
+      129,
+      128
+    ],
+    "points": [
+      20112
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 8,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      128
+    ],
+    "points": [
+      20112
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 9,
+    "encoding": "GBK",
+    "data": [
+      129,
+      254
+    ],
+    "points": [
+      20386
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 9,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      254
+    ],
+    "points": [
+      20386
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 10,
+    "encoding": "GBK",
+    "data": [
+      129,
+      255
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 10,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      255
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 11,
+    "encoding": "GBK",
+    "data": [
+      254,
+      64
+    ],
+    "points": [
+      64012
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 11,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      64
+    ],
+    "points": [
+      64012
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 12,
+    "encoding": "GBK",
+    "data": [
+      254,
+      254
+    ],
+    "points": [
+      58565
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 12,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      254
+    ],
+    "points": [
+      58565
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 13,
+    "encoding": "GBK",
+    "data": [
+      254,
+      255
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 13,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      255
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 14,
+    "encoding": "GBK",
+    "data": [
+      129,
+      48
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 14,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      48
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 15,
+    "encoding": "GBK",
+    "data": [
+      129,
+      48,
+      254
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 15,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      48,
+      254
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 16,
+    "encoding": "GBK",
+    "data": [
+      129,
+      48,
+      255
+    ],
+    "points": [
+      65533,
+      48,
+      65533
+    ],
+    "faults": 2
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 16,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      48,
+      255
+    ],
+    "points": [
+      65533,
+      48,
+      65533
+    ],
+    "faults": 2
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 17,
+    "encoding": "GBK",
+    "data": [
+      129,
+      48,
+      254,
+      41
+    ],
+    "points": [
+      65533,
+      48,
+      65533,
+      41
+    ],
+    "faults": 2
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 17,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      48,
+      254,
+      41
+    ],
+    "points": [
+      65533,
+      48,
+      65533,
+      41
+    ],
+    "faults": 2
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 18,
+    "encoding": "GBK",
+    "data": [
+      254,
+      57,
+      254,
+      57
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 18,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      57,
+      254,
+      57
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 19,
+    "encoding": "GBK",
+    "data": [
+      129,
+      53,
+      244,
+      54
+    ],
+    "points": [
+      7742
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 19,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      53,
+      244,
+      54
+    ],
+    "points": [
+      7742
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 20,
+    "encoding": "GBK",
+    "data": [
+      129,
+      53,
+      244,
+      55
+    ],
+    "points": [
+      59335
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 20,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      53,
+      244,
+      55
+    ],
+    "points": [
+      59335
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 21,
+    "encoding": "GBK",
+    "data": [
+      129,
+      53,
+      244,
+      56
+    ],
+    "points": [
+      7744
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 21,
+    "encoding": "gb18030",
+    "data": [
+      129,
+      53,
+      244,
+      56
+    ],
+    "points": [
+      7744
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 22,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      164,
+      57
+    ],
+    "points": [
+      65535
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 22,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      164,
+      57
+    ],
+    "points": [
+      65535
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 23,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      165,
+      48
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 23,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      165,
+      48
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 24,
+    "encoding": "GBK",
+    "data": [
+      143,
+      57,
+      254,
+      57
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 24,
+    "encoding": "gb18030",
+    "data": [
+      143,
+      57,
+      254,
+      57
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 25,
+    "encoding": "GBK",
+    "data": [
+      144,
+      48,
+      129,
+      48
+    ],
+    "points": [
+      65536
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 25,
+    "encoding": "gb18030",
+    "data": [
+      144,
+      48,
+      129,
+      48
+    ],
+    "points": [
+      65536
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 26,
+    "encoding": "GBK",
+    "data": [
+      227,
+      50,
+      154,
+      53
+    ],
+    "points": [
+      1114111
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 26,
+    "encoding": "gb18030",
+    "data": [
+      227,
+      50,
+      154,
+      53
+    ],
+    "points": [
+      1114111
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 27,
+    "encoding": "GBK",
+    "data": [
+      227,
+      50,
+      154,
+      54
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 27,
+    "encoding": "gb18030",
+    "data": [
+      227,
+      50,
+      154,
+      54
+    ],
+    "points": [
+      65533
+    ],
+    "faults": 1
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 28,
+    "encoding": "GBK",
+    "data": [
+      131,
+      54,
+      200,
+      48
+    ],
+    "points": [
+      59336
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 28,
+    "encoding": "gb18030",
+    "data": [
+      131,
+      54,
+      200,
+      48
+    ],
+    "points": [
+      59336
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 29,
+    "encoding": "GBK",
+    "data": [
+      161,
+      173
+    ],
+    "points": [
+      8230
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 29,
+    "encoding": "gb18030",
+    "data": [
+      161,
+      173
+    ],
+    "points": [
+      8230
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 30,
+    "encoding": "GBK",
+    "data": [
+      161,
+      171
+    ],
+    "points": [
+      65374
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 30,
+    "encoding": "gb18030",
+    "data": [
+      161,
+      171
+    ],
+    "points": [
+      65374
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 31,
+    "encoding": "GBK",
+    "data": [
+      163,
+      160
+    ],
+    "points": [
+      12288
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 31,
+    "encoding": "gb18030",
+    "data": [
+      163,
+      160
+    ],
+    "points": [
+      12288
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 32,
+    "encoding": "GBK",
+    "data": [
+      166,
+      217
+    ],
+    "points": [
+      65040
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 32,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      217
+    ],
+    "points": [
+      65040
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 33,
+    "encoding": "GBK",
+    "data": [
+      166,
+      218
+    ],
+    "points": [
+      65042
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 33,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      218
+    ],
+    "points": [
+      65042
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 34,
+    "encoding": "GBK",
+    "data": [
+      166,
+      219
+    ],
+    "points": [
+      65041
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 34,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      219
+    ],
+    "points": [
+      65041
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 35,
+    "encoding": "GBK",
+    "data": [
+      166,
+      220
+    ],
+    "points": [
+      65043
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 35,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      220
+    ],
+    "points": [
+      65043
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 36,
+    "encoding": "GBK",
+    "data": [
+      166,
+      221
+    ],
+    "points": [
+      65044
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 36,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      221
+    ],
+    "points": [
+      65044
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 37,
+    "encoding": "GBK",
+    "data": [
+      166,
+      222
+    ],
+    "points": [
+      65045
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 37,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      222
+    ],
+    "points": [
+      65045
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 38,
+    "encoding": "GBK",
+    "data": [
+      166,
+      223
+    ],
+    "points": [
+      65046
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 38,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      223
+    ],
+    "points": [
+      65046
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 39,
+    "encoding": "GBK",
+    "data": [
+      166,
+      236
+    ],
+    "points": [
+      65047
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 39,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      236
+    ],
+    "points": [
+      65047
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 40,
+    "encoding": "GBK",
+    "data": [
+      166,
+      237
+    ],
+    "points": [
+      65048
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 40,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      237
+    ],
+    "points": [
+      65048
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 41,
+    "encoding": "GBK",
+    "data": [
+      166,
+      243
+    ],
+    "points": [
+      65049
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 41,
+    "encoding": "gb18030",
+    "data": [
+      166,
+      243
+    ],
+    "points": [
+      65049
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 42,
+    "encoding": "GBK",
+    "data": [
+      254,
+      89
+    ],
+    "points": [
+      40884
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 42,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      89
+    ],
+    "points": [
+      40884
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 43,
+    "encoding": "GBK",
+    "data": [
+      254,
+      97
+    ],
+    "points": [
+      40885
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 43,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      97
+    ],
+    "points": [
+      40885
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 44,
+    "encoding": "GBK",
+    "data": [
+      254,
+      102
+    ],
+    "points": [
+      40886
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 44,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      102
+    ],
+    "points": [
+      40886
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 45,
+    "encoding": "GBK",
+    "data": [
+      254,
+      103
+    ],
+    "points": [
+      40887
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 45,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      103
+    ],
+    "points": [
+      40887
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 46,
+    "encoding": "GBK",
+    "data": [
+      254,
+      109
+    ],
+    "points": [
+      40888
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 46,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      109
+    ],
+    "points": [
+      40888
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 47,
+    "encoding": "GBK",
+    "data": [
+      254,
+      126
+    ],
+    "points": [
+      40889
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 47,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      126
+    ],
+    "points": [
+      40889
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 48,
+    "encoding": "GBK",
+    "data": [
+      254,
+      144
+    ],
+    "points": [
+      40890
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 48,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      144
+    ],
+    "points": [
+      40890
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 49,
+    "encoding": "GBK",
+    "data": [
+      254,
+      160
+    ],
+    "points": [
+      40891
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 49,
+    "encoding": "gb18030",
+    "data": [
+      254,
+      160
+    ],
+    "points": [
+      40891
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 50,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      144,
+      55
+    ],
+    "points": [
+      40884
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 50,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      144,
+      55
+    ],
+    "points": [
+      40884
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 51,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      144,
+      56
+    ],
+    "points": [
+      40885
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 51,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      144,
+      56
+    ],
+    "points": [
+      40885
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 52,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      144,
+      57
+    ],
+    "points": [
+      40886
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 52,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      144,
+      57
+    ],
+    "points": [
+      40886
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 53,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      145,
+      48
+    ],
+    "points": [
+      40887
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 53,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      145,
+      48
+    ],
+    "points": [
+      40887
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 54,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      145,
+      49
+    ],
+    "points": [
+      40888
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 54,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      145,
+      49
+    ],
+    "points": [
+      40888
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 55,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      145,
+      50
+    ],
+    "points": [
+      40889
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 55,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      145,
+      50
+    ],
+    "points": [
+      40889
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 56,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      145,
+      51
+    ],
+    "points": [
+      40890
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 56,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      145,
+      51
+    ],
+    "points": [
+      40890
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 57,
+    "encoding": "GBK",
+    "data": [
+      130,
+      53,
+      145,
+      52
+    ],
+    "points": [
+      40891
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 57,
+    "encoding": "gb18030",
+    "data": [
+      130,
+      53,
+      145,
+      52
+    ],
+    "points": [
+      40891
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 58,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      130,
+      54
+    ],
+    "points": [
+      65040
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 58,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      130,
+      54
+    ],
+    "points": [
+      65040
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 59,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      130,
+      55
+    ],
+    "points": [
+      65041
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 59,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      130,
+      55
+    ],
+    "points": [
+      65041
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 60,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      130,
+      56
+    ],
+    "points": [
+      65042
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 60,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      130,
+      56
+    ],
+    "points": [
+      65042
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 61,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      130,
+      57
+    ],
+    "points": [
+      65043
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 61,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      130,
+      57
+    ],
+    "points": [
+      65043
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 62,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      131,
+      48
+    ],
+    "points": [
+      65044
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 62,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      131,
+      48
+    ],
+    "points": [
+      65044
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 63,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      131,
+      49
+    ],
+    "points": [
+      65045
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 63,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      131,
+      49
+    ],
+    "points": [
+      65045
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 64,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      131,
+      50
+    ],
+    "points": [
+      65046
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 64,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      131,
+      50
+    ],
+    "points": [
+      65046
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 65,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      131,
+      51
+    ],
+    "points": [
+      65047
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 65,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      131,
+      51
+    ],
+    "points": [
+      65047
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 66,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      131,
+      52
+    ],
+    "points": [
+      65048
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 66,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      131,
+      52
+    ],
+    "points": [
+      65048
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 67,
+    "encoding": "GBK",
+    "data": [
+      132,
+      49,
+      131,
+      53
+    ],
+    "points": [
+      65049
+    ],
+    "faults": 0
+  },
+  {
+    "source": "legacy-mb-schinese/gb18030/gb18030-decoder.any.js",
+    "case": 67,
+    "encoding": "gb18030",
+    "data": [
+      132,
+      49,
+      131,
+      53
+    ],
+    "points": [
+      65049
+    ],
+    "faults": 0
+  }
+]

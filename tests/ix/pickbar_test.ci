@@ -1,0 +1,192 @@
+// tests/ix/pickbar_test.ci: the picker's bar (user/ci/kit/pickbar.ci; note 70, frame 23's Save As bar without its
+// name field), hosted: its places at the foot, its pixels with Choose live and at 40 percent, the keys by the dialog
+// rule (DN-69), DN-40's ring after Tab or an arrow only, and its presses. Run by check.sh with every
+// tests/ix/*_test.ci.
+import user.ci.kit.pickbar;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.blend;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+
+const I64 K_ESC = 1;
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_A = 30;
+const I64 K_SPACE = 57;
+const I64 K_DOWN = 108;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+
+const I64 W = 880;
+const I64 SH = 600;
+
+U32[880] px;
+
+U32 tw(I64 k) { return tokens.word(k); }
+
+// A bar of W x SH, Choose live or not, the focus in the list.
+void bar(Bool l) {
+    tokens.set_theme(tokens.DARK);
+    pickbar.place(W, SH);
+    pickbar.set_live(l);
+    pickbar.to_list();
+}
+
+// Row y of the bar over PAPER.
+void drawn(I64 y) {
+    draw.paint(px, 0, W, tw(tokens.PAPER));
+    pickbar.row_at(px, y);
+}
+
+// Whether any pixel of [x0, x1) is c.
+Bool any(I64 x0, I64 x1, U32 c) {
+    for x in x0..x1 {
+        if (px[x] == c) { return true; }
+    }
+    return false;
+}
+
+test "the bar: the surface's last 56 rows, Cancel 10 in from the right, Choose 8 left of it, both 36 high, centered" {
+    bar(false);
+    assert(pickbar.H == 56 && !pickbar.on_bar(SH - 57) && pickbar.on_bar(SH - 56) && pickbar.on_bar(SH - 1));
+    assert(!pickbar.on_bar(SH));
+    assert(pickbar.key_w(b"Esc") == 6 + ctext.width(b"Esc", 3, faces.SHORTCUT, 1) + 6);
+    I64 cw = ctext.width(b"Cancel", 6, faces.NAME_BOLD, 1);
+    assert(pickbar.bw(b"Esc", b"Cancel") == 12 + pickbar.key_w(b"Esc") + 10 + cw + 12);
+    assert(pickbar.cancel_x1() == W - 10 && pickbar.cancel_x0() == W - 10 - pickbar.bw(b"Esc", b"Cancel"));
+    assert(pickbar.choose_x1() == pickbar.cancel_x0() - 8);
+    assert(pickbar.choose_x0() == pickbar.choose_x1() - pickbar.bw(b"Enter", b"Choose"));
+    assert(pickbar.btn_y() == SH - 56 + 10);                       // (56 - 36) / 2 above and below
+    pickbar.place(958, 667);                                        // the bar follows the surface
+    assert(pickbar.cancel_x1() == 948 && pickbar.btn_y() == 667 - 46 && pickbar.on_bar(667 - 56));
+}
+
+test "the bar's ground: SURF2 across, no rule; above the bar nothing drawn; the buttons' grounds between" {
+    bar(true);
+    U32 s2 = tw(tokens.SURF2);
+    drawn(SH - 57);
+    assert(!any(0, W, s2));                                         // not the bar's row: untouched
+    for y in SH - 56..pickbar.btn_y() {
+        drawn(y);
+        for x in 0..W { assert(px[x] == s2); }                      // its top rows, the first too: no rule
+    }
+    for y in pickbar.btn_y() + 36..SH {
+        drawn(y);
+        for x in 0..W { assert(px[x] == s2); }
+    }
+    drawn(pickbar.btn_y() + 18);
+    for x in 0..10 { assert(px[W - 1 - x] == s2); }                 // PAD at the right
+    for x in pickbar.choose_x1()..pickbar.cancel_x0() { assert(px[x] == s2); }   // GAP between
+    assert(px[pickbar.choose_x0() - 1] == s2 && px[pickbar.choose_x0()] == tw(tokens.FILL));
+    assert(px[pickbar.cancel_x0()] == tw(tokens.SURF1) && px[pickbar.cancel_x1() - 1] == tw(tokens.SURF1));
+}
+
+test "Choose: FILL with its keycap and word ON_FILL once live, at 40 percent over the bar until then; Cancel alike" {
+    bar(false);
+    I64 y = pickbar.btn_y() + 18;                                   // through the keycaps
+    I64 gk = pickbar.choose_x0() + 12;
+    I64 ck = pickbar.cancel_x0() + 12;
+    U32 s2 = tw(tokens.SURF2);
+    drawn(y);
+    assert(px[pickbar.choose_x0() + 3] == blend.mix_px(s2, tw(tokens.FILL), 102));
+    assert(px[gk] == blend.mix_px(s2, tw(tokens.ON_FILL), 102));
+    assert(!any(pickbar.choose_x0(), pickbar.choose_x1(), tw(tokens.ON_FILL)));
+    assert(!any(pickbar.choose_x0(), pickbar.choose_x1(), tw(tokens.FILL)));
+    assert(px[ck] == tw(tokens.RULE) && px[ck + 1] == tw(tokens.SURF1));
+    assert(any(ck + pickbar.key_w(b"Esc") + 10, pickbar.cancel_x1() - 12, tw(tokens.INK)));
+    pickbar.set_live(true);
+    drawn(y);
+    assert(px[pickbar.choose_x0() + 3] == tw(tokens.FILL) && px[gk] == tw(tokens.ON_FILL));
+    assert(px[gk + pickbar.key_w(b"Enter") - 1] == tw(tokens.ON_FILL) && px[gk + 1] == tw(tokens.FILL));
+    assert(any(gk + pickbar.key_w(b"Enter") + 10, pickbar.choose_x1() - 12, tw(tokens.ON_FILL)));
+    assert(px[ck] == tw(tokens.RULE));                              // Cancel is the same either way
+    tokens.set_theme(tokens.LIGHT);
+    drawn(pickbar.btn_y() + 2);
+    assert(px[0] == tw(tokens.SURF2) && px[pickbar.choose_x0() + 3] == tw(tokens.FILL));
+    assert(px[pickbar.cancel_x0() + 3] == tw(tokens.SURF1));
+    tokens.set_theme(tokens.DARK);
+}
+
+test "the keys: Enter takes Choose while live, wherever the focus is, else is Index's; Tab skips a dim Choose" {
+    bar(false);
+    assert(pickbar.key(K_ENTER, false) == pickbar.PASS);           // a folder goes in
+    pickbar.set_live(true);
+    assert(pickbar.key(K_ENTER, false) == pickbar.GO && pickbar.focus() == pickbar.LIST);
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY && pickbar.focus() == pickbar.CHOOSE);
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY && pickbar.focus() == pickbar.CANCEL_BTN);
+    assert(pickbar.key(K_ENTER, false) == pickbar.GO);              // the blue button, though Cancel has the focus
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY && pickbar.focus() == pickbar.LIST);
+    assert(pickbar.key(K_TAB, true) == pickbar.STAY && pickbar.focus() == pickbar.CANCEL_BTN);
+    assert(pickbar.key(K_TAB, true) == pickbar.STAY && pickbar.focus() == pickbar.CHOOSE);
+    assert(pickbar.key(K_TAB, true) == pickbar.STAY && pickbar.focus() == pickbar.LIST);
+    pickbar.set_live(false);                                        // dim: Tab passes over Choose
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY && pickbar.focus() == pickbar.CANCEL_BTN);
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY && pickbar.focus() == pickbar.LIST);
+    assert(pickbar.key(K_TAB, true) == pickbar.STAY && pickbar.focus() == pickbar.CANCEL_BTN);
+    assert(pickbar.key(K_TAB, true) == pickbar.STAY && pickbar.focus() == pickbar.LIST);
+    pickbar.set_live(true);
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY && pickbar.focus() == pickbar.CHOOSE);
+    pickbar.set_live(false);                                        // a Choose that cannot act gives the list back
+    assert(pickbar.focus() == pickbar.LIST);
+}
+
+test "on a button: Left and Right move between them, Space takes it; any other key gives the list back and passes" {
+    bar(true);
+    assert(pickbar.key(K_LEFT, false) == pickbar.PASS && pickbar.focus() == pickbar.LIST);   // the list's arrows
+    assert(pickbar.key(K_SPACE, false) == pickbar.PASS);
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY);
+    assert(pickbar.key(K_RIGHT, false) == pickbar.STAY && pickbar.focus() == pickbar.CANCEL_BTN);
+    assert(pickbar.key(K_RIGHT, false) == pickbar.STAY && pickbar.focus() == pickbar.CANCEL_BTN);
+    assert(pickbar.key(K_LEFT, false) == pickbar.STAY && pickbar.focus() == pickbar.CHOOSE);
+    assert(pickbar.key(K_LEFT, false) == pickbar.STAY && pickbar.focus() == pickbar.CHOOSE);
+    assert(pickbar.key(K_SPACE, false) == pickbar.GO);
+    assert(pickbar.key(K_RIGHT, false) == pickbar.STAY && pickbar.key(K_SPACE, false) == pickbar.CANCEL);
+    pickbar.set_live(false);
+    assert(pickbar.key(K_LEFT, false) == pickbar.STAY && pickbar.focus() == pickbar.CANCEL_BTN);   // no dim Choose
+    assert(pickbar.key(K_A, false) == pickbar.PASS && pickbar.focus() == pickbar.LIST);
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY);
+    assert(pickbar.key(K_ESC, false) == pickbar.PASS && pickbar.focus() == pickbar.LIST);   // Index's Esc ends it
+    assert(pickbar.key(K_TAB, false) == pickbar.STAY);
+    assert(pickbar.key(K_DOWN, false) == pickbar.PASS && pickbar.focus() == pickbar.LIST);
+}
+
+test "DN-40's ring: on the focused button only, after Tab or an arrow, gone when the list has the keyboard" {
+    bar(true);
+    U32 s2 = tw(tokens.SURF2);
+    U32 blue = tw(tokens.ULTRAMARINE);
+    I64 y = pickbar.btn_y() + 10;
+    drawn(y);
+    assert(!any(0, W, blue));                                       // the focus in the list: no ring
+    I64 k = pickbar.key(K_TAB, false);
+    drawn(y);
+    assert(px[pickbar.choose_x0() - 3] == blue && px[pickbar.choose_x0() - 1] == s2);
+    assert(px[pickbar.choose_x1() + 2] == blue && px[pickbar.cancel_x1() + 2] == s2);
+    k = pickbar.key(K_RIGHT, false);
+    drawn(y);
+    assert(px[pickbar.cancel_x1() + 2] == blue && px[pickbar.cancel_x1() + 1] == s2);
+    assert(px[pickbar.choose_x0() - 3] == s2);
+    drawn(pickbar.btn_y() - 3);                                     // its top edge, 4 above the button
+    assert(px[pickbar.cancel_x0() + 20] == blue && px[pickbar.choose_x0() + 20] == s2);
+    k = pickbar.key(K_A, false);
+    drawn(y);
+    assert(!any(0, W, blue));
+}
+
+test "presses: Choose while live, Cancel always, the bar's ground and the gap nothing" {
+    bar(false);
+    I64 t = pickbar.btn_y();
+    assert(pickbar.click(pickbar.choose_x0() + 5, t + 5) == pickbar.STAY);   // at 40 percent: takes no press
+    assert(pickbar.click(pickbar.cancel_x0(), t) == pickbar.CANCEL);
+    pickbar.set_live(true);
+    assert(pickbar.click(pickbar.choose_x0(), t) == pickbar.GO);
+    assert(pickbar.click(pickbar.choose_x1() - 1, t + 35) == pickbar.GO);
+    assert(pickbar.click(pickbar.choose_x1(), t + 10) == pickbar.STAY);
+    assert(pickbar.click(pickbar.cancel_x0() - 1, t + 10) == pickbar.STAY);
+    assert(pickbar.click(pickbar.cancel_x1() - 1, t + 35) == pickbar.CANCEL);
+    assert(pickbar.click(pickbar.cancel_x1(), t + 10) == pickbar.STAY);
+    assert(pickbar.click(pickbar.choose_x0() + 5, t - 1) == pickbar.STAY);
+    assert(pickbar.click(pickbar.cancel_x0() + 5, t + 36) == pickbar.STAY);
+    assert(pickbar.click(5, t + 10) == pickbar.STAY);
+}
+// SPDX-License-Identifier: Apache-2.0

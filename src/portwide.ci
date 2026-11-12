@@ -1,0 +1,9 @@
+// src/portwide.ci: the 16-bit and 32-bit port I/O stubs of arch/x86_64/portio.S, as cint externs
+// (N-1). The PCI configuration ports and the registers of a legacy virtio device are 16 and 32
+// bits wide; src/portio.ci keeps the 8-bit pair every flavor uses.
+
+export extern unrestricted void port_out16(U16 port, U16 val);
+export extern observe U16 port_in16(U16 port);
+export extern unrestricted void port_out32(U16 port, U32 val);
+export extern observe U32 port_in32(U16 port);
+// SPDX-License-Identifier: Apache-2.0

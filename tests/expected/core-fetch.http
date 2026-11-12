@@ -1,0 +1,30 @@
+$ -o - http://127.0.0.1:PORT/text.txt
+stdout 47 4eb69a7d087144a689c9be93972cb54fc24423fc88828ac8cd569d7ca761651a
+status 0
+$ -o - http://127.0.0.1:PORT/bin.dat
+stdout 512 110009dcee21620b166f3abfecb5eff7a873be729d1c2d53822e7acc5f34eb9b
+status 0
+$ -o - http://127.0.0.1:PORT/long.txt
+stdout 20825 ae561fe9f91467bbb9f669618dd167428e607538d984026c94b2696f1419011d
+status 0
+$ -o - http://localhost:PORT/empty
+stdout 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+status 0
+$ http://127.0.0.1:PORT/nonl.txt
+stdout 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+file nonl.txt 21 e421985de8560d2d2847361afd20f82baf462e4ae68b199b19d664a7e4c2428d
+status 0
+$ -o got http://127.0.0.1:PORT/look/a.txt
+stdout 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+file got 6 b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060
+status 0
+$ -o - http://127.0.0.1:PORT/utf8.txt
+stdout 23 b7207a5d45ee12443a06bc2af8908509eb4e33463a1efc305394d11654815689
+status 0
+$ http://127.0.0.1:PORT/look/b.txt
+stdout 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+file b.txt 420 b4483cd89463a476bcb2b8310d291135b30933138ae3c224441d150e2af803c4
+status 0
+$ -o - http://127.0.0.1:PORT/missing
+stdout 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+status 1

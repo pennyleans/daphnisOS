@@ -1,0 +1,209 @@
+// tests/set/setfile_test.ci: U-SET's file (user/ci/kit/setfile.ci; docs/specs/2026-11-11-u-set.md) over the volume in
+// memory of tests/set/fs_shctl.ci: the path, folders and file made as the caller with their modes, the process's own
+// new file then the rename, unknown keys kept, a reader for another account, links and folders refused on the
+// descriptor (FS-5), a new file left by an ended process removed and never written through, and every failure leaving
+// the file as it was. Run by tools/check-settings.py (check.sh), which copies tests/set/fs_shctl.ci, fs_corectl.ci and
+// fs_fdctl.ci over user/ci/shctl.ci, corectl.ci and fdctl.ci in an isolated root; `cint test` on the tree itself does
+// not compile.
+import user.ci.kit.settings;
+import user.ci.kit.setfile;
+import user.ci.shctl;
+
+U8[9000] got;
+
+// A volume with /home and sam's home, sam calling.
+void volume() {
+    shctl.reset();
+    settings.clear();
+    _ = shctl.node(b"/home", shctl.DIR, 0, 493, b"", 0);
+    _ = shctl.node(b"/home/sam", shctl.DIR, 1000, 448, b"", 0);
+    shctl.caller(1000);
+}
+
+void settings_file(in U8[_] bytes, I64 uid) {
+    _ = shctl.node(b"/home/sam/.config", shctl.DIR, uid, 448, b"", 0);
+    _ = shctl.node(b"/home/sam/.config/daphnis", shctl.DIR, uid, 448, b"", 0);
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings", shctl.FILE, uid, 384, bytes, len(bytes));
+}
+
+// The file holds want, nothing is left open and no settings.new.7 (process 7's) is left.
+Bool file_is(in U8[_] want) {
+    I64 n = shctl.contents(b"/home/sam/.config/daphnis/settings", got);
+    if (n != len(want) || shctl.opened() != shctl.closed()) { return false; }
+    if (shctl.kind_of(b"/home/sam/.config/daphnis/settings.new.7") != shctl.NONE) { return false; }
+    for i in 0..n {
+        if (got[i] != want[i]) { return false; }
+    }
+    return true;
+}
+
+test "the path is under HOME/.config/daphnis, a trailing slash of HOME dropped" {
+    U8[64] p;
+    I64 n = setfile.path(b"/home/sam/", p);
+    assert(n == 34);
+    for i in 0..34 { assert(p[i] == b"/home/sam/.config/daphnis/settings"[i]); }
+    assert(setfile.path(b"/home/sam", p[0..33]) == -1);
+}
+
+test "a missing file is an empty store" {
+    volume();
+    assert(setfile.load(b"/home/sam", -1) == 0 && settings.entries() == 0);
+    assert(setfile.load(b"/home/sam", 1000) == 0);
+}
+
+test "put makes the folders 0700 and the file 0600 as the caller, through settings.new.PID" {
+    volume();
+    assert(setfile.put(b"/home/sam", b"desk.background", b"/home/sam/Pictures/a.png") == 0);
+    assert(file_is(b"desk.background=/home/sam/Pictures/a.png\n"));
+    assert(shctl.kind_of(b"/home/sam/.config") == shctl.DIR && shctl.mode_of(b"/home/sam/.config") == 448);
+    assert(shctl.mode_of(b"/home/sam/.config/daphnis") == 448);
+    assert(shctl.uid_of(b"/home/sam/.config/daphnis") == 1000);
+    assert(shctl.mode_of(b"/home/sam/.config/daphnis/settings") == 384);
+    assert(shctl.uid_of(b"/home/sam/.config/daphnis/settings") == 1000);
+    assert(setfile.put_num(b"/home/sam", b"time.24-hour", 1) == 0);
+    assert(file_is(b"desk.background=/home/sam/Pictures/a.png\ntime.24-hour=1\n"));
+}
+
+test "put keeps keys it does not know and drops bad lines" {
+    volume();
+    settings_file(b"zz.later=1\njunk line\ncalendar.week-starts=monday\n", 1000);
+    assert(setfile.put(b"/home/sam", b"desk.background", b"/b.png") == 0);
+    assert(file_is(b"zz.later=1\ncalendar.week-starts=monday\ndesk.background=/b.png\n"));
+}
+
+test "the desk reads sam's file as sam's; another owner is refused" {
+    volume();
+    settings_file(b"time.24-hour=1\n", 1000);
+    assert(setfile.load(b"/home/sam", 1000) == 1 && settings.num(b"time.24-hour", 0) == 1);
+    settings_file(b"time.24-hour=1\n", 0);
+    assert(setfile.load(b"/home/sam", 1000) == -1 && settings.entries() == 0);
+    assert(shctl.opened() == shctl.closed());
+    assert(setfile.load(b"/home/sam", -1) == 1);
+}
+
+test "a link or a folder in the file's place is refused, the store empty" {
+    volume();
+    settings_file(b"", 1000);
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings", shctl.LINK, 1000, 511, b"/home/.daphnis/accounts", 23);
+    assert(setfile.load(b"/home/sam", -1) == -40 && settings.entries() == 0);
+    assert(setfile.put(b"/home/sam", b"a", b"1") == -40);
+    assert(shctl.kind_of(b"/home/sam/.config/daphnis/settings") == shctl.LINK && shctl.opened() == 0);
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings", shctl.DIR, 1000, 448, b"", 0);
+    assert(setfile.load(b"/home/sam", -1) == -22 && shctl.opened() == 1 && shctl.closed() == 1);
+}
+
+test "the checks ask the descriptor: a failed fstat is said, the file closed and nothing written" {
+    volume();
+    settings_file(b"a=1\n", 1000);
+    shctl.fail_fstat(-5);
+    assert(setfile.load(b"/home/sam", 1000) == -5 && settings.entries() == 0);
+    assert(shctl.opened() == 1 && shctl.closed() == 1);
+    shctl.fail_fstat(-5);
+    assert(setfile.put(b"/home/sam", b"b", b"2") == -5);
+    assert(file_is(b"a=1\n") && shctl.opened() == 2);
+}
+
+test "a read failure leaves the store empty and the file unwritten" {
+    volume();
+    settings_file(b"a=1\nb=2\n", 1000);
+    shctl.fail_read(4, -5);
+    assert(setfile.load(b"/home/sam", -1) == -5 && settings.entries() == 0);
+    shctl.fail_read(0, -5);
+    assert(setfile.put(b"/home/sam", b"c", b"3") == -5);
+    shctl.fail_read(0, 0);
+    shctl.fail_open(-13);
+    assert(setfile.put(b"/home/sam", b"c", b"3") == -13);
+    assert(file_is(b"a=1\nb=2\n"));
+}
+
+test "a short write, a failed close or a failed rename keeps the old file and removes settings.new.PID" {
+    volume();
+    settings_file(b"a=1\n", 1000);
+    shctl.write_short();
+    assert(setfile.put(b"/home/sam", b"b", b"2") == -5);
+    assert(file_is(b"a=1\n"));
+    volume();
+    settings_file(b"a=1\n", 1000);
+    assert(setfile.load(b"/home/sam", -1) == 1 && settings.set(b"b", b"2") == 0);
+    shctl.fail_close(-5);                               // the close of settings.new.7
+    assert(setfile.save(b"/home/sam") == -5);
+    assert(file_is(b"a=1\n"));
+    shctl.fail_rename(-28);
+    assert(setfile.put(b"/home/sam", b"b", b"2") == -28);
+    assert(file_is(b"a=1\n"));
+    assert(setfile.put(b"/home/sam", b"b", b"2") == 0);
+    assert(file_is(b"a=1\nb=2\n"));
+}
+
+test "settings.new.PID left by an ended process goes; a link there is never followed" {
+    volume();
+    settings_file(b"a=1\n", 1000);
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings.new.7", shctl.LINK, 1000, 511,
+                   b"/home/sam/.config/daphnis/settings", 34);
+    assert(setfile.put(b"/home/sam", b"b", b"2") == 0);
+    assert(file_is(b"a=1\nb=2\n"));
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings.new.7", shctl.FILE, 1000, 384, b"half", 4);
+    assert(setfile.put(b"/home/sam", b"c", b"3") == 0);
+    assert(file_is(b"a=1\nb=2\nc=3\n"));
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings.new.7", shctl.DIR, 1000, 448, b"", 0);
+    assert(setfile.put(b"/home/sam", b"d", b"4") == -17);     // a folder cannot be unlinked: tried once, said
+    assert(shctl.contents(b"/home/sam/.config/daphnis/settings", got) == 12 && got[10] == '3');
+}
+
+test "two processes write two new files" {
+    volume();
+    settings_file(b"a=1\n", 1000);
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings.new.8", shctl.FILE, 1000, 384, b"half", 4);
+    assert(setfile.put(b"/home/sam", b"b", b"2") == 0);       // process 7, while 8 is mid-save
+    assert(file_is(b"a=1\nb=2\n"));
+    assert(shctl.contents(b"/home/sam/.config/daphnis/settings.new.8", got) == 4 && got[3] == 'f');
+    shctl.process(123456);
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings.new.123456", shctl.DIR, 1000, 448, b"", 0);
+    assert(setfile.put(b"/home/sam", b"c", b"3") == -17);     // its own name, and only its own
+    assert(file_is(b"a=1\nb=2\n"));
+}
+
+test "a folder that cannot be made is said, and nothing written" {
+    volume();
+    shctl.fail_mkdir(-13);
+    assert(setfile.put(b"/home/sam", b"a", b"1") == -13);
+    assert(shctl.kind_of(b"/home/sam/.config") == shctl.NONE);
+    assert(setfile.put(b"/home/nobody", b"a", b"1") == -2);
+}
+
+test "a refused setting is said and nothing written" {
+    volume();
+    settings_file(b"a=1\n", 1000);
+    assert(setfile.put(b"/home/sam", b"Bad Key", b"1") == settings.E_KEY);
+    assert(setfile.put(b"/home/sam", b"a", b"x\ny") == settings.E_VALUE);
+    assert(file_is(b"a=1\n") && shctl.opened() == 2);
+}
+
+test "past SIZE bytes only the whole lines before the cut are read" {
+    volume();
+    U8[8300] big;
+    I64 n = 0;
+    I64 lines = 0;
+    while (n + 12 <= 8300) {                            // "aa-NNNN=xyz\n": 12 bytes, distinct keys
+        big[n] = 'a';
+        big[n + 1] = 'a';
+        big[n + 2] = '-';
+        big[n + 3] = 48 + ((lines / 1000) % 10) as U8;
+        big[n + 4] = 48 + ((lines / 100) % 10) as U8;
+        big[n + 5] = 48 + ((lines / 10) % 10) as U8;
+        big[n + 6] = 48 + (lines % 10) as U8;
+        big[n + 7] = '=';
+        big[n + 8] = 'x';
+        big[n + 9] = 'y';
+        big[n + 10] = 'z';
+        big[n + 11] = '\n';
+        n = n + 12;
+        lines = lines + 1;
+    }
+    settings_file(big[0..n], 1000);                     // 691 lines, 8292 bytes: line 683 crosses 8192
+    assert(setfile.load(b"/home/sam", -1) == 682 && settings.dropped() == 0);
+    assert(settings.num(b"aa-0681", -1) == -1);
+    U8[8] v;
+    assert(settings.get(b"aa-0681", v) == 3 && settings.get(b"aa-0682", v) == -1);
+}
+// SPDX-License-Identifier: Apache-2.0

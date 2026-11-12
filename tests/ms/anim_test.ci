@@ -1,0 +1,118 @@
+// tests/ms/anim_test.ci: hosted model tests of the desk's animations (MS-2, user/ci/kit/anim.ci and ease.ci;
+// docs/specs/2026-11-10-ms-motion-shadows.md section 5). Run by check.sh: cint test --root . tests/ms/anim_test.ci
+
+import user.ci.kit.ease;
+import user.ci.kit.anim;
+
+test "both curves start at 0, end at 1000 and never fall; out leads in" {
+    for k in 0..2 {
+        assert(ease.at(k, 0) == 0);
+        assert(ease.at(k, 64) == 1000);
+        for i in 0..64 {
+            assert(ease.at(k, i) <= ease.at(k, i + 1));
+        }
+    }
+    for i in 1..64 {
+        assert(ease.at(anim.OUT, i) > ease.at(anim.IN, i));
+    }
+    // half way: out (.2, .8, .2, 1) is 946, in (.4, 0, 1, 1) is 325 (tools/ease.py, exact rationals)
+    assert(ease.at(anim.OUT, 32) == 946);
+    assert(ease.at(anim.IN, 32) == 325);
+}
+
+test "progress: 0 at and before the start, 1000 at and past the end, the table at its own points" {
+    I64 d = anim.ms(160);
+    for k in 0..2 {
+        assert(anim.progress(k, 0, d) == 0);
+        assert(anim.progress(k, 0 - anim.ms(5), d) == 0);
+        assert(anim.progress(k, d, d) == 1000);
+        assert(anim.progress(k, d + anim.ms(999), d) == 1000);
+        for i in 0..65 {
+            assert(anim.progress(k, d * i / 64, d) == ease.at(k, i));
+        }
+    }
+    assert(anim.progress(anim.OUT, 5, 0) == 1000);
+    // between two entries: the straight line, rounded down; entry 0 to 1 of out is 0 to 63
+    assert(anim.progress(anim.OUT, d / 128, d) == 31);
+}
+
+test "progress never falls along a duration, every nanosecond step of a short one" {
+    for k in 0..2 {
+        I64 last = 0;
+        for e in 0..1001 {
+            I64 p = anim.progress(k, e, 1000);
+            assert(p >= last);
+            last = p;
+        }
+        assert(last == 1000);
+    }
+}
+
+test "value runs from from to to, both directions, and a time past the end is the end" {
+    anim.Anim up = anim.toward(anim.rest(64), anim.ms(100), 72, anim.ms(120), anim.OUT, true);
+    assert(anim.value(up, anim.ms(100)) == 64);
+    assert(anim.value(up, anim.ms(50)) == 64);
+    assert(anim.value(up, anim.ms(220)) == 72);
+    assert(anim.value(up, anim.ms(5000)) == 72);
+    anim.Anim down = anim.toward(anim.rest(256), 0, 0, anim.ms(200), anim.IN, true);
+    assert(anim.value(down, 0) == 256);
+    assert(anim.value(down, anim.ms(200)) == 0);
+    // half way on in is 325 thousandths: 256 - 256 * 325 / 1000, rounded toward from, is 173
+    assert(anim.value(down, anim.ms(100)) == 173);
+    I64 last = 256;
+    for s in 0..21 {
+        I64 v = anim.value(down, anim.steps(s));
+        assert(v <= last);
+        last = v;
+    }
+    assert(last == 0);
+}
+
+test "running: while started and before the end, never at rest" {
+    anim.Anim a = anim.toward(anim.rest(0), anim.ms(10), 100, anim.ms(160), anim.OUT, true);
+    assert(!anim.running(anim.rest(5), 0));
+    assert(anim.running(a, anim.ms(10)));
+    assert(anim.running(a, anim.ms(169)));
+    assert(!anim.running(a, anim.ms(170)));
+    assert(!anim.running(anim.done(a), anim.ms(20)));
+    assert(anim.value(anim.done(a), anim.ms(20)) == 100);
+}
+
+test "a new motion starts where the old one stands, not from its start" {
+    anim.Anim a = anim.toward(anim.rest(0), 0, 1000, anim.ms(200), anim.OUT, true);
+    assert(anim.value(a, anim.ms(100)) == 946);
+    anim.Anim b = anim.toward(a, anim.ms(100), 0, anim.ms(200), anim.OUT, true);
+    assert(anim.value(b, anim.ms(100)) == 946);
+    assert(anim.value(b, anim.ms(300)) == 0);
+}
+
+test "animations off: at the end on the first frame (law 4)" {
+    anim.Anim a = anim.toward(anim.rest(64), anim.ms(100), 72, anim.ms(120), anim.OUT, false);
+    assert(anim.value(a, anim.ms(100)) == 72);
+    assert(!anim.running(a, anim.ms(100)));
+}
+
+test "stepped frames: 10 ms a step" {
+    assert(anim.steps(12) == anim.ms(120));
+    anim.Anim a = anim.toward(anim.rest(64), 0, 72, anim.ms(120), anim.OUT, true);
+    assert(anim.value(a, anim.steps(12)) == 72);
+    assert(anim.running(a, anim.steps(11)));
+}
+
+test "a grid of curves, durations and times equals the twin's (tools/check-hdesk.py anim_value)" {
+    I64 h = 0;
+    for k in 0..2 {
+        for d in 1..41 {
+            I64 dur = anim.ms(d * 7);
+            for s in 0..60 {
+                anim.Anim up = anim.toward(anim.rest(0 - 300), 0, 700, dur, k, true);
+                anim.Anim dn = anim.toward(anim.rest(256), 0, 0, dur, k, true);
+                I64 t = anim.ms(s * 5) + s;
+                h = (h * 31 + anim.value(up, t) + 1000) % 1000000007;
+                h = (h * 31 + anim.value(dn, t)) % 1000000007;
+            }
+        }
+    }
+    assert(h == 535594157);
+}
+// SPDX-License-Identifier: Apache-2.0

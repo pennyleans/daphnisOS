@@ -1,0 +1,11 @@
+// user/ci/ptyctl.ci: the desk's pty (user/ci/host.c, CI_ROWS_PTY), stage W-4.
+//   pty_open(cols, rows): a pty's master, its window cols x rows; the descriptor, or -errno
+//   pty_spawn(path, env, master): fork; the child runs path on the master's slave as 0, 1 and 2, with env, NAME=value
+//     strings each ended by a NUL byte, as its environment (E-6); its pid, or -errno
+//   pty_read(fd, buf): read (waits for a byte); the count, or -errno
+//   pty_write(fd, bytes): write; the count taken, or -errno
+export extern unrestricted I64 pty_open(I64 cols, I64 rows);
+export extern unrestricted I64 pty_spawn(in U8[_] path, in U8[_] env, I64 master);
+export extern unrestricted I64 pty_read(I64 fd, out U8[_] buf);
+export extern unrestricted I64 pty_write(I64 fd, in U8[_] bytes);
+// SPDX-License-Identifier: Apache-2.0

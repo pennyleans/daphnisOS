@@ -1,0 +1,409 @@
+// user/ci/kit/indextrash.ci: Index's Trash view (frame 32, design note 52) and the file states of design note 58, as a
+// kit: the Trash's menu rows, the toolbar's Empty Trash button, frame 23's ask before Empty Trash and Delete Forever,
+// the empty folder's line, and the one rule that says whether an act on an entry is live, dimmed or first asks a
+// Parent (state). It keeps what the program tells it and reads no file and no device, so tests/ix/indextrash_test.ci
+// and tests/ix/ix_proof.ci run it hosted. The Trash store is user/ci/trash.ci's.
+//
+// Menu (frame 32): on a Trash item no strip; Restore and Delete Forever as the app's rows, a divider, Properties.
+// Restore is dimmed unless every chosen item has a good record.
+//
+// Empty Trash (frame 32): the toolbar's button in Sort's slot, in both views: 32 high, radius 6, SURF1, the word in
+// NAME_BOLD INK, 12 in at each side; at 40 percent with the Trash empty.
+//
+// The ask (frame 23, no second sentence): a plate W wide, radius 12, FILL: its band BAND high, the act's name in
+// LABEL ON_FILL, centered; under it PAPER inside the 1 px sides and foot, PAD in: the question in NAME_BOLD INK, then
+// two buttons BTN_H high, radius 6, each its key on a KEY_H keycap of radius 4 (SHORTCUT, 6 in at each side) 12 in,
+// then KEY_GAP, then its word in NAME_BOLD, 12 in at the right: `Enter` and the act on FILL at the left (keycap and
+// word ON_FILL), `Esc Cancel` on SURF1 at the right (keycap RULE, its key INK_DIM, word INK); the elevation and revert
+// prompts' keycaps. Shadow level 3 (MS-3, High). Centered in the box place() gives. DN-69: Enter takes the blue
+// button and Esc cancels, as the keycaps show, wherever the focus is. The focus starts on the act; Tab, Left or Right
+// move it and Space takes the focused button. DN-40's ring shows only once Tab, Left or Right is pressed in the ask,
+// never at its opening, so every ask opens alike (frame 50). A press off the plate does nothing. Index draws it at 1x
+// (row_at, click); a desk at zoom 1 or 2 draws the plate alone from a device top left (plate_row) with its own shadow,
+// and gives a press from the plate's top left in logical pixels (press).
+//
+// The Delete key (DN-69): in the Trash it is Delete Forever, which always asks; elsewhere Move to Trash (delete_act).
+//
+// Empty folder (frame 32): `Folder is empty` in BODY INK_DIM, centered in the body. No picture.
+//
+// Note 58: an act that cannot work here is drawn dimmed (35 percent as a menu row, 40 as a control) and takes no
+// input; one refused for rights a Parent can grant raises frame 17's prompt first (ASK); never a message.
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.shade;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.ctxmenu;
+
+// The Trash's acts: its menu rows, an app's (ctxmenu.APP on), the toolbar's button, and a drag's drop.
+export const I64 RESTORE = 64;
+export const I64 DELETE_FOREVER = 65;
+export const I64 EMPTY_TRASH = 66;
+export const I64 MOVE = 67;
+
+// state(): what an act does here.
+export const I64 LIVE = 0;
+export const I64 DIM = 1;            // drawn dimmed, takes no input
+export const I64 ASK = 2;            // live: choosing it raises frame 17's prompt before the act
+
+// The facts state() reads, one bit each, of the folder the act writes (for a move, both folders' facts and-ed; for
+// several entries, the facts every one of them has).
+export const I64 ON_VOLUME = 1;      // on the writable volume (/home); the image tree is read only
+export const I64 WRITABLE = 2;       // this person may write there
+export const I64 GRANTABLE = 4;      // a Parent's approval would let them (frame 17)
+export const I64 RECORD_OK = 8;      // the Trash record is good (trash.info answers a path)
+export const I64 HAS_ITEMS = 16;     // the Trash holds an item
+export const I64 HAS_CLIP = 32;      // a cut or a copy waits to be pasted
+
+export const I64 BTN_ROW_H = 32;     // the toolbar's button
+const I64 BTN_SIDE = 12;
+const I64 OFF = 102;                 // 40 percent: a control that cannot act
+
+// The ask.
+export const I64 W = 400;
+export const I64 BAND = 36;
+export const I64 PAD = 14;
+export const I64 LINE_H = 18;
+export const I64 BTN_H = 36;
+export const I64 RAD = 12;
+export const I64 LEVEL = 3;
+const I64 GAP = 29;                  // the question to the buttons: frame 23's, its second sentence taken out
+export const I64 KEY_H = 20;         // a button's keycap
+const I64 KEY_R = 4;
+const I64 KEY_SIDE = 6;
+const I64 KEY_GAP = 10;              // the keycap to the word
+
+export const I64 STAY = 0;
+export const I64 CANCEL = -1;
+export const I64 GO = 1;
+
+const I64 K_ESC = 1;
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_SPACE = 57;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+export const I64 K_DELETE = 111;
+
+Bool up = false;
+I64 act = EMPTY_TRASH;
+I64 many = 0;
+U8[255] nm;                          // the one item Delete Forever names
+I64 nn = 0;
+Bool on_go = true;
+Bool kbd = false;                    // Tab, Left or Right was pressed in the ask: the focus shows its ring
+I64 bx0 = 0;                         // the box the plate is centered in, its shadow cut to it
+I64 by0 = 0;
+I64 bx1 = 0;
+I64 by1 = 0;
+
+U32 tok(I64 k) { return tokens.word(k); }
+
+Bool has(I64 f, I64 bit) { return (f & bit) != 0; }
+
+// --- note 58 ---
+
+// What act a (a ctxmenu action, RESTORE .. MOVE) does with facts f: LIVE, DIM or ASK. Acts that write nothing are
+// live; Paste needs something to paste, Restore a good record, Empty Trash an item; then the write: off the volume
+// dimmed, with the right live, with a Parent's grant possible ASK, else dimmed.
+export I64 state(I64 a, I64 f) {
+    if (a == ctxmenu.PASTE && !has(f, HAS_CLIP)) { return DIM; }
+    if (a == RESTORE && !has(f, RECORD_OK)) { return DIM; }
+    if (a == EMPTY_TRASH && !has(f, HAS_ITEMS)) { return DIM; }
+    if (!writes(a)) { return LIVE; }
+    if (!has(f, ON_VOLUME)) { return DIM; }
+    if (has(f, WRITABLE)) { return LIVE; }
+    if (has(f, GRANTABLE)) { return ASK; }
+    return DIM;
+}
+
+// Whether act a changes a folder.
+export Bool writes(I64 a) {
+    return a == ctxmenu.CUT || a == ctxmenu.RENAME || a == ctxmenu.TRASH || a == ctxmenu.PASTE
+           || a == ctxmenu.NEW_FOLDER || a == ctxmenu.NEW_FILE || (a >= RESTORE && a <= MOVE);
+}
+
+// Whether act a asks first with frame 23's plate: Delete Forever and Empty Trash, nothing else (frame 28).
+export Bool confirms(I64 a) { return a == DELETE_FOREVER || a == EMPTY_TRASH; }
+
+// The act of the Delete key (K_DELETE) on the chosen entries (DN-69): Delete Forever in the Trash (trash true), which
+// confirms() asks before; elsewhere Move to Trash, which asks nothing.
+export I64 delete_act(Bool trash) {
+    if (trash) { return DELETE_FOREVER; }
+    return ctxmenu.TRASH;
+}
+
+// The Trash's words for act a into dst: `Restore`, `Delete Forever`, `Empty Trash`; their length, 0 for another.
+export I64 words(I64 a, inout U8[_] dst) {
+    if (a == RESTORE) { return put(b"Restore", dst, 0); }
+    if (a == DELETE_FOREVER) { return put(b"Delete Forever", dst, 0); }
+    if (a == EMPTY_TRASH) { return put(b"Empty Trash", dst, 0); }
+    return 0;
+}
+
+I64 put(in U8[_] s, inout U8[_] dst, I64 at) {
+    for k in 0..len(s) { dst[at + k] = s[k]; }
+    return at + len(s);
+}
+
+I64 put_num(inout U8[_] dst, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 q = v;
+    if (q < 0) { q = 0; }
+    while (n == 0 || q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { dst[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+I64 base_in(I64 t, I64 h, I64 f) {
+    I64 a = ctext.ascent(f, 1);
+    I64 d = ctext.descent(f, 1);
+    return t + (h - a - d) / 2 + a;
+}
+
+// --- the toolbar's button ---
+
+export I64 button_w() { return BTN_SIDE + ctext.width(b"Empty Trash", 11, faces.NAME_BOLD, 1) + BTN_SIDE; }
+
+// The button's row y with its top left at (x0, y0); live false: at 40 percent (the Trash is empty).
+export void button_row(inout U32[_] row, I64 y, I64 x0, I64 y0, Bool live) {
+    if (y < y0 || y >= y0 + BTN_ROW_H) { return; }
+    U32 bg = tok(tokens.SURF1);
+    U32 ink = tok(tokens.INK);
+    if (!live) {
+        bg = blend.mix_px(tok(tokens.PAPER), bg, OFF);
+        ink = blend.mix_px(tok(tokens.PAPER), ink, OFF);
+    }
+    I64 x1 = x0 + button_w();
+    shape.rounded(row, y, x0, y0, x1, y0 + BTN_ROW_H, 6, bg);
+    I64 e = ctext.text(row, y, x0 + BTN_SIDE, base_in(y0, BTN_ROW_H, faces.NAME_BOLD), x1, b"Empty Trash", 11, ink,
+                       faces.NAME_BOLD, 1);
+}
+
+// --- the empty folder ---
+
+// The body's row y for a folder with nothing in it: the line centered in [x0, x1) x [y0, y1).
+export void empty_row(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 x1, I64 y1) {
+    I64 f = faces.BODY;
+    I64 t = y0 + (y1 - y0 - LINE_H) / 2;
+    if (y < t || y >= t + LINE_H) { return; }
+    I64 w = ctext.width(b"Folder is empty", 15, f, 1);
+    I64 e = ctext.text(row, y, x0 + (x1 - x0 - w) / 2, base_in(t, LINE_H, f), x1, b"Folder is empty", 15,
+                       tok(tokens.INK_DIM), f, 1);
+}
+
+// --- the ask ---
+
+// The ask up for a (EMPTY_TRASH or DELETE_FOREVER) over n items; Delete Forever of one item names it (name).
+export void ask(I64 a, I64 n, in U8[_] name) {
+    act = a;
+    many = n;
+    nn = len(name);
+    if (nn > 255) { nn = 255; }
+    for k in 0..nn { nm[k] = name[k]; }
+    on_go = true;
+    kbd = false;
+    up = true;
+}
+
+export void close() { up = false; }
+export Bool is_up() { return up; }
+export I64 asked() { return act; }
+export Bool focus_go() { return on_go; }
+
+// The box the plate is centered in (Index's surface); its shadow is cut to it.
+export void place(I64 x0, I64 y0, I64 x1, I64 y1) {
+    bx0 = x0;
+    by0 = y0;
+    bx1 = x1;
+    by1 = y1;
+}
+
+export I64 height() { return BAND + PAD + LINE_H + GAP + BTN_H + PAD + 1; }
+export I64 plate_x() { return bx0 + (bx1 - bx0 - W) / 2; }
+export I64 plate_y() { return by0 + (by1 - by0 - height()) / 2; }
+
+// The band's words: `EMPTY TRASH` or `DELETE FOREVER`.
+export I64 title(inout U8[_] dst) {
+    if (act == DELETE_FOREVER) { return put(b"DELETE FOREVER", dst, 0); }
+    return put(b"EMPTY TRASH", dst, 0);
+}
+
+// The act's button: `Empty` or `Delete`.
+export I64 go_word(inout U8[_] dst) {
+    if (act == DELETE_FOREVER) { return put(b"Delete", dst, 0); }
+    return put(b"Empty", dst, 0);
+}
+
+// The question (DN-69): `Remove N items permanently?`, `Remove 1 item permanently?`, or Delete Forever of one item
+// `Remove NAME permanently?`, the name cut with an ellipsis at its end to fit the plate.
+export I64 question(inout U8[_] dst) {
+    I64 n = put(b"Remove ", dst, 0);
+    if (act == DELETE_FOREVER && many == 1 && nn > 0) {
+        U8[3] el = [0xe2, 0x80, 0xa6];
+        I64 room = W - 2 * (PAD + 1) - ctext.width(b"Remove  permanently?", 20, faces.NAME_BOLD, 1);
+        I64 k = nn;
+        if (ctext.width(nm, nn, faces.NAME_BOLD, 1) > room) {
+            I64 ew = ctext.width(el, 3, faces.NAME_BOLD, 1);
+            while (k > 0 && (ctext.width(nm, k, faces.NAME_BOLD, 1) + ew > room || (nm[k - 1] & 0xc0) == 0x80)) {
+                k = k - 1;
+            }
+        }
+        for q in 0..k { dst[n + q] = nm[q]; }
+        n = n + k;
+        if (k < nn) { n = put(el, dst, n); }
+        return put(b" permanently?", dst, n);
+    }
+    n = put_num(dst, n, many);
+    if (many == 1) { n = put(b" item", dst, n); } else { n = put(b" items", dst, n); }
+    return put(b" permanently?", dst, n);
+}
+
+// A keycap's width for key k.
+export I64 key_w(in U8[_] k) { return KEY_SIDE + ctext.width(k, len(k), faces.SHORTCUT, 1) + KEY_SIDE; }
+
+// A button's width: its keycap for key k, then word s (n bytes).
+I64 bw(in U8[_] k, in U8[_] s, I64 n) {
+    return BTN_SIDE + key_w(k) + KEY_GAP + ctext.width(s, n, faces.NAME_BOLD, 1) + BTN_SIDE;
+}
+
+I64 go_w() {
+    U8[8] t;
+    I64 n = go_word(t);
+    return bw(b"Enter", t, n);
+}
+
+I64 cancel_w() { return bw(b"Esc", b"Cancel", 6); }
+
+// The buttons' places from the plate's top left.
+export I64 btn_y() { return height() - 1 - PAD - BTN_H; }
+export I64 go_x0() { return 1 + PAD; }
+export I64 go_x1() { return go_x0() + go_w(); }
+export I64 cancel_x1() { return W - 1 - PAD; }
+export I64 cancel_x0() { return cancel_x1() - cancel_w(); }
+
+// A key while the ask is up: GO, CANCEL (it closes either way) or STAY. Enter is the act, Esc Cancel, Space the
+// focused button.
+export I64 key(I64 c) {
+    if (!up) { return STAY; }
+    if (c == K_ESC) {
+        up = false;
+        return CANCEL;
+    }
+    if (c == K_ENTER) {
+        up = false;
+        return GO;
+    }
+    if (c == K_SPACE) {
+        up = false;
+        if (on_go) { return GO; }
+        return CANCEL;
+    }
+    if (c == K_TAB || c == K_LEFT || c == K_RIGHT) {
+        if (kbd) {
+            if (c == K_LEFT) {
+                on_go = true;
+            } else if (c == K_RIGHT) {
+                on_go = false;
+            } else {
+                on_go = !on_go;
+            }
+        }
+        kbd = true;
+    }
+    return STAY;
+}
+
+// A press at (x, y) on the surface: GO on the act, CANCEL on Cancel, else STAY (the plate holds the window).
+export I64 click(I64 x, I64 y) { return press(x - plate_x(), y - plate_y()); }
+
+// A press at (px, py), logical, from the plate's top left (a desk at zoom z divides its device offset by z): as
+// click().
+export I64 press(I64 px, I64 py) {
+    if (!up) { return STAY; }
+    if (py < btn_y() || py >= btn_y() + BTN_H) { return STAY; }
+    if (px >= go_x0() && px < go_x1()) {
+        up = false;
+        return GO;
+    }
+    if (px >= cancel_x0() && px < cancel_x1()) {
+        up = false;
+        return CANCEL;
+    }
+    return STAY;
+}
+
+// A button [x0, x1) (logical, from the plate's top left) at zoom z, the plate's device top left at (ox, oy): ground,
+// its keycap for key k (edge ke, key in ki), its word s in ink; ring: DN-40's.
+void button(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 x0, I64 x1, in U8[_] k, I64 ke, I64 ki, in U8[_] s, I64 n,
+            I64 ground, I64 ink, Bool ring, I64 z) {
+    I64 bt = btn_y();
+    I64 dx0 = ox + x0 * z;
+    I64 dx1 = ox + x1 * z;
+    I64 dy0 = oy + bt * z;
+    I64 dy1 = oy + (bt + BTN_H) * z;
+    if (ring && y >= dy0 - 4 * z && y < dy1 + 4 * z) {   // DN-40: the keyboard's focus, outside the button
+        shape.focus_ring(row, y, dx0, dy0, dx1, dy1, 6 * z, z, tok(tokens.PAPER), tok(tokens.ULTRAMARINE));
+    }
+    if (y < dy0 || y >= dy1) { return; }
+    shape.rounded(row, y, dx0, dy0, dx1, dy1, 6 * z, tok(ground));
+    I64 kx0 = x0 + BTN_SIDE;
+    I64 kx1 = kx0 + key_w(k);
+    I64 ky0 = bt + (BTN_H - KEY_H) / 2;
+    shape.ring(row, y, ox + kx0 * z, oy + ky0 * z, ox + kx1 * z, oy + (ky0 + KEY_H) * z, KEY_R * z, z, tok(ke));
+    I64 e = 0;
+    if (y >= oy + ky0 * z && y < oy + (ky0 + KEY_H) * z) {
+        e = ctext.text(row, y, ox + (kx0 + KEY_SIDE) * z, oy + base_in(ky0, KEY_H, faces.SHORTCUT) * z, ox + kx1 * z,
+                       k, len(k), tok(ki), faces.SHORTCUT, z);
+    }
+    e = ctext.text(row, y, ox + (kx1 + KEY_GAP) * z, oy + base_in(bt, BTN_H, faces.NAME_BOLD) * z, dx1, s, n, tok(ink),
+                   faces.NAME_BOLD, z);
+}
+
+// The surface's row y with the ask over it at 1x, centered in place()'s box: its shadow, cut to the box, then the
+// plate. Nothing when the ask is down.
+export void row_at(inout U32[_] row, I64 y) {
+    if (!up) { return; }
+    I64 x0 = plate_x();
+    I64 y0 = plate_y();
+    shade.shade_row(row, bx0, bx1, y, x0, y0, x0 + W, y0 + height(), RAD, LEVEL, tokens.theme(), 1);
+    plate_row(row, y, x0, y0, 1);
+}
+
+// Row y (device) of the ask's plate at zoom z (1 or 2), its top left at device (ox, oy): the plate W by height()
+// logical pixels, as row_at() draws it at 1x. Its shadow is the caller's (shade.shade_row, RAD and LEVEL at z). Nothing
+// when the ask is down.
+export void plate_row(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z) {
+    if (!up) { return; }
+    I64 x1 = ox + W * z;
+    I64 y1 = oy + height() * z;
+    if (y < oy || y >= y1) { return; }
+    shape.rounded(row, y, ox, oy, x1, y1, RAD * z, tok(tokens.FILL));
+    if (y < oy + BAND * z) {
+        U8[16] t;
+        I64 tn = title(t);
+        I64 tw = ctext.width(t, tn, faces.LABEL, z);
+        I64 e = ctext.text(row, y, ox + (W * z - tw) / 2, oy + base_in(0, BAND, faces.LABEL) * z, x1, t, tn,
+                           tok(tokens.ON_FILL), faces.LABEL, z);
+        return;
+    }
+    shape.lower_rounded(row, y, ox + z, oy + BAND * z, x1 - z, y1 - z, (RAD - 1) * z, tok(tokens.PAPER));
+    U8[300] q;
+    I64 qn = question(q);
+    I64 e = ctext.text(row, y, ox + (1 + PAD) * z, oy + base_in(BAND + PAD, LINE_H, faces.NAME_BOLD) * z,
+                       x1 - (1 + PAD) * z, q, qn, tok(tokens.INK), faces.NAME_BOLD, z);
+    U8[8] g;
+    I64 gn = go_word(g);
+    button(row, y, ox, oy, go_x0(), go_x1(), b"Enter", tokens.ON_FILL, tokens.ON_FILL, g, gn, tokens.FILL,
+           tokens.ON_FILL, kbd && on_go, z);
+    button(row, y, ox, oy, cancel_x0(), cancel_x1(), b"Esc", tokens.RULE, tokens.INK_DIM, b"Cancel", 6, tokens.SURF1,
+           tokens.INK, kbd && !on_go, z);
+}
+// SPDX-License-Identifier: Apache-2.0

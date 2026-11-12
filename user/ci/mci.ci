@@ -1,0 +1,34 @@
+// user/ci/mci.ci: the first cint program in ring 3 (stage R-1). Prints, computes, reads the clock
+// through its runtime, then overflows on purpose: the fault line on stderr and the status 1 are
+// the same on Linux and under Daphnis (the oracle), so the runtime's checks reach ring 3 whole.
+import user.ci.dev;
+
+I64 fib(I64 n) {
+    I64 a = 0;
+    I64 b = 1;
+    for i in 0..n {
+        I64 c = a + b;
+        a = b;
+        b = c;
+    }
+    return a;
+}
+
+void main() {
+    "mci: hello from cint in ring 3\n";
+    I64 f = fib(90);
+    "mci: fib(90) = {f}\n";
+    I64 t0 = dev.clock_ns();
+    I64 t1 = dev.clock_ns();
+    if (t1 >= t0) {
+        "mci: the clock does not go back\n";
+    } else {
+        "mci: the clock went back\n";
+    }
+    I64 w = dev.fb_word(0) as I64;
+    "mci: surface words before fb_open: {w}\n";
+    "mci: now fib(93), which does not fit\n";
+    I64 g = fib(93);
+    "mci: never {g}\n";
+}
+// SPDX-License-Identifier: Apache-2.0

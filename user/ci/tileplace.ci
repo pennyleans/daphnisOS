@@ -1,0 +1,7 @@
+// user/ci/tileplace.ci: the tiler's placement (H-2, docs/specs/2026-11-05-h-hybrid.md section 5 item 2), a row of
+// user/ci/host.c built only into a program that imports this file (CI_ROWS_PLACE), so no other program's bytes change:
+//   tile_place(arg): FBIO_TILE_PLACE with arg's 24-byte head {u32 pid (0: the tile set next), i32 dst_x, dst_y,
+//     u16 scale, u16 nrects, u64 uaddr} and its nrects rectangles {u32 x, y, w, h} after it, at most 32; host.c
+//     points uaddr at them. 0, or -errno.
+export extern unrestricted I64 tile_place(in U8[_] arg);
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,12 @@
+# DN-43, review on PR 272: the About sheet over Settings (Super+,). Down, Down, Right and Enter go to the sheet:
+# no Settings page moves while it is up, Enter closes it, and Esc then closes Settings.
+hdesk: screen 1920x1080 plane 1920x
+=hdesk: settings 1
+hdesk: app menu open
+~hdesk: app menu chose [0-9]+ \|About .+\|
+=hdesk: about 1
+-hdesk: settings
+=hdesk: about closed
+-hdesk: settings page
+=hdesk: settings closed
+=hdesk: shell ended, status 0

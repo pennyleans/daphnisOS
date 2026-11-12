@@ -1,0 +1,192 @@
+// user/ci/chmod.ci: chmod [-R] MODE FILE... (docs/specs/2026-11-07-bu2-meta.md section 6, BU-2b; XCU chmod): each
+// FILE's permission bits become MODE: octal (at most 07777, absolute), or symbolic clauses joined by ',', each
+// [ugoa]* then one or more of [-+=] with [rwxXst]* or one of u, g, o (the bits that class holds now). With no class
+// named, + - and = leave the bits the umask holds. X is x for a directory or a file with any x already. -R goes
+// down each directory FILE (pre-order, as busybox), never through a link below it. A MODE that starts with '-'
+// (chmod -w f) is a MODE, not an option.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.metactl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.path;
+
+const I64 EINVAL = 22;
+
+I64[2048] ws;       // the words of the arguments
+I64[2048] we;
+I64 nw = 0;
+I64 ms = 0;         // the MODE word
+I64 me = 0;
+Bool rec_on = false;
+I64 mask = 0;
+I64[16] st;
+U8[4096] p;
+
+void split(in U8[_] a) {
+    I64 s = 0;
+    for i in 0..len(a) {
+        if (a[i] == 0) {
+            if (nw == 2048) { msg.limit(b"ARGS_MAX"); }
+            ws[nw] = s;
+            we[nw] = i;
+            nw = nw + 1;
+            s = i + 1;
+        }
+    }
+}
+
+I64 class_bits(U8 c) {
+    if (c == 'u') { return 0x9C0; }    // 04700
+    if (c == 'g') { return 0x438; }    // 02070
+    if (c == 'o') { return 0x7; }      // 0007
+    return 0xFFF;                      // a
+}
+
+// The rwx bits class c holds in m, spread to every class (the copy forms u, g and o).
+I64 copy_of(I64 m, U8 c) {
+    I64 t = 0;
+    if (c == 'u') { t = (m >> 6) & 7; }
+    if (c == 'g') { t = (m >> 3) & 7; }
+    if (c == 'o') { t = m & 7; }
+    return t * 0x49;                   // 0111 * t
+}
+
+// MODE applied to old (dir: a directory); -1 for a MODE that does not parse.
+I64 apply(in U8[_] a, I64 old, Bool dir) {
+    if (me == ms) { return -1; }
+    Bool octal = true;
+    for i in ms..me {
+        if (a[i] < '0' || a[i] > '7') { octal = false; }
+    }
+    if (octal) {
+        I64 v = 0;
+        for i in ms..me {
+            v = v * 8 + (a[i] - '0') as I64;
+            if (v > 0xFFF) { return -1; }
+        }
+        return v;
+    }
+    I64 m = old;
+    I64 i = ms;
+    while (i <= me) {
+        I64 who = 0;
+        while (i < me && (a[i] == 'u' || a[i] == 'g' || a[i] == 'o' || a[i] == 'a')) {
+            who = who | class_bits(a[i]);
+            i = i + 1;
+        }
+        if (i >= me || (a[i] != '+' && a[i] != '-' && a[i] != '=')) { return -1; }
+        while (i < me && (a[i] == '+' || a[i] == '-' || a[i] == '=')) {
+            U8 op = a[i];
+            i = i + 1;
+            I64 bits = 0;
+            if (i < me && (a[i] == 'u' || a[i] == 'g' || a[i] == 'o')) {
+                bits = copy_of(m, a[i]);
+                i = i + 1;
+            } else {
+                while (i < me && (a[i] == 'r' || a[i] == 'w' || a[i] == 'x' || a[i] == 'X' || a[i] == 's' || a[i] == 't')) {
+                    U8 c = a[i];
+                    if (c == 'r') { bits = bits | 0x124; }
+                    if (c == 'w') { bits = bits | 0x92; }
+                    if (c == 'x') { bits = bits | 0x49; }
+                    if (c == 'X' && (dir || (old & 0x49) != 0)) { bits = bits | 0x49; }
+                    if (c == 's') { bits = bits | 0xC00; }
+                    if (c == 't') { bits = bits | 0x200; }
+                    i = i + 1;
+                }
+            }
+            I64 w = who;
+            I64 keep = 0;
+            if (who == 0) {
+                w = 0xFFF;
+                keep = mask;
+            }
+            if (op == '+') { m = m | (bits & w & ~keep); }
+            if (op == '-') { m = m & ~(bits & w & ~keep); }
+            if (op == '=') {
+                I64 clear = w;
+                if (who == 0) { clear = 0xFFF & ~keep; }
+                if ((who & 0x7) != 0 || who == 0) { clear = clear | 0x200; }
+                m = (m & ~clear) | (bits & w & ~keep);
+            }
+        }
+        if (i < me && a[i] != ',') { return -1; }
+        i = i + 1;
+    }
+    return m;
+}
+
+// MODE onto the file p[0..k] whose record is st.
+void set(in U8[_] a, I64 k) {
+    Bool dir = (st[corectl.ST_MODE] & corectl.S_IFMT) == corectl.S_IFDIR;
+    I64 m = apply(a, st[corectl.ST_MODE] & 0xFFF, dir);
+    if (m < 0) { msg.usage(b"invalid mode"); }
+    I64 r = metactl.co_chmod(p[0..k], m);
+    if (r < 0) { msg.file(p[0..k], 0 - r); }
+}
+
+void one(in U8[_] a, I64 s, I64 e) {
+    for i in s..e { p[i - s] = a[i]; }
+    I64 k = e - s;
+    I64 r = corectl.co_stat(a[s..e], 1, st);
+    if (r < 0) {
+        msg.file(a[s..e], 0 - r);
+        return;
+    }
+    if (!rec_on || (st[corectl.ST_MODE] & corectl.S_IFMT) != corectl.S_IFDIR) {
+        set(a, k);
+        return;
+    }
+    path.walk_start(a[s..e], true, false, false);
+    I64 w = path.walk_next();
+    while (w != path.W_END) {
+        I64 pl = path.walk_path(p);
+        if (w == path.W_ERR) {
+            msg.file(p[0..pl], path.walk_errno());
+        } else if (w == path.W_PRE || w == path.W_FILE) {
+            path.walk_rec(st);
+            if ((st[corectl.ST_MODE] & corectl.S_IFMT) != corectl.S_IFLNK) {
+                set(a, pl);
+            }
+        }
+        w = path.walk_next();
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"chmod");
+    split(a);
+    I64 i = 0;
+    Bool opts = true;
+    while (opts && i < nw) {
+        I64 k = we[i] - ws[i];
+        if (k == 2 && a[ws[i]] == '-' && a[ws[i] + 1] == 'R') {
+            rec_on = true;
+            i = i + 1;
+        } else if (k == 2 && a[ws[i]] == '-' && a[ws[i] + 1] == '-') {
+            i = i + 1;
+            opts = false;
+        } else if (k >= 2 && a[ws[i]] == '-' && a[ws[i] + 1] != 'r' && a[ws[i] + 1] != 'w' && a[ws[i] + 1] != 'x'
+                   && a[ws[i] + 1] != 'X' && a[ws[i] + 1] != 's' && a[ws[i] + 1] != 't' && a[ws[i] + 1] != 'u'
+                   && a[ws[i] + 1] != 'g' && a[ws[i] + 1] != 'o' && a[ws[i] + 1] != ',') {
+            msg.refuse(a[ws[i] + 1]);
+        } else {
+            opts = false;
+        }
+    }
+    if (i >= nw) { msg.usage(b"missing operand"); }
+    ms = ws[i];
+    me = we[i];
+    i = i + 1;
+    if (i >= nw) { msg.usage(b"missing operand"); }
+    mask = metactl.co_umask(0);
+    _ = metactl.co_umask(mask);
+    if (apply(a, 0, false) < 0) { msg.usage(b"invalid mode"); }
+    while (i < nw) {
+        one(a, ws[i], we[i]);
+        i = i + 1;
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

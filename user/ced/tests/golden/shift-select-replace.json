@@ -1,0 +1,28 @@
+{
+  "id": "shift-select-replace",
+  "rules": [
+    "KEY-3",
+    "KEY-4",
+    "TEXT-4"
+  ],
+  "text": "hello",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b32431b5b313b3243",
+    "4a"
+  ],
+  "expect": {
+    "text": "Jllo",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

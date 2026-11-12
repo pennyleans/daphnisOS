@@ -1,0 +1,15 @@
+x = 5
+y = x * 2.5
+y
+_ + 1
+scale = 3
+1/7
+scale = 18
+1/7
+scale = 0
+7/2
+scale = 9
+
+hex 4096
+rate = 0.0725
+1200 * rate

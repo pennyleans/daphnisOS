@@ -1,0 +1,187 @@
+// user/ci/typist.ci: a shell on a pty, typed at, for the drivers of the shell's key gates (K-10 ctrlc, K-9 keyed;
+// docs/specs/2026-11-07-k-kit2.md section 3a). start opens a pty of 80 x 24 and runs SHELL (default /cish) on the
+// slave as a desk terminal does (pty_spawn: a new session, the slave its controlling terminal) with PATH (default
+// /bin) and PS1 `@> `; with LOG, every byte the terminal shows is written to that file too (Linux, for the screen
+// twin of tools/check-cish.py). A driver prints one line a step and what it waited for, never the terminal's bytes,
+// so every shell and system that acts the same prints the same lines. A driver ends 0, or 1 when the terminal ends
+// before a step's bytes come.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.ptyctl;
+
+U8[8192] seen;      // the terminal's bytes not yet matched
+I64 nseen = 0;
+I64 fd = -1;
+I64 log = -1;
+U8[16] who;
+I64 nwho = 0;
+
+export void say(in U8[_] s) {
+    _ = shctl.fd_write(1, s);
+}
+
+void said(in U8[_] s) {
+    say(who[0..nwho]);
+    say(b": ");
+    say(s);
+    say(b"\n");
+}
+
+export void keys(in U8[_] s) {
+    I64 at = 0;
+    while (at < len(s)) {
+        I64 k = ptyctl.pty_write(fd, s[at..len(s)]);
+        if (k <= 0) {
+            said(b"the terminal takes no input");
+            dev.exit_now(1);
+        }
+        at = at + k;
+    }
+}
+
+// The terminal's next bytes into b; their count, 0 at its end.
+I64 more(inout U8[_] b) {
+    I64 got = ptyctl.pty_read(fd, b);
+    if (got <= 0) { return 0; }
+    if (log >= 0) { _ = shctl.fd_write(log, b[0..got]); }
+    return got;
+}
+
+// Reads the terminal until want has come; the bytes up to its end are dropped, the rest kept. Nothing is printed.
+export void until(in U8[_] step, in U8[_] want) {
+    Bool found = false;
+    while (!found) {
+        I64 at = 0;
+        while (!found && at + len(want) <= nseen) {
+            Bool same = true;
+            for k in 0..len(want) {
+                if (seen[at + k] != want[k]) { same = false; }
+            }
+            if (same) {
+                found = true;
+                I64 rest = nseen - at - len(want);
+                for k in 0..rest { seen[k] = seen[at + len(want) + k]; }
+                nseen = rest;
+            }
+            at = at + 1;
+        }
+        if (!found) {
+            U8[512] b;
+            I64 got = more(b);
+            if (got == 0) {
+                say(who[0..nwho]);
+                say(b": the terminal ended before ");
+                say(step);
+                say(b"\n");
+                dev.exit_now(1);
+            }
+            if (nseen + got > 8192) {
+                I64 drop = nseen + got - 8192;   // keep the newest bytes: want is short
+                for k in 0..nseen - drop { seen[k] = seen[drop + k]; }
+                nseen = nseen - drop;
+            }
+            for k in 0..got { seen[nseen + k] = b[k]; }
+            nseen = nseen + got;
+        }
+    }
+}
+
+// until, then one line: the step and what came.
+export void wait_for(in U8[_] step, in U8[_] want) {
+    until(step, want);
+    U8[64] w;
+    I64 nw = len(want);
+    if (nw > 64) { nw = 64; }
+    for k in 0..nw {
+        w[k] = want[k];
+        if (w[k] < 32 || w[k] > 126) { w[k] = '.'; }   // CR, NL and ESC as dots: one line a step
+    }
+    say(who[0..nwho]);
+    say(b": ");
+    say(step);
+    say(b": ");
+    say(w[0..nw]);
+    say(b"\n");
+}
+
+// Reads the terminal to its end (the shell has gone), then says so; status 0.
+export void finish() {
+    U8[512] b;
+    while (more(b) > 0) { }
+    said(b"the shell ended");
+    dev.exit_now(0);
+}
+
+// Argument k (from 0) of a: where it starts, or -1 past the last; its end is the next NUL.
+I64 arg_at(in U8[_] a, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(a)) { return -1; }
+        if (a[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(a)) { return -1; }
+    return at;
+}
+
+I64 arg_end(in U8[_] a, I64 at) {
+    I64 e = at;
+    while (e < len(a) && a[e] != 0) { e = e + 1; }
+    return e;
+}
+
+// The driver named name, with arguments a (SHELL [PATH [LOG]]): the shell started.
+export void start(in U8[_] name, in U8[_] a) {
+    nwho = len(name);
+    if (nwho > 16) { nwho = 16; }
+    for k in 0..nwho { who[k] = name[k]; }
+    U8[256] shell;
+    I64 ns = 0;
+    U8[512] env;
+    I64 ne = 0;
+    I64 s0 = arg_at(a, 0);
+    if (s0 < 0) {
+        for k in 0..5 { shell[k] = b"/cish"[k]; }
+        ns = 5;
+    } else {
+        ns = arg_end(a, s0) - s0;
+        if (ns > 255) { ns = 255; }
+        for k in 0..ns { shell[k] = a[s0 + k]; }
+    }
+    for k in 0..5 { env[k] = b"PATH="[k]; }
+    ne = 5;
+    I64 p0 = arg_at(a, 1);
+    if (p0 < 0) {
+        for k in 0..4 { env[ne + k] = b"/bin"[k]; }
+        ne = ne + 4;
+    } else {
+        I64 np = arg_end(a, p0) - p0;
+        if (np > 400) { np = 400; }
+        for k in 0..np { env[ne + k] = a[p0 + k]; }
+        ne = ne + np;
+    }
+    env[ne] = 0;
+    ne = ne + 1;
+    for k in 0..8 { env[ne + k] = b"PS1=@> \x00"[k]; }
+    ne = ne + 8;
+    I64 l0 = arg_at(a, 2);
+    if (l0 >= 0) {
+        log = shctl.sh_open(a[l0..arg_end(a, l0)], 0x241, 420);   // O_WRONLY O_CREAT O_TRUNC, 0644
+        if (log < 0) {
+            said(b"cannot write the log");
+            dev.exit_now(1);
+        }
+    }
+    fd = ptyctl.pty_open(80, 24);
+    if (fd < 0) {
+        said(b"no pty");
+        dev.exit_now(1);
+    }
+    I64 pid = ptyctl.pty_spawn(shell[0..ns], env[0..ne], fd);
+    if (pid < 0) {
+        said(b"cannot run the shell");
+        dev.exit_now(1);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,130 @@
+// src/heap.ci: the kernel heap, as arenas. An arena is a run of contiguous frames from
+// src/frames.ci and a bump offset; arena_alloc hands out physical addresses inside the run and
+// the caller reaches them through the view shim. Resetting an arena forgets its objects;
+// freeing it returns its frames. Module state, no externs, tested hosted. Like the frame
+// allocator, a request that cannot be met returns before the first store.
+
+import src.frames;
+import src.sha256;
+
+export const I64 ERR_NO_SLOT = -11;
+export const I64 ERR_BAD_ARENA = -12;
+export const I64 ERR_BAD_SIZE = -13;
+export const I64 ERR_EXHAUSTED = -14;
+
+const I64 ARENAS = 4;
+
+I64[4] a_first;
+I64[4] a_frames;
+I64[4] a_bump;
+I64 heap_ops = 0;
+
+// A new arena of nframes frames; returns its slot.
+export I64 arena_new(I64 nframes) {
+    if (nframes < 1) {
+        return ERR_BAD_SIZE;
+    }
+    I64 slot = -1;
+    for i in 0..ARENAS {
+        if (slot < 0 && a_frames[i] == 0) {
+            slot = i;
+        }
+    }
+    if (slot < 0) {
+        return ERR_NO_SLOT;
+    }
+    I64 first = frames.alloc(nframes);
+    if (first < 0) {
+        return ERR_EXHAUSTED;
+    }
+    a_first[slot] = first;
+    a_frames[slot] = nframes;
+    a_bump[slot] = 0;
+    heap_ops += 1;
+    return slot;
+}
+
+Bool live(I64 slot) {
+    return slot >= 0 && slot < ARENAS && a_frames[slot] != 0;
+}
+
+// The physical address of `bytes` bytes aligned to `align` (a power of two up to 4,096) in the
+// arena, or a negative status code.
+export I64 arena_alloc(I64 slot, I64 bytes, I64 align) {
+    if (!live(slot)) {
+        return ERR_BAD_ARENA;
+    }
+    if (bytes < 1 || align < 1 || align > 4096 || (4096 % align) != 0) {
+        return ERR_BAD_SIZE;
+    }
+    I64 start = (a_bump[slot] + align - 1) / align * align;
+    I64 limit = a_frames[slot] * frames.FRAME_BYTES;
+    if (bytes > limit - start) {
+        return ERR_EXHAUSTED;
+    }
+    I64 base = frames.frame_addr(a_first[slot]);
+    if (base < 0) {
+        return ERR_BAD_ARENA;
+    }
+    a_bump[slot] = start + bytes;
+    heap_ops += 1;
+    return base + start;
+}
+
+export I64 arena_reset(I64 slot) {
+    if (!live(slot)) {
+        return ERR_BAD_ARENA;
+    }
+    a_bump[slot] = 0;
+    heap_ops += 1;
+    return 0;
+}
+
+// Returns the arena's frames to the frame allocator and frees the slot.
+export I64 arena_free(I64 slot) {
+    if (!live(slot)) {
+        return ERR_BAD_ARENA;
+    }
+    I64 left = frames.release(a_first[slot], a_frames[slot]);
+    if (left < 0) {
+        return ERR_BAD_ARENA;
+    }
+    a_first[slot] = 0;
+    a_frames[slot] = 0;
+    a_bump[slot] = 0;
+    heap_ops += 1;
+    return left;
+}
+
+export I64 arena_used(I64 slot) {
+    I64 used_bytes = 0;
+    if (live(slot)) {
+        used_bytes = a_bump[slot];
+    }
+    return used_bytes;
+}
+
+void put_le(U64 v, inout U8[8] w) {
+    for k in 0..8 {
+        w[k] = (v >> (8 * k)) as% U8;
+    }
+}
+
+// SHA-256 of the heap state: each arena's first frame, frame count and bump, then the count.
+export void digest(inout U8[32] result) {
+    sha256.Sha256[1] s;
+    U8[8] w;
+    sha256.sha_init(s);
+    for i in 0..ARENAS {
+        put_le(a_first[i] as U64, w);
+        sha256.sha_update(s, w, 0, 8);
+        put_le(a_frames[i] as U64, w);
+        sha256.sha_update(s, w, 0, 8);
+        put_le(a_bump[i] as U64, w);
+        sha256.sha_update(s, w, 0, 8);
+    }
+    put_le(heap_ops as U64, w);
+    sha256.sha_update(s, w, 0, 8);
+    sha256.sha_final(s, result);
+}
+// SPDX-License-Identifier: Apache-2.0

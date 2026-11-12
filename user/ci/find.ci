@@ -1,0 +1,675 @@
+// user/ci/find.ci: find [-H|-L] PATH... [EXPRESSION] (docs/specs/2026-11-06-c-core.md, CT-4). Each PATH (none: `.`)
+// and what it holds, a directory's names in byte order (path.ci's walk; busybox takes the directory's order), is
+// judged by EXPRESSION: `( )`, `!`, `-a` (or two terms side by side) and `-o`, in XCU's precedence, over
+//   -name PAT, -path PAT   the last component (trailing '/' aside), or the whole path, matches PAT (XCU 2.14)
+//   -type C                b c d f l p s
+//   -size [+-]N[c]         blocks of 512 bytes, rounded up; bytes with c (XCU; busybox compares N * 512 exactly)
+//   -mtime, -atime, -ctime [+-]N   days of 86,400 s between the start and the time, rounded down
+//   -newer FILE            modified after FILE (seconds, then nanoseconds)
+//   -links, -user, -group [+-]N    numeric only: Daphnis holds no user database
+//   -perm [-]OCTAL         the permission bits are OCTAL, or (-) hold all of its bits
+//   -depth, -xdev          a directory after what it holds; no directory of another device is entered
+//   -prune                 the directory is not entered (no effect with -depth)
+//   -print, -print0        the path and '\n', or NUL
+//   -exec UTILITY [ARG...] ;   runs it, each "{}" in an ARG the path; true when it exits 0
+//   -exec UTILITY [ARG...] {} +   runs it with as many paths as ARGS_MAX and ARGS_BYTES hold, at the end at latest
+//   -ok UTILITY [ARG...] ;     -exec after `< UTILITY ARG... > ? ` on descriptor 2 and a line from 0 that starts y
+// With no -print, -print0, -exec or -ok, a path for which EXPRESSION holds is printed. -H follows a PATH that is a
+// symbolic link, -L every one. A path that cannot be read is `find: PATH: reason`, and the status is 1.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.runctl;
+import user.ci.corectl;
+import user.ci.cish.pattern;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.path;
+import user.ci.core.run;
+
+const I64 ARGS_MAX = 4096;
+const I64 ARGS_BYTES = 65536;
+const I64 NODES = 512;
+
+const I64 K_AND = 1;
+const I64 K_OR = 2;
+const I64 K_NOT = 3;
+const I64 K_NAME = 4;
+const I64 K_PATH = 5;
+const I64 K_TYPE = 6;
+const I64 K_SIZE = 7;
+const I64 K_TIME = 8;
+const I64 K_NEWER = 9;
+const I64 K_PRUNE = 10;
+const I64 K_PRINT = 11;
+const I64 K_PRINT0 = 12;
+const I64 K_EXEC = 13;
+const I64 K_PLUS = 14;
+const I64 K_OK = 15;
+const I64 K_TRUE = 16;
+const I64 K_LINKS = 17;
+const I64 K_PERM = 18;
+const I64 K_USER = 19;
+const I64 K_GROUP = 20;
+
+I64[4096] wa;      // the words of argv: start and end in main's args
+I64[4096] we;
+I64 nw = 0;
+U8[65536] av;      // main's args, kept for the expression's words
+I64 avn = 0;
+
+I64[512] nk;       // a node's kind; its two children or words; its value and its comparison (-1, 0, 1)
+I64[512] n1;
+I64[512] n2;
+I64[512] nv;
+I64[512] nc;
+I64 nn = 0;
+I64 pos = 0;       // the parser's word
+Bool acted = false;
+Bool depth_first = false;
+Bool xdev = false;
+I64 now = 0;       // the start, seconds since 1970
+
+I64 status = 0;
+Bool pruned = false;
+U8[4096] cur;      // the path being judged
+I64 curn = 0;
+I64[16] rec;
+I64 root_dev = 0;
+
+U8[65536] argb;    // the argv of a program to run
+I64[512] pb;       // per -exec + node: the bytes and paths waiting
+I64[512] pc;
+I64[512] fixb;     // its fixed words' bytes and count
+I64[512] fixc;
+U8[65536] pend;    // the paths waiting: [node lo][node hi][path][NUL]
+I64 pendn = 0;
+
+// --- words and the command line ---
+
+Bool word_is(I64 w, in U8[_] s) {
+    if (w >= nw || we[w] - wa[w] != len(s)) { return false; }
+    for i in 0..len(s) {
+        if (av[wa[w] + i] != s[i]) { return false; }
+    }
+    return true;
+}
+
+void say(in U8[_] what) {
+    msg.begin();
+    msg.text(what);
+    msg.send();
+}
+
+// Ends with status 2 after `find: WHAT WORD`: a usage error (DIFFS D-3).
+void usage_word(in U8[_] what, I64 w) {
+    msg.begin();
+    msg.text(what);
+    if (w >= 0 && w < nw) { msg.text(av[wa[w]..we[w]]); }
+    msg.send();
+    put.flush();
+    dev.exit_now(2);
+}
+
+// Ends with status 2 after `find: not supported: WORD` (gate 4).
+void refuse_word(I64 w) {
+    usage_word(b"not supported: ", w);
+}
+
+I64 node(I64 k, I64 a, I64 b) {
+    if (nn == NODES) { msg.limit(b"EXPR_MAX"); }
+    nk[nn] = k;
+    n1[nn] = a;
+    n2[nn] = b;
+    nv[nn] = 0;
+    nc[nn] = 0;
+    nn = nn + 1;
+    return nn - 1;
+}
+
+// The operand word w of the primary at w - 1, or a usage error.
+I64 operand(I64 w) {
+    if (w >= nw) { usage_word(b"missing argument to ", w - 1); }
+    return w;
+}
+
+// [+-]N of word w into node x (nc -1, 0, 1); the suffix byte c allowed at the end, or 0 for none. Returns whether
+// the suffix was there.
+Bool number(I64 x, I64 w, U8 c) {
+    I64 i = wa[w];
+    I64 e = we[w];
+    nc[x] = 0;
+    if (i < e && av[i] == '+') {
+        nc[x] = 1;
+        i = i + 1;
+    } else if (i < e && av[i] == '-') {
+        nc[x] = -1;
+        i = i + 1;
+    }
+    Bool suffix = false;
+    if (c != 0 && e > i && av[e - 1] == c) {
+        suffix = true;
+        e = e - 1;
+    }
+    if (e > i && (av[e - 1] < '0' || av[e - 1] > '9') && av[i] >= '0' && av[i] <= '9') {
+        refuse_word(w);   // busybox's k, w and b units
+    }
+    if (i == e) { usage_word(b"invalid number: ", w); }
+    I64 v = 0;
+    while (i < e) {
+        U8 d = av[i];
+        if (d < '0' || d > '9') { usage_word(b"invalid number: ", w); }
+        if (v > 461168601842738790) { msg.limit(b"COUNT"); }
+        v = v * 10 + ((d - 48) as I64);
+        i = i + 1;
+    }
+    nv[x] = v;
+    return suffix;
+}
+
+Bool has_braces(I64 w) {
+    for i in wa[w]..we[w] - 1 {
+        if (av[i] == '{' && av[i + 1] == '}') { return true; }
+    }
+    return false;
+}
+
+// -exec, -ok: the words up to `;` (or `{}` then `+` for -exec): node words n1.., count n2.
+I64 exec_node(I64 w, Bool ok) {
+    I64 s = w + 1;
+    I64 k = s;
+    I64 kind = K_EXEC;
+    if (ok) { kind = K_OK; }
+    Bool going = true;
+    while (going) {
+        if (k >= nw) { usage_word(b"missing argument to ", w); }
+        if (word_is(k, b";")) {
+            going = false;
+        } else if (!ok && word_is(k, b"+") && k > s && has_braces(k - 1)) {
+            kind = K_PLUS;
+            going = false;
+        } else {
+            k = k + 1;
+        }
+    }
+    if (k == s) { usage_word(b"missing argument to ", w); }
+    I64 x = node(kind, s, k - s);
+    if (kind == K_PLUS) {
+        I64 b = 0;
+        for j in s..k - 1 {
+            if (has_braces(j)) { usage_word(b"-exec +: a second path argument: ", j); }
+            b = b + we[j] - wa[j] + 1;
+        }
+        fixb[x] = b;
+        fixc[x] = k - 1 - s;
+        pb[x] = 0;
+        pc[x] = 0;
+    }
+    pos = k + 1;
+    acted = true;
+    return x;
+}
+
+I64 primary() {
+    I64 w = pos;
+    if (w >= nw) { usage_word(b"missing expression after ", w - 1); }
+    if (word_is(w, b"(")) {
+        pos = w + 1;
+        I64 e = parse_or();
+        if (!word_is(pos, b")")) { usage_word(b"missing ) for ", w); }
+        pos = pos + 1;
+        return e;
+    }
+    pos = w + 1;
+    if (word_is(w, b"-print")) {
+        acted = true;
+        return node(K_PRINT, 0, 0);
+    }
+    if (word_is(w, b"-print0")) {
+        acted = true;
+        return node(K_PRINT0, 0, 0);
+    }
+    if (word_is(w, b"-prune")) { return node(K_PRUNE, 0, 0); }
+    if (word_is(w, b"-depth")) {
+        depth_first = true;
+        return node(K_TRUE, 0, 0);
+    }
+    if (word_is(w, b"-xdev")) {
+        xdev = true;
+        return node(K_TRUE, 0, 0);
+    }
+    if (word_is(w, b"-exec")) { return exec_node(w, false); }
+    if (word_is(w, b"-ok")) { return exec_node(w, true); }
+    if (word_is(w, b"-name") || word_is(w, b"-path")) {
+        I64 k = K_NAME;
+        if (word_is(w, b"-path")) { k = K_PATH; }
+        pos = operand(w + 1) + 1;
+        return node(k, w + 1, 0);
+    }
+    if (word_is(w, b"-type")) {
+        I64 o = operand(w + 1);
+        pos = o + 1;
+        I64 x = node(K_TYPE, 0, 0);
+        if (we[o] - wa[o] != 1) { usage_word(b"invalid argument to -type: ", o); }
+        U8 c = av[wa[o]];
+        if (c == 'b') { nv[x] = corectl.S_IFBLK; }
+        else if (c == 'c') { nv[x] = corectl.S_IFCHR; }
+        else if (c == 'd') { nv[x] = corectl.S_IFDIR; }
+        else if (c == 'f') { nv[x] = corectl.S_IFREG; }
+        else if (c == 'l') { nv[x] = corectl.S_IFLNK; }
+        else if (c == 'p') { nv[x] = corectl.S_IFIFO; }
+        else if (c == 's') { nv[x] = corectl.S_IFSOCK; }
+        else { usage_word(b"invalid argument to -type: ", o); }
+        return x;
+    }
+    if (word_is(w, b"-size")) {
+        I64 o = operand(w + 1);
+        pos = o + 1;
+        I64 x = node(K_SIZE, 0, 0);
+        if (number(x, o, 'c')) { n1[x] = 1; }
+        return x;
+    }
+    if (word_is(w, b"-mtime") || word_is(w, b"-atime") || word_is(w, b"-ctime")) {
+        I64 o = operand(w + 1);
+        pos = o + 1;
+        I64 x = node(K_TIME, corectl.ST_MTIME, 0);
+        if (word_is(w, b"-atime")) { n1[x] = corectl.ST_ATIME; }
+        if (word_is(w, b"-ctime")) { n1[x] = corectl.ST_CTIME; }
+        _ = number(x, o, 0);
+        return x;
+    }
+    if (word_is(w, b"-links") || word_is(w, b"-user") || word_is(w, b"-group")) {
+        I64 o = operand(w + 1);
+        pos = o + 1;
+        I64 x = node(K_LINKS, corectl.ST_NLINK, 0);
+        if (word_is(w, b"-user")) { nk[x] = K_USER; }
+        if (word_is(w, b"-group")) { nk[x] = K_GROUP; }
+        _ = number(x, o, 0);
+        if (nk[x] != K_LINKS && nc[x] != 0) { usage_word(b"invalid number: ", o); }
+        return x;
+    }
+    if (word_is(w, b"-perm")) {
+        I64 o = operand(w + 1);
+        pos = o + 1;
+        I64 x = node(K_PERM, 0, 0);
+        I64 i = wa[o];
+        if (i < we[o] && av[i] == '-') {
+            nc[x] = 1;
+            i = i + 1;
+        }
+        if (i == we[o]) { usage_word(b"invalid mode: ", o); }
+        I64 m = 0;
+        while (i < we[o]) {
+            U8 d = av[i];
+            if (d < '0' || d > '7') { refuse_word(w); }   // a symbolic mode
+            m = m * 8 + ((d - 48) as I64);
+            if (m > 4095) { usage_word(b"invalid mode: ", o); }
+            i = i + 1;
+        }
+        nv[x] = m;
+        return x;
+    }
+    if (word_is(w, b"-newer")) {
+        I64 o = operand(w + 1);
+        pos = o + 1;
+        I64 x = node(K_NEWER, 0, 0);
+        I64[16] r;
+        I64 e = corectl.co_stat(av[wa[o]..we[o]], 1, r);
+        if (e < 0) {
+            msg.file(av[wa[o]..we[o]], 0 - e);
+            msg.finish();
+        }
+        nv[x] = r[corectl.ST_MTIME];
+        nc[x] = r[corectl.ST_MTIME_NS];
+        return x;
+    }
+    if (word_is(w, b")") || word_is(w, b"-o") || word_is(w, b"-a")) {
+        usage_word(b"missing expression before ", w);
+    }
+    if (av[wa[w]] == '-' && we[w] - wa[w] > 1) { refuse_word(w); }
+    usage_word(b"not a primary: ", w);
+    return -1;
+}
+
+I64 parse_not() {
+    if (word_is(pos, b"!")) {
+        pos = pos + 1;
+        return node(K_NOT, parse_not(), 0);
+    }
+    return primary();
+}
+
+I64 parse_and() {
+    I64 x = parse_not();
+    while (pos < nw && !word_is(pos, b"-o") && !word_is(pos, b")")) {
+        if (word_is(pos, b"-a")) { pos = pos + 1; }
+        x = node(K_AND, x, parse_not());
+    }
+    return x;
+}
+
+I64 parse_or() {
+    I64 x = parse_and();
+    while (word_is(pos, b"-o")) {
+        pos = pos + 1;
+        x = node(K_OR, x, parse_and());
+    }
+    return x;
+}
+
+// --- running programs ---
+
+// Appends w with each "{}" made p to argb at k: the new end, or `find: limit: ARGS_BYTES`.
+I64 subst(I64 w, in U8[_] p, I64 k) {
+    I64 i = wa[w];
+    I64 at = k;
+    while (i < we[w]) {
+        if (i + 1 < we[w] && av[i] == '{' && av[i + 1] == '}') {
+            if (at + len(p) >= ARGS_BYTES) { msg.limit(b"ARGS_BYTES"); }
+            for j in 0..len(p) { argb[at + j] = p[j]; }
+            at = at + len(p);
+            i = i + 2;
+        } else {
+            if (at + 1 >= ARGS_BYTES) { msg.limit(b"ARGS_BYTES"); }
+            argb[at] = av[i];
+            at = at + 1;
+            i = i + 1;
+        }
+    }
+    argb[at] = 0;
+    return at + 1;
+}
+
+// Runs argb[0..k]: true when it exits 0. A program that cannot run is said; it is false.
+Bool launch(I64 k) {
+    I64 st = run.spawn(argb[0..k]);
+    if (st < 0) {
+        run.say(argb[0..k], 0 - st);
+        return false;
+    }
+    return st == 0;
+}
+
+Bool exec_one(I64 x) {
+    I64 k = 0;
+    for j in n1[x]..n1[x] + n2[x] {
+        k = subst(j, cur[0..curn], k);
+    }
+    return launch(k);
+}
+
+// -ok: `< UTILITY ARG... > ? ` on descriptor 2 and a line from descriptor 0; true when it starts with y or Y.
+Bool confirm(I64 k) {
+    put.flush();
+    _ = shctl.fd_write(2, b"< ");
+    I64 s = 0;
+    for i in 0..k {
+        if (argb[i] == 0) {
+            _ = shctl.fd_write(2, argb[s..i]);
+            if (i + 1 < k) { _ = shctl.fd_write(2, b" "); }
+            s = i + 1;
+        }
+    }
+    _ = shctl.fd_write(2, b" > ? ");
+    U8[1] c;
+    U8 first = 0;
+    Bool seen = false;
+    Bool going = true;
+    while (going) {
+        I64 r = shctl.fd_read(0, c);
+        if (r != 1 || c[0] == '\n') {
+            going = false;
+        } else if (!seen) {
+            first = c[0];
+            seen = true;
+        }
+    }
+    return first == 'y' || first == 'Y';
+}
+
+// --- -exec + ---
+
+// The bytes path p takes in node x's command.
+I64 plus_bytes(I64 x, I64 pl) {
+    I64 w = n1[x] + n2[x] - 1;
+    return we[w] - wa[w] - 2 + pl + 1;
+}
+
+// Runs node x with the paths waiting for it, and drops them: true when it exits 0.
+Bool plus_flush(I64 x) {
+    if (pc[x] == 0) { return true; }
+    I64 k = 0;
+    I64 last = n1[x] + n2[x] - 1;
+    for j in n1[x]..last {
+        k = subst(j, b"", k);
+    }
+    I64 i = 0;
+    I64 m = 0;
+    while (i < pendn) {
+        I64 who = (pend[i] as I64) | ((pend[i + 1] as I64) << 8);
+        I64 e = i + 2;
+        while (pend[e] != 0) { e = e + 1; }
+        if (who == x) {
+            k = subst(last, pend[i + 2..e], k);
+        } else {
+            for j in i..e + 1 { pend[m + j - i] = pend[j]; }
+            m = m + e + 1 - i;
+        }
+        i = e + 1;
+    }
+    pendn = m;
+    pb[x] = 0;
+    pc[x] = 0;
+    Bool ok = launch(k);
+    if (!ok) { status = 1; }
+    return ok;
+}
+
+void plus_all() {
+    for x in 0..nn {
+        if (nk[x] == K_PLUS) { _ = plus_flush(x); }
+    }
+}
+
+void plus_add(I64 x) {
+    I64 b = plus_bytes(x, curn);
+    if (fixb[x] + b > ARGS_BYTES) { msg.limit(b"ARGS_BYTES"); }
+    if (fixb[x] + pb[x] + b > ARGS_BYTES || fixc[x] + pc[x] + 1 >= ARGS_MAX) { _ = plus_flush(x); }
+    if (pendn + curn + 3 > 65536) { plus_all(); }
+    pend[pendn] = (x & 0xFF) as U8;
+    pend[pendn + 1] = ((x >> 8) & 0xFF) as U8;
+    for i in 0..curn { pend[pendn + 2 + i] = cur[i]; }
+    pend[pendn + 2 + curn] = 0;
+    pendn = pendn + curn + 3;
+    pb[x] = pb[x] + b;
+    pc[x] = pc[x] + 1;
+}
+
+// --- judging a path ---
+
+Bool cmp(I64 v, I64 c, I64 want) {
+    if (c > 0) { return v > want; }
+    if (c < 0) { return v < want; }
+    return v == want;
+}
+
+// x / y rounded toward minus infinity, y > 0.
+I64 floor_div(I64 x, I64 y) {
+    if (x >= 0) { return x / y; }
+    return 0 - ((0 - x + y - 1) / y);
+}
+
+Bool eval(I64 x) {
+    I64 k = nk[x];
+    if (k == K_AND) { return eval(n1[x]) && eval(n2[x]); }
+    if (k == K_OR) { return eval(n1[x]) || eval(n2[x]); }
+    if (k == K_NOT) { return !eval(n1[x]); }
+    if (k == K_TRUE) { return true; }
+    if (k == K_NAME) {
+        I64 s = path.base_start(cur[0..curn]);
+        I64 e = path.base_stop(cur[0..curn]);
+        return pattern.match(av[wa[n1[x]]..we[n1[x]]], cur[s..e]);
+    }
+    if (k == K_PATH) { return pattern.match(av[wa[n1[x]]..we[n1[x]]], cur[0..curn]); }
+    if (k == K_TYPE) { return (rec[corectl.ST_MODE] & corectl.S_IFMT) == nv[x]; }
+    if (k == K_SIZE) {
+        I64 v = rec[corectl.ST_SIZE];
+        if (n1[x] == 0) { v = v / 512 + (v % 512 + 511) / 512; }
+        return cmp(v, nc[x], nv[x]);
+    }
+    if (k == K_TIME) { return cmp(floor_div(now - rec[n1[x]], 86400), nc[x], nv[x]); }
+    if (k == K_NEWER) {
+        I64 t = rec[corectl.ST_MTIME];
+        return t > nv[x] || (t == nv[x] && rec[corectl.ST_MTIME_NS] > nc[x]);
+    }
+    if (k == K_LINKS) { return cmp(rec[corectl.ST_NLINK], nc[x], nv[x]); }
+    if (k == K_USER) { return rec[corectl.ST_UID] == nv[x]; }
+    if (k == K_GROUP) { return rec[corectl.ST_GID] == nv[x]; }
+    if (k == K_PERM) {
+        I64 m = rec[corectl.ST_MODE] & 4095;
+        if (nc[x] == 1) { return (m & nv[x]) == nv[x]; }
+        return m == nv[x];
+    }
+    if (k == K_PRUNE) {
+        pruned = true;
+        return true;
+    }
+    if (k == K_PRINT || k == K_PRINT0) {
+        put.bytes(cur[0..curn]);
+        if (k == K_PRINT) { put.byte('\n'); } else { put.byte(0); }
+        return true;
+    }
+    if (k == K_EXEC) { return exec_one(x); }
+    if (k == K_OK) {
+        I64 n = 0;
+        for j in n1[x]..n1[x] + n2[x] {
+            n = subst(j, cur[0..curn], n);
+        }
+        if (!confirm(n)) { return false; }
+        return launch(n);
+    }
+    if (k == K_PLUS) {
+        plus_add(x);
+        return true;
+    }
+    return false;
+}
+
+void judge(I64 expr) {
+    curn = path.walk_path(cur);
+    path.walk_rec(rec);
+    pruned = false;
+    Bool r = true;
+    if (expr >= 0) { r = eval(expr); }
+    if (r && !acted) {
+        put.bytes(cur[0..curn]);
+        put.byte('\n');
+    }
+}
+
+void walk(in U8[_] root, I64 expr, Bool follow_root, Bool follow) {
+    path.walk_order(path.BY_NAME, false);
+    path.walk_start(root, follow_root, follow, false);
+    Bool first = true;
+    Bool going = true;
+    while (going) {
+        I64 w = path.walk_next();
+        if (w == path.W_END) {
+            going = false;
+        } else if (w == path.W_ERR) {
+            curn = path.walk_path(cur);
+            msg.file(cur[0..curn], path.walk_errno());
+            status = 1;
+        } else {
+            path.walk_rec(rec);
+            if (first) {
+                root_dev = rec[corectl.ST_DEV];
+                first = false;
+            }
+            if (w == path.W_FILE) {
+                judge(expr);
+            } else if (w == path.W_PRE) {
+                if (!depth_first) { judge(expr); }
+                if (!depth_first && pruned) {
+                    path.walk_skip();
+                } else if (xdev && rec[corectl.ST_DEV] != root_dev) {
+                    path.walk_skip();
+                }
+            } else if (w == path.W_POST && depth_first) {
+                judge(expr);
+            }
+        }
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"find");
+    if (len(a) > 65536) { msg.limit(b"ARGS_BYTES"); }
+    for i in 0..len(a) { av[i] = a[i]; }
+    avn = len(a);
+    I64 s = 0;
+    for i in 0..len(a) {
+        if (a[i] == 0) {
+            if (nw == 4096) { msg.limit(b"ARGS_MAX"); }
+            wa[nw] = s;
+            we[nw] = i;
+            nw = nw + 1;
+            s = i + 1;
+        }
+    }
+    Bool follow_root = false;
+    Bool follow = false;
+    I64 w = 0;
+    Bool going = true;
+    while (going && w < nw) {
+        I64 n = we[w] - wa[w];
+        if (n < 2 || av[wa[w]] != '-') {
+            going = false;
+        } else if (word_is(w, b"--")) {
+            w = w + 1;
+            going = false;
+        } else {
+            Bool opts = true;
+            for i in wa[w] + 1..we[w] {
+                if (av[i] != 'H' && av[i] != 'L') { opts = false; }
+            }
+            if (!opts) {
+                going = false;
+            } else {
+                for i in wa[w] + 1..we[w] {
+                    if (av[i] == 'H') {
+                        follow_root = true;
+                        follow = false;
+                    } else {
+                        follow = true;
+                    }
+                }
+                w = w + 1;
+            }
+        }
+    }
+    I64 p0 = w;
+    while (w < nw && !(we[w] > wa[w] && av[wa[w]] == '-') && !word_is(w, b"!") && !word_is(w, b"(")) {
+        w = w + 1;
+    }
+    I64 p1 = w;
+    I64 expr = -1;
+    pos = w;
+    if (pos < nw) {
+        expr = parse_or();
+        if (pos < nw) { usage_word(b"unexpected ", pos); }
+    }
+    now = corectl.co_clock(0) / 1000000000;
+    if (p0 == p1) {
+        walk(b".", expr, follow_root, follow);
+    }
+    for i in p0..p1 {
+        walk(av[wa[i]..we[i]], expr, follow_root, follow);
+    }
+    plus_all();
+    if (status != 0) {
+        put.flush();
+        dev.exit_now(status);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

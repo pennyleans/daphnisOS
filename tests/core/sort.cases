@@ -1,0 +1,44 @@
+# tests/core/sort.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Run in tests/core/search.
+words.txt | - | -
+ | words.txt | -
+-r words.txt | - | -
+-f words.txt | - | -
+-u words.txt | - | -
+-fu words.txt | - | -
+-b words.txt | - | -
+-d words.txt | - | -
+-i utf8.txt words.txt | - | -
+-n words.txt | - | -
+-k2 words.txt | - | -
+-k2n words.txt | - | -
+-k2,2n -k1,1 words.txt | - | -
+-k2,2nr words.txt | - | -
+-k1.2 words.txt | - | -
+-k1.2,1.3 words.txt | - | -
+-k1b,1 words.txt | - | -
+-b -k2 words.txt | - | -
+-s -k2,2n words.txt | - | -
+-s -r -k2,2n words.txt | - | -
+-u -k2,2n words.txt | - | -
+-t: -k3,3n cols.txt | - | -
+-t: -k3,3nr -k1,1 cols.txt | - | -
+-t: -k5 cols.txt | - | -
+-t: -k6,6 -s cols.txt | - | -
+text.txt nonl.txt empty | - | -
+- text.txt | nonl.txt | -
+-m text.txt text2.txt | - | -
+-c words.txt | - | -
+-c empty | - | -
+-cu text.txt | - | -
+-o out.txt text.txt | - | -
+missing | - | -
+-n long.txt | - | -
+-n sums.txt | - | -
+-C words.txt | - | D-32
+-g words.txt | - | D-1
+-M words.txt | - | D-1
+-k0 words.txt | - | -
+-k1,1x words.txt | - | -
+-t ab words.txt | - | -
+-n nums.txt | - | D-34
+-nr nums.txt | - | D-34

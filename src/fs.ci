@@ -1,0 +1,5271 @@
+// src/fs.ci: files, directories and descriptors (U1-3, P-0; docs/user.md). A tree under one root
+// directory. Its entries are the members of the cpio image, placed by their paths and read where
+// they lie in the image, and files and directories programs create, files held in pool frames.
+// Writing an image file copies it into frames first; reset() drops every created entry and every
+// copy and puts every image member back under its path, so the view of the filesystem is the
+// image's again: inode numbers and directory order come from the image, not from what ran before
+// (stage R).
+//
+// A slot is one directory entry: a name (a path component), the directory holding it (a slot or
+// ROOT) and either a file's bytes or a directory. A process has a working directory, a slot or
+// ROOT, inherited by fork and kept by execve. Paths are walked component by component from the
+// root (a leading "/"), the working directory, or an *at call's directory descriptor.
+//
+// Descriptors follow Linux: a process has 16, the lowest free one is given out, each points at
+// an open file description (offset, flags, a reference count) that dup shares. Descriptions 0
+// and 1 are the console, shared by every process: fd 0 reads the serial line, fds 1 and 2 write
+// it (src/proc.ci does the bytes; here they are kinds).
+//
+// P-2: an ext2 volume (src/ext2.ci), when the device holds one, is mounted on a directory called home in
+// the root (FS-3, FS-R1: the volume is the home). A walk that reaches it goes on in the volume (".." from the volume's root
+// comes back); a symlink in the volume is followed, but for the last component of lstat. Descriptions
+// of the volume's files and directories are their own kinds, holding the inode number; anything that
+// would change the volume is -EROFS, and a rename between the two -EXDEV.
+
+import src.portio;
+import src.serial;
+import src.text;
+import src.user;
+import src.uvm;
+import src.cpio;
+import src.statfs;
+import src.grants;
+import src.frames;
+import src.phys;
+import src.serialrx;
+import src.pty;
+import src.tile;
+import src.ext2;
+import src.eth;
+import src.tcp;
+import src.udp;
+import src.dsp;
+import src.fsidx;
+
+export const I64 OFDS = 1024;
+export const I64 FDS = 256;            // FS-4 (RV-4 A): Linux's 1,024 soft limit is a setting; 256 a process here
+const I64 NAME_MAX = 255;             // FS-4 (RV-4 A): Linux's NAME_MAX
+const I64 NAME_SLOT = 256;            // a name's bytes in the entry table, its NUL included
+const I64 PATH_BYTES = 4096;          // FS-4: Linux's PATH_MAX, a path as read from a process, its NUL included
+const I64 PATH_CHUNK = 128;           // a path is read 128 bytes at a time, up to its NUL
+export const I64 ROOT = -1;            // the root directory, which has no slot
+const I64 NONE = -2;                  // no entry
+const I64 AT_FDCWD = -100;
+const I64 PAGE = 4096;                // FS-3: a file's bytes lie in a chain of map frames, each naming MAP_SLOTS data frames
+const I64 MAP_SLOTS = 511;            // and, in its last word, the next map frame (frame + 1, or 0)
+const I64 SEEK_MAX = 0x7FFFFFFF;       // an offset lseek or pread accepts (R-2a)
+export const I64 KIND_NONE = 0;
+export const I64 KIND_IN = 1;
+export const I64 KIND_OUT = 2;
+export const I64 KIND_FILE = 3;
+export const I64 KIND_DIR = 4;
+export const I64 KIND_PIPE_R = 5;
+export const I64 KIND_PIPE_W = 6;
+export const I64 KIND_FB = 7;           // /dev/fb0 (F-1, docs/specs/2026-11-05-f-surface.md section 3)
+export const I64 KIND_EVENT = 8;        // /dev/input/event0 (F-2)
+export const I64 KIND_XFILE = 9;        // a file of the volume (P-2): ofile is its inode number
+export const I64 KIND_XDIR = 10;        // a directory of the volume
+export const I64 KIND_SOCK = 11;        // a UDP socket (N-2): ofile is its slot in src/udp.ci
+export const I64 KIND_TCP = 12;         // a TCP socket (N-3): ofile is its slot in src/tcp.ci
+export const I64 KIND_PTM = 13;         // a pty's master (W-4): ofile is its pair in src/pty.ci
+export const I64 KIND_PTS = 14;         // a pty's slave
+export const I64 KIND_DSP = 15;         // /dev/dsp (AU-3): ofile is its stream in src/dsp.ci
+export const I64 KIND_FSIDX = 16;       // /dev/fsidx (FF-1): the ring of src/fsidx.ci, one holder
+export const I64 KIND_RESOLV = 17;      // /etc/resolv.conf (NW-5): nameserver from DHCP or daphnis.net=
+export const I64 KIND_NULL = 18;        // /dev/null (HW-17 P1): reads end at once, writes are taken whole
+const I64 EAGAIN = 11;
+const I64 ENOTSOCK = 88;
+export const I64 WOULD_BLOCK = -1000;   // a read or write that must wait: src/proc.ci parks the process
+const I64 PIPES = 16;
+const I64 PIPE_BYTES = 4096;
+const I64 EPIPE = 32;
+const I64 ENOENT = 2;
+const I64 EBADF = 9;
+const I64 EFAULT = 14;
+const I64 EEXIST = 17;
+const I64 ENOTDIR = 20;
+const I64 EISDIR = 21;
+const I64 EINVAL = 22;
+const I64 ENFILE = 23;
+const I64 EMFILE = 24;
+const I64 ENOSPC = 28;
+const I64 ERANGE = 34;
+const I64 ENAMETOOLONG = 36;
+const I64 ENOTEMPTY = 39;
+const I64 EBUSY = 16;
+const I64 EACCES = 13;
+const I64 EXDEV = 18;
+const I64 ENOMEM = 12;
+const I64 EPERM = 1;
+const I64 ENOTTY = 25;
+const I64 EIO = 5;
+const I64 EROFS = 30;
+const I64 ELOOP = 40;
+const I64 EFBIG = 27;
+const I64 UMASK = 0x12;                 // 022: a process's mask at boot (BU-2: umask(2) changes it)
+const I64 S_IFMT = 0xF000;
+const I64 S_IFLNK = 0xA000;
+const I64 LINK_MAX = 4095;             // BU-2: an image-tree link's target, the walk's path less its NUL
+const U64 AT_SYMLINK_FOLLOW = 0x400;
+const I64 UTIME_NOW = 0x3FFFFFFF;
+const I64 UTIME_OMIT = 0x3FFFFFFE;
+export const U64 GRANT_DISK = 1;        // GR-1: the grant word's bit that lets a process write under /home
+export const U64 GRANT_NET = 2;         // GR-1, N-4: the bit that lets a process open a socket
+export const U64 GRANT_AUDIO = 4;       // AU-3: the bit that lets a process open /dev/dsp (law 3: sound leaves the machine)
+export const U64 GRANT_KERN = 8;        // R0-1: ring 0 (`kern`, docs/specs/2026-11-07-r0-ring-zero.md); only the desk sets it
+export const U64 GRANT_ALL = 7;         // AC-1a: disk, net and audio, the ceiling of every process the kernel starts
+const U64 AT_SYMLINK_NOFOLLOW = 0x100;
+const U64 FBIOGET_VSCREENINFO = 0x4600;
+const U64 FBIOGET_FSCREENINFO = 0x4602;
+const U64 FB_RDEV = 0x1D00;             // 29:0
+const U64 FB_INO = 7424;
+const U64 EVENT_RDEV = 0xD40;           // 13:64
+const U64 EVENT_INO = 3392;
+const U64 PTMX_RDEV = 0x502;           // 5:2
+const U64 PTMX_INO = 1282;
+const U64 PTS_RDEV = 0x8800;           // 136:n
+const U64 PTS_INO = 34816;             // and n
+const U64 DSP_RDEV = 0xE03;             // 14:3, OSS's
+const U64 DSP_INO = 3587;
+const U64 FSIDX_INO = 7936;            // FF-1: no device number of Linux's; a name of the digest only
+const U64 RESOLV_INO = 7937;           // NW-5: synthetic /etc/resolv.conf inode
+const U64 NULL_RDEV = 0x103;            // 1:3, Linux's
+const U64 NULL_INO = 259;
+const I64 ENXIO = 6;
+const U64 O_NONBLOCK = 0x800;           // kept on an event description only (F-2)
+const U64 O_ACCMODE = 3;
+const U64 O_CREAT = 0x40;
+const U64 O_EXCL = 0x80;
+const U64 O_TRUNC = 0x200;
+const U64 O_APPEND = 0x400;
+const U64 O_DIRECTORY = 0x10000;
+const U64 O_NOFOLLOW = 0x20000;        // FS-5: a symbolic link as the path's last component is -ELOOP, not followed
+const U64 O_CLOEXEC = 0x80000;
+const U64 O_KEPT = 0x403;             // what a description keeps of the flags: access mode, O_APPEND
+const I64 FD_CLOEXEC = 1;
+
+// entries: the table (FS-4), below
+I64 image_files = 0;    // the first image_files slots are the image's
+I64 past = 0;           // CT-5a: the image's members left out for want of a slot; a boot with any fails
+I64 refused = 0;        // CT-5a: the image's members refused, each named on the serial line; a boot with any fails
+const I64 WHY_PATH = 1;     // a member refused: its name, its NUL included, is past PATH_BYTES
+const I64 WHY_PART = 2;     // a part of its name is past NAME_MAX
+const I64 WHY_EMPTY = 3;    // a part of its name is empty ("a//b", "/a", "a/", "")
+const I64 WHY_NODIR = 4;    // no directory member before it holds it
+const I64 WHY_HEADER = 5;   // no header that reads where a member should start, before the trailer
+I64 next_ino = 1;
+// open file descriptions
+// descriptors (FS-4): each process's table is one pool frame of FDS words, (FD_CLOEXEC << 32) | description + 1,
+// 0 for a free descriptor; taken at the process's first descriptor and given back when it closes them all, or -1
+I64[64] fdt;
+// the working directory of each process (P-0)
+I64[64] cwd;
+I64[64] cwd_x;          // P-2: 0, or the volume directory the working directory is (cwd is then the mount)
+U64[64] grant;          // P-3: the grant word of each process (GR-1 A), inherited by fork, kept by execve
+I64[64] puid;           // AC-1a (docs/specs/2026-11-08-ac-accounts.md section 5): the user and group of each process,
+I64[64] pgid;           // 0 until the desk's login call; inherited by fork, kept by execve
+U64[64] pceil;          // AC-1a: the grants a process may take for itself (GRANT_ALL until a login narrows it)
+I64[64] pmask;          // BU-2: the umask of each process, inherited by fork, kept by execve
+// the last walk: the directory its last component is in, the entry it names (a slot, ROOT or
+// NONE), that component (w_len 0 when the path ends in ".", ".." or names the root alone, w_dots
+// 1, 2, 3 for those), and whether the path ended in "/"
+I64 w_dir = -1;
+I64 w_slot = -2;
+U8[256] w_name;
+I64 w_len = 0;
+I64 w_dots = 0;
+Bool w_trail = false;
+Bool w_x = false;       // P-2: the walk ended in the volume (or on its mount): w_xino is the inode, 0 if absent
+I64 w_xino = 0;
+I64 w_xdir = 0;         // P-3: the volume directory the last component is in (0: the mount's own directory)
+Bool w_follow = true;   // the next walk follows a symlink in the last component (lstat clears it)
+// FS-4 (rulings FS-R2 and FS-R3 C, docs/specs/2026-11-07-bu2-meta.md section 4.6): the time of the call that is
+// changing a tree, in seconds: the system's stamp time (src/proc.ci stamp_s), which every changing entry point takes
+// as its last argument (now) and keeps here for the steps below it. No clock is read in this module or in
+// src/ext2.ci.
+I64 w_now = 0;
+I64 mnt = NONE;         // the slot the volume is mounted on
+// pipes: a ring of PIPE_BYTES each, in one pool frame held while an end is open
+I64[16] pframe;
+
+// the scripted input (U1-5): read once from the serial line, up to a byte 0x04; every process
+// reads it from its start through its own console-in description
+U8[8192] inbuf;
+I64 inlen = 0;
+I64[16] phead;
+I64[16] pcount;
+I64[16] preaders;
+I64[16] pwriters;
+// the surface (F-1): what the device reports, or w 0 when there is none; the last path read
+// named a device (0, or its KIND)
+I64 fb_w = 0;
+I64 fb_h = 0;
+I64 fb_stride = 0;
+I64 dev_kind = 0;
+I64 dev_pty = 0;        // /dev/pts/n: n
+Bool input_on = false;  // /dev/input/event0 exists (F-2)
+
+export void set_input(Bool on) {
+    input_on = on;
+}
+
+export void set_fb(I64 w, I64 h, I64 stride) {
+    fb_w = w;
+    fb_h = h;
+    fb_stride = stride;
+}
+
+// HX-13: the screen's size kept on the volume, the kernel's own file /home/.daphnis-mode ("WxH\n"), so the next
+// boot starts at it. RES-1, DN-10: written only by FBIO_TILE_SAVE (the desk's Keep), never by a switch. 0, -EROFS
+// without a writable volume, -EIO when the file could not be written. FS-4: written inside the desk's ioctl, it
+// takes that call's time (w_now), as any file the call wrote would.
+U8[16] mode_text;
+
+I64 save_mode() {
+    if (!ext2.is_writable()) {
+        return 0 - EROFS;
+    }
+    I64 n = put_num(mode_text, 0, fb_w);
+    mode_text[n] = 'x';
+    n = put_num(mode_text, n + 1, fb_h);
+    mode_text[n] = 10;
+    n = n + 1;
+    I64 i = ext2.lookup(ext2.ROOT_INO, ".daphnis-mode", 13);
+    if (i == 0) {
+        i = ext2.create(ext2.ROOT_INO, ".daphnis-mode", 13, 0x1A4, w_now);
+    }
+    if (i <= 0) {
+        return 0 - EIO;
+    }
+    ext2.truncate(i, 0, w_now);
+    I64 put = ext2.write_at(i, 0, mode_text, 0, n, w_now);
+    I64 done = x_done(put);
+    if (done != n) {
+        return 0 - EIO;
+    }
+    return 0;
+}
+
+I64 put_num(inout U8[16] b, I64 at, I64 v) {
+    U8[8] d;
+    I64 n = 0;
+    I64 q = v;
+    if (q == 0) { d[0] = '0'; n = 1; }
+    while (q > 0 && n < 8) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { b[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// The size kept on the mounted volume, applied to the screen: true when it was read and the display took it.
+export Bool load_mode() {
+    if (!ext2.is_mounted()) {
+        return false;
+    }
+    I64 i = ext2.lookup(ext2.ROOT_INO, ".daphnis-mode", 13);
+    if (i <= 0) {
+        return false;
+    }
+    I64 n = ext2.read_at(i, 0, mode_text, 0, 16);
+    I64 w = 0;
+    I64 h = 0;
+    I64 k = 0;
+    while (k < n && mode_text[k] >= '0' && mode_text[k] <= '9' && w < 10000) {
+        w = 10 * w + (mode_text[k] - '0') as I64;
+        k = k + 1;
+    }
+    if (k >= n || mode_text[k] != 'x') {
+        return false;
+    }
+    k = k + 1;
+    while (k < n && mode_text[k] >= '0' && mode_text[k] <= '9' && h < 10000) {
+        h = 10 * h + (mode_text[k] - '0') as I64;
+        k = k + 1;
+    }
+    if (user.fb_mode(w as U64, h as U64) != 0) {
+        return false;
+    }
+    set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+    return true;
+}
+
+// --- FS-4: the entry table ---
+// The entries live in pool frames, PER_PAGE to a frame, the frames chained from map frames as a file's pages are
+// (troot, the first map, or -1); slots is how many entries the table holds, and it grows a frame at a time while
+// the pool lasts, so the count of files is the pool's to bound (RV-4 A). A frame's first HOT bytes are two words an
+// entry, its flags (bit 0 used, 1 named, 2 a directory, 3 its bytes in the image, 4 a symbolic link) and its
+// parent, so a directory is searched a frame at a time; then each entry's record: its name (NAME_SLOT bytes, NUL
+// padded) and its words img_hdr, ino, fsize, img_at, img_size, frame, frefs, perm, fuid, fgid, fatime, fmtime and
+// alias, two's complement. A new frame's entries are free, with no chain, alias or image header (-1).
+const I64 PER_PAGE = 8;
+const I64 HOT = 128;
+const I64 REC = 360;                  // NAME_SLOT + 13 words
+I64 troot = -1;
+I64 slots = 0;
+I64 t_pg = -1;                        // the page tpage found last, and its frame
+I64 t_fr = -1;
+
+U64 rd(U64 a) {
+    U64[1] w;
+    phys.phys_read64(a, w);
+    return w[0];
+}
+
+void wr(U64 a, U64 v) {
+    U64[1] w;
+    w[0] = v;
+    phys.phys_write64(a, w);
+}
+
+// open file descriptions (FS-4): 1,024, each five words (kind, entry, offset, flags, references), a field to a
+// run of 2 pool frames, the 10 frames taken once at init, so 256 descriptors a process can each hold one; named
+// on report_pool's line with the entry table.
+const I64 OFD_FIELD = 2;               // frames a field: 1,024 words
+export const I64 OFD_FRAMES = 10;
+I64 otab = -1;
+
+U64 ofd_at(I64 k, I64 o) {
+    return (frames.frame_addr(otab) as U64) + (4096 * OFD_FIELD * k + 8 * o) as U64;
+}
+
+I64 o_kind(I64 o) {
+    return rd(ofd_at(0, o)) as% I64;
+}
+
+void set_o_kind(I64 o, I64 v) {
+    wr(ofd_at(0, o), v as% U64);
+}
+
+I64 o_file(I64 o) {
+    return rd(ofd_at(1, o)) as% I64;
+}
+
+void set_o_file(I64 o, I64 v) {
+    wr(ofd_at(1, o), v as% U64);
+}
+
+I64 o_off(I64 o) {
+    return rd(ofd_at(2, o)) as% I64;
+}
+
+void set_o_off(I64 o, I64 v) {
+    wr(ofd_at(2, o), v as% U64);
+}
+
+U64 o_flags(I64 o) {
+    return rd(ofd_at(3, o));
+}
+
+void set_o_flags(I64 o, U64 v) {
+    wr(ofd_at(3, o), v);
+}
+
+I64 o_refs(I64 o) {
+    return rd(ofd_at(4, o)) as% I64;
+}
+
+void set_o_refs(I64 o, I64 v) {
+    wr(ofd_at(4, o), v as% U64);
+}
+
+// The frame of the table's page pg (pg below slots / PER_PAGE).
+I64 tpage(I64 pg) {
+    if (pg != t_pg) {
+        I64 m = troot;
+        for h in 0..pg / MAP_SLOTS {
+            m = (word_at(m, MAP_SLOTS) as I64) - 1;
+        }
+        t_fr = (word_at(m, pg % MAP_SLOTS) as I64) - 1;
+        t_pg = pg;
+    }
+    return t_fr;
+}
+
+U64 addr_hot(I64 f) {
+    return (frames.frame_addr(tpage(f / PER_PAGE)) + 16 * (f % PER_PAGE)) as U64;
+}
+
+U64 addr_rec(I64 f) {
+    return (frames.frame_addr(tpage(f / PER_PAGE)) + HOT + REC * (f % PER_PAGE)) as U64;
+}
+
+Bool flag(I64 f, I64 b) {
+    return ((rd(addr_hot(f)) >> (b as U64)) & 1) != 0;
+}
+
+void set_flag(I64 f, I64 b, Bool v) {
+    U64 a = addr_hot(f);
+    U64 m = (1 as U64) << (b as U64);
+    U64 w = rd(a) & ~m;
+    if (v) {
+        w = w | m;
+    }
+    wr(a, w);
+}
+
+I64 field(I64 f, I64 k) {
+    return rd(addr_rec(f) + (NAME_SLOT + 8 * k) as U64) as% I64;
+}
+
+void set_field(I64 f, I64 k, I64 v) {
+    wr(addr_rec(f) + (NAME_SLOT + 8 * k) as U64, v as% U64);
+}
+
+Bool e_used(I64 f) {
+    return flag(f, 0);
+}
+
+void s_used(I64 f, Bool v) {
+    set_flag(f, 0, v);
+}
+
+Bool e_named(I64 f) {
+    return flag(f, 1);
+}
+
+void s_named(I64 f, Bool v) {
+    set_flag(f, 1, v);
+}
+
+Bool e_isdir(I64 f) {
+    return flag(f, 2);
+}
+
+void s_isdir(I64 f, Bool v) {
+    set_flag(f, 2, v);
+}
+
+Bool e_in_image(I64 f) {
+    return flag(f, 3);
+}
+
+void s_in_image(I64 f, Bool v) {
+    set_flag(f, 3, v);
+}
+
+Bool e_islink(I64 f) {
+    return flag(f, 4);
+}
+
+void s_islink(I64 f, Bool v) {
+    set_flag(f, 4, v);
+}
+
+I64 e_parent(I64 f) {
+    return rd(addr_hot(f) + 8) as% I64;
+}
+
+void s_parent(I64 f, I64 v) {
+    wr(addr_hot(f) + 8, v as% U64);
+}
+
+I64 e_img_hdr(I64 f) {
+    return field(f, 0);
+}
+
+void s_img_hdr(I64 f, I64 v) {
+    set_field(f, 0, v);
+}
+
+I64 e_ino(I64 f) {
+    return field(f, 1);
+}
+
+void s_ino(I64 f, I64 v) {
+    set_field(f, 1, v);
+}
+
+I64 e_fsize(I64 f) {
+    return field(f, 2);
+}
+
+void s_fsize(I64 f, I64 v) {
+    set_field(f, 2, v);
+}
+
+I64 e_img_at(I64 f) {
+    return field(f, 3);
+}
+
+void s_img_at(I64 f, I64 v) {
+    set_field(f, 3, v);
+}
+
+I64 e_img_size(I64 f) {
+    return field(f, 4);
+}
+
+void s_img_size(I64 f, I64 v) {
+    set_field(f, 4, v);
+}
+
+I64 e_frame(I64 f) {
+    return field(f, 5);
+}
+
+void s_frame(I64 f, I64 v) {
+    set_field(f, 5, v);
+}
+
+I64 e_frefs(I64 f) {
+    return field(f, 6);
+}
+
+void s_frefs(I64 f, I64 v) {
+    set_field(f, 6, v);
+}
+
+I64 e_perm(I64 f) {
+    return field(f, 7);
+}
+
+void s_perm(I64 f, I64 v) {
+    set_field(f, 7, v);
+}
+
+I64 e_fuid(I64 f) {
+    return field(f, 8);
+}
+
+void s_fuid(I64 f, I64 v) {
+    set_field(f, 8, v);
+}
+
+I64 e_fgid(I64 f) {
+    return field(f, 9);
+}
+
+void s_fgid(I64 f, I64 v) {
+    set_field(f, 9, v);
+}
+
+I64 e_fatime(I64 f) {
+    return field(f, 10);
+}
+
+void s_fatime(I64 f, I64 v) {
+    set_field(f, 10, v);
+}
+
+I64 e_fmtime(I64 f) {
+    return field(f, 11);
+}
+
+void s_fmtime(I64 f, I64 v) {
+    set_field(f, 11, v);
+}
+
+I64 e_alias(I64 f) {
+    return field(f, 12);
+}
+
+void s_alias(I64 f, I64 v) {
+    set_field(f, 12, v);
+}
+
+// One more frame of entries: true, or false when the pool is out (nothing taken).
+Bool grow_table() {
+    I64 pg = slots / PER_PAGE;
+    I64 d = zeroed();
+    if (d < 0) {
+        return false;
+    }
+    if (troot < 0) {
+        troot = zeroed();
+        if (troot < 0) {
+            give(d);
+            return false;
+        }
+    }
+    I64 m = troot;
+    for h in 0..pg / MAP_SLOTS {
+        U64 next = word_at(m, MAP_SLOTS);
+        if (next == 0) {
+            I64 nm = zeroed();
+            if (nm < 0) {
+                give(d);
+                return false;
+            }
+            set_word(m, MAP_SLOTS, (nm + 1) as U64);
+            next = (nm + 1) as U64;
+        }
+        m = (next as I64) - 1;
+    }
+    set_word(m, pg % MAP_SLOTS, (d + 1) as U64);
+    t_pg = -1;
+    slots += PER_PAGE;
+    for f in slots - PER_PAGE..slots {
+        s_frame(f, -1);
+        s_alias(f, -1);
+        s_img_hdr(f, -1);
+    }
+    return true;
+}
+
+// The frames the filesystem's tables hold: the open file descriptions' 10 and the entry table's data frames and the
+// map frames naming them (report_pool names them, so a pool that is whole but for the tables reads as whole).
+export I64 table_frames() {
+    I64 n = 0;
+    if (otab >= 0) {
+        n = OFD_FRAMES;
+    }
+    if (troot < 0) {
+        return n;
+    }
+    I64 pages = slots / PER_PAGE;
+    return n + pages + (pages + MAP_SLOTS - 1) / MAP_SLOTS;
+}
+
+// The table holds entry f: true, growing it if need be; false when the pool is out.
+Bool table_holds(I64 f) {
+    while (slots <= f) {
+        if (!grow_table()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Every frame of the table back to the pool (its entries already dropped).
+void table_free() {
+    I64 m = troot;
+    while (m >= 0) {
+        U64 next = word_at(m, MAP_SLOTS);
+        for s in 0..MAP_SLOTS {
+            U64 d = word_at(m, s);
+            if (d != 0) {
+                give((d as I64) - 1);
+            }
+        }
+        give(m);
+        m = (next as I64) - 1;
+    }
+    troot = -1;
+    slots = 0;
+    t_pg = -1;
+}
+
+// --- names ---
+
+// The name of entry f into b, NUL padded; its length.
+I64 name_of(I64 f, inout U8[256] b) {
+    phys.phys_read8(addr_rec(f), b);
+    I64 n = 0;
+    while (n < NAME_MAX && b[n] != 0) {
+        n += 1;
+    }
+    return n;
+}
+
+I64 name_len(I64 f) {
+    U8[256] b;
+    return name_of(f, b);
+}
+
+Bool name_is[n](I64 f, in U8[n] want, I64 k) {
+    U8[256] b;
+    if (name_of(f, b) != k) {
+        return false;
+    }
+    for i in 0..k {
+        if (b[i] != want[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void set_name[n](I64 f, in U8[n] b, I64 k) {
+    U8[256] z;
+    for i in 0..NAME_SLOT {
+        z[i] = 0;
+    }
+    for i in 0..k {
+        z[i] = b[i];
+    }
+    phys.phys_write8(addr_rec(f), z);
+}
+
+Bool is_dir(I64 d) {
+    return d == ROOT || (d >= 0 && e_isdir(d));
+}
+
+I64 ino_of(I64 d) {
+    if (d == ROOT) {
+        return 1;
+    }
+    return e_ino(d);
+}
+
+I64 parent_of(I64 d) {
+    if (d == ROOT) {
+        return ROOT;
+    }
+    return e_parent(d);
+}
+
+// BU-2: the entry that holds f's bytes and inode fields: f, or what f is an alias of.
+I64 node(I64 f) {
+    if (f >= 0 && e_alias(f) >= 0) {
+        return e_alias(f);
+    }
+    return f;
+}
+
+// The names of the inode entry h holds (named entries that are h or its aliases).
+I64 names_of(I64 h) {
+    I64 n = 0;
+    for f in 0..slots {
+        if (e_used(f) && e_named(f) && node(f) == h) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+// The fields of a new entry f: no alias, not a link, permission bits p, owner 0:0, times t (0 for the image's own
+// entries, whose mtime is the archive's; FS-4: the creating call's time for an entry made later).
+void fresh(I64 f, I64 p, I64 t) {
+    s_perm(f, p & 0xFFF);
+    s_fuid(f, 0);
+    s_fgid(f, 0);
+    s_fatime(f, t);
+    s_fmtime(f, t);
+    s_alias(f, -1);
+    s_islink(f, false);
+}
+
+// The entry called b[0..k) in directory d, or NONE: the table a frame at a time, its flags and parents in one read.
+I64 child[n](I64 d, in U8[n] b, I64 k) {
+    U64 want = d as% U64;
+    U64[16] hw;
+    for pg in 0..slots / PER_PAGE {
+        phys.phys_read64(frames.frame_addr(tpage(pg)) as U64, hw);
+        for e in 0..PER_PAGE {
+            if ((hw[2 * e] & 3) == 3 && hw[2 * e + 1] == want && name_is(pg * PER_PAGE + e, b, k)) {
+                return pg * PER_PAGE + e;
+            }
+        }
+    }
+    return NONE;
+}
+
+// True when directory d holds an entry.
+Bool has_child(I64 d) {
+    for f in 0..slots {
+        if (e_used(f) && e_named(f) && e_parent(f) == d) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// FS-4: the walk's path and a link's spliced path, PATH_BYTES each; the walk is never re-entered.
+U8[4096] w_raw;
+U8[4096] w_t;
+U8[4096] s_t;           // symlink's target, read before its walk
+
+// A string of pid's memory at va into b, PATH_CHUNK bytes at a time until a chunk holds its NUL or PATH_BYTES
+// are read (a path never reads far past its end); the count read.
+I64 peek_path(I64 pid, U64 va, inout U8[4096] b) {
+    I64 got = 0;
+    Bool more = true;
+    while (more && got < PATH_BYTES) {
+        I64 c = uvm.peek(pid, va + got as U64, b[got..got + PATH_CHUNK], PATH_CHUNK);
+        for i in got..got + c {
+            if (b[i] == 0) {
+                more = false;
+            }
+        }
+        got += c;
+        if (c < PATH_CHUNK) {
+            more = false;
+        }
+    }
+    return got;
+}
+
+// True when raw[at..] starts with the bytes of want.
+Bool name_at[m](in U8[4096] raw, I64 at, in U8[m] want) {
+    if (at + m > PATH_BYTES) {
+        return false;
+    }
+    for i in 0..m {
+        if (raw[at + i] != want[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Walks the path at va in pid's memory: 0 with w_dir, w_slot, w_name, w_len, w_dots, w_trail
+// set, or -errno. A relative path starts at the working directory (dfd AT_FDCWD) or at the
+// directory open on dfd. Every component but the last must be a directory that exists ("."
+// stays, ".." goes up, the root's parent is the root); the last may be absent (w_slot NONE).
+// A device is named by its path from the root (dev_kind set, w_slot NONE). -ENOENT for an
+// empty path, -ENAMETOOLONG for a component past NAME_MAX or a path past PATH_BYTES, -ENOTDIR
+// through a file or for a file named with a trailing "/", -EFAULT if unreadable.
+// P-2: past the mount the walk is in the volume: w_x is set and w_xino is the last component's
+// inode (0 if absent; w_dir is then the mount, w_slot NONE). A symlink is replaced by its target and
+// the rest of the path (8 at most, then -ELOOP; an absolute target starts again at the root).
+// AC-1c (docs/specs/2026-11-08-ac-accounts.md section 4): c[0..8) is `.daphnis`, the volume root's account directory.
+Bool acct_name(in U8[_] c) {
+    U8[8] want = [46, 100, 97, 112, 104, 110, 105, 115];
+    for t in 0..8 {
+        if (c[t] != want[t]) { return false; }
+    }
+    return true;
+}
+
+I64 walk(I64 pid, I64 dfd, U64 va) {
+    I64 got = peek_path(pid, va, w_raw);
+    Bool follow = w_follow;
+    w_follow = true;
+    w_x = false;
+    w_xino = 0;
+    w_xdir = 0;
+    I64 n = 0;
+    while (n < got && w_raw[n] != 0) {
+        n += 1;
+    }
+    if (n == got) {
+        if (got < PATH_BYTES) {
+            return 0 - EFAULT;
+        }
+        return 0 - ENAMETOOLONG;
+    }
+    dev_kind = 0;
+    if (n == 0) {
+        return 0 - ENOENT;
+    }
+    I64 dir = ROOT;
+    I64 xd = 0;                        // not 0: the walk is in the volume, in directory xd
+    if (w_raw[0] != 47) {
+        if (dfd == AT_FDCWD) {
+            dir = cwd[pid];
+            xd = cwd_x[pid];
+        } else {
+            I64 o = ofd_of(pid, dfd);
+            if (o < 0) {
+                return 0 - EBADF;
+            }
+            if (o_kind(o) == KIND_XDIR) {
+                dir = mnt;
+                xd = o_file(o);
+            } else if (o_kind(o) != KIND_DIR) {
+                return 0 - ENOTDIR;
+            } else {
+                dir = o_file(o);
+            }
+        }
+    }
+    if (dir == ROOT && xd == 0) {
+        I64 at = 0;
+        Bool more = true;
+        while (more) {
+            more = false;
+            if (at < n && w_raw[at] == 47) {
+                at += 1;
+                more = true;
+            }
+            if (at + 1 < n && w_raw[at] == 46 && w_raw[at + 1] == 47) {
+                at += 2;
+                more = true;
+            }
+        }
+        I64 k = n - at;
+        if (fb_w > 0 && k == 7 && name_at(w_raw, at, "dev/fb0")) {
+            dev_kind = KIND_FB;
+        }
+        if (input_on && k == 16 && name_at(w_raw, at, "dev/input/event0")) {
+            dev_kind = KIND_EVENT;
+        }
+        if (dsp.present() && k == 7 && name_at(w_raw, at, "dev/dsp")) {
+            dev_kind = KIND_DSP;
+        }
+        if (k == 9 && name_at(w_raw, at, "dev/fsidx")) {
+            dev_kind = KIND_FSIDX;
+        }
+        if (eth.dns_ip() != 0 && k == 15 && name_at(w_raw, at, "etc/resolv.conf")) {
+            dev_kind = KIND_RESOLV;
+        }
+        if (k == 8 && name_at(w_raw, at, "dev/ptmx")) {
+            dev_kind = KIND_PTM;
+        }
+        if (k == 8 && name_at(w_raw, at, "dev/null")) {
+            dev_kind = KIND_NULL;      // HW-17 P1: user/ci/runas.h's child takes it as stdin and stderr
+        }
+        if (k == 7 && name_at(w_raw, at, "dev/tty")) {
+            dev_pty = pty.terminal_of(pid);   // the caller's controlling terminal, its slave (xargs -p asks it)
+            if (dev_pty < 0) {
+                return 0 - ENXIO;      // no controlling terminal, as Linux answers its open
+            }
+            dev_kind = KIND_PTS;
+        }
+        if (k == 9 && name_at(w_raw, at, "dev/pts/") && w_raw[at + 8] >= 48 && (w_raw[at + 8] as I64) < 48 + pty.PTYS) {
+            dev_kind = KIND_PTS;
+            dev_pty = (w_raw[at + 8] as I64) - 48;
+        }
+        if (dev_kind != 0) {
+            w_dir = ROOT;
+            w_slot = NONE;
+            w_len = 0;
+            w_dots = 0;
+            w_trail = false;
+            return 0;
+        }
+    }
+    w_dir = dir;
+    w_slot = dir;
+    w_len = 0;
+    w_dots = 3;
+    w_trail = false;
+    I64 hops = 0;
+    I64 i = 0;
+    while (i < n) {
+        while (i < n && w_raw[i] == 47) {
+            i += 1;
+        }
+        if (i < n) {
+            I64 j = i;
+            while (j < n && w_raw[j] != 47) {
+                j += 1;
+            }
+            I64 k = j - i;
+            I64 after = j;
+            while (after < n && w_raw[after] == 47) {
+                after += 1;
+            }
+            Bool last = after == n;
+            I64 dots = 0;
+            if (k == 1 && w_raw[i] == 46) {
+                dots = 1;
+            } else if (k == 2 && w_raw[i] == 46 && w_raw[i + 1] == 46) {
+                dots = 2;
+            } else if (k > NAME_MAX) {
+                return 0 - ENAMETOOLONG;
+            }
+            U8[256] c;
+            for t in 0..NAME_SLOT {
+                c[t] = 0;
+            }
+            if (dots == 0) {
+                for t in 0..k {
+                    c[t] = w_raw[i + t];
+                }
+            }
+            if (xd == 0) {
+                if (!dir_may(pid, dir, 1)) {
+                    return 0 - EACCES;         // FSP-1 A: each directory the walk looks in is searched
+                }
+                I64 next = NONE;
+                if (dots == 1) {
+                    next = dir;
+                } else if (dots == 2) {
+                    next = parent_of(dir);
+                } else {
+                    next = child(dir, c, k);
+                }
+                Bool into = next != NONE && next == mnt;
+                Bool hop = next >= 0 && dots == 0 && e_islink(node(next)) && (!last || follow);
+                if (hop) {
+                    // BU-2: a link of the image tree, replaced by its target as on the volume
+                    hops += 1;
+                    I64 tl = e_fsize(node(next));
+                    if (hops > 8) {
+                        return 0 - ELOOP;
+                    }
+                    if (tl < 1) {
+                        return 0 - ENOENT;
+                    }
+                    if (tl + n - j >= PATH_BYTES) {
+                        return 0 - ENAMETOOLONG;
+                    }
+                    _ = file_read(node(next), 0, w_t, tl);
+                    for q in 0..n - j {
+                        w_t[tl + q] = w_raw[j + q];
+                    }
+                    n = tl + n - j;
+                    for q in 0..n {
+                        w_raw[q] = w_t[q];
+                    }
+                    if (w_raw[0] == 47) {
+                        dir = ROOT;
+                    }
+                    after = 0;                 // the walk starts again on the spliced path
+                } else if (last) {
+                    w_dir = dir;
+                    w_slot = next;
+                    w_dots = dots;
+                    w_len = 0;
+                    if (dots == 0) {
+                        w_len = k;
+                        for t in 0..NAME_SLOT {
+                            w_name[t] = c[t];
+                        }
+                    }
+                    w_trail = j < n;
+                    if (into) {
+                        w_x = true;
+                        w_xino = ext2.ROOT_INO;
+                    }
+                    if (w_trail && next != NONE && !is_dir(next)) {
+                        return 0 - ENOTDIR;
+                    }
+                } else {
+                    if (next == NONE) {
+                        return 0 - ENOENT;
+                    }
+                    if (!is_dir(next)) {
+                        return 0 - ENOTDIR;
+                    }
+                    dir = next;
+                    if (into) {
+                        xd = ext2.ROOT_INO;
+                    }
+                }
+                i = after;
+            } else {
+                if (!xdir_may(pid, xd, 1)) {
+                    return 0 - EACCES;         // FSP-1 A: on the volume as in the image tree
+                }
+                I64 xn = 0;
+                if (dots == 1) {
+                    xn = xd;
+                } else if (dots == 2 && xd == ext2.ROOT_INO) {
+                    xn = -1;                   // out of the volume, to the mount's directory
+                } else if (dots == 2) {
+                    xn = ext2.lookup(xd, "..", 2);
+                } else if (xd == ext2.ROOT_INO && k == 8 && acct_name(c) && puid[pid] != 0 &&
+                           (grant[pid] & GRANT_KERN) == 0) {
+                    return 0 - EACCES;         // AC-1c: the account store, /home/.daphnis, is uid 0's or ring 0's
+                } else {
+                    xn = ext2.lookup(xd, c, k);
+                }
+                if (ext2.failed()) {
+                    ext2.clear_failed();
+                    return 0 - EIO;
+                }
+                if (xn > 0 && dots == 0 && ext2.is_link(xn) && (!last || follow)) {
+                    hops += 1;
+                    I64 tl = ext2.file_size(xn);
+                    if (hops > 8) {
+                        return 0 - ELOOP;
+                    }
+                    if (tl < 1) {
+                        return 0 - ENOENT;
+                    }
+                    if (tl + n - j >= PATH_BYTES) {
+                        return 0 - ENAMETOOLONG;
+                    }
+                    _ = ext2.read_at(xn, 0, w_t, 0, tl);
+                    for q in 0..n - j {
+                        w_t[tl + q] = w_raw[j + q];
+                    }
+                    n = tl + n - j;
+                    for q in 0..n {
+                        w_raw[q] = w_t[q];
+                    }
+                    if (w_raw[0] == 47) {
+                        xd = 0;
+                        dir = ROOT;
+                    }
+                    i = 0;
+                } else if (xn == -1) {
+                    I64 up = parent_of(mnt);
+                    if (last) {
+                        w_dir = mnt;
+                        w_slot = up;
+                        w_dots = 2;
+                        w_len = 0;
+                        w_trail = j < n;
+                    } else {
+                        xd = 0;
+                        dir = up;
+                    }
+                    i = after;
+                } else if (last) {
+                    w_dir = mnt;
+                    w_slot = NONE;
+                    w_dots = dots;
+                    w_len = 0;
+                    if (dots == 0) {
+                        w_len = k;
+                        for t in 0..NAME_SLOT {
+                            w_name[t] = c[t];
+                        }
+                    }
+                    w_trail = j < n;
+                    w_x = true;
+                    w_xino = xn;
+                    w_xdir = xd;
+                    if (w_trail && xn != 0 && !ext2.is_dir(xn)) {
+                        return 0 - ENOTDIR;
+                    }
+                    i = after;
+                } else {
+                    if (xn == 0) {
+                        return 0 - ENOENT;
+                    }
+                    if (!ext2.is_dir(xn)) {
+                        return 0 - ENOTDIR;
+                    }
+                    xd = xn;
+                    i = after;
+                }
+            }
+        }
+    }
+    if (xd != 0 && w_dots == 3) {
+        w_x = true;
+        w_xino = xd;
+    }
+    return 0;
+}
+
+// The working directory of pid becomes d (a reference on it is held, the old one's let go).
+void set_cwd(I64 pid, I64 d) {
+    I64 old_x = cwd_x[pid];
+    cwd_x[pid] = 0;
+    x_idle(old_x);
+    if (d >= 0) {
+        s_frefs(d, e_frefs(d) + 1);
+    }
+    I64 old = cwd[pid];
+    cwd[pid] = d;
+    if (old >= 0) {
+        unref(old);
+    }
+}
+
+// One reference on entry f less; an unlinked entry nobody holds is dropped.
+void unref(I64 f) {
+    s_frefs(f, e_frefs(f) - 1);
+    if (e_frefs(f) == 0 && !e_named(f)) {
+        drop(f);
+    }
+}
+
+// --- files ---
+
+I64 free_slot() {
+    for f in 0..slots {
+        if (!e_used(f)) {
+            return f;
+        }
+    }
+    if (grow_table()) {
+        return slots - PER_PAGE;
+    }
+    return -1;
+}
+
+void drop(I64 f) {
+    if (e_alias(f) >= 0) {
+        I64 h = e_alias(f);
+        s_alias(f, -1);
+        unref(h);
+    }
+    s_islink(f, false);
+    trim(f, 0);
+    s_used(f, false);
+    s_named(f, false);
+    s_isdir(f, false);
+    s_fsize(f, 0);
+    s_frefs(f, 0);
+}
+
+// A number on the serial line.
+void say_num(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+// CT-5a: the image's member whose header is at byte at, name ns bytes with its NUL, refused, and named on the serial
+// line: its name up to NAME_MAX bytes, a byte under 32 or past 126 shown as ?, then why.
+void refuse(I64 at, I64 ns, I64 why) {
+    refused += 1;
+    if (why == WHY_HEADER) {
+        serial.serial_write("daphnis: image: no member header that reads at byte ");
+        say_num(at);
+        serial.serial_write(", before the trailer; the rest of the image is refused\n");
+        return;
+    }
+    U8[256] b;
+    I64 k = ns - 1;
+    if (k > NAME_MAX) {
+        k = NAME_MAX;
+    }
+    serial.serial_write("daphnis: image: member ");
+    serial.serial_putc(34);
+    if (k > 0) {
+        _ = user.initrd_read(at + cpio.HEADER_BYTES, b[0..k]);
+    }
+    for i in 0..k {
+        if (b[i] < 32 || b[i] > 126) {
+            serial.serial_putc(63);
+        } else {
+            serial.serial_putc(b[i]);
+        }
+    }
+    if (ns - 1 > k) {
+        serial.serial_write("...");
+    }
+    serial.serial_putc(34);
+    serial.serial_write(" at byte ");
+    say_num(at);
+    if (why == WHY_PATH) {
+        serial.serial_write(": its name is ");
+        say_num(ns);
+        serial.serial_write(" bytes with its NUL, past the path bound, 4096\n");
+    } else if (why == WHY_PART) {
+        serial.serial_write(": a part of its name is past NAME_MAX, 255\n");
+    } else if (why == WHY_EMPTY) {
+        serial.serial_write(": a part of its name is empty\n");
+    } else {
+        serial.serial_write(": no directory member before it holds it\n");
+    }
+}
+
+Bool bytes_equal[n](in U8[n] a, in U8[n] b) {
+    Bool eq = true;
+    for i in 0..n {
+        if (a[i] != b[i]) {
+            eq = false;
+        }
+    }
+    return eq;
+}
+
+// True when the member at byte at, name ns bytes with its NUL, is the trailer: the name TRAILER!!!, every byte of it.
+Bool trailer(I64 at, I64 ns) {
+    if (ns != 11) {
+        return false;
+    }
+    U8[10] t;
+    _ = user.initrd_read(at + cpio.HEADER_BYTES, t);
+    return bytes_equal(t, "TRAILER!!!");
+}
+
+// Indexes the image into slots 0 on: one entry per member, in image order, with the member's inode number, under the
+// directory its path names; a member with no bytes and more than one link takes the bytes of its inode's holder.
+// Returns the count. A name is taken as far as a path from a process goes, PATH_BYTES with its NUL, and read a part at
+// a time, each part up to NAME_MAX, so every member is a path a process can name from the root. Nothing is left out
+// unsaid (CT-5a): a member the table cannot hold counts in past; a member refused counts in refused and is named on
+// the serial line as the scan meets it (refuse): a name past PATH_BYTES, a part past NAME_MAX or empty, a member no
+// directory member before it holds, and a header that does not read before the trailer, which ends the scan. The scan
+// goes on past any other refused member, so each is named; init and reset then fail the boot (refuse_image).
+I64 scan_image() {
+    past = 0;
+    refused = 0;
+    I64 total = user.initrd_size();
+    I64 at = 0;
+    U8[110] h;
+    U8[256] dc;         // a part of the name; the last part's bytes stay here for the entry
+    I64 f = 0;
+    Bool more = true;
+    while (more && at + cpio.HEADER_BYTES <= total) {
+        I64 ns = -1;
+        I64 msize = -1;
+        if (user.initrd_read(at, h) == cpio.HEADER_BYTES && cpio.magic_ok(h)) {
+            ns = cpio.field(h, cpio.F_NAMESIZE);
+            msize = cpio.field(h, cpio.F_FILESIZE);
+        }
+        if (ns < 1 || msize < 0 || at + cpio.HEADER_BYTES + ns > total) {
+            refuse(at, 0, WHY_HEADER);
+            more = false;
+        } else if (trailer(at, ns)) {
+            more = false;
+        } else {
+            I64 why = 0;
+            I64 d = ROOT;
+            I64 s0 = 0;         // where the part starts in the name
+            I64 cl = 0;         // the last part's length
+            if (ns > PATH_BYTES) {
+                why = WHY_PATH;
+            }
+            Bool last = false;
+            while (why == 0 && !last) {
+                I64 w = ns - 1 - s0;           // the name's bytes from s0, its NUL not counted, up to one past NAME_MAX
+                if (w > NAME_MAX + 1) {
+                    w = NAME_MAX + 1;
+                }
+                if (w > 0) {
+                    _ = user.initrd_read(at + cpio.HEADER_BYTES + s0, dc[0..w]);
+                }
+                I64 j = 0;
+                while (j < w && dc[j] != 47) {
+                    j += 1;
+                }
+                if (j == w && s0 + w == ns - 1) {
+                    last = true;               // no slash before the NUL: the last part, in dc[0..cl)
+                    cl = w;
+                    if (cl < 1) {
+                        why = WHY_EMPTY;
+                    } else if (cl > NAME_MAX) {
+                        why = WHY_PART;
+                    }
+                } else if (j > NAME_MAX) {
+                    why = WHY_PART;
+                } else if (j < 1) {
+                    why = WHY_EMPTY;
+                } else {
+                    d = child(d, dc, j);       // the directory: every part but the last, from the root
+                    if (d == NONE || !e_isdir(d)) {
+                        why = WHY_NODIR;
+                    }
+                    s0 += j + 1;
+                }
+            }
+            if (why != 0) {
+                refuse(at, ns, why);
+            } else if (!table_holds(f)) {
+                past += 1;
+            } else {
+                I64 da = cpio.data_at(at, ns);
+                s_used(f, true);
+                s_named(f, true);
+                set_name(f, dc, cl);
+                s_parent(f, d);
+                s_isdir(f, (cpio.field(h, cpio.F_MODE) & 0xF000) == 0x4000);
+                fresh(f, cpio.field(h, cpio.F_MODE), 0);
+                s_islink(f, (cpio.field(h, cpio.F_MODE) & S_IFMT) == S_IFLNK);
+                s_fuid(f, cpio.field(h, cpio.F_UID));
+                s_fgid(f, cpio.field(h, cpio.F_GID));
+                s_fmtime(f, cpio.field(h, cpio.F_MTIME));
+                s_fatime(f, e_fmtime(f));
+                s_img_hdr(f, at);
+                s_ino(f, cpio.field(h, cpio.F_INO));
+                s_fsize(f, msize);
+                s_in_image(f, true);
+                s_img_at(f, da);
+                s_img_size(f, msize);
+                s_frame(f, -1);
+                s_frefs(f, 0);
+                f += 1;
+            }
+            at = cpio.next_at(at, ns, msize);
+        }
+    }
+    // hard links: the bytes are with the last member of the inode; the other members are its aliases (BU-2)
+    for a in 0..f {
+        if (e_fsize(a) == 0 && !e_isdir(a)) {
+            I64 hb = -1;
+            for b in 0..f {
+                if (e_ino(b) == e_ino(a) && e_fsize(b) > 0) {
+                    hb = b;
+                }
+            }
+            if (hb >= 0) {
+                s_alias(a, hb);
+                s_frefs(hb, e_frefs(hb) + 1);
+            }
+        }
+    }
+    I64 top = 0;
+    for a in 0..f {
+        if (e_ino(a) > top) {
+            top = e_ino(a);
+        }
+    }
+    next_ino = top + 1;
+    return f;
+}
+
+export void init() {
+    table_free();
+    if (otab < 0) {
+        otab = frames.alloc(OFD_FRAMES);
+        if (otab < 0) {
+            serial.serial_write("daphnis: the pool cannot hold the open file descriptions\n");
+            portio.port_out8(0xF4 as U16, 0x1F as U8);   // RT_EXIT_PANIC (rt/rt.h): QEMU exits with status 63
+        }
+    }
+    for i in 0..OFD_FRAMES * 512 {
+        wr((frames.frame_addr(otab) as U64) + (8 * i) as U64, 0);
+    }
+    for p in 0..uvm.PROCS {
+        fdt[p] = -1;
+        cwd[p] = ROOT;
+        cwd_x[p] = 0;
+        pmask[p] = UMASK;
+    }
+    for p in 0..PIPES {
+        preaders[p] = 0;
+        pwriters[p] = 0;
+        pcount[p] = 0;
+        phead[p] = 0;
+        pframe[p] = -1;
+    }
+    image_files = scan_image();
+    refuse_image();
+    set_o_kind(0, KIND_IN);
+    set_o_refs(0, 1);
+    set_o_flags(0, 0);
+    set_o_kind(1, KIND_OUT);
+    set_o_refs(1, 1);
+    set_o_flags(1, 1);
+}
+
+// CT-5a: an image larger than the file table, or with a member refused (each named as the scan met it), fails the
+// boot, never cut short.
+void refuse_image() {
+    if (past > 0) {
+        serial.serial_write("daphnis: image: ");
+        say_num(past);
+        serial.serial_write(" members past what the pool holds\n");
+    }
+    if (refused > 0) {
+        serial.serial_write("daphnis: image refused: ");
+        say_num(refused);
+        serial.serial_write(" members named above\n");
+    }
+    if (past > 0 || refused > 0) {
+        portio.port_out8(0xF4 as U16, 0x1F as U8);   // RT_EXIT_PANIC (rt/rt.h): QEMU exits with status 63
+    }
+}
+
+// The image's view again: created entries and copies dropped, every image member back under its
+// path, every working directory the root.
+export void reset() {
+    for f in 0..slots {
+        s_alias(f, -1);
+    }
+    for f in 0..slots {
+        if (e_used(f) || e_frame(f) >= 0) {
+            drop(f);
+        }
+    }
+    table_free();                      // FS-4: the table is the image's again, frame for frame
+    I64 again = scan_image();
+    refuse_image();
+    if (again != image_files) {
+        image_files = again;
+    }
+    if (mnt != NONE) {
+        make_mount();
+    }
+    for p in 0..uvm.PROCS {
+        cwd[p] = ROOT;
+        cwd_x[p] = 0;
+    }
+    for o in 2..OFDS {
+        set_o_refs(o, 0);
+    }
+    for p in 0..uvm.PROCS {
+        drop_table(p);
+    }
+    for p in 0..PIPES {
+        preaders[p] = 0;
+        pwriters[p] = 0;
+        pcount[p] = 0;
+        phead[p] = 0;
+        pipe_drop(p);
+    }
+}
+
+export I64 file_count() {
+    I64 n = 0;
+    for f in 0..slots {
+        if (e_used(f) && e_named(f)) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+// P-2: mounts the volume of the block device on a directory called disk in the root, if it is ext2
+// src/ext2.ci reads. True when mounted.
+export Bool mount_disk() {
+    if (ext2.mount() < 0) {
+        return false;
+    }
+    make_mount();
+    return mnt != NONE;
+}
+
+// FS-3 (RV-1 A): pid starts in the home, the volume's root on /home, and holds the disk grant there when the
+// volume is one this kernel writes: the home is the one writable plane, sienna from boot. False, and nothing
+// changed, without a mounted volume.
+export Bool home(I64 pid) {
+    if (mnt == NONE || !ext2.is_mounted()) {
+        return false;
+    }
+    set_cwd(pid, mnt);
+    cwd_x[pid] = ext2.ROOT_INO;
+    if (ext2.is_writable()) {
+        grant[pid] = grant[pid] | GRANT_DISK;
+    }
+    return true;
+}
+
+export Bool disk_mounted() {
+    return mnt != NONE && ext2.is_mounted();
+}
+
+// The mount's directory: an entry of the root the mount holds, so nothing drops it.
+void make_mount() {
+    I64 f = free_slot();
+    mnt = NONE;
+    if (f >= 0) {
+        s_used(f, true);
+        s_named(f, true);
+        s_isdir(f, true);
+        set_name(f, "home", 4);
+        s_parent(f, ROOT);
+        fresh(f, 0x1ED, 0);
+        s_img_hdr(f, -1);
+        s_ino(f, next_ino);
+        next_ino += 1;
+        s_fsize(f, 0);
+        s_in_image(f, false);
+        s_frame(f, -1);
+        s_frefs(f, 1);
+        mnt = f;
+    }
+}
+
+// Files made since the image was read (R-2d: what a churn left).
+export I64 created_count() {
+    I64 n = 0;
+    for f in image_files..slots {
+        if (e_used(f) && e_named(f) && f != mnt) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+// --- FS-3: the chain ---
+// A created file, or an image file once written, holds its bytes in pool frames: map frames chained from e_frame(f),
+// each naming up to MAP_SLOTS data frames (page index h * MAP_SLOTS + s is slot s of the h-th map). A page no
+// write reached has no frame and reads as zeros; a frame is zeroed when taken and its bytes past the size are kept
+// zero (trim), so growing a file never shows old bytes. A file is bounded by a process's quota (M-2 A), not by a
+// constant: file_max().
+
+// The largest size a file may have: the quota, in bytes.
+I64 file_max() {
+    return frames.quota() * PAGE;
+}
+
+U64 word_at(I64 fr, I64 i) {
+    U64[1] w;
+    phys.phys_read64((frames.frame_addr(fr) as U64) + (8 * i) as U64, w);
+    return w[0];
+}
+
+void set_word(I64 fr, I64 i, U64 v) {
+    U64[1] w;
+    w[0] = v;
+    phys.phys_write64((frames.frame_addr(fr) as U64) + (8 * i) as U64, w);
+}
+
+// A frame from the pool, every byte zero; -1 when the pool is out.
+I64 zeroed() {
+    I64 fr = frames.alloc(1);
+    if (fr < 0) {
+        return -1;
+    }
+    U64[64] z;
+    for i in 0..64 {
+        z[i] = 0;
+    }
+    U64 base = frames.frame_addr(fr) as U64;
+    for k in 0..8 {
+        phys.phys_write64(base + (512 * k) as U64, z);
+    }
+    return fr;
+}
+
+// The data frame of page pg of file f; -1 when it has none. With grow, missing maps and the data frame are
+// taken (zeroed) on the way: -1 then means the pool is out, and what was taken stays on the chain.
+I64 page_of(I64 f, I64 pg, Bool grow) {
+    if (e_frame(f) < 0) {
+        if (!grow) {
+            return -1;
+        }
+        I64 m0 = zeroed();
+        if (m0 < 0) {
+            return -1;
+        }
+        s_frame(f, m0);
+    }
+    I64 m = e_frame(f);
+    for h in 0..pg / MAP_SLOTS {
+        U64 next = word_at(m, MAP_SLOTS);
+        if (next == 0) {
+            if (!grow) {
+                return -1;
+            }
+            I64 nm = zeroed();
+            if (nm < 0) {
+                return -1;
+            }
+            set_word(m, MAP_SLOTS, (nm + 1) as U64);
+            next = (nm + 1) as U64;
+        }
+        m = (next as I64) - 1;
+    }
+    I64 s = pg % MAP_SLOTS;
+    U64 d = word_at(m, s);
+    if (d == 0) {
+        if (!grow) {
+            return -1;
+        }
+        I64 nd = zeroed();
+        if (nd < 0) {
+            return -1;
+        }
+        set_word(m, s, (nd + 1) as U64);
+        return nd;
+    }
+    return (d as I64) - 1;
+}
+
+void give(I64 fr) {
+    I64 r = frames.release(fr, 1);
+    if (r < 0) {
+        serial.serial_write("daphnis: fs: a chain frame was not owned\n");
+    }
+}
+
+// File f keeps the pages that hold its first sz bytes: every data frame past them goes back to the pool, with
+// every map that names none of the kept pages, and the kept last page is zero past sz. trim(f, 0) frees the chain.
+void trim(I64 f, I64 sz) {
+    if (e_frame(f) < 0) {
+        return;
+    }
+    I64 keep = (sz + PAGE - 1) / PAGE;
+    I64 m = e_frame(f);
+    I64 prev = -1;
+    I64 h = 0;
+    while (m >= 0) {
+        U64 next = word_at(m, MAP_SLOTS);
+        for s in 0..MAP_SLOTS {
+            U64 d = word_at(m, s);
+            if (d != 0 && h * MAP_SLOTS + s >= keep) {
+                give((d as I64) - 1);
+                set_word(m, s, 0);
+            }
+        }
+        if (h * MAP_SLOTS >= keep) {
+            if (prev < 0) {
+                s_frame(f, -1);
+            } else {
+                set_word(prev, MAP_SLOTS, 0);
+            }
+            give(m);
+        } else {
+            prev = m;
+        }
+        m = (next as I64) - 1;
+        h += 1;
+    }
+    if (sz % PAGE != 0) {
+        I64 p = page_of(f, sz / PAGE, false);
+        if (p >= 0) {
+            U8[256] z;
+            for i in 0..256 {
+                z[i] = 0;
+            }
+            I64 at = sz % PAGE;
+            U64 base = frames.frame_addr(p) as U64;
+            while (at < PAGE) {
+                I64 c = PAGE - at;
+                if (c > 256) {
+                    c = 256;
+                }
+                phys.phys_write8(base + at as U64, z[0..c]);
+                at += c;
+            }
+        }
+    }
+}
+
+// Moves an image file's bytes onto a chain so it can be written; -1 if the pool is out (the file is then the
+// image's again).
+I64 make_writable(I64 f) {
+    if (!e_in_image(f)) {
+        return 0;
+    }
+    I64 sz = e_fsize(f);
+    s_in_image(f, false);
+    s_fsize(f, 0);
+    U8[256] b;
+    I64 done = 0;
+    while (done < sz) {
+        I64 c = sz - done;
+        if (c > 256) {
+            c = 256;
+        }
+        I64 got = user.initrd_read(e_img_at(f) + done, b[0..c]);
+        if (got != c || file_write(f, done, b, c) != c) {
+            trim(f, 0);
+            s_in_image(f, true);
+            s_fsize(f, sz);
+            return -1;
+        }
+        done += c;
+    }
+    return 0;
+}
+
+// The size of file f becomes sz, at or under its size: an image file emptied leaves the image without a copy.
+// 0, or -1 when the pool is out.
+I64 shrink(I64 f, I64 sz) {
+    if (e_in_image(f) && sz == 0) {
+        s_in_image(f, false);
+    } else if (make_writable(f) < 0) {
+        return -1;
+    }
+    s_fsize(f, sz);
+    trim(f, sz);
+    return 0;
+}
+
+// Copies up to k bytes of file f from offset off into b; the count.
+I64 file_read[n](I64 f, I64 off, inout U8[n] b, I64 k) {
+    if (off >= e_fsize(f)) {
+        return 0;
+    }
+    I64 c = e_fsize(f) - off;
+    if (c > k) {
+        c = k;
+    }
+    if (e_in_image(f)) {
+        return user.initrd_read(e_img_at(f) + off, b[0..c]);
+    }
+    I64 done = 0;
+    while (done < c) {
+        I64 at = off + done;
+        I64 m = PAGE - at % PAGE;
+        if (m > c - done) {
+            m = c - done;
+        }
+        I64 p = page_of(f, at / PAGE, false);
+        if (p < 0) {
+            for i in done..done + m {
+                b[i] = 0;
+            }
+        } else {
+            phys.phys_read8((frames.frame_addr(p) as U64) + (at % PAGE) as U64, b[done..done + m]);
+        }
+        done += m;
+    }
+    return c;
+}
+
+// Writes k bytes of b into file f at off, growing it; the count, which is short when the pool ran out part way,
+// or -1 when nothing was written: past file_max() or the pool is out.
+I64 file_write[n](I64 f, I64 off, in U8[n] b, I64 k) {
+    if (off + k > file_max()) {
+        return -1;
+    }
+    if (e_in_image(f) && make_writable(f) < 0) {
+        return -1;
+    }
+    I64 done = 0;
+    while (done < k) {
+        I64 at = off + done;
+        I64 m = PAGE - at % PAGE;
+        if (m > k - done) {
+            m = k - done;
+        }
+        I64 p = page_of(f, at / PAGE, true);
+        if (p < 0) {
+            if (done == 0) {
+                trim(f, e_fsize(f));
+                return -1;
+            }
+            if (off + done > e_fsize(f)) {
+                s_fsize(f, off + done);
+            }
+            trim(f, e_fsize(f));
+            return done;
+        }
+        phys.phys_write8((frames.frame_addr(p) as U64) + (at % PAGE) as U64, b[done..done + m]);
+        done += m;
+    }
+    if (off + k > e_fsize(f)) {
+        s_fsize(f, off + k);
+    }
+    return k;
+}
+
+// --- descriptions and descriptors ---
+
+I64 new_ofd(I64 k, I64 f, U64 flags) {
+    for o in 2..OFDS {
+        if (o_refs(o) == 0) {
+            set_o_kind(o, k);
+            set_o_file(o, f);
+            set_o_off(o, 0);
+            set_o_flags(o, flags & O_KEPT);
+            if (k == KIND_EVENT || k == KIND_SOCK || k == KIND_TCP || k == KIND_PTM || k == KIND_DSP) {
+                set_o_flags(o, flags & (O_KEPT | O_NONBLOCK));
+            }
+            set_o_refs(o, 1);
+            if (k == KIND_FILE || (k == KIND_DIR && f >= 0)) {
+                s_frefs(f, e_frefs(f) + 1);
+            } else if (k == KIND_PIPE_R) {
+                preaders[f] += 1;
+            } else if (k == KIND_PIPE_W) {
+                pwriters[f] += 1;
+            } else if (k == KIND_PTM || k == KIND_PTS) {
+                pty.ref(f, k == KIND_PTM, 1);
+            }
+            return o;
+        }
+    }
+    return -1;
+}
+
+void ofd_release(I64 o) {
+    set_o_refs(o, o_refs(o) - 1);
+    if (o_refs(o) == 0 && (o_kind(o) == KIND_FILE || (o_kind(o) == KIND_DIR && o_file(o) >= 0))) {
+        unref(o_file(o));
+    } else if (o_refs(o) == 0 && o_kind(o) == KIND_PIPE_R) {
+        preaders[o_file(o)] -= 1;
+        pipe_idle(o_file(o));
+    } else if (o_refs(o) == 0 && o_kind(o) == KIND_PIPE_W) {
+        pwriters[o_file(o)] -= 1;
+        pipe_idle(o_file(o));
+    } else if (o_refs(o) == 0 && (o_kind(o) == KIND_XFILE || o_kind(o) == KIND_XDIR)) {
+        if (o_kind(o) == KIND_XFILE && (o_flags(o) & O_ACCMODE) != 0) {
+            fsidx.post(fsidx.CHANGE, o_file(o), 0, w_name, 0);   // FF-1: its bytes are final for now
+        }
+        x_idle(o_file(o));
+    } else if (o_refs(o) == 0 && o_kind(o) == KIND_SOCK) {
+        udp.close(o_file(o));
+    } else if (o_refs(o) == 0 && (o_kind(o) == KIND_PTM || o_kind(o) == KIND_PTS)) {
+        pty.ref(o_file(o), o_kind(o) == KIND_PTM, -1);
+    } else if (o_refs(o) == 0 && o_kind(o) == KIND_TCP) {
+        tcp.release(o_file(o));
+    } else if (o_refs(o) == 0 && o_kind(o) == KIND_DSP) {
+        dsp.close(o_file(o));
+    } else if (o_refs(o) == 0 && o_kind(o) == KIND_FSIDX) {
+        fsidx.close();
+    }
+}
+
+// --- P-3: the volume written ---
+
+// The grant word of pid (GR-1); grant(2) of src/proc.ci sets it.
+export U64 grant_of(I64 pid) {
+    return grant[pid];
+}
+
+// grant (1000): the answer and the word are src/grants.ci's (set_answer, set_word). -EINVAL for an unknown bit;
+// -EPERM for ring 0 not held (R0-1: a process may keep or drop ring 0, never take it); -EACCES past the ceiling
+// (AC-1a; a parent's yes comes through grant_ask, src/proc.ci). GV-1c: a call that leaves ring 0 out ends ring 0
+// whatever it answers, and the word keeps nothing beyond the ceiling that the call was not allowed outside ring 0.
+export I64 sys_grant(I64 pid, U64 w) {
+    I64 r = grants.set_answer(grant[pid], pceil[pid], w);
+    grant[pid] = grants.set_word(grant[pid], pceil[pid], w);
+    return r;
+}
+
+// AC-1a: the bits of w that pid would take past its ceiling: neither held nor within the ceiling; 0 in ring 0, which
+// holds every grant.
+export U64 beyond(I64 pid, U64 w) {
+    return grants.beyond(grant[pid], pceil[pid], w);
+}
+
+// GV-1a (docs/specs/2026-11-11-gv-revoke.md section 2): the desk takes the grants of w back from pid (src/proc.ci's
+// sys_revoke checks who may ask and names the processes). The bits leave pid's word and its ceiling, so beyond()
+// names them again: grant (1000) answers -EACCES for them, and the way back is grant_ask's prompt. A fork copies
+// both words, so a child made later holds neither the bit nor the silent way back. True when the word held one of
+// the bits.
+export Bool revoke(I64 pid, U64 w) {
+    Bool had = grants.holds(grant[pid], w);
+    grant[pid] = grants.word_after(grant[pid], w);
+    pceil[pid] = grants.ceiling_after(pceil[pid], w);
+    if ((w & GRANT_NET) != 0 && !held(pid, GRANT_NET)) {
+        net_cut(pid);
+    }
+    return had;
+}
+
+// GV-1b (section 3, option A): what pid has open is cut when the grant goes, not only what it opens next.
+//   net: every TCP connection among its descriptors is reset at once (src/tcp.ci abort), and every socket call it
+//     makes from now on finds the socket shut (src/sock.ci shut_out): a read ends, a write fails.
+//   audio: a write to an open /dev/dsp, and every ioctl on it, answers -EACCES (the checks in sys_write and
+//     sys_ioctl); what was already queued plays out.
+//   disk: a write, a truncate or a metadata change under /home through an open descriptor answers -EACCES
+//     (x_fd_may_write, FSP-2 A, as when a process drops the grant itself).
+// Nothing is closed and nothing ends the program; a descriptor open for reading inside the process's own rights
+// reads on. A process in ring 0 holds every grant and is not cut.
+void net_cut(I64 pid) {
+    for fd in 0..FDS {
+        I64 o = ofd_of(pid, fd);
+        if (o >= 0 && o_kind(o) == KIND_TCP) {
+            tcp.abort(o_file(o));
+        }
+    }
+}
+
+// AC-1a: the desk's yes to a grant_ask: the bits join pid's word (not its ceiling), so they last until its tree ends.
+export void grant_add(I64 pid, U64 w) {
+    grant[pid] = grant[pid] | (w & GRANT_ALL);
+}
+
+// P1, P3 of the kernel read: pid holds a description of pair i's master (the maker, or its child before execve).
+Bool holds_master(I64 pid, I64 i) {
+    U64[256] w;
+    read_table(pid, w);
+    for fd in 0..FDS {
+        I64 o = ((w[fd] & 0xFFFFFFFF) as I64) - 1;
+        if (w[fd] != 0 && o_kind(o) == KIND_PTM && o_file(o) == i) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// P1: pid is the desk, the tiler as uid 0 (src/proc.ci's sys_home asks the same).
+Bool is_desk(I64 pid) {
+    return pid == tile.tiler_pid() && uid_of(pid) == 0;
+}
+
+export I64 uid_of(I64 pid) {
+    return puid[pid];
+}
+
+export I64 gid_of(I64 pid) {
+    return pgid[pid];
+}
+
+export U64 ceil_of(I64 pid) {
+    return pceil[pid];
+}
+
+// AC-1a: the login (src/proc.ci's sys_login checks who may call it): pid takes uid, gid and the ceiling, drops ring 0
+// and every grant, and keeps the disk grant only if the ceiling holds it (FS-3: the home is the writable plane).
+export void set_login(I64 pid, I64 uid, I64 gid, U64 c) {
+    puid[pid] = uid;
+    pgid[pid] = gid;
+    pceil[pid] = c & GRANT_ALL;
+    grant[pid] = c & GRANT_DISK;
+}
+
+// R0-1: ring 0 on or off for pid, the desk's call alone (src/proc.ci). held(pid, g): pid holds grant g, or ring 0,
+// which holds every grant.
+export Bool held(I64 pid, U64 g) {
+    return (grant[pid] & (g | GRANT_KERN)) != 0;
+}
+
+// GV-1c (GV-R2): when ring 0 ends, the word keeps no grant bit beyond the ceiling (grants.after_ring0): what the
+// process took while beyond() was 0 for it, a revoked bit among them, goes with ring 0. This path is the desk's and
+// the clock's (the hold's end, FBIO_TILE_KERN 3), so the grant is taken, not given up: if net is no longer held, the
+// process's TCP connections are reset as a revoke resets them (net_cut). Off for a process outside ring 0 changes
+// nothing.
+export void kern_set(I64 pid, Bool on) {
+    if (on) {
+        grant[pid] = grant[pid] | GRANT_KERN;
+    } else if ((grant[pid] & GRANT_KERN) != 0) {
+        grant[pid] = grants.after_ring0(grant[pid], pceil[pid]);
+        if (!held(pid, GRANT_NET)) {
+            net_cut(pid);
+        }
+    }
+}
+
+// FSP-1 A (docs/superpowers/specs/2026-11-09-filesystem-security-intake.md, decisions): the one permission predicate
+// of the path and descriptor entry points. pid may have req (read 4, write 2, execute or search 1) on an object of
+// owner ou, group og and permission bits mode: the owner's bits if pid's uid is ou, else the group's if its gid is
+// og, else the others'. uid 0 gets nothing extra; ring 0 (GRANT_KERN, the administration of the kernel grants)
+// passes every read, write and directory search, and executes a file only if one of its execute bits is set.
+export Bool may(I64 pid, I64 ou, I64 og, I64 mode, I64 req, Bool dir) {
+    if ((grant[pid] & GRANT_KERN) != 0) {
+        return dir || (req & 1) == 0 || (mode & 73) != 0;
+    }
+    I64 bits = mode & 7;
+    if (puid[pid] == ou) {
+        bits = (mode >> 6) & 7;
+    } else if (pgid[pid] == og) {
+        bits = (mode >> 3) & 7;
+    }
+    return (bits & req) == req;
+}
+
+// pid may search (or, req, read or write) the image tree's directory d; the root is 0755, uid 0's.
+Bool dir_may(I64 pid, I64 d, I64 req) {
+    if (d == ROOT) {
+        return may(pid, 0, 0, 493, req, true);
+    }
+    I64 f = node(d);
+    return may(pid, e_fuid(f), e_fgid(f), e_perm(f), req, true);
+}
+
+// The same for the volume's directory inode i.
+Bool xdir_may(I64 pid, I64 i, I64 req) {
+    return may(pid, ext2.uid(i), ext2.gid(i), ext2.mode(i) & 4095, req, true);
+}
+
+// FS-2: pid may req on the image tree's entry f (a node) or the volume's inode i.
+Bool f_may(I64 pid, I64 f, I64 req) {
+    return may(pid, e_fuid(f), e_fgid(f), e_perm(f), req, e_isdir(f));
+}
+
+Bool x_may(I64 pid, I64 i, I64 req) {
+    return may(pid, ext2.uid(i), ext2.gid(i), ext2.mode(i) & 4095, req, ext2.is_dir(i));
+}
+
+// FSP-1 A: pid acts as the owner ou: its uid is ou, or it holds ring 0 (administration is by kernel grant alone).
+Bool owns(I64 pid, I64 ou) {
+    return puid[pid] == ou || (grant[pid] & GRANT_KERN) != 0;
+}
+
+// The sticky bit of a directory (mode dm, owner du): only the owner of the entry (ou) or of the directory, or ring 0,
+// removes or renames an entry in it.
+Bool sticky_ok(I64 pid, I64 dm, I64 du, I64 ou) {
+    return (dm & 512) == 0 || owns(pid, du) || owns(pid, ou);
+}
+
+// The image tree's directory slot d: its owner and bits (the root is 0755, uid 0's).
+I64 d_uid(I64 d) {
+    if (d == ROOT) { return 0; }
+    return e_fuid(node(d));
+}
+
+I64 d_mode(I64 d) {
+    if (d == ROOT) { return 493; }
+    return e_perm(node(d));
+}
+
+// What open asks of an existing object: read for O_RDONLY, write for O_WRONLY, both for O_RDWR; O_TRUNC writes.
+I64 open_req(U64 flags) {
+    U64 acc = flags & O_ACCMODE;
+    I64 r = 4;
+    if (acc == 1) { r = 2; }
+    if (acc == 2) { r = 6; }
+    if ((flags & O_TRUNC) != 0) { r = r | 2; }
+    return r;
+}
+
+// FSP-2 A: a change through a descriptor already held on the volume needs the disk grant now; without it, EACCES.
+Bool x_fd_may_write(I64 pid) {
+    return held(pid, GRANT_DISK);
+}
+
+// pid may write under /home: it holds the disk grant and the volume is one this kernel writes.
+Bool x_may_write(I64 pid) {
+    return held(pid, GRANT_DISK) && ext2.is_writable();
+}
+
+// The end of a call that wrote the volume: the cache goes to the device; r, or -EIO if a request failed.
+I64 x_done(I64 r) {
+    Bool ok = ext2.commit();
+    if (!ok || ext2.failed()) {
+        ext2.clear_failed();
+        return 0 - EIO;
+    }
+    return r;
+}
+
+// FF-1: posts a change of inode i in directory d under the walk's last name (src/fsidx.ci).
+void ix(I64 op, I64 i, I64 d) {
+    fsidx.post(op, i, d, w_name, w_len);
+}
+
+// Inode i of the volume is held: by an open description or as a working directory.
+Bool x_held(I64 i) {
+    for o in 0..OFDS {
+        if (o_refs(o) > 0 && (o_kind(o) == KIND_XFILE || o_kind(o) == KIND_XDIR) && o_file(o) == i) {
+            return true;
+        }
+    }
+    for p in 0..64 {
+        if (cwd_x[p] == i) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Inode i, once it has no link and nothing holds it, is freed (an inode freed already has mode 0).
+void x_idle(I64 i) {
+    if (i > 0 && ext2.mode(i) != 0 && ext2.links(i) == 0 && !x_held(i)) {
+        ext2.release(i);
+        _ = x_done(0);
+    }
+}
+
+// Pipe p's frame back to the pool once no end is open.
+void pipe_idle(I64 p) {
+    if (preaders[p] == 0 && pwriters[p] == 0) {
+        pipe_drop(p);
+    }
+}
+
+void pipe_drop(I64 p) {
+    if (pframe[p] >= 0) {
+        I64 r = frames.release(pframe[p], 1);
+        if (r < 0) {
+            pframe[p] = pframe[p];
+        }
+        pframe[p] = -1;
+    }
+}
+
+// --- FS-4: the descriptor tables ---
+
+// Word fd of pid's table: 0 when the descriptor is free or the process has no table.
+U64 fd_word(I64 pid, I64 fd) {
+    if (fdt[pid] < 0 || fd < 0 || fd >= FDS) {
+        return 0;
+    }
+    return word_at(fdt[pid], fd);
+}
+
+void set_fd_word(I64 pid, I64 fd, U64 v) {
+    set_word(fdt[pid], fd, v);
+}
+
+// Every word of pid's table into w (zeros without a table).
+void read_table(I64 pid, inout U64[256] w) {
+    if (fdt[pid] < 0) {
+        for fd in 0..FDS {
+            w[fd] = 0;
+        }
+        return;
+    }
+    phys.phys_read64(frames.frame_addr(fdt[pid]) as U64, w);
+}
+
+// pid has a table: true, taking a zeroed frame if it had none; false when the pool is out.
+Bool table(I64 pid) {
+    if (fdt[pid] < 0) {
+        fdt[pid] = zeroed();
+    }
+    return fdt[pid] >= 0;
+}
+
+// pid's table back to the pool (its descriptors already closed).
+void drop_table(I64 pid) {
+    if (fdt[pid] >= 0) {
+        give(fdt[pid]);
+        fdt[pid] = -1;
+    }
+}
+
+I64 fd_flags(I64 pid, I64 fd) {
+    return (fd_word(pid, fd) >> 32) as I64;
+}
+
+void set_fd_flags(I64 pid, I64 fd, I64 flags) {
+    U64 w = fd_word(pid, fd);
+    if (w != 0) {
+        set_fd_word(pid, fd, (w & 0xFFFFFFFF) | ((flags as U64) << 32));
+    }
+}
+
+// The description behind fd of pid, or -1.
+I64 ofd_of(I64 pid, I64 fd) {
+    U64 w = fd_word(pid, fd);
+    if (w == 0) {
+        return -1;
+    }
+    return ((w & 0xFFFFFFFF) as I64) - 1;
+}
+
+// The lowest free descriptor of pid from `from` on, bound to description o; -EMFILE if none, -ENOMEM when the
+// table cannot be had.
+I64 bind(I64 pid, I64 from, I64 o, I64 flags) {
+    if (!table(pid)) {
+        return 0 - ENOMEM;
+    }
+    U64[256] w;
+    read_table(pid, w);
+    for fd in from..FDS {
+        if (w[fd] == 0) {
+            set_fd_word(pid, fd, ((o + 1) as U64) | ((flags as U64) << 32));
+            set_o_refs(o, o_refs(o) + 1);
+            return fd;
+        }
+    }
+    return 0 - EMFILE;
+}
+
+void unbind(I64 pid, I64 fd) {
+    I64 o = ofd_of(pid, fd);
+    set_fd_word(pid, fd, 0);
+    ofd_release(o);
+}
+
+// A byte of the scripted input, in the order they arrive (main_user.ci polls the serial line).
+export void stdin_push(U8 c) {
+    if (inlen < 8192) {
+        inbuf[inlen] = c;
+        inlen += 1;
+    }
+}
+
+export I64 stdin_len() {
+    return inlen;
+}
+
+// read(0): bytes of the scripted input from the description's offset; 0 at its end.
+I64 stdin_read(I64 pid, I64 o, U64 buf, U64 n) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 want = inlen - o_off(o);
+    if (n == 0 || want <= 0) {
+        return 0;
+    }
+    if (n < want as U64) {
+        want = n as I64;
+    }
+    if (uvm.USER_HI - buf < want as U64) {
+        want = (uvm.USER_HI - buf) as I64;
+    }
+    U8[256] b;
+    I64 done = 0;
+    while (done < want) {
+        I64 c = want - done;
+        if (c > 256) {
+            c = 256;
+        }
+        for i in 0..c {
+            b[i] = inbuf[o_off(o) + done + i];
+        }
+        I64 put = uvm.poke(pid, buf + done as U64, b, c, true);
+        done += put;
+        if (put < c) {
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            want = done;
+        }
+    }
+    set_o_off(o, o_off(o) + done);
+    return done;
+}
+
+// A new process: 0 reads the scripted input from its start (its own description, which its
+// children share), 1 and 2 write the console.
+export void proc_init(I64 pid) {
+    cwd[pid] = ROOT;
+    cwd_x[pid] = 0;
+    grant[pid] = 0;
+    puid[pid] = 0;
+    pgid[pid] = 0;
+    pceil[pid] = GRANT_ALL;
+    pmask[pid] = UMASK;
+    drop_table(pid);
+    I64 oin = new_ofd(KIND_IN, 0, 0);
+    if (oin < 0) {
+        oin = 0;
+    }
+    I64 a = bind(pid, 0, oin, 0);
+    if (oin > 0) {
+        ofd_release(oin);
+    }
+    I64 b = bind(pid, 1, 1, 0);
+    I64 c = bind(pid, 2, 1, 0);
+    if (a != 0 || b != 1 || c != 2) {
+        serial.serial_write("daphnis: fs: a process without its console descriptors\n");
+    }
+}
+
+export void proc_close_all(I64 pid) {
+    U64[256] w;
+    read_table(pid, w);
+    for fd in 0..FDS {
+        if (w[fd] != 0) {
+            unbind(pid, fd);
+        }
+    }
+    drop_table(pid);
+    set_cwd(pid, ROOT);
+}
+
+// fork: dst gets src's descriptors, on the same descriptions, and its working directory.
+export void proc_clone(I64 src, I64 dst) {
+    I64 d = cwd[src];
+    cwd[dst] = ROOT;
+    set_cwd(dst, d);
+    cwd_x[dst] = cwd_x[src];
+    grant[dst] = grant[src];
+    puid[dst] = puid[src];
+    pgid[dst] = pgid[src];
+    pceil[dst] = pceil[src];
+    pmask[dst] = pmask[src];
+    drop_table(dst);
+    if (fdt[src] < 0 || !table(dst)) {
+        return;
+    }
+    U64[256] w;
+    read_table(src, w);
+    phys.phys_write64(frames.frame_addr(fdt[dst]) as U64, w);
+    for fd in 0..FDS {
+        if (w[fd] != 0) {
+            set_o_refs(((w[fd] & 0xFFFFFFFF) as I64) - 1, o_refs(((w[fd] & 0xFFFFFFFF) as I64) - 1) + 1);
+        }
+    }
+}
+
+// execve: the descriptors marked FD_CLOEXEC close.
+export void proc_exec(I64 pid) {
+    U64[256] w;
+    read_table(pid, w);
+    for fd in 0..FDS {
+        if (w[fd] != 0 && (((w[fd] >> 32) as I64) & FD_CLOEXEC) != 0) {
+            unbind(pid, fd);
+        }
+    }
+}
+
+// pipe2(fds, flags): a pipe, its read end on the lowest free descriptor and its write end on the
+// next; the two numbers go to pid's memory at va as 32-bit ints.
+export I64 sys_pipe(I64 pid, U64 va, U64 flags) {
+    I64 p = -1;
+    for i in 0..PIPES {
+        if (p < 0 && preaders[i] == 0 && pwriters[i] == 0) {
+            p = i;
+        }
+    }
+    if (p < 0) {
+        return 0 - ENFILE;
+    }
+    I64 fr = frames.alloc(1);
+    if (fr < 0) {
+        return 0 - ENOMEM;
+    }
+    pframe[p] = fr;
+    pcount[p] = 0;
+    phead[p] = 0;
+    I64 cfl = 0;
+    if ((flags & O_CLOEXEC) != 0) {
+        cfl = FD_CLOEXEC;
+    }
+    I64 orr = new_ofd(KIND_PIPE_R, p, 0);
+    if (orr < 0) {
+        return 0 - ENFILE;
+    }
+    I64 ow = new_ofd(KIND_PIPE_W, p, 1);
+    if (ow < 0) {
+        ofd_release(orr);
+        return 0 - ENFILE;
+    }
+    I64 r = bind(pid, 0, orr, cfl);
+    I64 w = -1;
+    if (r >= 0) {
+        w = bind(pid, 0, ow, cfl);
+    }
+    ofd_release(orr);
+    ofd_release(ow);
+    if (r < 0 || w < 0) {
+        if (r >= 0) {
+            unbind(pid, r);
+        }
+        return 0 - EMFILE;
+    }
+    U8[8] b;
+    for j in 0..4 {
+        b[j] = (((r as U64) >> ((8 * j) as U64)) & 0xFF) as U8;
+        b[4 + j] = (((w as U64) >> ((8 * j) as U64)) & 0xFF) as U8;
+    }
+    if (va >= uvm.USER_HI || uvm.poke(pid, va, b, 8, true) != 8) {
+        unbind(pid, r);
+        unbind(pid, w);
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// Bytes out of pipe p into pid's memory: up to n, what is there; 0 when it is empty and no
+// writer is left; WOULD_BLOCK when it is empty and one is.
+I64 pipe_read(I64 pid, I64 p, U64 buf, U64 n) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    if (pcount[p] == 0) {
+        if (pwriters[p] == 0) {
+            return 0;
+        }
+        return WOULD_BLOCK;
+    }
+    I64 want = pcount[p];
+    if (n < want as U64) {
+        want = n as I64;
+    }
+    if (uvm.USER_HI - buf < want as U64) {
+        want = (uvm.USER_HI - buf) as I64;
+    }
+    U64 ring = frames.frame_addr(pframe[p]) as U64;
+    U8[256] b;
+    I64 done = 0;
+    while (done < want) {
+        I64 at = (phead[p] + done) % PIPE_BYTES;
+        I64 c = want - done;
+        if (c > 256) {
+            c = 256;
+        }
+        if (c > PIPE_BYTES - at) {
+            c = PIPE_BYTES - at;
+        }
+        phys.phys_read8(ring + at as U64, b[0..c]);
+        I64 put = uvm.poke(pid, buf + done as U64, b, c, true);
+        done += put;
+        if (put < c) {
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            want = done;
+        }
+    }
+    phead[p] = (phead[p] + done) % PIPE_BYTES;
+    pcount[p] -= done;
+    return done;
+}
+
+// Bytes of pid's memory into pipe p: what fits; -EPIPE with no reader left (the caller sends
+// SIGPIPE); WOULD_BLOCK when it is full.
+I64 pipe_write(I64 pid, I64 p, U64 buf, U64 n) {
+    if (preaders[p] == 0) {
+        return 0 - EPIPE;
+    }
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    I64 room = PIPE_BYTES - pcount[p];
+    if (room == 0) {
+        return WOULD_BLOCK;
+    }
+    I64 want = room;
+    if (n < want as U64) {
+        want = n as I64;
+    }
+    if (uvm.USER_HI - buf < want as U64) {
+        want = (uvm.USER_HI - buf) as I64;
+    }
+    U64 ring = frames.frame_addr(pframe[p]) as U64;
+    U8[256] b;
+    I64 done = 0;
+    while (done < want) {
+        I64 at = (phead[p] + pcount[p] + done) % PIPE_BYTES;
+        I64 c = want - done;
+        if (c > 256) {
+            c = 256;
+        }
+        if (c > PIPE_BYTES - at) {
+            c = PIPE_BYTES - at;
+        }
+        I64 got = uvm.peek(pid, buf + done as U64, b, c);
+        phys.phys_write8(ring + at as U64, b[0..got]);
+        done += got;
+        if (got < c) {
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            want = done;
+        }
+    }
+    pcount[p] += done;
+    return done;
+}
+
+// True when the descriptor's description is non-blocking (an event description, F-2).
+export Bool nonblock(I64 pid, I64 fd) {
+    I64 o = ofd_of(pid, fd);
+    return o >= 0 && (o_flags(o) & O_NONBLOCK) != 0;
+}
+
+// socket (N-2), accept (N-3): a description of kind k (KIND_SOCK, slot s of src/udp.ci; KIND_TCP, slot s
+// of src/tcp.ci) on the lowest free descriptor; flags are SOCK_NONBLOCK (O_NONBLOCK) and SOCK_CLOEXEC. The
+// descriptor, or -errno; on an error the socket is closed.
+export I64 sock_open(I64 pid, I64 k, I64 s, U64 flags) {
+    I64 o = new_ofd(k, s, flags & O_NONBLOCK);
+    if (o < 0) {
+        if (k == KIND_TCP) {
+            tcp.release(s);
+        } else {
+            udp.close(s);
+        }
+        return 0 - ENFILE;
+    }
+    I64 cfl = 0;
+    if ((flags & O_CLOEXEC) != 0) {
+        cfl = FD_CLOEXEC;
+    }
+    I64 fd = bind(pid, 0, o, cfl);
+    ofd_release(o);
+    return fd;
+}
+
+// The socket slot behind fd (fd_kind says UDP or TCP), or -EBADF, or -ENOTSOCK.
+export I64 sock_of(I64 pid, I64 fd) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) != KIND_SOCK && o_kind(o) != KIND_TCP) {
+        return 0 - ENOTSOCK;
+    }
+    return o_file(o);
+}
+
+// The pty pair behind pid's descriptor fd, a master's or a slave's (H-3a), or -1.
+export I64 fd_pty(I64 pid, I64 fd) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0 || (o_kind(o) != KIND_PTM && o_kind(o) != KIND_PTS)) {
+        return -1;
+    }
+    return o_file(o);
+}
+
+export I64 fd_kind(I64 pid, I64 fd) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return KIND_NONE;
+    }
+    return o_kind(o);
+}
+
+// --- the calls (paths are read from pid's memory; results are Linux's) ---
+
+// FSP-1 A: a new entry or inode takes its creator's uid and gid (no set-group-ID directory: the bit is refused).
+// FS-2: in ring 0 the creator is the administration, uid 0 and gid 0, as a file made under sudo is root's: the
+// account store `kern accounts` writes stays the desk's to read.
+void own(I64 pid, I64 f) {
+    s_fuid(f, c_uid(pid));
+    s_fgid(f, c_gid(pid));
+}
+
+void x_own(I64 pid, I64 i) {
+    ext2.set_owner(i, c_uid(pid), c_gid(pid), w_now);
+}
+
+I64 c_uid(I64 pid) {
+    if ((grant[pid] & GRANT_KERN) != 0) { return 0; }
+    return puid[pid];
+}
+
+I64 c_gid(I64 pid) {
+    if ((grant[pid] & GRANT_KERN) != 0) { return 0; }
+    return pgid[pid];
+}
+
+// A new entry in directory w_dir called w_name: a slot, or -errno (-ENOENT when the directory
+// was removed, -ENOSPC when every slot is taken).
+I64 make_entry(Bool dir, I64 p) {
+    if (w_dir != ROOT && !e_named(w_dir)) {
+        return 0 - ENOENT;
+    }
+    I64 f = free_slot();
+    if (f < 0) {
+        return 0 - ENOSPC;
+    }
+    s_used(f, true);
+    s_named(f, true);
+    s_isdir(f, dir);
+    set_name(f, w_name, w_len);
+    s_parent(f, w_dir);
+    fresh(f, p, w_now);
+    s_img_hdr(f, -1);
+    s_ino(f, next_ino);
+    next_ino += 1;
+    s_fsize(f, 0);
+    s_in_image(f, false);
+    s_frame(f, -1);
+    s_frefs(f, 0);
+    return f;
+}
+
+// open and openat: dfd is AT_FDCWD or the directory a relative path starts at.
+export I64 sys_open(I64 pid, I64 dfd, U64 path, U64 flags, U64 mode, I64 now) {
+    w_now = now;                               // FS-4: a create or O_TRUNC stamps it
+    Bool excl = (flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL);   // O_CREAT|O_EXCL: a link is there already
+    w_follow = !excl && (flags & O_NOFOLLOW) == 0;
+    I64 e = walk(pid, dfd, path);
+    if (e < 0) {
+        return e;
+    }
+    // FS-5: O_NOFOLLOW. The walk left the last component unfollowed; a symbolic link there is -ELOOP, as on Linux,
+    // on either tree (links in the directories before it are followed as ever); with O_DIRECTORY it is -ENOTDIR, as
+    // Linux answers, the link not being a directory. With O_CREAT|O_EXCL the answer for any name that is there
+    // stays -EEXIST, below.
+    if ((flags & O_NOFOLLOW) != 0 && !excl) {
+        Bool link = false;
+        if (w_x) {
+            link = w_xino != 0 && ext2.is_link(w_xino);
+        } else {
+            link = dev_kind == 0 && w_slot != NONE && e_islink(node(w_slot));
+        }
+        if (link && (flags & O_DIRECTORY) != 0) {
+            return 0 - ENOTDIR;
+        }
+        if (link) {
+            return 0 - ELOOP;
+        }
+    }
+    U64 acc = flags & O_ACCMODE;
+    I64 cfl = 0;
+    if ((flags & O_CLOEXEC) != 0) {
+        cfl = FD_CLOEXEC;
+    }
+    if (w_x) {
+        return open_x(pid, flags, mode, cfl);
+    }
+    if (dev_kind == 0 && w_slot != NONE && is_dir(w_slot)) {
+        if (acc != 0 || (flags & O_CREAT) != 0) {
+            return 0 - EISDIR;
+        }
+        if (!dir_may(pid, w_slot, 4)) {
+            return 0 - EACCES;                 // FSP-1 A: a directory is opened to be read
+        }
+        I64 o = new_ofd(KIND_DIR, w_slot, flags);
+        if (o < 0) {
+            return 0 - ENFILE;
+        }
+        I64 fd = bind(pid, 0, o, cfl);
+        ofd_release(o);
+        return fd;
+    }
+    if ((flags & O_DIRECTORY) != 0) {
+        if (dev_kind == 0 && w_slot == NONE) {
+            return 0 - ENOENT;
+        }
+        return 0 - ENOTDIR;
+    }
+    if (dev_kind != 0) {
+        if ((flags & O_CREAT) != 0 && (flags & O_EXCL) != 0) {
+            return 0 - EEXIST;
+        }
+        if (dev_kind == KIND_FB) {
+            I64 t = tile.on_open(pid, uid_of(pid));   // W-2: the screen, or a private surface in a tile
+            if (t < 0) {
+                return t;
+            }
+        } else if (dev_kind == KIND_EVENT) {
+            I64 t = tile.on_open_input(pid);   // W-3: the device, or a tile queue the tiler writes
+            if (t < 0) {
+                return t;
+            }
+        }
+        I64 df = -1;
+        if (dev_kind == KIND_PTM) {
+            df = pty.alloc(uid_of(pid), is_desk(pid));   // W-4: a free pair, its master; P1: the uid's share
+            if (df < 0) {
+                return df;
+            }
+        } else if (dev_kind == KIND_DSP) {
+            if (!held(pid, GRANT_AUDIO)) {
+                return 0 - EACCES;
+            }
+            df = dsp.open(pid);        // AU-3: a free stream (SP-1: its opener, for Now Playing)
+            if (df < 0) {
+                return df;
+            }
+        } else if (dev_kind == KIND_FSIDX) {
+            if ((flags & O_ACCMODE) != 0) {
+                return 0 - EACCES;
+            }
+            df = fsidx.open();         // FF-1: the ring, while no other description holds it
+            if (df < 0) {
+                return df;
+            }
+        } else if (dev_kind == KIND_RESOLV) {
+            if ((flags & O_ACCMODE) != 0 || (flags & O_TRUNC) != 0) {
+                return 0 - EACCES;
+            }
+            df = 0;
+        } else if (dev_kind == KIND_PTS) {
+            df = dev_pty;
+            I64 t = pty.slave_ok(df);
+            if (t < 0) {
+                return t;
+            }
+            t = pty.may(pid, df, pty.unowned(df) && holds_master(pid, df), is_desk(pid));
+            if (t < 0) {
+                return t;              // P1: another session's terminal
+            }
+        }
+        I64 o = new_ofd(dev_kind, df, flags);
+        if (o < 0) {
+            if (dev_kind == KIND_FSIDX) {
+                fsidx.close();
+            }
+            return 0 - ENFILE;
+        }
+        I64 fd = bind(pid, 0, o, cfl);
+        ofd_release(o);
+        if (fd >= 0 && dev_kind == KIND_PTS) {
+            pty.slave_opened(pid, df, flags, is_desk(pid));   // P1: the owner; K-10: it may take the pair
+        }
+        return fd;
+    }
+    I64 f = w_slot;
+    if (f == NONE) {
+        if ((flags & O_CREAT) == 0) {
+            return 0 - ENOENT;
+        }
+        if (w_trail) {
+            return 0 - EISDIR;
+        }
+        if ((mode & 0xC00) != 0) {
+            return 0 - EPERM;                  // FSP-1 A: setuid and setgid are refused at creation
+        }
+        if (!dir_may(pid, w_dir, 2)) {
+            return 0 - EACCES;                 // FS-2: a new entry writes its directory
+        }
+        f = make_entry(false, (mode as I64) & ~pmask[pid]);
+        if (f < 0) {
+            return f;
+        }
+        own(pid, f);
+    } else if ((flags & O_CREAT) != 0 && (flags & O_EXCL) != 0) {
+        return 0 - EEXIST;
+    } else if (!f_may(pid, node(f), open_req(flags))) {
+        return 0 - EACCES;                     // FS-2: read, write or both, by the file's bits
+    }
+    f = node(f);
+    if ((flags & O_TRUNC) != 0 && acc != 0) {
+        if (e_fsize(f) > 0 && shrink(f, 0) < 0) {
+            return 0 - ENOSPC;
+        }
+        s_fmtime(f, w_now);                    // FS-4: also when the file was empty, as Linux does
+    }
+    I64 o = new_ofd(KIND_FILE, f, flags);
+    if (o < 0) {
+        return 0 - ENFILE;
+    }
+    I64 fd = bind(pid, 0, o, cfl);
+    ofd_release(o);
+    return fd;
+}
+
+// open of a walk that ended in the volume. Creating, writing and O_TRUNC need the disk grant (-EROFS).
+I64 open_x(I64 pid, U64 flags, U64 mode, I64 cfl) {
+    U64 acc = flags & O_ACCMODE;
+    I64 i = w_xino;
+    Bool wrote = false;
+    if (i == 0) {
+        if ((flags & O_CREAT) == 0) {
+            return 0 - ENOENT;
+        }
+        if (w_trail || w_len == 0) {
+            return 0 - EISDIR;
+        }
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if ((mode & 0xC00) != 0) {
+            return 0 - EPERM;                  // FSP-1 A
+        }
+        if (!xdir_may(pid, w_xdir, 2)) {
+            return 0 - EACCES;                 // FS-2
+        }
+        i = ext2.create(w_xdir, w_name, w_len, (mode as I64) & ~pmask[pid], w_now);
+        if (i < 0) {
+            return x_done(i);
+        }
+        x_own(pid, i);
+        ix(fsidx.CREATE, i, w_xdir);
+        wrote = true;
+    } else if ((flags & O_CREAT) != 0 && (flags & O_EXCL) != 0) {
+        return 0 - EEXIST;
+    }
+    I64 k = KIND_XFILE;
+    if (ext2.is_dir(i)) {
+        if (acc != 0 || (flags & O_CREAT) != 0) {
+            return 0 - EISDIR;
+        }
+        if (!xdir_may(pid, i, 4)) {
+            return 0 - EACCES;                 // FSP-1 A: as in the image tree
+        }
+        k = KIND_XDIR;
+    } else if ((flags & O_DIRECTORY) != 0) {
+        return 0 - ENOTDIR;
+    } else if (acc != 0 || (flags & O_TRUNC) != 0) {
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if (!wrote && !x_may(pid, i, open_req(flags))) {
+            return 0 - EACCES;                 // FS-2
+        }
+        if ((flags & O_TRUNC) != 0) {          // FS-4: stamped also when the file was empty, as Linux does
+            ext2.truncate(i, 0, w_now);
+            wrote = true;
+        }
+        if (w_xino != 0) {
+            ix(fsidx.CHANGE, i, w_xdir);   // FF-1: opened for writing (a create posted CREATE)
+        }
+    }
+    if (k == KIND_XFILE && acc == 0 && (flags & O_TRUNC) == 0 && !wrote && !x_may(pid, i, 4)) {
+        return 0 - EACCES;                     // FS-2: a read-only open reads
+    }
+    I64 o = new_ofd(k, i, flags);
+    if (o < 0) {
+        return 0 - ENFILE;
+    }
+    I64 fd = bind(pid, 0, o, cfl);
+    ofd_release(o);
+    if (wrote) {
+        return x_done(fd);
+    }
+    return fd;
+}
+
+export I64 sys_close(I64 pid, I64 fd) {
+    if (ofd_of(pid, fd) < 0) {
+        return 0 - EBADF;
+    }
+    unbind(pid, fd);
+    return 0;
+}
+
+// read on a file descriptor: into pid's memory at buf, up to n bytes; the count.
+// poll(2) on fd (E-1, docs/specs/2026-11-06-e-editor.md section 4a): the events of ev that a read (POLLIN 1)
+// or a write (POLLOUT 4) of it would not wait for, and POLLERR 8, POLLHUP 16 and POLLNVAL 32 whatever ev asks;
+// a pipe's ends as Linux's pipe_poll gives them (an empty read end with no writer is POLLHUP alone).
+// A pipe, a pty end and a UDP socket answer exactly. Files, directories, the console and the rest answer
+// ready: a read or a write of them never waits here, or (a TCP socket, the input device) waits as it did.
+export I64 poll_events(I64 pid, I64 fd, I64 ev) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 32;
+    }
+    I64 k = o_kind(o);
+    I64 r = 1 | 4;
+    if (k == KIND_PIPE_R) {
+        I64 p = o_file(o);
+        r = 0;
+        if (pcount[p] > 0) { r = 1; }
+        if (pwriters[p] == 0) { r = r | 16; }
+    } else if (k == KIND_PIPE_W) {
+        I64 p = o_file(o);
+        r = 0;
+        if (pcount[p] < PIPE_BYTES) { r = 4; }
+        if (preaders[p] == 0) { r = r | 8; }
+    } else if (k == KIND_PTM || k == KIND_PTS) {
+        r = pty.revents(o_file(o), k == KIND_PTM);
+    } else if (k == KIND_SOCK) {
+        r = 4;
+        if (udp.queued(o_file(o)) > 0) { r = r | 1; }
+    }
+    if ((r & 1) != 0) { r = r | 0x40; }    // POLLRDNORM and POLLWRNORM go with POLLIN and POLLOUT, as on Linux
+    if ((r & 4) != 0) { r = r | 0x100; }
+    return r & (ev | 8 | 16 | 32);
+}
+
+export I64 sys_read(I64 pid, I64 fd, U64 buf, U64 n) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) == KIND_DIR || o_kind(o) == KIND_XDIR) {
+        return 0 - EISDIR;
+    }
+    if (o_kind(o) == KIND_IN) {
+        return stdin_read(pid, o, buf, n);
+    }
+    if (o_kind(o) == KIND_PIPE_R) {
+        I64 got = pipe_read(pid, o_file(o), buf, n);
+        if (got == WOULD_BLOCK && (o_flags(o) & O_NONBLOCK) != 0) { return 0 - EAGAIN; }
+        return got;
+    }
+    if (o_kind(o) == KIND_PTM) {
+        return pty.master_read(pid, o_file(o), buf, n, (o_flags(o) & O_NONBLOCK) != 0);
+    }
+    if (o_kind(o) == KIND_PTS) {
+        return pty.slave_read(pid, o_file(o), buf, n);
+    }
+    if (o_kind(o) == KIND_FSIDX) {
+        return ring_read(pid, o, buf, n);
+    }
+    if (o_kind(o) == KIND_NULL) {
+        if ((o_flags(o) & O_ACCMODE) == 1) {
+            return 0 - EBADF;
+        }
+        return 0;                      // /dev/null: the end at once
+    }
+    if (o_kind(o) == KIND_RESOLV) {
+        I64 rr = resolv_read(pid, o_off(o), buf, n);
+        if (rr > 0) {
+            set_o_off(o, o_off(o) + rr);
+        }
+        return rr;
+    }
+    if (o_kind(o) == KIND_DSP || o_kind(o) == KIND_FB || o_kind(o) == KIND_EVENT || o_kind(o) == KIND_SOCK || o_kind(o) == KIND_TCP) {
+        return 0 - EINVAL;             // a client draws through the mapping; events are read by src/proc.ci; a socket takes recvfrom (N-2)
+    }
+    if ((o_kind(o) != KIND_FILE && o_kind(o) != KIND_XFILE) || (o_flags(o) & O_ACCMODE) == 1) {
+        return 0 - EBADF;
+    }
+    I64 r = read_at(pid, o_kind(o) == KIND_XFILE, o_file(o), o_off(o), buf, n);
+    if (r > 0) {
+        set_o_off(o, o_off(o) + r);
+    }
+    return r;
+}
+
+export I64 sys_pread(I64 pid, I64 fd, U64 buf, U64 n, U64 off) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) == KIND_NULL) {
+        if ((o_flags(o) & O_ACCMODE) == 1) {
+            return 0 - EBADF;
+        }
+        return 0;
+    }
+    if (o_kind(o) == KIND_RESOLV) {
+        if (off > SEEK_MAX as U64) {
+            return 0;
+        }
+        return resolv_read(pid, off as I64, buf, n);
+    }
+    if ((o_kind(o) != KIND_FILE && o_kind(o) != KIND_XFILE) || (o_flags(o) & O_ACCMODE) == 1) {
+        return 0 - EBADF;
+    }
+    if (off > SEEK_MAX as U64) {
+        return 0;
+    }
+    return read_at(pid, o_kind(o) == KIND_XFILE, o_file(o), off as I64, buf, n);
+}
+
+// NW-5: formats `nameserver A.B.C.D\n` from eth.dns_ip() into b; returns byte count (0 when unset).
+I64 resolv_fill(inout U8[32] b) {
+    for i in 0..32 {
+        b[i] = 0;
+    }
+    I64 d = eth.dns_ip();
+    if (d == 0) {
+        return 0;
+    }
+    U8[11] pfx = [110, 97, 109, 101, 115, 101, 114, 118, 101, 114, 32];
+    for i in 0..11 {
+        b[i] = pfx[i];
+    }
+    I64 at = 11;
+    I64[4] oct = [(d >> 24) & 0xFF, (d >> 16) & 0xFF, (d >> 8) & 0xFF, d & 0xFF];
+    U8[24] tmp;
+    for k in 0..4 {
+        if (k > 0) {
+            b[at] = 46;
+            at += 1;
+        }
+        I64 dn = text.dec_digits(oct[k], tmp);
+        for j in 0..dn {
+            b[at] = tmp[j];
+            at += 1;
+        }
+    }
+    b[at] = 10;
+    return at + 1;
+}
+
+I64 resolv_len() {
+    U8[32] b;
+    return resolv_fill(b);
+}
+
+I64 resolv_read(I64 pid, I64 off, U64 buf, U64 n) {
+    if (n == 0) {
+        return 0;
+    }
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    U8[32] b;
+    I64 sz = resolv_fill(b);
+    if (off >= sz) {
+        return 0;
+    }
+    I64 rem = sz - off;
+    if ((rem as U64) > n) {
+        rem = n as I64;
+    }
+    U8[32] out_b;
+    for i in 0..32 {
+        out_b[i] = 0;
+    }
+    for i in 0..rem {
+        out_b[i] = b[off + i];
+    }
+    if (uvm.poke(pid, buf, out_b, rem, true) != rem) {
+        return 0 - EFAULT;
+    }
+    return rem;
+}
+
+// Up to n bytes of file f (an entry, or with x a volume inode) from off into pid's memory at buf.
+I64 read_at(I64 pid, Bool x, I64 f, I64 off, U64 buf, U64 n) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    U64 want = n;
+    if (want > uvm.USER_HI - buf) {
+        want = uvm.USER_HI - buf;
+    }
+    if (want > 0x7FFFF000) {
+        want = 0x7FFFF000;
+    }
+    I64 total = want as I64;
+    I64 done = 0;
+    U8[256] b;
+    Bool more = true;
+    while (more && done < total) {
+        I64 c = total - done;
+        if (c > 256) {
+            c = 256;
+        }
+        I64 got = 0;
+        if (x) {
+            got = ext2.read_at(f, off + done, b, 0, c);
+            if (ext2.failed()) {
+                ext2.clear_failed();
+                return 0 - EIO;
+            }
+        } else {
+            got = file_read(f, off + done, b, c);
+        }
+        if (got == 0) {
+            more = false;
+        } else {
+            I64 put = uvm.poke(pid, buf + done as U64, b, got, true);
+            done += put;
+            if (put < got) {
+                if (done == 0) {
+                    return 0 - EFAULT;
+                }
+                more = false;
+            }
+        }
+    }
+    return done;
+}
+
+// FF-1: whole entries of the ring into buf, oldest first, as many as n holds; 0 when none waits.
+I64 ring_read(I64 pid, I64 o, U64 buf, U64 n) {
+    I64 done = 0;
+    U8[64] e;
+    while ((done + fsidx.ENTRY) as U64 <= n && fsidx.next(e)) {
+        I64 put = uvm.poke(pid, buf + done as U64, e, fsidx.ENTRY, true);
+        if (put < fsidx.ENTRY) {
+            return 0 - EFAULT;         // the entry is taken: the reader's buffer was bad, as a pipe's would be
+        }
+        done += fsidx.ENTRY;
+    }
+    set_o_off(o, o_off(o) + done);
+    return done;
+}
+
+// write on a file descriptor; the count.
+export I64 sys_write(I64 pid, I64 fd, U64 buf, U64 n, I64 now) {
+    w_now = now;                               // FS-4: bytes written to a file stamp it
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) == KIND_PIPE_W) {
+        return pipe_write(pid, o_file(o), buf, n);
+    }
+    if (o_kind(o) == KIND_NULL) {
+        if ((o_flags(o) & O_ACCMODE) == 0) {
+            return 0 - EBADF;
+        }
+        if (n > 0x7FFFF000) {
+            return 0x7FFFF000;         // Linux's MAX_RW_COUNT; the bytes are never read
+        }
+        return n as I64;
+    }
+    if (o_kind(o) == KIND_PTM) {
+        return pty.master_write(pid, o_file(o), buf, n, (o_flags(o) & O_NONBLOCK) != 0);
+    }
+    if (o_kind(o) == KIND_PTS) {
+        return pty.slave_write(pid, o_file(o), buf, n);
+    }
+    if (o_kind(o) == KIND_DSP) {
+        if (!held(pid, GRANT_AUDIO)) {
+            return 0 - EACCES;                 // GV-1b: the audio grant is tested at every write, as the disk grant is
+        }
+        if (buf >= uvm.USER_HI) {
+            return 0 - EFAULT;
+        }
+        I64 k = dsp.ring_bytes();
+        if (n < k as U64) {
+            k = n as I64;
+        }
+        return dsp.write(pid, o_file(o), buf, k, (o_flags(o) & O_NONBLOCK) != 0);
+    }
+    if (o_kind(o) == KIND_FB || o_kind(o) == KIND_EVENT || o_kind(o) == KIND_SOCK || o_kind(o) == KIND_TCP) {
+        return 0 - EINVAL;
+    }
+    if (o_kind(o) == KIND_XFILE && (o_flags(o) & O_ACCMODE) != 0) {
+        if (!x_fd_may_write(pid)) {
+            return 0 - EACCES;                 // FSP-2 A: the disk grant dropped; the bytes stay
+        }
+        return x_done(write_x(pid, o, buf, n));
+    }
+    if (o_kind(o) != KIND_FILE || (o_flags(o) & O_ACCMODE) == 0) {
+        return 0 - EBADF;
+    }
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 f = o_file(o);
+    if ((o_flags(o) & O_APPEND) != 0) {
+        set_o_off(o, e_fsize(f));
+    }
+    U64 want = n;
+    if (want > uvm.USER_HI - buf) {
+        want = uvm.USER_HI - buf;
+    }
+    if (want > file_max() as U64) {
+        want = file_max() as U64;
+    }
+    I64 total = want as I64;
+    I64 done = 0;
+    U8[256] b;
+    while (done < total) {
+        I64 c = total - done;
+        if (c > 256) {
+            c = 256;
+        }
+        I64 got = uvm.peek(pid, buf + done as U64, b, c);
+        if (got == 0) {
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            return done;
+        }
+        I64 put = file_write(f, o_off(o), b, got);
+        if (put < 0) {
+            if (done == 0) {
+                return 0 - ENOSPC;
+            }
+            return done;
+        }
+        if (put > 0) {
+            s_fmtime(f, w_now);
+        }
+        set_o_off(o, o_off(o) + put);
+        done += put;
+        if (got < c) {
+            return done;
+        }
+    }
+    return done;
+}
+
+// write on a description of a volume file: the count, or -errno when nothing was written.
+I64 write_x(I64 pid, I64 o, U64 buf, U64 n) {
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 i = o_file(o);
+    if ((o_flags(o) & O_APPEND) != 0) {
+        set_o_off(o, ext2.file_size(i));
+    }
+    U64 want = n;
+    if (want > uvm.USER_HI - buf) {
+        want = uvm.USER_HI - buf;
+    }
+    if (want > 0x7FFFF000) {
+        want = 0x7FFFF000;
+    }
+    I64 total = want as I64;
+    I64 done = 0;
+    U8[256] b;
+    while (done < total) {
+        I64 c = total - done;
+        if (c > 256) {
+            c = 256;
+        }
+        I64 got = uvm.peek(pid, buf + done as U64, b, c);
+        if (got == 0) {
+            if (done == 0) {
+                return 0 - EFAULT;
+            }
+            return done;
+        }
+        I64 put = ext2.write_at(i, o_off(o), b, 0, got, w_now);
+        if (put <= 0) {
+            if (done == 0) {
+                return put;
+            }
+            return done;
+        }
+        set_o_off(o, o_off(o) + put);
+        done += put;
+        if (put < got || got < c) {
+            return done;
+        }
+    }
+    return done;
+}
+
+// truncate (nr 76) and ftruncate (77): the file's size becomes sz, zeros where it grows. FS-4: ftruncate sets mtime
+// (and ctime on the volume) always; truncate, by path, only when the size moves. That is Linux on ext2: ftruncate and
+// O_TRUNC ask for the times, truncate leaves them to the filesystem, and ext2 stamps a change of size only.
+export I64 sys_truncate(I64 pid, U64 path, I64 sz, I64 now) {
+    w_now = now;
+    if (sz < 0) {
+        return 0 - EINVAL;
+    }
+    I64 e = walk(pid, AT_FDCWD, path);
+    if (e < 0) {
+        return e;
+    }
+    if (w_x) {
+        if (w_xino == 0) {
+            return 0 - ENOENT;
+        }
+        if (ext2.is_dir(w_xino)) {
+            return 0 - EISDIR;
+        }
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if (!x_may(pid, w_xino, 2)) {
+            return 0 - EACCES;                 // FS-2
+        }
+        if (ext2.file_size(w_xino) == sz) {
+            return 0;                          // FS-4: by path, a size that does not move sets no time (Linux's ext2)
+        }
+        ext2.truncate(w_xino, sz, w_now);
+        ix(fsidx.CHANGE, w_xino, w_xdir);
+        return x_done(0);
+    }
+    if (dev_kind != 0) {
+        return 0 - EINVAL;
+    }
+    if (w_slot == NONE) {
+        return 0 - ENOENT;
+    }
+    if (is_dir(w_slot)) {
+        return 0 - EISDIR;
+    }
+    if (!f_may(pid, node(w_slot), 2)) {
+        return 0 - EACCES;                     // FS-2
+    }
+    if (e_fsize(node(w_slot)) == sz) {
+        return 0;                              // FS-4: as on the volume
+    }
+    return file_truncate(node(w_slot), sz);
+}
+
+export I64 sys_ftruncate(I64 pid, I64 fd, I64 sz, I64 now) {
+    w_now = now;
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (sz < 0 || (o_flags(o) & O_ACCMODE) == 0) {
+        return 0 - EINVAL;
+    }
+    if (o_kind(o) == KIND_XFILE) {
+        if (!x_fd_may_write(pid)) {
+            return 0 - EACCES;                 // FSP-2 A
+        }
+        if (!ext2.is_writable()) {
+            return 0 - EROFS;
+        }
+        ext2.truncate(o_file(o), sz, w_now);
+        fsidx.post(fsidx.CHANGE, o_file(o), 0, w_name, 0);
+        return x_done(0);
+    }
+    if (o_kind(o) != KIND_FILE) {
+        return 0 - EINVAL;
+    }
+    return file_truncate(o_file(o), sz);
+}
+
+// The size of entry f becomes sz: -EFBIG past file_max(), -ENOSPC when the pool is out. FS-4: its mtime becomes the
+// call's time whether or not the size moved (ftruncate; sys_truncate does not come here for an equal size).
+I64 file_truncate(I64 f, I64 sz) {
+    if (sz > file_max()) {
+        return 0 - EFBIG;
+    }
+    if (sz < e_fsize(f)) {
+        if (shrink(f, sz) < 0) {
+            return 0 - ENOSPC;
+        }
+    } else if (sz > e_fsize(f)) {
+        U8[1] z;
+        z[0] = 0;
+        if (file_write(f, sz - 1, z, 1) < 0) {
+            return 0 - ENOSPC;
+        }
+    }
+    s_fmtime(f, w_now);
+    return 0;
+}
+
+// fsync (74) and fdatasync (75) on fd, and sync (162): the cache goes to the device; 0 in the ramfs.
+export I64 sys_fsync(I64 pid, I64 fd) {
+    if (ofd_of(pid, fd) < 0) {
+        return 0 - EBADF;
+    }
+    return sys_sync();
+}
+
+export I64 sys_sync() {
+    if (!ext2.is_mounted()) {
+        return 0;
+    }
+    return x_done(0);
+}
+
+export I64 sys_lseek(I64 pid, I64 fd, I64 off, I64 whence) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) == KIND_FB || o_kind(o) == KIND_EVENT) {
+        return 0 - EINVAL;
+    }
+    if (o_kind(o) == KIND_NULL) {
+        return 0;                      // as Linux's null device: any seek, at 0
+    }
+    if (o_kind(o) != KIND_FILE && o_kind(o) != KIND_DIR && o_kind(o) != KIND_XFILE && o_kind(o) != KIND_XDIR && o_kind(o) != KIND_RESOLV) {
+        return 0 - 29;                 // ESPIPE
+    }
+    I64 base = 0;
+    if (whence == 1) {
+        base = o_off(o);
+    } else if (whence == 2) {
+        if (o_kind(o) == KIND_FILE) {
+            base = e_fsize(o_file(o));
+        } else if (o_kind(o) == KIND_XFILE) {
+            base = ext2.file_size(o_file(o));
+        } else if (o_kind(o) == KIND_RESOLV) {
+            base = resolv_len();
+        }
+    } else if (whence != 0) {
+        return 0 - EINVAL;
+    }
+    if (off < 0 - SEEK_MAX || off > SEEK_MAX || base + off < 0) {
+        return 0 - EINVAL;
+    }
+    set_o_off(o, base + off);
+    return o_off(o);
+}
+
+// struct stat as Linux x86-64 lays it out (144 bytes) for entry f (or ROOT); times 0, device 1,
+// owner 0; a directory has 2 links and one more for each directory in it.
+void put_stat(I64 pid, U64 st, I64 f, inout I64[1] r) {
+    U64[18] w;
+    for i in 0..18 {
+        w[i] = 0;
+    }
+    w[0] = 1;
+    U64 mode = 0x41ED;                 // 040755
+    U64 sz = 0;
+    I64 h = node(f);
+    if (is_dir(f)) {
+        w[1] = ino_of(f) as U64;
+        w[2] = 2;
+        for c in 0..slots {
+            if (e_used(c) && e_named(c) && e_isdir(c) && e_parent(c) == f) {
+                w[2] += 1;
+            }
+        }
+    } else {
+        w[1] = e_ino(h) as U64;
+        w[2] = names_of(h) as U64;
+        mode = 0x8000;
+        if (e_islink(h)) {
+            mode = S_IFLNK as U64;
+        }
+        sz = e_fsize(h) as U64;
+    }
+    if (h >= 0) {                      // BU-2: the entry's own bits, owner and times (the root keeps 040755)
+        mode = (mode & 0xF000) | (e_perm(h) as U64);
+        mode = mode | (((e_fuid(h) as U64) & 0xFFFFFFFF) << 32);
+        w[4] = (e_fgid(h) as U64) & 0xFFFFFFFF;
+        w[9] = e_fatime(h) as U64;
+        w[11] = e_fmtime(h) as U64;
+    }
+    w[3] = mode;                       // st_mode, st_uid; st_gid, pad in w[4]
+    w[5] = 0;                          // st_rdev
+    w[6] = sz;                         // st_size
+    w[7] = 4096;                       // st_blksize
+    w[8] = (sz + 511) / 512;           // st_blocks
+    U8[144] b;
+    for i in 0..18 {
+        for k in 0..8 {
+            b[8 * i + k] = ((w[i] >> ((8 * k) as U64)) & 0xFF) as U8;
+        }
+    }
+    if (st >= uvm.USER_HI || uvm.poke(pid, st, b, 144, true) != 144) {
+        r[0] = 0 - EFAULT;
+    } else {
+        r[0] = 0;
+    }
+}
+
+// struct stat of a device (F-1): a character device, 020666, its major and minor in st_rdev.
+I64 put_dev_stat(I64 pid, U64 st, I64 k, I64 f) {
+    U64[18] w;
+    for i in 0..18 {
+        w[i] = 0;
+    }
+    w[0] = 1;
+    w[2] = 1;
+    w[3] = 0x21B6;
+    w[7] = 4096;
+    if (k == KIND_FB) {
+        w[1] = FB_INO;
+        w[5] = FB_RDEV;
+    } else if (k == KIND_EVENT) {
+        w[1] = EVENT_INO;
+        w[5] = EVENT_RDEV;
+    } else if (k == KIND_DSP) {
+        w[1] = DSP_INO;
+        w[5] = DSP_RDEV;
+    } else if (k == KIND_FSIDX) {
+        w[1] = FSIDX_INO;
+        w[3] = 0x2100;                 // 020400: read only
+    } else if (k == KIND_NULL) {
+        w[1] = NULL_INO;
+        w[5] = NULL_RDEV;
+    } else if (k == KIND_RESOLV) {
+        w[1] = RESOLV_INO;
+        w[3] = 0x8124;                 // 0100444: regular file, read only
+        w[6] = resolv_len() as U64;
+        w[8] = 1;
+    } else if (k == KIND_PTM) {
+        w[1] = PTMX_INO;
+        w[5] = PTMX_RDEV;
+    } else if (k == KIND_PTS) {
+        w[1] = PTS_INO + f as U64;
+        w[5] = PTS_RDEV + f as U64;
+        w[3] = 0x2180;                 // 020600, as devpts gives the slave
+    }
+    U8[144] b;
+    for i in 0..18 {
+        for j in 0..8 {
+            b[8 * i + j] = ((w[i] >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+    }
+    if (st >= uvm.USER_HI || uvm.poke(pid, st, b, 144, true) != 144) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// struct stat of volume inode i (P-2): as stored, device 2, st_blksize the block size, st_blocks i_blocks.
+I64 put_xstat(I64 pid, U64 st, I64 i) {
+    U64[18] w;
+    for t in 0..18 {
+        w[t] = 0;
+    }
+    w[0] = 2;
+    w[1] = i as U64;
+    w[2] = ext2.links(i) as U64;
+    w[3] = (ext2.mode(i) as U64) | ((ext2.uid(i) as U64) << 32);
+    w[4] = ext2.gid(i) as U64;
+    w[6] = ext2.file_size(i) as U64;
+    w[7] = ext2.block_size() as U64;
+    w[8] = ext2.sectors_held(i) as U64;
+    w[9] = ext2.atime(i) as U64;
+    w[11] = ext2.mtime(i) as U64;
+    w[13] = ext2.ctime(i) as U64;
+    if (ext2.failed()) {
+        ext2.clear_failed();
+        return 0 - EIO;
+    }
+    U8[144] b;
+    for t in 0..18 {
+        for j in 0..8 {
+            b[8 * t + j] = ((w[t] >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+    }
+    if (st >= uvm.USER_HI || uvm.poke(pid, st, b, 144, true) != 144) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// Writes the little-endian 32-bit words w[0..k) to pid's memory at va: 0, or -EFAULT.
+I64 poke_u32[n](I64 pid, U64 va, in U64[n] w, I64 k) {
+    U8[256] b;
+    for i in 0..k {
+        for j in 0..4 {
+            b[4 * i + j] = ((w[i] >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+    }
+    if (va >= uvm.USER_HI || uvm.poke(pid, va, b, 4 * k, true) != 4 * k) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// The bytes of id into the first words of w, little endian (fb_fix_screeninfo.id).
+void id_words[m](inout U64[40] w, in U8[m] id) {
+    for i in 0..m {
+        w[i / 4] = w[i / 4] | ((id[i] as U64) << ((8 * (i % 4)) as U64));
+    }
+}
+
+// The OSS requests of /dev/dsp (AU-3, docs/specs/2026-11-06-au-audio.md section 4): the format is fixed, so SPEED,
+// SETFMT, CHANNELS, STEREO and GETFMTS answer it whatever was asked (OSS's rule: the driver writes back what it
+// set) and SETFRAGMENT is taken and changes nothing; GETOSPACE and GETODELAY report the stream; SYNC waits for the
+// device; RESET drops what is queued. Anything else is -EINVAL.
+I64 dsp_ioctl(I64 pid, I64 s, U64 req, U64 arg) {
+    U64[4] w;
+    for i in 0..4 {
+        w[i] = 0;
+    }
+    if (req == 0x5000) {               // SNDCTL_DSP_RESET
+        dsp.reset(s);
+        return 0;
+    }
+    if (req == 0x5001) {               // SNDCTL_DSP_SYNC
+        return dsp.sync(s);
+    }
+    if (req == 0xC004500A) {           // SNDCTL_DSP_SETFRAGMENT
+        return 0;
+    }
+    if (req == 0xC0045002) {           // SNDCTL_DSP_SPEED
+        w[0] = 48000;
+    } else if (req == 0xC0045005 || req == 0x8004500B) {   // SNDCTL_DSP_SETFMT, GETFMTS: AFMT_S16_LE
+        w[0] = 0x10;
+    } else if (req == 0xC0045006) {    // SNDCTL_DSP_CHANNELS
+        w[0] = 2;
+    } else if (req == 0xC0045003) {    // SNDCTL_DSP_STEREO
+        w[0] = 1;
+    } else if (req == 0x8010500C) {    // SNDCTL_DSP_GETOSPACE: fragments, fragstotal, fragsize, bytes
+        I64 sp = dsp.space(s);
+        w[0] = (sp / 4096) as U64;
+        w[1] = (dsp.ring_bytes() / 4096) as U64;
+        w[2] = 4096;
+        w[3] = sp as U64;
+        return poke_u32(pid, arg, w, 4);
+    } else if (req == 0x80045017) {    // SNDCTL_DSP_GETODELAY
+        w[0] = dsp.delay(s) as U64;
+    } else {
+        return 0 - EINVAL;
+    }
+    return poke_u32(pid, arg, w, 1);
+}
+
+// ioctl(fd, req, arg): on /dev/fb0 FBIOGET_VSCREENINFO fills fb_var_screeninfo (160 bytes: xres,
+// yres, the virtual size the same, bits_per_pixel 32, red at 16, green at 8, blue at 0, 8 bits
+// each) and FBIOGET_FSCREENINFO fills fb_fix_screeninfo (80 bytes: id "daphnis", smem_len
+// stride * h, type 0, visual 2, line_length the stride); anything else on a device is -EINVAL.
+// The size and stride are the caller's surface (W-2): a private surface's own, stride 4 * w. The tiler's
+// requests go to src/tile.ci. Nothing else open is a terminal: -ENOTTY.
+export I64 sys_ioctl(I64 pid, I64 fd, U64 req, U64 arg, I64 now) {
+    w_now = now;                               // FS-4: FBIO_TILE_SAVE (RES-1) writes /home/.daphnis-mode
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) == KIND_EVENT) {
+        return 0 - EINVAL;
+    }
+    if (o_kind(o) == KIND_PTM || o_kind(o) == KIND_PTS) {
+        Bool holder = o_kind(o) == KIND_PTS && pty.asks_holder(o_file(o), req & 0xFFFFFFFF)
+            && holds_master(pid, o_file(o));   // walked only for a change before the first open
+        return pty.ioctl(pid, o_file(o), o_kind(o) == KIND_PTM, req & 0xFFFFFFFF, arg,   // Linux: an unsigned int
+                         holder, is_desk(pid));
+    }
+    if (o_kind(o) == KIND_DSP) {
+        if (!held(pid, GRANT_AUDIO)) {
+            return 0 - EACCES;                 // GV-1b: as its writes
+        }
+        return dsp_ioctl(pid, o_file(o), req & 0xFFFFFFFF, arg);
+    }
+    if (o_kind(o) != KIND_FB) {
+        return 0 - ENOTTY;
+    }
+    if (req == tile.FBIO_TILE_MODE) {
+        I64 r = tile.ioctl(pid, req, arg);
+        if (r == 0) {
+            set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        }                              // RES-1, DN-10: switching is not saving; FBIO_TILE_SAVE keeps the size
+        return r;
+    }
+    if (req == tile.FBIO_TILE_SAVE) {
+        if (pid != tile.tiler_pid()) {
+            return 0 - EPERM;
+        }
+        return save_mode();
+    }
+    if (req == tile.FBIO_TILER || req == tile.FBIO_TILE_NEXT || req == tile.FBIO_TILE_SYNC || req == tile.FBIO_TILE_CURSOR ||
+        req == tile.FBIO_TILE_VAR || req == tile.FBIO_TILE_WANT || req == tile.FBIO_TILE_RESIZE ||
+        req == tile.FBIO_TILE_MENU ||
+        req == tile.FBIO_TILE_POINT || req == tile.FBIO_TILE_MARK || req == tile.FBIO_TILE_BUSY) {
+        I64 r = tile.ioctl(pid, req, arg);
+        if (r == tile.WAIT) {
+            return WOULD_BLOCK;
+        }
+        return r;
+    }
+    I64 sw = fb_w;
+    I64 shh = fb_h;
+    I64 sst = fb_stride;
+    if (tile.kind_of(pid) == tile.PRIVATE) {
+        sw = tile.width(pid);
+        shh = tile.height(pid);
+        sst = tile.stride(pid);
+    }
+    U64[40] w;
+    for i in 0..40 {
+        w[i] = 0;
+    }
+    if (req == FBIOGET_VSCREENINFO) {
+        w[0] = sw as U64;
+        w[1] = shh as U64;
+        w[2] = sw as U64;
+        w[3] = shh as U64;
+        w[6] = 32;
+        w[8] = 16;
+        w[9] = 8;
+        w[11] = 8;
+        w[12] = 8;
+        w[15] = 8;
+        return poke_u32(pid, arg, w, 40);
+    }
+    if (req == FBIOGET_FSCREENINFO) {
+        id_words(w, "daphnis");
+        w[6] = (sst * shh) as U64;           // smem_len at 24
+        w[9] = 2;                            // visual at 36: true color
+        w[12] = sst as U64;                  // line_length at 48
+        return poke_u32(pid, arg, w, 20);
+    }
+    return 0 - EINVAL;
+}
+
+export I64 sys_fstat(I64 pid, I64 fd, U64 st) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    I64[1] r;
+    if (o_kind(o) == KIND_FB || o_kind(o) == KIND_EVENT || o_kind(o) == KIND_PTM || o_kind(o) == KIND_PTS || o_kind(o) == KIND_DSP || o_kind(o) == KIND_FSIDX || o_kind(o) == KIND_RESOLV || o_kind(o) == KIND_NULL) {
+        return put_dev_stat(pid, st, o_kind(o), o_file(o));
+    }
+    if (o_kind(o) == KIND_XFILE || o_kind(o) == KIND_XDIR) {
+        return put_xstat(pid, st, o_file(o));
+    }
+    if (o_kind(o) == KIND_FILE || o_kind(o) == KIND_DIR) {
+        put_stat(pid, st, o_file(o), r);
+    } else {
+        // the console: a character device (020620); a pipe: a FIFO (010600)
+        U64[18] w;
+        for i in 0..18 {
+            w[i] = 0;
+        }
+        w[0] = 1;
+        w[2] = 1;
+        w[3] = 0x2190;
+        if (o_kind(o) == KIND_PIPE_R || o_kind(o) == KIND_PIPE_W) {
+            w[3] = 0x1180;
+        }
+        w[7] = 4096;
+        U8[144] b;
+        for i in 0..18 {
+            for k in 0..8 {
+                b[8 * i + k] = ((w[i] >> ((8 * k) as U64)) & 0xFF) as U8;
+            }
+        }
+        if (st >= uvm.USER_HI || uvm.poke(pid, st, b, 144, true) != 144) {
+            return 0 - EFAULT;
+        }
+        return 0;
+    }
+    return r[0];
+}
+
+// stat, lstat and newfstatat; AT_EMPTY_PATH (0x1000) with an empty path is fstat of dfd. Only the volume
+// has links: AT_SYMLINK_NOFOLLOW (lstat) gives the link's own inode.
+export I64 sys_stat(I64 pid, I64 dfd, U64 path, U64 st, U64 flags) {
+    if ((flags & 0x1000) != 0 && path < uvm.USER_HI) {
+        U8[1] z;
+        if (uvm.peek(pid, path, z, 1) == 1 && z[0] == 0) {
+            if (dfd == AT_FDCWD && cwd_x[pid] != 0) {
+                return put_xstat(pid, st, cwd_x[pid]);
+            }
+            if (dfd == AT_FDCWD) {
+                I64[1] r;
+                put_stat(pid, st, cwd[pid], r);
+                return r[0];
+            }
+            return sys_fstat(pid, dfd, st);
+        }
+    }
+    w_follow = (flags & AT_SYMLINK_NOFOLLOW) == 0;
+    I64 e = walk(pid, dfd, path);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0) {
+        return put_dev_stat(pid, st, dev_kind, dev_pty);
+    }
+    if (w_x) {
+        if (w_xino == 0) {
+            return 0 - ENOENT;
+        }
+        return put_xstat(pid, st, w_xino);
+    }
+    if (w_slot == NONE) {
+        return 0 - ENOENT;
+    }
+    I64[1] r;
+    put_stat(pid, st, w_slot, r);
+    return r[0];
+}
+
+// --- KF-1: statfs (137) and fstatfs (138), docs/specs/2026-11-11-kf-facts.md section 2 ---
+//
+// Linux's struct statfs (src/statfs.ci), for the tree the path or the descriptor is in. Any process may ask, as on
+// Linux: the walk's search checks apply to the path, nothing to the object. The record holds counts only.
+
+// The volume: the superblock's counts (src/ext2.ci), the ones dumpe2fs prints. f_bavail is the free blocks less the
+// reserved ones, never below 0.
+void statfs_volume(inout U8[120] b) {
+    I64 free = ext2.blocks_free();
+    I64 avail = free - ext2.blocks_reserved();
+    if (avail < 0) {
+        avail = 0;
+    }
+    statfs.record(b, statfs.EXT2, ext2.block_size() as U64, ext2.blocks_total() as U64, free as U64, avail as U64,
+                  ext2.inodes_total() as U64, ext2.inodes_free() as U64, ext2.NAME_BYTES as U64);
+}
+
+// The image tree, in 4 KiB blocks: used is what its files hold (a file's size rounded up, the bytes still in the
+// image counted too; a second name of a file counts nothing), free is the pool's frames no promise holds, which is
+// what the next write could take (src/frames.ci alloc). The entries: the table's, used and free as it stands (it
+// grows a frame of entries at a time).
+void statfs_image(inout U8[120] b) {
+    I64 used = 0;
+    I64 entries = 0;
+    for f in 0..slots {
+        if (e_used(f)) {
+            entries += 1;
+            if (!e_isdir(f) && e_alias(f) < 0) {
+                used += (e_fsize(f) + PAGE - 1) / PAGE;
+            }
+        }
+    }
+    I64 free = frames.free_count() - frames.held_count();
+    if (free < 0) {
+        free = 0;
+    }
+    statfs.record(b, statfs.RAMFS, PAGE as U64, (used + free) as U64, free as U64, free as U64, slots as U64,
+                  (slots - entries) as U64, NAME_MAX as U64);
+}
+
+// Copies the record out: -EFAULT unless all 120 bytes lie where ring 3 may write.
+I64 put_statfs(I64 pid, U64 buf, Bool volume) {
+    U8[120] b;
+    if (volume) {
+        statfs_volume(b);
+    } else {
+        statfs_image(b);
+    }
+    if (buf >= uvm.USER_HI || uvm.poke(pid, buf, b, statfs.BYTES, true) != statfs.BYTES) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+// statfs(path, buf): the tree path is in; -ENOENT for a name that is not there, the walk's own errors before it.
+export I64 sys_statfs(I64 pid, U64 path, U64 buf) {
+    w_follow = true;
+    I64 e = walk(pid, AT_FDCWD, path);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0) {
+        return put_statfs(pid, buf, false);    // a device node is the image tree's
+    }
+    if (w_x) {
+        if (w_xino == 0) {
+            return 0 - ENOENT;
+        }
+        return put_statfs(pid, buf, true);
+    }
+    if (w_slot == NONE) {
+        return 0 - ENOENT;
+    }
+    return put_statfs(pid, buf, false);
+}
+
+// fstatfs(fd, buf): the volume for a file or directory open on it; the image tree for every other open descriptor
+// (its files and directories, and the console, pipes, devices and sockets, which live in no volume). -EBADF.
+export I64 sys_fstatfs(I64 pid, I64 fd, U64 buf) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    return put_statfs(pid, buf, o_kind(o) == KIND_XFILE || o_kind(o) == KIND_XDIR);
+}
+
+export I64 sys_access(I64 pid, I64 dfd, U64 path, U64 mask) {
+    if ((mask & ~7) != 0) {
+        return 0 - EINVAL;
+    }
+    I64 e = walk(pid, dfd, path);
+    if (e < 0) {
+        return e;
+    }
+    if (w_x && w_xino == 0) {
+        return 0 - ENOENT;
+    }
+    I64 req = (mask & 7) as I64;
+    if (w_x) {
+        if (req != 0 && !x_may(pid, w_xino, req)) {
+            return 0 - EACCES;                 // FS-2: R_OK 4, W_OK 2, X_OK 1 by the bits; F_OK 0 only finds it
+        }
+        return 0;
+    }
+    if (dev_kind == 0 && w_slot == NONE) {
+        return 0 - ENOENT;
+    }
+    if (dev_kind == KIND_RESOLV && (req & 3) != 0) {
+        return 0 - EACCES;
+    }
+    if (req != 0 && dev_kind == 0) {
+        Bool ok = false;
+        if (w_slot == ROOT) { ok = dir_may(pid, ROOT, req); } else { ok = f_may(pid, node(w_slot), req); }
+        if (!ok) {
+            return 0 - EACCES;
+        }
+    }
+    return 0;
+}
+
+// unlink and unlinkat; with AT_REMOVEDIR (rmdir true) the entry must be an empty directory.
+export I64 sys_unlink(I64 pid, I64 dfd, U64 path, Bool rmdir, I64 now) {
+    w_now = now;
+    w_follow = false;
+    I64 e = walk(pid, dfd, path);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0) {
+        if (rmdir) {
+            return 0 - ENOTDIR;
+        }
+        return 0 - EPERM;
+    }
+    if (rmdir) {
+        if (w_dots == 1) {
+            return 0 - EINVAL;
+        }
+        if (w_dots == 2) {
+            return 0 - ENOTEMPTY;
+        }
+        if (w_dots == 3) {
+            return 0 - EBUSY;
+        }
+    } else if (w_len == 0) {
+        return 0 - EISDIR;
+    }
+    if (w_x && w_slot == mnt) {
+        if (rmdir) {
+            return 0 - EBUSY;
+        }
+        return 0 - EISDIR;
+    }
+    if (w_x && w_xino == 0) {
+        return 0 - ENOENT;
+    }
+    if (w_x) {
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if (!xdir_may(pid, w_xdir, 2) ||
+            !sticky_ok(pid, ext2.mode(w_xdir), ext2.uid(w_xdir), ext2.uid(w_xino))) {
+            return 0 - EACCES;                 // FS-2: removal writes the directory; the sticky bit keeps others' names
+        }
+        I64 r = 0;
+        if (rmdir) {
+            r = ext2.rmdir(w_xdir, w_name, w_len, w_now);
+        } else {
+            r = ext2.unlink(w_xdir, w_name, w_len, w_now);
+        }
+        if (r < 0) {
+            return x_done(r);
+        }
+        ix(fsidx.UNLINK, r, w_xdir);
+        I64 d = x_done(0);
+        x_idle(r);
+        return d;
+    }
+    I64 f = w_slot;
+    if (f == NONE) {
+        return 0 - ENOENT;
+    }
+    if (!dir_may(pid, w_dir, 2) || !sticky_ok(pid, d_mode(w_dir), d_uid(w_dir), e_fuid(node(f)))) {
+        return 0 - EACCES;                     // FS-2, before the entry's own checks (as Linux)
+    }
+    if (rmdir) {
+        if (!e_isdir(f)) {
+            return 0 - ENOTDIR;
+        }
+        if (has_child(f)) {
+            return 0 - ENOTEMPTY;
+        }
+    } else if (e_isdir(f)) {
+        return 0 - EISDIR;
+    }
+    s_named(f, false);
+    if (e_frefs(f) == 0) {
+        drop(f);
+    }
+    return 0;
+}
+
+// mkdir and mkdirat: the directory takes mode less the process's umask (BU-2).
+export I64 sys_mkdir(I64 pid, I64 dfd, U64 path, U64 mode, I64 now) {
+    w_now = now;
+    I64 p = ((mode & 0xFFF) as I64) & ~pmask[pid];
+    w_follow = false;
+    I64 e = walk(pid, dfd, path);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0 || w_slot != NONE || (w_x && w_xino != 0)) {
+        return 0 - EEXIST;
+    }
+    if ((mode & 0xC00) != 0) {
+        return 0 - EPERM;                      // FSP-1 A: setuid and setgid are refused at creation
+    }
+    if (w_x) {
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if (w_len == 0) {
+            return 0 - EEXIST;
+        }
+        if (!xdir_may(pid, w_xdir, 2)) {
+            return 0 - EACCES;                 // FS-2
+        }
+        I64 r = ext2.mkdir(w_xdir, w_name, w_len, p, w_now);
+        if (r < 0) {
+            return x_done(r);
+        }
+        x_own(pid, r);
+        ix(fsidx.CREATE, r, w_xdir);
+        return x_done(0);
+    }
+    if (!dir_may(pid, w_dir, 2)) {
+        return 0 - EACCES;                     // FS-2
+    }
+    I64 f = make_entry(true, p);
+    if (f < 0) {
+        return f;
+    }
+    own(pid, f);
+    return 0;
+}
+
+// FS-3: the home of an account, made or checked by the desk (src/proc.ci's call 1006 lets no one else ask):
+// /home/NAME, one name under the volume's root. Absent, it is made 0700 and owned by uid and gid. There, it must be a
+// directory, not a link, owned by uid, with no group or other write; nothing is changed then. 0, or -errno: -EPERM
+// for another's object or a writable one, -ENOTDIR for a file or a link, -EROFS without a writable volume, -EINVAL
+// for a path that is not one name under the volume's root.
+export I64 sys_home(I64 pid, U64 path, I64 uid, I64 gid, I64 now) {
+    w_now = now;                               // FS-4: the desk's call makes the home at the desk's time
+    if (uid < 1 || uid > 65535 || gid < 0 || gid > 65535) {
+        return 0 - EINVAL;
+    }
+    w_follow = false;
+    I64 e = walk(pid, AT_FDCWD, path);
+    if (e < 0) {
+        return e;
+    }
+    if (!w_x || w_xdir != ext2.ROOT_INO || w_len == 0 || w_dots != 0 || w_trail) {
+        return 0 - EINVAL;
+    }
+    I64 i = w_xino;
+    if (i == 0) {
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        I64 r = ext2.mkdir(w_xdir, w_name, w_len, 448, w_now);
+        if (r < 0) {
+            return x_done(r);
+        }
+        ext2.set_owner(r, uid, gid, w_now);
+        ix(fsidx.CREATE, r, w_xdir);
+        return x_done(0);
+    }
+    if (ext2.is_link(i) || !ext2.is_dir(i)) {
+        return 0 - ENOTDIR;
+    }
+    if (ext2.uid(i) != uid || (ext2.mode(i) & 18) != 0) {
+        return 0 - EPERM;
+    }
+    return 0;
+}
+
+// --- BU-2: metadata (docs/specs/2026-11-07-bu2-meta.md sections 3 and 4) ---
+
+// What a metadata call acts on: a volume inode (m_x, m_i) or an entry of the image tree (m_f, the entry that
+// holds the fields).
+Bool m_x = false;
+I64 m_i = 0;
+I64 m_f = NONE;
+Bool m_fd = false;                     // FSP-2 A: the object came from a held descriptor, not a path
+
+// The walk of path for a metadata call, following its last link when follow: 0 with m_x, m_i, m_f set, or
+// -errno (-EPERM for a device or the root, which is not an entry).
+I64 meta_walk(I64 pid, I64 dfd, U64 path, Bool follow) {
+    w_follow = follow;
+    I64 e = walk(pid, dfd, path);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0) {
+        return 0 - EPERM;
+    }
+    m_x = w_x;
+    m_i = w_xino;
+    m_f = NONE;
+    m_fd = false;
+    if (w_x) {
+        if (w_xino == 0) {
+            return 0 - ENOENT;
+        }
+        return 0;
+    }
+    if (w_slot == NONE) {
+        return 0 - ENOENT;
+    }
+    if (w_slot == ROOT) {
+        return 0 - EPERM;
+    }
+    m_f = node(w_slot);
+    return 0;
+}
+
+// The same for the file open on fd.
+I64 meta_fd(I64 pid, I64 fd) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    m_x = o_kind(o) == KIND_XFILE || o_kind(o) == KIND_XDIR;
+    m_i = 0;
+    m_f = NONE;
+    m_fd = true;
+    if (m_x) {
+        m_i = o_file(o);
+        return 0;
+    }
+    if ((o_kind(o) != KIND_FILE && o_kind(o) != KIND_DIR) || o_file(o) == ROOT) {
+        return 0 - EPERM;
+    }
+    m_f = node(o_file(o));
+    return 0;
+}
+
+// The fields of what meta_walk or meta_fd found: permission bits p (below 0: kept), owner u and group g (below
+// 0: kept), atime a and mtime t in seconds (below 0: kept). 0, or -EROFS on the volume without the disk grant.
+// FS-2, FSP-1 A: may pid change the object's bits to p, owner to u, group to g (-1 leaves each)? 0, or -errno.
+// The bits: the owner only, and never setuid or setgid. The owner: ring 0 only. The group: the owner, to its own
+// group (ring 0 to any). Times (meta_set's own check) are separate.
+I64 meta_may(I64 pid, I64 p, I64 u, I64 g) {
+    I64 ou = 0;
+    I64 og = 0;
+    if (m_x) {
+        ou = ext2.uid(m_i);
+        og = ext2.gid(m_i);
+    } else {
+        ou = e_fuid(m_f);
+        og = e_fgid(m_f);
+    }
+    Bool kern = (grant[pid] & GRANT_KERN) != 0;
+    if (p >= 0 && (!owns(pid, ou) || (p & 0xC00) != 0)) {
+        return 0 - EPERM;
+    }
+    if (u >= 0 && u != ou && !kern) {
+        return 0 - EPERM;
+    }
+    if (g >= 0 && g != og && !kern && (!owns(pid, ou) || g != pgid[pid])) {
+        return 0 - EPERM;
+    }
+    return 0;
+}
+
+// utimensat's rule: "now" for both takes the owner or write access (EACCES); any explicit time takes the owner (EPERM).
+I64 times_may(I64 pid, Bool now_only) {
+    I64 ou = 0;
+    Bool w = false;
+    if (m_x) {
+        ou = ext2.uid(m_i);
+        w = x_may(pid, m_i, 2);
+    } else {
+        ou = e_fuid(m_f);
+        w = f_may(pid, m_f, 2);
+    }
+    if (owns(pid, ou)) { return 0; }
+    if (now_only) {
+        if (w) { return 0; }
+        return 0 - EACCES;
+    }
+    return 0 - EPERM;
+}
+
+I64 meta_set(I64 pid, I64 p, I64 u, I64 g, I64 a, I64 t) {
+    if (m_x) {
+        if (m_fd && !x_fd_may_write(pid)) {
+            return 0 - EACCES;                 // FSP-2 A: a held volume descriptor without the disk grant
+        }
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if (p >= 0) {
+            ext2.set_perm(m_i, p, w_now);
+        }
+        if (u >= 0 || g >= 0) {
+            ext2.set_owner(m_i, u, g, w_now);
+        }
+        if (a >= 0 || t >= 0) {
+            ext2.set_times(m_i, a, t, w_now);
+        }
+        fsidx.post(fsidx.CHANGE, m_i, 0, w_name, 0);
+        return x_done(0);
+    }
+    I64 f = m_f;
+    if (p >= 0) {
+        s_perm(f, p & 0xFFF);
+    }
+    if (u >= 0 || g >= 0) {
+        if (u >= 0) {
+            s_fuid(f, u);
+        }
+        if (g >= 0) {
+            s_fgid(f, g);
+        }
+        if (!e_isdir(f)) {               // as the volume: a change of owner clears set-user-ID and set-group-ID
+            I64 kill = 0x800;
+            if ((e_perm(f) & 0x8) != 0) {
+                kill = 0xC00;
+            }
+            s_perm(f, e_perm(f) & ~kill);
+        }
+    }
+    if (a >= 0) {
+        s_fatime(f, a);
+    }
+    if (t >= 0) {
+        s_fmtime(f, t);
+    }
+    return 0;
+}
+
+// chmod (90) and fchmodat (268): the 07777 bits of mode.
+export I64 sys_chmod(I64 pid, I64 dfd, U64 path, U64 mode, I64 now) {
+    w_now = now;
+    I64 e = meta_walk(pid, dfd, path, true);
+    if (e < 0) {
+        return e;
+    }
+    e = meta_may(pid, (mode & 0xFFF) as I64, -1, -1);
+    if (e < 0) {
+        return e;
+    }
+    return meta_set(pid, (mode & 0xFFF) as I64, -1, -1, -1, -1);
+}
+
+// fchmod (91).
+export I64 sys_fchmod(I64 pid, I64 fd, U64 mode, I64 now) {
+    w_now = now;
+    I64 e = meta_fd(pid, fd);
+    if (e < 0) {
+        return e;
+    }
+    e = meta_may(pid, (mode & 0xFFF) as I64, -1, -1);
+    if (e < 0) {
+        return e;
+    }
+    return meta_set(pid, (mode & 0xFFF) as I64, -1, -1, -1, -1);
+}
+
+// An owner or group argument: the low 32 bits, -1 (0xFFFFFFFF) leaving the field.
+I64 id_arg(U64 v) {
+    U64 w = v & 0xFFFFFFFF;
+    if (w == 0xFFFFFFFF) {
+        return -1;
+    }
+    return w as I64;
+}
+
+// chown (92), lchown (94) and fchownat (260; AT_SYMLINK_NOFOLLOW the link itself, AT_EMPTY_PATH not taken).
+export I64 sys_chown(I64 pid, I64 dfd, U64 path, U64 u, U64 g, U64 flags, I64 now) {
+    w_now = now;
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0) {
+        return 0 - EINVAL;
+    }
+    I64 e = meta_walk(pid, dfd, path, (flags & AT_SYMLINK_NOFOLLOW) == 0);
+    if (e < 0) {
+        return e;
+    }
+    e = meta_may(pid, -1, id_arg(u), id_arg(g));
+    if (e < 0) {
+        return e;
+    }
+    return meta_set(pid, -1, id_arg(u), id_arg(g), -1, -1);
+}
+
+// fchown (93).
+export I64 sys_fchown(I64 pid, I64 fd, U64 u, U64 g, I64 now) {
+    w_now = now;
+    I64 e = meta_fd(pid, fd);
+    if (e < 0) {
+        return e;
+    }
+    e = meta_may(pid, -1, id_arg(u), id_arg(g));
+    if (e < 0) {
+        return e;
+    }
+    return meta_set(pid, -1, id_arg(u), id_arg(g), -1, -1);
+}
+
+// umask (95): the process's mask becomes mask's 0777 bits; the old one.
+export I64 sys_umask(I64 pid, U64 mask) {
+    I64 old = pmask[pid];
+    pmask[pid] = (mask & 0x1FF) as I64;
+    return old;
+}
+
+// One timespec of utimensat's pair: its seconds, -1 for UTIME_OMIT, now for UTIME_NOW; -EINVAL past the
+// seconds a volume inode holds (0 to 2^31 - 1) or for nanoseconds out of range.
+I64 time_arg(U64 sec, U64 nsec, I64 now) {
+    if (nsec == UTIME_OMIT as U64) {
+        return -1;
+    }
+    if (nsec == UTIME_NOW as U64) {
+        return now;
+    }
+    if (nsec >= 1000000000 || sec > 0x7FFFFFFF) {
+        return 0 - 2;
+    }
+    return sec as I64;
+}
+
+// utimensat (280): path names the file from dfd, or a null path the file open on dfd (futimens); times null
+// is UTIME_NOW for both; now is the caller's CLOCK_REALTIME in seconds (src/proc.ci).
+export I64 sys_utimensat(I64 pid, I64 dfd, U64 path, U64 times, U64 flags, I64 now) {
+    w_now = now;
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0) {
+        return 0 - EINVAL;
+    }
+    I64 a = now;
+    I64 t = now;
+    Bool now_only = true;                      // FS-2: null times, or UTIME_NOW (or UTIME_OMIT) in both
+    if (times != 0) {
+        U8[32] b;
+        if (times >= uvm.USER_HI || uvm.peek(pid, times, b, 32) != 32) {
+            return 0 - EFAULT;
+        }
+        U64[4] w;
+        for q in 0..4 {
+            w[q] = 0;
+            for j in 0..8 {
+                w[q] = w[q] | ((b[8 * q + j] as U64) << ((8 * j) as U64));
+            }
+        }
+        a = time_arg(w[0], w[1], now);
+        t = time_arg(w[2], w[3], now);
+        now_only = (w[1] == UTIME_NOW as U64 || w[1] == UTIME_OMIT as U64) &&
+            (w[3] == UTIME_NOW as U64 || w[3] == UTIME_OMIT as U64);
+        if (a < -1 || t < -1) {
+            return 0 - EINVAL;
+        }
+        if (a == -1 && t == -1) {
+            return 0;                  // both UTIME_OMIT: nothing to change, and nothing is checked (Linux)
+        }
+    }
+    I64 e = 0;
+    if (path == 0) {
+        e = meta_fd(pid, dfd);
+    } else {
+        e = meta_walk(pid, dfd, path, (flags & AT_SYMLINK_NOFOLLOW) == 0);
+    }
+    if (e < 0) {
+        return e;
+    }
+    e = times_may(pid, now_only);
+    if (e < 0) {
+        return e;
+    }
+    return meta_set(pid, -1, -1, -1, a, t);
+}
+
+// link (86) and linkat (265; AT_SYMLINK_FOLLOW follows a link at the old path, which is otherwise linked
+// itself): a second name of the old path's file. -EPERM for a directory, -EXDEV between the two trees.
+export I64 sys_link(I64 pid, I64 odfd, U64 opath, I64 ndfd, U64 npath, U64 flags, I64 now) {
+    w_now = now;
+    if ((flags & ~AT_SYMLINK_FOLLOW) != 0) {
+        return 0 - EINVAL;
+    }
+    I64 e = meta_walk(pid, odfd, opath, (flags & AT_SYMLINK_FOLLOW) != 0);
+    if (e < 0) {
+        return e;
+    }
+    Bool fx = m_x;
+    I64 oi = m_i;
+    I64 of = m_f;
+    if ((fx && ext2.is_dir(oi)) || (!fx && e_isdir(of))) {
+        return 0 - EPERM;
+    }
+    // FS-2, as Linux's protected_hardlinks: the source's owner, or one who may read and write it
+    if ((fx && !owns(pid, ext2.uid(oi)) && !x_may(pid, oi, 6)) || (!fx && !owns(pid, e_fuid(of)) && !f_may(pid, of, 6))) {
+        return 0 - EPERM;
+    }
+    w_follow = false;
+    e = walk(pid, ndfd, npath);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0 || w_len == 0 || w_slot != NONE || (w_x && w_xino != 0)) {
+        return 0 - EEXIST;
+    }
+    if (w_trail) {
+        return 0 - ENOENT;
+    }
+    if (fx != w_x) {
+        return 0 - EXDEV;
+    }
+    if (fx) {
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if (!xdir_may(pid, w_xdir, 2)) {
+            return 0 - EACCES;                 // FS-2
+        }
+        I64 r = ext2.link(w_xdir, w_name, w_len, oi, w_now);
+        if (r < 0) {
+            return x_done(r);
+        }
+        ix(fsidx.CREATE, oi, w_xdir);
+        return x_done(0);
+    }
+    if (!dir_may(pid, w_dir, 2)) {
+        return 0 - EACCES;                     // FS-2
+    }
+    I64 f = make_entry(false, 0);
+    if (f < 0) {
+        return f;
+    }
+    s_alias(f, of);
+    s_ino(f, e_ino(of));
+    s_frefs(of, e_frefs(of) + 1);
+    return 0;
+}
+
+// symlink (88) and symlinkat (266): a link at npath whose target is the string at target (1 to 4,095 bytes).
+export I64 sys_symlink(I64 pid, U64 target, I64 ndfd, U64 npath, I64 now) {
+    w_now = now;
+    I64 got = peek_path(pid, target, s_t);
+    I64 tl = 0;
+    while (tl < got && s_t[tl] != 0) {
+        tl += 1;
+    }
+    if (tl == got) {
+        if (got < PATH_BYTES) {
+            return 0 - EFAULT;
+        }
+        return 0 - ENAMETOOLONG;
+    }
+    if (tl == 0) {
+        return 0 - ENOENT;
+    }
+    w_follow = false;
+    I64 e = walk(pid, ndfd, npath);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0 || w_len == 0 || w_slot != NONE || (w_x && w_xino != 0)) {
+        return 0 - EEXIST;
+    }
+    if (w_trail) {
+        return 0 - ENOENT;
+    }
+    if (w_x) {
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        if (!xdir_may(pid, w_xdir, 2)) {
+            return 0 - EACCES;                 // FS-2
+        }
+        I64 r = ext2.symlink(w_xdir, w_name, w_len, s_t, tl, w_now);
+        if (r < 0) {
+            return x_done(r);
+        }
+        x_own(pid, r);
+        ix(fsidx.CREATE, r, w_xdir);
+        return x_done(0);
+    }
+    if (!dir_may(pid, w_dir, 2)) {
+        return 0 - EACCES;                     // FS-2
+    }
+    I64 f = make_entry(false, 0x1FF);
+    if (f < 0) {
+        return f;
+    }
+    own(pid, f);
+    s_islink(f, true);
+    if (file_write(f, 0, s_t, tl) != tl) {
+        s_named(f, false);
+        drop(f);
+        return 0 - ENOSPC;
+    }
+    return 0;
+}
+
+// readlink (89) and readlinkat (267): the target of the link at path into buf, at most n bytes, no NUL; the
+// count. -EINVAL for a name that is not a link.
+export I64 sys_readlink(I64 pid, I64 dfd, U64 path, U64 buf, U64 n) {
+    if (n == 0 || n > 0x7FFFFFFF) {
+        return 0 - EINVAL;
+    }
+    I64 e = meta_walk(pid, dfd, path, false);
+    if (e == 0 - EPERM) {
+        return 0 - EINVAL;             // a device or the root: not a link
+    }
+    if (e < 0) {
+        return e;
+    }
+    I64 tl = 0;
+    if (m_x) {
+        if (!ext2.is_link(m_i)) {
+            return 0 - EINVAL;
+        }
+        tl = ext2.file_size(m_i);
+        if (tl > PATH_BYTES) {
+            tl = PATH_BYTES;
+        }
+        tl = ext2.read_at(m_i, 0, w_t, 0, tl);
+    } else {
+        if (!e_islink(m_f)) {
+            return 0 - EINVAL;
+        }
+        tl = file_read(m_f, 0, w_t, PATH_BYTES);
+    }
+    if (tl > (n as I64)) {
+        tl = n as I64;
+    }
+    if (buf >= uvm.USER_HI || uvm.poke(pid, buf, w_t, tl, true) != tl) {
+        return 0 - EFAULT;
+    }
+    return tl;
+}
+
+// rename, renameat and renameat2 with no flags: the entry moves under its new name, and what
+// held that name goes (a file, or an empty directory in place of a directory).
+export I64 sys_rename(I64 pid, I64 odfd, U64 opath, I64 ndfd, U64 npath, I64 now) {
+    w_now = now;
+    w_follow = false;
+    I64 e = walk(pid, odfd, opath);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0) {
+        return 0 - EXDEV;
+    }
+    if (w_dots != 0 || (w_x && w_slot == mnt)) {
+        return 0 - EBUSY;
+    }
+    Bool fx = w_x;
+    if (fx && w_xino == 0) {
+        return 0 - ENOENT;
+    }
+    I64 f = w_slot;
+    if (f == NONE && !fx) {
+        return 0 - ENOENT;
+    }
+    I64 oxd = w_xdir;
+    I64 oxi = w_xino;
+    I64 od = w_dir;
+    U8[256] on;
+    I64 ok = w_len;
+    for t in 0..NAME_SLOT {
+        on[t] = w_name[t];
+    }
+    w_follow = false;
+    e = walk(pid, ndfd, npath);
+    if (e < 0) {
+        return e;
+    }
+    if (dev_kind != 0 || fx != w_x) {
+        return 0 - EXDEV;
+    }
+    if (w_dots != 0 || (fx && w_slot == mnt)) {
+        return 0 - EBUSY;
+    }
+    if (fx) {
+        if (!ext2.is_dir(oxi) && w_trail) {
+            return 0 - ENOTDIR;
+        }
+        if (!x_may_write(pid)) {
+            return 0 - EROFS;
+        }
+        // FS-2: both directories are written, the sticky bit keeps others' names on both sides, and a directory
+        // that changes parent is written too (its "..")
+        I64 xt = ext2.lookup(w_xdir, w_name, w_len);
+        if (!xdir_may(pid, oxd, 2) || !xdir_may(pid, w_xdir, 2) ||
+            !sticky_ok(pid, ext2.mode(oxd), ext2.uid(oxd), ext2.uid(oxi)) ||
+            (xt > 0 && !sticky_ok(pid, ext2.mode(w_xdir), ext2.uid(w_xdir), ext2.uid(xt))) ||
+            (ext2.is_dir(oxi) && oxd != w_xdir && !x_may(pid, oxi, 2))) {
+            return 0 - EACCES;
+        }
+        Bool same = ext2.lookup(w_xdir, w_name, w_len) == oxi;   // one inode's two names: nothing happens
+        I64 r = ext2.rename(oxd, on, ok, w_xdir, w_name, w_len, w_now);
+        if (r < 0) {
+            return x_done(r);
+        }
+        if (!same) {
+            if (r > 0) {
+                ix(fsidx.UNLINK, r, w_xdir);   // FF-1: the name it replaced
+            }
+            fsidx.post(fsidx.FROM, oxi, oxd, on, ok);
+            ix(fsidx.TO, oxi, w_xdir);
+        }
+        I64 d = x_done(0);
+        x_idle(r);
+        return d;
+    }
+    if (!e_isdir(f) && w_trail) {
+        return 0 - ENOTDIR;
+    }
+    I64 t = w_slot;
+    if (t == f || (t != NONE && !e_isdir(f) && !e_isdir(t) && node(t) == node(f))) {
+        return 0;                      // one inode's two names: nothing happens (POSIX rename)
+    }
+    if (e_isdir(f)) {
+        // not into itself or below it
+        I64 d = w_dir;
+        while (d != ROOT) {
+            if (d == f) {
+                return 0 - EINVAL;
+            }
+            d = e_parent(d);
+        }
+        if (t != NONE && !e_isdir(t)) {
+            return 0 - ENOTDIR;
+        }
+        if (t != NONE && has_child(t)) {
+            return 0 - ENOTEMPTY;
+        }
+    } else if (t != NONE && e_isdir(t)) {
+        return 0 - EISDIR;
+    }
+    if (w_dir != ROOT && !e_named(w_dir)) {
+        return 0 - ENOENT;
+    }
+    if (!dir_may(pid, od, 2) || !dir_may(pid, w_dir, 2) ||
+        !sticky_ok(pid, d_mode(od), d_uid(od), e_fuid(node(f))) ||
+        (t != NONE && !sticky_ok(pid, d_mode(w_dir), d_uid(w_dir), e_fuid(node(t)))) ||
+        (e_isdir(f) && od != w_dir && !f_may(pid, node(f), 2))) {
+        return 0 - EACCES;                     // FS-2, as the volume above
+    }
+    if (t != NONE) {
+        s_named(t, false);
+        if (e_frefs(t) == 0) {
+            drop(t);
+        }
+    }
+    set_name(f, w_name, w_len);
+    s_parent(f, w_dir);
+    return 0;
+}
+
+// getdents64(fd, dirp, cap): the entries of the description's directory from its offset on: ".",
+// "..", then the entries in slot order (the image's order, then creation); nothing once the
+// directory is removed. Each is d_ino (u64), d_off (i64,
+// the next offset), d_reclen (u16), d_type (u8), the name and its NUL, padded to 8.
+export I64 sys_getdents(I64 pid, I64 fd, U64 dirp, U64 cap) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) == KIND_XDIR && dirp < uvm.USER_HI) {
+        return getdents_x(pid, o, dirp, cap);
+    }
+    if (o_kind(o) != KIND_DIR && o_kind(o) != KIND_XDIR) {
+        return 0 - ENOTDIR;
+    }
+    if (dirp >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    I64 d = o_file(o);
+    if (d != ROOT && !e_named(d)) {
+        return 0;
+    }
+    I64 room = 65536;
+    if (cap < 65536) {
+        room = cap as I64;
+    }
+    I64 done = 0;
+    I64 pos = o_off(o);
+    Bool more = true;
+    while (more && pos < slots + 2) {
+        I64 k = 0;
+        U8[256] nm;
+        I64 dino = 1;
+        U8 dtype = 4;                  // DT_DIR, or DT_REG (8)
+        if (pos == 0) {
+            nm[0] = 46;
+            k = 1;
+            dino = ino_of(d);
+        } else if (pos == 1) {
+            nm[0] = 46;
+            nm[1] = 46;
+            k = 2;
+            dino = ino_of(parent_of(d));
+        } else if (e_used(pos - 2) && e_named(pos - 2) && e_parent(pos - 2) == d) {
+            k = name_of(pos - 2, nm);
+            dino = e_ino(node(pos - 2));
+            if (!e_isdir(pos - 2)) {
+                dtype = 8;
+            }
+            if (e_islink(node(pos - 2))) {
+                dtype = 10;            // DT_LNK (BU-2)
+            }
+        }
+        if (k == 0) {
+            pos += 1;
+        } else {
+            I64 reclen = (19 + k + 1 + 7) / 8 * 8;
+            if (done + reclen > room) {
+                more = false;
+                if (done == 0) {
+                    return 0 - EINVAL;
+                }
+            } else {
+                U8[280] e;               // 19 + NAME_MAX + 1, padded to 8
+                for i in 0..280 {
+                    e[i] = 0;
+                }
+                for j in 0..8 {
+                    e[j] = (((dino as U64) >> ((8 * j) as U64)) & 0xFF) as U8;
+                    e[8 + j] = ((((pos + 1) as U64) >> ((8 * j) as U64)) & 0xFF) as U8;
+                }
+                e[16] = (reclen & 0xFF) as U8;
+                e[17] = (reclen >> 8) as U8;
+                e[18] = dtype;
+                for i in 0..k {
+                    e[19 + i] = nm[i];
+                }
+                if (uvm.poke(pid, dirp + done as U64, e, reclen, true) != reclen) {
+                    if (done == 0) {
+                        return 0 - EFAULT;
+                    }
+                    more = false;
+                } else {
+                    done += reclen;
+                    pos += 1;
+                }
+            }
+        }
+    }
+    set_o_off(o, pos);
+    return done;
+}
+
+// getdents64 of a volume directory: its entries as the volume holds them ("." and ".." among them), the
+// offset a byte position in the directory.
+I64 getdents_x(I64 pid, I64 o, U64 dirp, U64 cap) {
+    I64 room = 65536;
+    if (cap < 65536) {
+        room = cap as I64;
+    }
+    I64 done = 0;
+    I64 pos = o_off(o);
+    Bool more = true;
+    while (more) {
+        I64 next = ext2.dirent(o_file(o), pos);
+        if (next < 0) {
+            more = false;
+        } else {
+            U8[280] e;
+            for t in 0..280 {
+                e[t] = 0;
+            }
+            U8[256] nm;
+            I64 k = ext2.de_name(nm);
+            for t in 0..k {
+                e[19 + t] = nm[t];
+            }
+            I64 reclen = (19 + k + 1 + 7) / 8 * 8;
+            if (done + reclen > room) {
+                more = false;
+                if (done == 0) {
+                    return 0 - EINVAL;
+                }
+            } else {
+                U64 dino = ext2.de_ino() as U64;
+                for j in 0..8 {
+                    e[j] = ((dino >> ((8 * j) as U64)) & 0xFF) as U8;
+                    e[8 + j] = (((next as U64) >> ((8 * j) as U64)) & 0xFF) as U8;
+                }
+                e[16] = (reclen & 0xFF) as U8;
+                e[17] = (reclen >> 8) as U8;
+                e[18] = ext2.de_type() as U8;
+                if (uvm.poke(pid, dirp + done as U64, e, reclen, true) != reclen) {
+                    if (done == 0) {
+                        return 0 - EFAULT;
+                    }
+                    more = false;
+                } else {
+                    done += reclen;
+                    pos = next;
+                }
+            }
+        }
+    }
+    if (ext2.failed()) {
+        ext2.clear_failed();
+        return 0 - EIO;
+    }
+    set_o_off(o, pos);
+    return done;
+}
+
+export I64 sys_dup(I64 pid, I64 fd, I64 from) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0 || from < 0) {
+        return 0 - EBADF;
+    }
+    if (from >= FDS) {
+        return 0 - EINVAL;
+    }
+    return bind(pid, from, o, 0);
+}
+
+// dup2 and dup3: nfd closed first if open; dup3 may set FD_CLOEXEC and refuses fd == nfd.
+export I64 sys_dup2(I64 pid, I64 fd, I64 nfd, U64 flags, Bool three) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0 || nfd < 0 || nfd >= FDS) {
+        return 0 - EBADF;
+    }
+    if (fd == nfd) {
+        if (three) {
+            return 0 - EINVAL;
+        }
+        return nfd;
+    }
+    if (ofd_of(pid, nfd) >= 0) {
+        unbind(pid, nfd);
+    }
+    I64 cfl = 0;
+    if (three && (flags & O_CLOEXEC) != 0) {
+        cfl = FD_CLOEXEC;
+    }
+    return bind(pid, nfd, o, cfl);
+}
+
+export I64 sys_fcntl(I64 pid, I64 fd, I64 cmd, U64 arg) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (cmd == 0 || cmd == 1030) {     // F_DUPFD, F_DUPFD_CLOEXEC
+        if (arg >= FDS as U64) {
+            return 0 - EINVAL;
+        }
+        I64 nfd = bind(pid, arg as I64, o, 0);
+        if (nfd >= 0 && cmd == 1030) {
+            set_fd_flags(pid, nfd, FD_CLOEXEC);
+        }
+        return nfd;
+    }
+    if (cmd == 1) {                    // F_GETFD
+        return fd_flags(pid, fd);
+    }
+    if (cmd == 2) {                    // F_SETFD
+        set_fd_flags(pid, fd, (arg & 1) as I64);
+        return 0;
+    }
+    if (cmd == 3) {                    // F_GETFL
+        return (o_flags(o) | 0x8000) as I64;   // O_LARGEFILE, as Linux reports it
+    }
+    if (cmd == 4) {                    // F_SETFL: O_APPEND can change; O_NONBLOCK too on an event description
+        set_o_flags(o, (o_flags(o) & O_ACCMODE) | (arg & O_APPEND));
+        if (o_kind(o) == KIND_EVENT || o_kind(o) == KIND_SOCK || o_kind(o) == KIND_TCP || o_kind(o) == KIND_PTM || o_kind(o) == KIND_DSP || o_kind(o) == KIND_PIPE_R) {
+            set_o_flags(o, o_flags(o) | (arg & O_NONBLOCK));
+        }
+        return 0;
+    }
+    return 0 - EINVAL;
+}
+
+// getcwd: the path of the working directory from the root, walked up through the parents;
+// -ENOENT once it was removed, -ERANGE when it does not fit in n bytes.
+export I64 sys_getcwd(I64 pid, U64 buf, U64 n) {
+    I64 d = cwd[pid];
+    I64 k = 0;
+    // P-2: in the volume, its components first, each found by name in the directory ".." names
+    I64 x = cwd_x[pid];
+    while (x != 0 && x != ext2.ROOT_INO) {
+        I64 up = ext2.lookup(x, "..", 2);
+        U8[255] nm;
+        I64 c = ext2.name_in(up, x, nm);
+        if (c == 0 || up == 0) {
+            return 0 - ENOENT;
+        }
+        if (k + c + 1 > PATH_BYTES - 1) {
+            return 0 - ENAMETOOLONG;
+        }
+        for i in 0..c {
+            w_t[k + i] = nm[c - 1 - i];
+        }
+        w_t[k + c] = 47;
+        k += c + 1;
+        x = up;
+    }
+    // the components from the bottom up, each reversed, then the whole reversed once
+    while (d != ROOT) {
+        if (!e_named(d)) {
+            return 0 - ENOENT;
+        }
+        U8[256] nb;
+        I64 c = name_of(d, nb);
+        if (k + c + 1 > PATH_BYTES - 1) {
+            return 0 - ENAMETOOLONG;
+        }
+        for i in 0..c {
+            w_t[k + i] = nb[c - 1 - i];
+        }
+        w_t[k + c] = 47;
+        k += c + 1;
+        d = e_parent(d);
+    }
+    if (k == 0) {
+        w_t[0] = 47;
+        k = 1;
+    }
+    for i in 0..k / 2 {
+        U8 t = w_t[i];
+        w_t[i] = w_t[k - 1 - i];
+        w_t[k - 1 - i] = t;
+    }
+    w_t[k] = 0;
+    if (n < (k + 1) as U64) {
+        return 0 - ERANGE;
+    }
+    if (buf >= uvm.USER_HI || uvm.poke(pid, buf, w_t, k + 1, true) != k + 1) {
+        return 0 - EFAULT;
+    }
+    return k + 1;
+}
+
+export I64 sys_chdir(I64 pid, U64 path) {
+    I64 e = walk(pid, AT_FDCWD, path);
+    if (e < 0) {
+        return e;
+    }
+    if (w_x) {
+        if (w_xino == 0) {
+            return 0 - ENOENT;
+        }
+        if (!ext2.is_dir(w_xino)) {
+            return 0 - ENOTDIR;
+        }
+        if (!xdir_may(pid, w_xino, 1)) {
+            return 0 - EACCES;                 // FSP-1 A: the new working directory is searched
+        }
+        set_cwd(pid, mnt);
+        cwd_x[pid] = w_xino;
+        return 0;
+    }
+    if (dev_kind == 0 && w_slot == NONE) {
+        return 0 - ENOENT;
+    }
+    if (dev_kind != 0 || !is_dir(w_slot)) {
+        return 0 - ENOTDIR;
+    }
+    if (!dir_may(pid, w_slot, 1)) {
+        return 0 - EACCES;
+    }
+    set_cwd(pid, w_slot);
+    return 0;
+}
+
+export I64 sys_fchdir(I64 pid, I64 fd) {
+    I64 o = ofd_of(pid, fd);
+    if (o < 0) {
+        return 0 - EBADF;
+    }
+    if (o_kind(o) == KIND_XDIR) {
+        if (!xdir_may(pid, o_file(o), 1)) {
+            return 0 - EACCES;                 // FSP-1 A: as chdir, by the directory's bits now
+        }
+        set_cwd(pid, mnt);
+        cwd_x[pid] = o_file(o);
+        return 0;
+    }
+    if (o_kind(o) != KIND_DIR) {
+        return 0 - ENOTDIR;
+    }
+    if (!dir_may(pid, o_file(o), 1)) {
+        return 0 - EACCES;
+    }
+    set_cwd(pid, o_file(o));
+    return 0;
+}
+
+// K13 (BU-4e): the volume inode the last exec_name found, 0 when it named an image member.
+I64 x_exec = 0;
+
+export I64 exec_ino() {
+    return x_exec;
+}
+
+// The bytes of a volume file from off into b, as many as b holds; the count read (short at the end of
+// the file), or -1 when the volume failed.
+export I64 exec_read[n](I64 i, I64 off, inout U8[n] b) {
+    I64 got = ext2.read_at(i, off, b, 0, n);
+    if (ext2.failed()) {
+        ext2.clear_failed();
+        return -1;
+    }
+    return got;
+}
+
+export I64 exec_size(I64 i) {
+    return ext2.file_size(i);
+}
+
+// K13: the absolute path of volume file xi, named in volume directory xd, into nm: the mount's path in the
+// image tree, the directories up from xd (each found by name in its ".."), then the file's own name, as
+// getcwd builds a path. Its length, or -ENAMETOOLONG past 31 bytes (an executable's name, src/proc.ci
+// exe), or -ENOENT when a name is not found.
+I64 exec_path(I64 xd, I64 xi, inout U8[32] nm) {
+    U8[256] b;                         // the components from the file up, each reversed; reversed once at the end
+    I64 k = 0;
+    U8[256] c;
+    I64 n = ext2.name_in(xd, xi, c);
+    if (n == 0) {
+        return 0 - ENOENT;
+    }
+    for i in 0..n {
+        if (k < 256) {
+            b[k] = c[n - 1 - i];
+        }
+        k += 1;
+    }
+    I64 x = xd;
+    while (x != ext2.ROOT_INO && k <= 32) {
+        I64 up = ext2.lookup(x, "..", 2);
+        n = ext2.name_in(up, x, c);
+        if (n == 0 || up == 0) {
+            return 0 - ENOENT;
+        }
+        if (k < 256) {
+            b[k] = 47;
+        }
+        k += 1;
+        for i in 0..n {
+            if (k < 256) {
+                b[k] = c[n - 1 - i];
+            }
+            k += 1;
+        }
+        x = up;
+    }
+    I64 d = mnt;
+    while (d != ROOT && k <= 32) {
+        if (!e_named(d)) {
+            return 0 - ENOENT;
+        }
+        I64 l = name_of(d, c);
+        if (k < 256) {
+            b[k] = 47;
+        }
+        k += 1;
+        for i in 0..l {
+            if (k < 256) {
+                b[k] = c[l - 1 - i];
+            }
+            k += 1;
+        }
+        d = e_parent(d);
+    }
+    if (k + 1 > 31) {
+        return 0 - ENAMETOOLONG;
+    }
+    nm[0] = 47;
+    for i in 0..k {
+        nm[1 + i] = b[k - 1 - i];
+    }
+    nm[k + 1] = 0;
+    return k + 1;
+}
+
+// K13 (BU-4e): the kernel's own run of a volume program: rel is its path from the volume's root, each part
+// looked up as written (no link followed). Its absolute path goes to nm and exec_ino gives its inode; the
+// path's length, or 0 when the volume is not mounted or holds no regular file there.
+export I64 vol_exec[m](in U8[m] rel, inout U8[32] nm) {
+    x_exec = 0;
+    if (mnt == NONE || !ext2.is_mounted()) {
+        return 0;
+    }
+    I64 d = ext2.ROOT_INO;
+    I64 i = ext2.ROOT_INO;
+    I64 at = 0;
+    while (at < m) {
+        I64 e = at;
+        while (e < m && rel[e] != 47) {
+            e += 1;
+        }
+        if (e == at || i == 0 || !ext2.is_dir(i)) {
+            return 0;
+        }
+        d = i;
+        i = ext2.lookup(d, rel[at..e], e - at);
+        if (ext2.failed()) {
+            ext2.clear_failed();
+            return 0;
+        }
+        at = e + 1;
+    }
+    if (i == 0 || i == d || (ext2.mode(i) & ext2.S_IFMT) != ext2.S_IFREG) {
+        return 0;
+    }
+    I64 k = exec_path(d, i, nm);
+    if (k <= 0) {
+        return 0;
+    }
+    x_exec = i;
+    return k;
+}
+
+// execve's file: the path walked from the working directory to an image member, whose name in
+// the image goes to nm, or (K13) to a regular file of the volume, whose absolute path goes to nm and
+// whose inode exec_ino gives; its length, or -errno (-ENOENT for a file a program made in the image
+// tree, -EACCES for a directory or a volume file that is not regular).
+export I64 exec_name(I64 pid, U64 path, inout U8[32] nm) {
+    x_exec = 0;
+    I64 e = walk(pid, AT_FDCWD, path);
+    if (e < 0) {
+        return e;
+    }
+    I64 f = w_slot;
+    if (w_x && w_xino != 0 && ext2.is_dir(w_xino)) {
+        return 0 - EACCES;
+    }
+    if (w_x) {
+        if (w_xino == 0) {
+            return 0 - ENOENT;
+        }
+        if ((ext2.mode(w_xino) & ext2.S_IFMT) != ext2.S_IFREG || w_xdir == 0) {
+            return 0 - EACCES;
+        }
+        if (!x_may(pid, w_xino, 1)) {
+            return 0 - EACCES;                 // FS-3: execute by the file's bits (ring 0 too needs one set)
+        }
+        I64 k = exec_path(w_xdir, w_xino, nm);
+        if (k > 0) {
+            x_exec = w_xino;
+        }
+        return k;
+    }
+    if (dev_kind != 0 || is_dir(f)) {
+        return 0 - EACCES;
+    }
+    if (f >= image_files) {
+        f = node(f);                   // BU-2: a hard link made since boot runs what it names
+    }
+    if (f == NONE || f >= image_files) {
+        return 0 - ENOENT;
+    }
+    if (!f_may(pid, f, 1)) {
+        return 0 - EACCES;                     // FS-3: as on the volume
+    }
+    U8[110] h;
+    if (user.initrd_read(e_img_hdr(f), h) != cpio.HEADER_BYTES) {
+        return 0 - ENOENT;
+    }
+    I64 ns = cpio.field(h, cpio.F_NAMESIZE);
+    if (ns > 32) {
+        return 0 - ENAMETOOLONG;
+    }
+    if (user.initrd_read(e_img_hdr(f) + cpio.HEADER_BYTES, nm[0..ns]) != ns) {
+        return 0 - ENOENT;
+    }
+    return ns - 1;
+}
+
+// --- the canonical descriptor state of a process (docs/user.md) ---
+//
+// Per descriptor: its kind (u8; 0 closed), the entry's inode number (u64; 0 for the console and
+// the root), the description's offset (u64), its flags (u8: access mode, O_APPEND as bit 2) and
+// the descriptor's own (u8: FD_CLOEXEC). Descriptions are counted by what they hold, never by
+// their index.
+// FS-4, digest edition 9: the open descriptors of pid, their count (u16), then in descriptor order each one's
+// number (u8) and 19 bytes: the kind (u8), the inode (u64: the volume's, or the device's fixed one), the offset
+// (u64), the access mode with bit 2 O_APPEND and bit 3 O_NONBLOCK (u8), the descriptor flags (u8). Returns the
+// bytes written to b, at most 2 + 20 * FDS.
+export I64 digest_fds[n](I64 pid, inout U8[n] b) {
+    U64[256] w;
+    read_table(pid, w);
+    I64 open = 0;
+    I64 at = 2;
+    for fd in 0..FDS {
+        I64 o = ofd_of(pid, fd);
+        if (o >= 0 && at + 20 <= n) {
+            open += 1;
+            b[at] = fd as U8;
+            at += 1;
+            for i in 0..19 {
+                b[at + i] = 0;
+            }
+            b[at] = o_kind(o) as U8;
+            U64 n_ino = 0;
+            if (o_kind(o) == KIND_FILE || (o_kind(o) == KIND_DIR && o_file(o) >= 0)) {
+                n_ino = e_ino(o_file(o)) as U64;
+            } else if (o_kind(o) == KIND_XFILE || o_kind(o) == KIND_XDIR) {
+                n_ino = o_file(o) as U64;       // the kind byte says it is the volume's
+            } else if (o_kind(o) == KIND_FB) {
+                n_ino = FB_INO;
+            } else if (o_kind(o) == KIND_EVENT) {
+                n_ino = EVENT_INO;
+            } else if (o_kind(o) == KIND_DSP) {
+                n_ino = DSP_INO;
+            } else if (o_kind(o) == KIND_FSIDX) {
+                n_ino = FSIDX_INO;
+            } else if (o_kind(o) == KIND_RESOLV) {
+                n_ino = RESOLV_INO;
+            } else if (o_kind(o) == KIND_PTM) {
+                n_ino = PTMX_INO;
+            } else if (o_kind(o) == KIND_PTS) {
+                n_ino = PTS_INO + o_file(o) as U64;
+            }
+            for j in 0..8 {
+                b[at + 1 + j] = ((n_ino >> ((8 * j) as U64)) & 0xFF) as U8;
+                b[at + 9 + j] = (((o_off(o) as U64) >> ((8 * j) as U64)) & 0xFF) as U8;
+            }
+            U64 fl = o_flags(o) & O_ACCMODE;
+            if ((o_flags(o) & O_APPEND) != 0) {
+                fl = fl | 4;
+            }
+            if ((o_flags(o) & O_NONBLOCK) != 0) {
+                fl = fl | 8;
+            }
+            b[at + 17] = fl as U8;
+            b[at + 18] = ((w[fd] >> 32) & 0xFF) as U8;
+            at += 19;
+        }
+    }
+    b[0] = (open & 0xFF) as U8;
+    b[1] = ((open >> 8) & 0xFF) as U8;
+    return at;
+}
+
+// The sockets of a process (digest edition 5, N-2; docs/specs/2026-11-05-n-net.md section 6), after the
+// working directory and only for descriptors that hold one, so a process without a socket digests as
+// before: per socket descriptor in descriptor order its number (u8), the local address (u32) and port
+// (u16), the remote address (u32) and port (u16), the TCP state (u8), the two sequence numbers (u32, u32)
+// and the bytes queued (u16; for UDP, the datagrams), all little endian. A UDP socket is unconnected: no
+// remote, state 0, sequence numbers 0. A TCP socket (N-3): local address 10.0.2.15 once it has a remote,
+// the state of src/tcp.ci, snd_nxt and rcv_nxt, the bytes in its receive ring. Returns the bytes written
+// to b (24 a socket).
+export I64 digest_socks[n](I64 pid, inout U8[n] b) {
+    I64 at = 0;
+    for fd in 0..FDS {
+        I64 o = ofd_of(pid, fd);
+        if (o >= 0 && (o_kind(o) == KIND_SOCK || o_kind(o) == KIND_TCP) && at + 24 <= n) {
+            I64 s = o_file(o);
+            for i in 0..24 {
+                b[at + i] = 0;
+            }
+            b[at] = fd as U8;
+            U64 a = 0;
+            U64 p = 0;
+            U64 ra = 0;
+            U64 rp = 0;
+            U64 sq = 0;
+            U64 ak = 0;
+            U64 q = 0;
+            if (o_kind(o) == KIND_SOCK) {
+                a = udp.local_addr(s) as U64;
+                p = udp.local_port(s) as U64;
+                q = udp.queued(s) as U64;
+            } else {
+                p = tcp.local_port(s) as U64;
+                ra = tcp.remote_addr(s) as U64;
+                rp = tcp.remote_port(s) as U64;
+                if (ra != 0) {
+                    a = eth.our_ip() as U64;
+                }
+                b[at + 13] = tcp.state(s) as U8;
+                sq = tcp.seq_of(s) as U64;
+                ak = tcp.ack_of(s) as U64;
+                q = tcp.queued(s) as U64;
+            }
+            for j in 0..4 {
+                b[at + 1 + j] = ((a >> ((8 * j) as U64)) & 0xFF) as U8;
+                b[at + 7 + j] = ((ra >> ((8 * j) as U64)) & 0xFF) as U8;
+                b[at + 14 + j] = ((sq >> ((8 * j) as U64)) & 0xFF) as U8;
+                b[at + 18 + j] = ((ak >> ((8 * j) as U64)) & 0xFF) as U8;
+            }
+            for j in 0..2 {
+                b[at + 5 + j] = ((p >> ((8 * j) as U64)) & 0xFF) as U8;
+                b[at + 11 + j] = ((rp >> ((8 * j) as U64)) & 0xFF) as U8;
+                b[at + 22 + j] = ((q >> ((8 * j) as U64)) & 0xFF) as U8;
+            }
+            at += 24;
+        }
+    }
+    return at;
+}
+
+// The ring of the volume's changes (digest edition 8, FF-1; docs/specs/2026-11-07-ff-super-plane.md section 4),
+// after the sockets and only for a process with a descriptor of /dev/fsidx, so any other digests as before: the
+// entries posted (u64), the entries waiting (u64) and the loss flag (u8), little endian. Returns the bytes written
+// to b (17, or 0).
+export I64 digest_ring[n](I64 pid, inout U8[n] b) {
+    Bool has = false;
+    for fd in 0..FDS {
+        I64 o = ofd_of(pid, fd);
+        if (o >= 0 && o_kind(o) == KIND_FSIDX) {
+            has = true;
+        }
+    }
+    if (!has || n < 17) {
+        return 0;
+    }
+    U64 p = fsidx.posted_count() as U64;
+    U64 w = fsidx.waiting() as U64;
+    for j in 0..8 {
+        b[j] = ((p >> ((8 * j) as U64)) & 0xFF) as U8;
+        b[8 + j] = ((w >> ((8 * j) as U64)) & 0xFF) as U8;
+    }
+    b[16] = 0;
+    if (fsidx.lost_flag()) {
+        b[16] = 1;
+    }
+    return 17;
+}
+
+// The working directory of a process (digest edition 5, P-0): its filesystem (u8: 1 the ramfs, 2 the
+// volume) and its inode number (u64).
+export void digest_cwd[n](I64 pid, inout U8[n] b) {
+    b[0] = 1;
+    U64 v = ino_of(cwd[pid]) as U64;
+    if (cwd_x[pid] != 0) {
+        b[0] = 2;
+        v = cwd_x[pid] as U64;
+    }
+    for j in 0..8 {
+        b[1 + j] = ((v >> ((8 * j) as U64)) & 0xFF) as U8;
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

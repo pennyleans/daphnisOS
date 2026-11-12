@@ -1,0 +1,180 @@
+// tests/bench/blur_cost.ci: DN-41 (g), a measurement only (nothing of the desk uses it): the cost of a 24 px blur in
+// the integer renderer for All Apps' see-through sheet, at W x H. A 24 px blur is CSS's: a Gaussian of sigma 24, its
+// kernel cut at 3 sigma (145 taps). Three ways, each over XRGB words, every channel in integers:
+//   g  the true Gaussian, separable: a horizontal pass then a vertical one, 145 taps each, weights in 1/65536;
+//   b  three box blurs (each 49 wide: sqrt(12 sigma^2 / 3 + 1) = 48.0, rounded to odd), each separable, a running sum
+//      per row and column, O(1) a pixel a pass;
+//   s  the snapshot: the desk blurred once (b) when the sheet opens, kept; a frame copies it and mixes the sheet's tint
+//      (a 50 percent mix with SURF2, as the sheet would draw it).
+// The three buffers are main's, in the frame arena (build with --frame-arena 120000000: 3 x 3840 x 2160 words).
+// Usage: blur_cost MODE W H FRAMES. It prints `MODE W H FRAMES checksum`; the time is the process's, taken around it.
+
+I64[145] gw;
+
+I64 parse(in U8[_] a, I64 at, inout I64[1] end) {
+    I64 v = 0;
+    I64 i = at;
+    while (i < len(a) && a[i] >= '0' && a[i] <= '9') {
+        v = v * 10 + (a[i] - '0') as I64;
+        i = i + 1;
+    }
+    end[0] = i;
+    return v;
+}
+
+// The kernel: a Gaussian of sigma 24 cut at 3 sigma, normalized, in 1/65536 (round(65536 * exp(-x^2 / 1152) / (24
+// sqrt(2 pi))), the middle tap taking the remainder so the sum is 65536); made by Python for the measurement.
+I64[145] gk = [
+    12, 14, 15, 17, 20, 22, 25, 28, 31, 35, 39, 43, 48, 53, 59, 65,
+    72, 79, 87, 95, 104, 114, 124, 136, 147, 160, 174, 188, 203, 219, 236, 253,
+    272, 291, 311, 332, 354, 376, 399, 423, 448, 473, 499, 525, 552, 579, 606, 633,
+    661, 688, 716, 743, 770, 796, 822, 848, 872, 896, 919, 941, 961, 981, 999, 1015,
+    1031, 1044, 1056, 1066, 1074, 1081, 1086, 1088, 1248, 1088, 1086, 1081, 1074, 1066, 1056, 1044,
+    1031, 1015, 999, 981, 961, 941, 919, 896, 872, 848, 822, 796, 770, 743, 716, 688,
+    661, 633, 606, 579, 552, 525, 499, 473, 448, 423, 399, 376, 354, 332, 311, 291,
+    272, 253, 236, 219, 203, 188, 174, 160, 147, 136, 124, 114, 104, 95, 87, 79,
+    72, 65, 59, 53, 48, 43, 39, 35, 31, 28, 25, 22, 20, 17, 15, 14,
+    12];
+
+void make_kernel() {
+    for k in 0..145 { gw[k] = gk[k]; }
+}
+
+void paint_src(inout U32[_] src, I64 w, I64 h) {
+    for y in 0..h {
+        for x in 0..w {
+            I64 v = ((x * 7 + y * 13) % 256) | (((x * 3) % 256) << 8) | (((y * 5 + x) % 256) << 16);
+            src[y * w + x] = v as U32;
+        }
+    }
+}
+
+I64 ch(U32 p, I64 c) { return ((p >> ((8 * c) as U32)) & 255) as I64; }
+
+void gauss(in U32[_] src, inout U32[_] tmp, inout U32[_] dst, I64 w, I64 h) {
+    for y in 0..h {
+        I64 b = y * w;
+        for x in 0..w {
+            I64 r = 0;
+            I64 g = 0;
+            I64 bl = 0;
+            for k in 0..145 {
+                I64 xx = x + k - 72;
+                if (xx < 0) { xx = 0; }
+                if (xx >= w) { xx = w - 1; }
+                U32 p = src[b + xx];
+                I64 q = gw[k];
+                r = r + q * ch(p, 2);
+                g = g + q * ch(p, 1);
+                bl = bl + q * ch(p, 0);
+            }
+            tmp[b + x] = (((r >> 16) << 16) | ((g >> 16) << 8) | (bl >> 16)) as U32;
+        }
+    }
+    for x in 0..w {
+        for y in 0..h {
+            I64 r = 0;
+            I64 g = 0;
+            I64 bl = 0;
+            for k in 0..145 {
+                I64 yy = y + k - 72;
+                if (yy < 0) { yy = 0; }
+                if (yy >= h) { yy = h - 1; }
+                U32 p = tmp[yy * w + x];
+                I64 q = gw[k];
+                r = r + q * ch(p, 2);
+                g = g + q * ch(p, 1);
+                bl = bl + q * ch(p, 0);
+            }
+            dst[y * w + x] = (((r >> 16) << 16) | ((g >> 16) << 8) | (bl >> 16)) as U32;
+        }
+    }
+}
+
+// One box pass of radius 24 (49 wide) along rows (rows true) or columns, from a into o, edges clamped.
+void box(in U32[_] a, inout U32[_] o, I64 w, I64 h, Bool rows) {
+    I64 n = h;
+    I64 m = w;
+    if (!rows) {
+        n = w;
+        m = h;
+    }
+    for i in 0..n {
+        I64 r = 0;
+        I64 g = 0;
+        I64 bl = 0;
+        for k in 0..49 {
+            I64 j = k - 24;
+            if (j < 0) { j = 0; }
+            if (j >= m) { j = m - 1; }
+            I64 at = i * w + j;
+            if (!rows) { at = j * w + i; }
+            U32 p = a[at];
+            r = r + ch(p, 2);
+            g = g + ch(p, 1);
+            bl = bl + ch(p, 0);
+        }
+        for j in 0..m {
+            I64 at = i * w + j;
+            if (!rows) { at = j * w + i; }
+            o[at] = (((r / 49) << 16) | ((g / 49) << 8) | (bl / 49)) as U32;
+            I64 out_j = j - 24;
+            I64 in_j = j + 25;
+            if (out_j < 0) { out_j = 0; }
+            if (in_j >= m) { in_j = m - 1; }
+            I64 ao = i * w + out_j;
+            I64 ai = i * w + in_j;
+            if (!rows) {
+                ao = out_j * w + i;
+                ai = in_j * w + i;
+            }
+            U32 po = a[ao];
+            U32 pi = a[ai];
+            r = r + ch(pi, 2) - ch(po, 2);
+            g = g + ch(pi, 1) - ch(po, 1);
+            bl = bl + ch(pi, 0) - ch(po, 0);
+        }
+    }
+}
+
+void boxes(in U32[_] src, inout U32[_] tmp, inout U32[_] dst, I64 w, I64 h) {
+    for pass in 0..3 {
+        if (pass == 0) { box(src, tmp, w, h, true); } else { box(dst, tmp, w, h, true); }
+        box(tmp, dst, w, h, false);
+    }
+}
+
+void frame_snapshot(in U32[_] tmp, inout U32[_] dst, I64 w, I64 h) {
+    U32 tint = 0x00282a2c;              // SURF2, dark
+    for i in 0..w * h {
+        U32 p = tmp[i];
+        U32 v = ((((p >> 1) & 0x7f7f7f) + ((tint >> 1) & 0x7f7f7f))) as U32;   // the 50 percent mix
+        dst[i] = v;
+    }
+}
+
+export void main(in U8[_] a) {
+    U32[8294400] src;
+    U32[8294400] tmp;
+    U32[8294400] dst;
+    I64[1] e;
+    U8 mode = a[0];
+    I64 w = parse(a, 2, e);
+    I64 h = parse(a, e[0] + 1, e);
+    I64 frames = parse(a, e[0] + 1, e);
+    paint_src(src, w, h);
+    make_kernel();
+    if (mode == 's') {
+        boxes(src, tmp, dst, w, h);     // once, when the sheet opens
+        for i in 0..w * h { tmp[i] = dst[i]; }
+    }
+    for f in 0..frames {
+        if (mode == 'g') { gauss(src, tmp, dst, w, h); }
+        if (mode == 'b') { boxes(src, tmp, dst, w, h); }
+        if (mode == 's') { frame_snapshot(tmp, dst, w, h); }
+    }
+    I64 c = 0;
+    for i in 0..w * h { c = (c * 31 + (dst[i] as I64)) % 1000000007; }
+    "{mode as I64} {w} {h} {frames} {c}\n";
+}
+// SPDX-License-Identifier: Apache-2.0

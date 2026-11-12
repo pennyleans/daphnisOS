@@ -1,0 +1,9 @@
+# RS-MON (PR 324) over the kernel train's facts (KF-1 to KF-3e): Monitor's window opens, reads the machine once a
+# second and draws it (two screendumps 3 s apart differ, guest.py differ); q ends it; the first shell's exit ends the
+# desk with status 0.
+hdesk: screen 1920x1080 plane 1920x
+~hdesk: float 1 app -?[0-9]+ frame -?[0-9]+,-?[0-9]+ [0-9]+x[0-9]+
+~hdesk: pixel 1 pid [0-9]+ size [0-9]+x[0-9]+
+=hdesk: pixel 1 ended
+=hdesk: shell ended, status 0
+!fault: cint-core-1/fault/v2

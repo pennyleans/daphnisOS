@@ -1,0 +1,25 @@
+// user/ci/core/get.ci: a core tool's inputs (docs/specs/2026-11-06-c-core.md section 4). An operand `-` is
+// descriptor 0, any other a path opened read-only; each is read in blocks of up to 4 KiB.
+import user.ci.shctl;
+import user.ci.core.msg;
+
+// Opens operand path (`-` is descriptor 0): the descriptor, or -1 after `TOOL: path: reason`.
+export I64 open(in U8[_] path) {
+    if (len(path) == 1 && path[0] == '-') { return 0; }
+    I64 fd = shctl.sh_open(path, 0, 0);
+    if (fd < 0) {
+        msg.file(path, 0 - fd);
+        return -1;
+    }
+    return fd;
+}
+
+// The next block of fd into buf (at most 4 KiB a call): its length, 0 at the end, or -errno.
+export I64 read(I64 fd, inout U8[_] buf) {
+    return shctl.fd_read(fd, buf);
+}
+
+export void close(I64 fd) {
+    if (fd > 0) { _ = shctl.fd_close(fd); }
+}
+// SPDX-License-Identifier: Apache-2.0

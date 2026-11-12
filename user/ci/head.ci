@@ -1,0 +1,89 @@
+// user/ci/head.ci: head [-n N | -c N | -N] [FILE...] (docs/specs/2026-11-06-c-core.md, CT-1; POSIX XCU head): the first
+// N lines (default 10), or with -c the first N bytes, of each FILE (`-` or none: descriptor 0). -N, the old form a
+// script in this tree uses (`head -1`), is -n N; -c wins over -n. Two or more FILEs each come after a line
+// `==> FILE <==`, and every FILE but the first after an empty line.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+
+U8[4096] buf;
+I64 want = 10;
+Bool bytes = false;
+
+void pour(I64 fd, in U8[_] name) {
+    I64 left = want;
+    while (left > 0) {
+        I64 r = get.read(fd, buf);
+        if (r < 0) {
+            msg.file(name, 0 - r);
+            left = 0;
+        } else if (r == 0) {
+            left = 0;
+        } else {
+            I64 k = 0;
+            while (k < r && left > 0) {
+                if (bytes || buf[k] == '\n') { left = left - 1; }
+                k = k + 1;
+            }
+            put.bytes(buf[0..k]);
+        }
+    }
+}
+
+void one(in U8[_] name, I64 i, Bool named) {
+    I64 fd = get.open(name);
+    if (fd >= 0) {
+        if (named) {
+            if (i > 0) { put.byte('\n'); }
+            put.bytes(b"==> ");
+            if (len(name) == 1 && name[0] == '-') { put.bytes(b"standard input"); } else { put.bytes(name); }
+            put.bytes(b" <==\n");
+        }
+        pour(fd, name);
+        get.close(fd);
+    }
+}
+
+// N of -n or -c: digits only (XCU: a positive decimal integer).
+I64 plain(in U8[_] a, U8 c) {
+    I64 s = args.val_start(c);
+    if (s < args.val_stop(c) && a[s] == '+') { msg.usage(b"bad count"); }
+    return args.count_of(a, s, args.val_stop(c), b"bad count");
+}
+
+void run(in U8[_] a) {
+    args.parse(a, b"", b"cn");
+    if (args.has('n')) { want = plain(a, 'n'); }
+    if (args.has('c')) {
+        want = plain(a, 'c');
+        bytes = true;
+    }
+    I64 n = args.operands();
+    if (n == 0) { pour(0, b"-"); }
+    for i in 0..n {
+        one(a[args.op_start(i)..args.op_stop(a, i)], i, n > 1);
+    }
+}
+
+// The length of a's first argument when it is the old form -N, and N into want; else 0.
+I64 old_form(in U8[_] a) {
+    if (len(a) < 3 || a[0] != '-' || a[1] < '0' || a[1] > '9') { return 0; }
+    I64 e = 1;
+    while (a[e] != 0) {
+        if (a[e] < '0' || a[e] > '9') { return 0; }
+        e = e + 1;
+    }
+    want = args.count_of(a, 1, e, b"bad count");
+    return e + 1;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"head");
+    I64 k = old_form(a);
+    run(a[k..len(a)]);
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

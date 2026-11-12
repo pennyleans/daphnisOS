@@ -1,0 +1,75 @@
+// tests/kfz/k8_promise.ci: a call's copy into and out of a promise (M-2: a mapped page with no frame until its first
+// touch, which uvm.translate makes inside the call, as k0_kit.ci's header says). KZ_LZ and KZ_LZ_RO are promises in
+// both modes. A backed promise takes its frame out of the pool's hold and adds nothing to the caller's count, which
+// counted it at the map; with the hold broken (0) the touch fails, and the call must answer -EFAULT with no frame
+// taken, the promise kept and no byte written outside its own.
+
+test "promise: a copy into one backs it out of the hold, charged to the caller; past the copy it reads 0" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    I64 held = frames.held_count();
+    I64 owned = uvm.frames_owned(p);
+    assert(!kz_backed(p, KZ_LZ) && !kz_backed(p, KZ_LZ_RO));
+    assert(kz_call(p, NR_SYSINFO, KZ_LZ + 8, 0, 0, 0, 0, 0) == 0);
+    assert(kz_backed(p, KZ_LZ) && frames.held_count() == held - 1);
+    assert(uvm.frames_owned(p) == owned && kz_pool() == pool);
+    assert(kz_changed(p, KZ_LZ + 8, KZ_LZ + 120) > 0 && kz_kept_outside(p, KZ_LZ + 8, KZ_LZ + 120));
+    // into the read-only promise: -EFAULT, nothing written
+    assert(kz_call(p, NR_SYSINFO, KZ_LZ_RO, 0, 0, 0, 0, 0) == E_FAULT);
+    assert(kz_kept_outside(p, KZ_LZ + 8, KZ_LZ + 120) && kz_pool() == pool);
+    // read from it: a name of no bytes, the page backed for the read and charged as before
+    held = frames.held_count();
+    Bool was = kz_backed(p, KZ_LZ_RO);
+    assert(kz_call(p, NR_PRCTL, 15, KZ_LZ_RO, 0, 0, 0, 0) == 0 && comm[p * 16] == 0);
+    assert(kz_backed(p, KZ_LZ_RO) && frames.held_count() == held - 1 + was as I64);
+    assert(uvm.frames_owned(p) == owned && kz_pool() == pool);
+    // the end gives every frame back, the backed promises' too
+    I64 free = frames.free_count() - frames.held_count();
+    kz_end(p);
+    assert(frames.free_count() - frames.held_count() > free);
+    assert(kz_pool() > pool);
+}
+
+test "promise: facts and PR_GET_NAME into one, and a copy that starts on a backed page and runs into it" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    assert(kz_call(p, NR_FACTS, facts.CPU, 0, KZ_LZ + 4000, 96, 0, 0) == facts.CPU_BYTES);
+    assert(kz_backed(p, KZ_LZ) && kz_kept_outside(p, KZ_LZ + 4000, KZ_LZ + 4096) && kz_pool() == pool);
+    kz_fill(p);
+    assert(kz_call(p, NR_PRCTL, 16, KZ_LZ + 4080, 0, 0, 0, 0) == 0);
+    assert(kz_kept_outside(p, KZ_LZ + 4080, KZ_LZ + 4096) && kz_pool() == pool);
+    kz_fill(p);
+    kz_own(p, PATHS, 4096);
+    assert(kz_call(p, NR_SYSINFO, KZ_LZ - 56, 0, 0, 0, 0, 0) == 0);  // PATHS' last 56 bytes, then the promise
+    assert(kz_backed(p, KZ_LZ) && kz_kept_outside(p, KZ_LZ - 56, KZ_LZ + 56) && kz_pool() == pool);
+    assert(kz_changed(p, PATHS, KZ_LZ - 56) == 0 && kz_changed(p, KZ_LZ - 56, KZ_LZ) > 0);
+    kz_end(p);
+}
+
+test "promise: with the pool's hold broken to 0, a copy into one is -EFAULT; no frame, the promise kept" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_own(p, PATHS, 4096);
+    I64 h = frames.held_count();
+    assert(h >= 2 && frames.unhold(h) == 0);
+    I64 free = frames.free_count();
+    // whole in the promise
+    assert(kz_call(p, NR_SYSINFO, KZ_LZ, 0, 0, 0, 0, 0) == E_FAULT);
+    assert(kz_call(p, NR_FACTS, facts.CPU, 0, KZ_LZ, 96, 0, 0) == E_FAULT);
+    assert(kz_call(p, NR_PRCTL, 16, KZ_LZ, 0, 0, 0, 0) == E_FAULT);
+    // a read of it: no name taken, the name kept
+    U8[16] was;
+    for k in 0..16 {
+        was[k] = comm[p * 16 + k];
+    }
+    assert(kz_call(p, NR_PRCTL, 15, KZ_LZ_RO, 0, 0, 0, 0) == E_FAULT);
+    for k in 0..16 {
+        assert(comm[p * 16 + k] == was[k]);
+    }
+    // from a backed page into the promise: -EFAULT, and no byte past the copy's own
+    assert(kz_call(p, NR_SYSINFO, KZ_LZ - 56, 0, 0, 0, 0, 0) == E_FAULT);
+    assert(!kz_backed(p, KZ_LZ) && !kz_backed(p, KZ_LZ_RO) && frames.free_count() == free);
+    assert(kz_kept_outside(p, KZ_LZ - 56, KZ_LZ) && kz_changed(p, PATHS, KZ_LZ - 56) == 0);
+    assert(frames.hold(h) == h);
+    kz_end(p);
+}
+// SPDX-License-Identifier: Apache-2.0

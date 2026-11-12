@@ -1,0 +1,193 @@
+// src/pool.ci: M-3 (docs/specs/2026-11-06-m-memory.md section 9), the pool is the machine. With daphnis.pool=max on
+// the loader's command line (tools/run-qemu.sh POOL=max, tools/play.sh), the pool is every usable frame of the
+// memory map from 32 MiB up to 8 GiB, the frames that are not RAM (the PCI hole, reserved entries, the top of RAM)
+// and the region 1 to 2 GiB (src/paging.ci's and the fault probes') taken from the start; the shim's window
+// follows (rt/phys.c rt_pool_end). Without the word nothing here runs and the pool is the gates' 16,384 frames.
+// AU-5: a loader module that runs past 32 MiB (the play image) moves the pool's first frame to its end (pool_floor).
+
+import src.serial;
+import src.text;
+import src.bootarg;
+import src.bootinfo;
+import src.memmap;
+import src.phys;
+import src.frames;
+
+export extern unrestricted I64 pool_window(U64 end);
+export extern unrestricted U64 pool_floor();   // AU-5: 32 MiB, or the page after a loader module that runs past it (rt/boot.c)
+
+const U64 CAP_END = 0x200000000;      // 8 GiB: rt/rt.h RT_POOL_CAP, where boot.S's identity map ends
+const U64 HOLE_LO = 0x40000000;       // 1 GiB: the probe region, out of the pool
+const U64 HOLE_HI = 0x80000000;
+const U64 BASE = 33554432;
+const U64 BLOB_BASE = 0x6000000;      // 96 MiB: rt/rt.h RT_BLOB_BASE, the gates' pool ends here
+const U64 BLOB_END = 0x6100000;       // 97 MiB: rt/rt.h RT_BLOB_END
+U64 top = 0;
+U8[8192] block;       // the loader's block (bootinfo), module state: too large for a frame
+U8[64] info;          // Multiboot 1: the fixed structure
+U8[512] mm;           // Multiboot 1: the map
+
+Bool has_word[n](in U8[n] line, I64 nbytes, in U8[16] word) {
+    I64 i = 0;
+    while (i + 16 <= nbytes) {
+        if ((i == 0 || line[i - 1] == 32) && (i + 16 == nbytes || line[i + 16] == 32)) {
+            Bool same = true;
+            for k in 0..16 {
+                if (line[i + k] != word[k]) {
+                    same = false;
+                }
+            }
+            if (same) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    return false;
+}
+
+void put_dec(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+// Frames [lo, hi) of physical address, no hole inside: into the pool, clipped to its reach. floor is BASE, or the
+// end of a loader module past it (AU-5): the frames under the image stay taken.
+void add(U64 lo, U64 hi, U64 floor) {
+    U64 a = (lo + 4095) & 0xFFFFFFFFFFFFF000;
+    U64 b = hi & 0xFFFFFFFFFFFFF000;
+    if (a < floor) {
+        a = floor;
+    }
+    if (b > CAP_END) {
+        b = CAP_END;
+    }
+    if (a >= b) {
+        return;
+    }
+    _ = frames.usable_range(((a - BASE) / 4096) as I64, ((b - BASE) / 4096) as I64);
+    if (b > top) {
+        top = b;
+    }
+}
+
+// Frames [lo, hi) of physical address are RAM: into the pool around the hole.
+void ram(U64 lo, U64 hi, U64 floor) {
+    if (lo < HOLE_LO) {
+        U64 b = hi;
+        if (b > HOLE_LO) {
+            b = HOLE_LO;
+        }
+        add(lo, b, floor);
+    }
+    if (hi > HOLE_HI) {
+        U64 a = lo;
+        if (a < HOLE_HI) {
+            a = HOLE_HI;
+        }
+        add(a, hi, floor);
+    }
+}
+
+// True when the pool was sized from the map; false (and nothing changed) without daphnis.pool=max or a map.
+export Bool init() {
+    U8[256] line;
+    I64 nbytes = bootarg.boot_cmdline(line);
+    if (!has_word(line, nbytes, "daphnis.pool=max")) {
+        return false;
+    }
+    I64 protocol = bootinfo.boot_info(block);
+    I64 n = 0;
+    U64 floor = pool_floor();
+    if (protocol == 1) {
+        for i in 0..64 {
+            info[i] = block[i];
+        }
+        if (!memmap.mmap_valid(info)) {
+            serial.serial_write("daphnis: pool: no memory map\n");
+            return false;
+        }
+        I64 length = memmap.mmap_length(info);
+        if (length < 24 || length > 512) {
+            serial.serial_write("daphnis: pool: memory map length out of range\n");
+            return false;
+        }
+        phys.phys_read8(memmap.mmap_address(info) as U64, mm);
+        if (frames.init(frames.CAPACITY, ((floor - BASE) / 4096) as I64) < 0) {   // FB: the bitmap at the floor
+            return false;
+        }
+        I64 at = memmap.entry(mm, length, n);
+        while (at >= 0) {
+            if (memmap.entry_kind(mm, at) == 1) {
+                ram(memmap.entry_base(mm, at), memmap.entry_base(mm, at) + memmap.entry_span(mm, at), floor);
+            }
+            n += 1;
+            at = memmap.entry(mm, length, n);
+        }
+    } else if (protocol == 2) {
+        I64 tag = memmap.mb2_mmap(block, memmap.mb2_length(block));
+        if (tag < 0) {
+            serial.serial_write("daphnis: pool: no memory map\n");
+            return false;
+        }
+        if (frames.init(frames.CAPACITY, ((floor - BASE) / 4096) as I64) < 0) {   // FB: the bitmap at the floor
+            return false;
+        }
+        I64 e = memmap.mb2_entry(block, tag, n);
+        while (e >= 0) {
+            if (memmap.mb2_entry_kind(block, e) == 1) {
+                ram(memmap.mb2_entry_base(block, e), memmap.mb2_entry_base(block, e) + memmap.mb2_entry_span(block, e), floor);
+            }
+            n += 1;
+            e = memmap.mb2_entry(block, tag, n);
+        }
+    } else {
+        serial.serial_write("daphnis: pool: no loader block\n");
+        return false;
+    }
+    said(floor);
+    return true;
+}
+
+// The window to the pool's top, and its line.
+void said(U64 floor) {
+    if (top > 0x6000000) {
+        _ = pool_window(top);
+    }
+    serial.serial_write("daphnis: pool ");
+    put_dec(frames.ram());
+    serial.serial_write(" frames usable of ");
+    put_dec(frames.covered());
+    serial.serial_write(" to ");
+    put_dec((top / 1048576) as I64);
+    serial.serial_write(" MiB\n");
+    if (floor > BASE) {
+        serial.serial_write("daphnis: pool: the image holds ");
+        put_dec(((floor - BASE) / 4096) as I64);
+        serial.serial_write(" frames past 32 MiB\n");
+    }
+}
+
+// The doom flavor's pool (PR 356's batch P1): the gates' 16,384 frames and n more from 97 MiB (rt/rt.h RT_BLOB_END),
+// past the run blob's MiB, which stays out of the pool as on every flavor. cish, a live shell, holds 554 frames where
+// busybox sh held 61, and the churned `doom --sealed` runs as the shell's child. A fixed number, the same on every
+// leg (-kernel and GRUB, all at -m 128): not daphnis.pool=max, which the GRUB legs cannot set and whose map-sized
+// pool would move the transcript per leg. Only on a pool nothing was taken from; false, and nothing changed, else.
+export Bool past_blob(I64 n) {
+    U64 floor = pool_floor();
+    if (n < 1 || n > 7168) {   // to 125 MiB at most: under QEMU's top of RAM at -m 128 (0x7FE0000)
+        return false;
+    }
+    U64 hi = BLOB_END + (n * 4096) as U64;
+    if (frames.init(((hi - BASE) / 4096) as I64, ((floor - BASE) / 4096) as I64) < 0) {
+        return false;
+    }
+    add(BASE, BLOB_BASE, floor);
+    add(BLOB_END, hi, floor);
+    said(floor);
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

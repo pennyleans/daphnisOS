@@ -1,0 +1,26 @@
+// user/ci/kit/grid.ci: the dividual grid (docs/specs/2026-11-05-w-tiler.md section 3). A screen of `span`
+// pixels on one axis is cut into n cells of span / n pixels; the span mod n pixels left over go to the last
+// cell, so every edge is an integer. The last pixel of each cell, the screen's edge included, is its 1 px
+// hairline; the rest is the cell's inside, the surface a client in that tile gets: a 2 x 2 grid of 640 x 480
+// gives cells of 320 x 240 and insides of 319 x 239.
+
+export const I64 MAX_CELLS = 16;   // per axis
+
+// The first pixel of cell i (0 <= i <= n): i * (span / n), and span at i == n.
+export I64 edge(I64 span, I64 n, I64 i) {
+    if (i == n) { return span; }
+    return i * (span / n);
+}
+
+// The cell that holds pixel p.
+export I64 cell(I64 span, I64 n, I64 p) {
+    I64 i = p / (span / n);
+    if (i >= n) { return n - 1; }
+    return i;
+}
+
+// True when pixel p is the last pixel of its cell: a hairline.
+export Bool hairline(I64 span, I64 n, I64 p) {
+    return p == edge(span, n, cell(span, n, p) + 1) - 1;
+}
+// SPDX-License-Identifier: Apache-2.0

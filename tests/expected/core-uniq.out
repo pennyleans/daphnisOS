@@ -1,0 +1,241 @@
+$ words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$  < words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -c words.txt
+      1 apple 3
+      1 Banana 10
+      1 cherry 2
+      2 apple 3
+      1 banana 1
+      1 Date 7
+      1   elder 12
+      1 fig 0.5
+      1 fig -4
+      1 grape 3
+      1 
+      1 Hello, world.
+      1 foo(bar) = [baz]
+      1 x*y+z?
+      1 end$ ^start
+      1 aaa
+      1 ab
+      1 abab
+      1 123-456-7890
+      1 color colour
+      1 tab	here
+status 0
+$ -d words.txt
+apple 3
+status 0
+$ -u words.txt
+apple 3
+Banana 10
+cherry 2
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -cd words.txt
+      2 apple 3
+status 0
+$ -i text.txt
+one two three
+four  five
+
+six	seven eight
+nine
+status 0
+$ -ci words.txt
+      1 apple 3
+      1 Banana 10
+      1 cherry 2
+      2 apple 3
+      1 banana 1
+      1 Date 7
+      1   elder 12
+      1 fig 0.5
+      1 fig -4
+      1 grape 3
+      1 
+      1 Hello, world.
+      1 foo(bar) = [baz]
+      1 x*y+z?
+      1 end$ ^start
+      1 aaa
+      1 ab
+      1 abab
+      1 123-456-7890
+      1 color colour
+      1 tab	here
+status 0
+$ -f 1 words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+color colour
+tab	here
+status 0
+$ -s 1 words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -f 1 -s 1 words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+color colour
+tab	here
+status 0
+$ -f1 -c cols.txt
+      7 root:x:0:0:root:/root:/bin/sh
+status 0
+$ empty
+status 0
+$ nonl.txt
+no newline at the end
+status 0
+$ - < words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ words.txt out.txt
+-- tree
++ out.txt f 0644 183 c465c48311fd5e13
+status 0
+$ missing
+-- stderr
+uniq: missing: No such file or directory
+status 1
+$ words.txt a b
+-- stderr
+uniq: too many operands
+status 2
+$ -f x words.txt
+-- stderr
+uniq: invalid number
+status 2
+$ -z words.txt
+-- stderr
+uniq: not supported: -z
+status 2

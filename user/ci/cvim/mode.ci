@@ -1,0 +1,375 @@
+// Insert and Replace sessions. All text changes pass through edit.ci and share their undo step.
+import user.ced.keys;
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.edit;
+import user.ci.cvim.undo;
+import user.ci.cvim.motion;
+
+export void begin(inout I64[_] r, I64 cmd, I64 rep) {
+    r[state.R_MODE] = state.MODE_INSERT;
+    if (cmd == 'R') { r[state.R_MODE] = state.MODE_REPLACE; }
+    r[state.R_INS_CMD] = cmd;
+    r[state.R_INS_COUNT] = rep;
+    r[state.R_LOG_N] = 0;
+    r[state.R_RS_N] = 0;
+    r[state.R_DID_AI] = 0;
+    r[state.R_DID_SI] = 0;
+    r[state.R_CAN_SI] = 0;
+    r[state.R_CAN_SI_BACK] = 0;
+    r[state.R_REPLAY] = 0;
+    r[state.R_WANT] = -1;
+}
+
+void clean_ai(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u) {
+    if (r[state.R_DID_AI] != 0) {
+        I64 l = text.lineof(x, orig, add, r[state.R_CUR]);
+        I64 ls = text.lstart(x, orig, add, l);
+        I64 e = text.lend(x, orig, add, l);
+        if (text.first_nonblank(x, orig, add, l, false) == e) {
+            if (!edit.del(r, x, orig, add, sp, u, ls, e - ls)) { return; }
+            r[state.R_CUR] = ls;
+        }
+    }
+    r[state.R_DID_AI] = 0;
+}
+
+export void newline(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                    inout I64[_] u, Bool above) {
+    I64 p = r[state.R_CUR];
+    I64 l = text.lineof(x, orig, add, p);
+    I64 ind = text.indent(x, orig, add, l);
+    I64 e = text.lend(x, orig, add, l);
+    I64 last = e;
+    if (!above) { last = min(p, e); }
+    while (last > text.lstart(x, orig, add, l) && text.white(text.ch(x, orig, add, last - 1))) { last -= 1; }
+    Bool si = !above && last > 0 && text.ch(x, orig, add, last - 1) == '{';
+    if (si) { ind += text.TS; }
+    if (above && text.ch(x, orig, add, text.first_nonblank(x, orig, add, l, false)) == '}') { ind += text.TS; }
+    I64 extra = 1;
+    if (buf.total(x) == 0) { extra = 2; }
+    if (!edit.reserve(r,x,add,sp,u,ind+extra,0,extra+edit.blank_ops(ind),3*extra+edit.blank_cost(x,ind))) { return; }
+    U8[1] lf; lf[0] = '\n';
+    if (above) {
+        I64 ls = text.lstart(x, orig, add, l);
+        if (!edit.ins(r, x, orig, add, u, ls, lf)) { return; }
+        r[state.R_CUR] = ls;
+    } else {
+        if (!edit.ins(r, x, orig, add, u, p, lf)) { return; }
+        r[state.R_CUR] = p + 1;
+    }
+    if (!edit.blanks(r, x, orig, add, u, r[state.R_CUR], ind)) { return; }
+    r[state.R_CUR] += ind;
+    r[state.R_DID_AI] = 1;
+    r[state.R_DID_SI] = 0;
+    if (si) { r[state.R_DID_SI] = 1; }
+    r[state.R_CAN_SI] = 1;
+    r[state.R_RS_N] = 0;
+}
+
+export void enter(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                  inout I64[_] u, I64 cmd, I64 rep) {
+    I64 p = r[state.R_CUR];
+    I64 l = text.lineof(x, orig, add, p);
+    if (cmd == 'o' || cmd == 'O') {
+        I64 ind = text.indent(x, orig, add, l);
+        I64 ls = text.lstart(x, orig, add, l);
+        I64 last = text.lend(x, orig, add, l);
+        while (last > ls && text.white(text.ch(x, orig, add, last - 1))) { last -= 1; }
+        if (cmd == 'o' && last > ls && text.ch(x, orig, add, last - 1) == '{') { ind += text.TS; }
+        if (cmd == 'O' && text.ch(x, orig, add, text.first_nonblank(x, orig, add, l, false)) == '}') { ind += text.TS; }
+        I64 extra = 1;
+        if (buf.total(x) == 0) { extra = 2; }
+        if (!edit.reserve(r,x,add,sp,u,ind+extra,0,extra+edit.blank_ops(ind),3*extra+edit.blank_cost(x,ind))) { return; }
+    }
+    begin(r, cmd, rep);
+    if (cmd == 'a' && text.ch(x, orig, add, p) != '\n') { r[state.R_CUR] = text.nextc(x, orig, add, p); }
+    if (cmd == 'A') { r[state.R_CUR] = text.lend(x, orig, add, l); }
+    if (cmd == 'I') { r[state.R_CUR] = text.first_nonblank(x, orig, add, l, false); }
+    if (cmd == 'o' || cmd == 'O') {
+        undo.open_step(r,x,orig,add,u);
+        r[state.R_CUR] = text.lend(x, orig, add, l);
+        newline(r, x, orig, add, sp, u, cmd == 'O');
+    }
+}
+
+// A single key inside Insert/Replace; Escape repetition calls this same function.
+void typed(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+           inout I64[_] u, I64 k) {
+    I64 p = r[state.R_CUR];
+    I64 l = text.lineof(x, orig, add, p);
+    if (k == keys.K_LEFT || k == keys.K_RIGHT || k == keys.K_UP || k == keys.K_DOWN || k == keys.K_HOME || k == keys.K_END) {
+        Bool vertical = k == keys.K_UP || k == keys.K_DOWN;
+        if (vertical) {
+            if (r[state.R_WANT] < 0) { r[state.R_WANT] = text.vcol(x, orig, add, p); }
+        }
+        if (k == keys.K_LEFT && text.off_start(x, orig, add, p)) { p = text.prevc(x, orig, add, p); }
+        if (k == keys.K_RIGHT && p < text.lend(x, orig, add, l)) { p = text.nextc(x, orig, add, p); }
+        if (k == keys.K_HOME) { p = text.lstart(x, orig, add, l); }
+        if (k == keys.K_END) { p = text.lend(x, orig, add, l); }
+        if (k == keys.K_UP && l > 0) { p = text.at_vcol(x, orig, add, l - 1, r[state.R_WANT], true); }
+        if (k == keys.K_DOWN && l + 1 < text.nlines(x)) { p = text.at_vcol(x, orig, add, l + 1, r[state.R_WANT], true); }
+        if (!vertical && (p != r[state.R_CUR] || k == keys.K_HOME)) { r[state.R_WANT] = -1; }
+        if (k == keys.K_END) { r[state.R_WANT] = state.WANT_END; }
+        if (p == r[state.R_CUR]) { return; }
+        undo.close_step(r);
+        r[state.R_INS_COUNT] = 1;
+        r[state.R_RS_N] = 0;
+        r[state.R_DID_AI] = 0;
+        r[state.R_CUR] = p;
+        return;
+    }
+    if (k == keys.K_BACKSPACE) {
+        if (p <= 0) { return; }
+        I64 q = text.prevc(x, orig, add, p);
+        if (r[state.R_MODE] == state.MODE_REPLACE && r[state.R_RS_N] == 0 && text.ch(x, orig, add, q) != '\n') { r[state.R_CUR] = q; return; }
+        I64 restore = 0;
+        if (r[state.R_MODE] == state.MODE_REPLACE && r[state.R_RS_N] > 0 && r[state.R_RS0+r[state.R_RS_N]-1] >= 0) {
+            U8[4] enc; restore = text.encode_utf8(r[state.R_RS0+r[state.R_RS_N]-1],enc);
+        }
+        I64 ops = 1; I64 cost = 2; if (restore > 0) { ops += 1; cost += buf.chunks(x,restore)+2; }
+        if (!edit.reserve(r,x,add,sp,u,restore,edit.span_cost(x,q,p-q),ops,cost)) { return; }
+        if (r[state.R_MODE] == state.MODE_REPLACE && r[state.R_RS_N] > 0) {
+            I64 at = r[state.R_RS_N] - 1;
+            I64 old = r[state.R_RS0 + at];
+            if (old >= 0) {
+                U8[4] restored;
+                I64 restore_n = text.encode_utf8(old, restored);
+                if (!edit.space(r, add, restore_n)) { return; }
+            }
+            if (!edit.del(r, x, orig, add, sp, u, q, p - q)) { return; }
+            if (old >= 0) {
+                U8[4] s;
+                I64 n = text.encode_utf8(old, s);
+                if (!edit.ins(r, x, orig, add, u, q, s[0..n])) { return; }
+            }
+            r[state.R_RS_N] = at;
+        } else {
+            if (!edit.del(r, x, orig, add, sp, u, q, p - q)) { return; }
+        }
+        r[state.R_CUR] = q;
+        return;
+    }
+    if (k == keys.K_DELETE) {
+        if (p < buf.total(x) - 1) { if (!edit.del(r, x, orig, add, sp, u, p, text.nextc(x, orig, add, p) - p)) { return; } }
+        return;
+    }
+    if (k == keys.K_ENTER) {
+        // Compute the indent from the retained prefix before any cleanup removes bytes.
+        I64 line_start = text.lstart(x, orig, add, l);
+        I64 prefix = line_start;
+        while (prefix < p && text.white(text.ch(x, orig, add, prefix))) { prefix += 1; }
+        I64 ind = text.vcol(x, orig, add, prefix);
+        I64 last = p;
+        while (last > line_start && text.white(text.ch(x, orig, add, last - 1))) { last -= 1; }
+        if (last > line_start && text.ch(x, orig, add, last - 1) == '{') { ind += text.TS; }
+        if (r[state.R_DID_AI] != 0) { ind = text.indent(x, orig, add, l); }
+        I64 extra = 1;
+        if (buf.total(x) == 0) { extra = 2; }
+        I64 tail0 = p;
+        while (text.white(text.ch(x,orig,add,tail0))) { tail0 += 1; }
+        I64 cleanup = 0;
+        if (r[state.R_DID_AI] != 0 && text.first_nonblank(x,orig,add,l,false) == text.lend(x,orig,add,l)) {
+            cleanup = edit.span_cost(x,line_start,text.lend(x,orig,add,l)-line_start);
+        }
+        if (!edit.reserve(r,x,add,sp,u,ind+extra,cleanup+edit.span_cost(x,p,tail0-p),2+extra+2*edit.blank_ops(ind),4+3*extra+2*edit.blank_cost(x,ind))) { return; }
+        I64 saved_ind = 0;
+        if (r[state.R_DID_AI] != 0) { saved_ind = text.indent(x, orig, add, l); }
+        clean_ai(r, x, orig, add, sp, u);
+        if (r[state.R_FULL] != 0) { return; }
+        p = r[state.R_CUR];
+        // Vim removes leading whitespace from the carried tail with autoindent enabled.
+        I64 tail = p;
+        while (text.white(text.ch(x, orig, add, tail))) { tail += 1; }
+        if (!edit.del(r, x, orig, add, sp, u, p, tail - p)) { return; }
+        newline(r, x, orig, add, sp, u, false);
+        if (r[state.R_FULL] != 0) { return; }
+        if (saved_ind > 0) {
+            if (!edit.blanks(r, x, orig, add, u, r[state.R_CUR], saved_ind)) { return; }
+            r[state.R_CUR] += saved_ind;
+        }
+        return;
+    }
+    if (k == keys.K_TAB) {
+        I64 n = text.TS - text.vcol(x, orig, add, p) % text.TS;
+        I64 spans = 0; I64 ops = edit.blank_ops(n); I64 cost = edit.blank_cost(x,n);
+        if (r[state.R_MODE] == state.MODE_REPLACE) {
+            if (r[state.R_RS_N]+n > state.RS_MAX) { r[state.R_FULL] = 1; r[state.R_BELL] = 1; return; }
+            if (text.ch(x,orig,add,p) != '\n') { spans = edit.span_cost(x,p,text.nextc(x,orig,add,p)-p); ops += 1; cost += 2; }
+            ops += 1; cost += 3;
+        }
+        I64 extra = 0; if (buf.total(x) == 0) { extra = 1; }
+        if (!edit.reserve(r,x,add,sp,u,n+extra,spans,ops+extra,cost+3*extra)) { return; }
+        I64 start = p;
+        I64 left = n;
+        if (r[state.R_MODE] == state.MODE_REPLACE) {
+            typed(r, x, orig, add, sp, u, ' ');
+            if (r[state.R_FULL] != 0) { return; }
+            start = r[state.R_CUR];
+            left -= 1;
+            for i in 0..left {
+                if (r[state.R_RS_N] < state.RS_MAX) {
+                    r[state.R_RS0 + r[state.R_RS_N]] = -1;
+                    r[state.R_RS_N] += 1;
+                }
+            }
+        }
+        if (!edit.blanks(r, x, orig, add, u, start, left)) { return; }
+        r[state.R_CUR] += left;
+        r[state.R_DID_AI] = 0;
+        return;
+    }
+    if (k < 32 || k > 1114111 || (k >= 55296 && k <= 57343)) {
+        r[state.R_BELL] = 1;
+        r[state.R_MSG] = k;
+        return;
+    }
+    U8[4] encoded;
+    I64 encoded_n = text.encode_utf8(k, encoded);
+    I64 spans = 0; I64 ops = 1;
+    I64 extra = 0; if (buf.total(x) == 0) { extra = 1; }
+    I64 cost = edit.insert_cost(r,x,u,p,r[state.R_ST_ADD]+extra,encoded_n)+3*extra;
+    if (r[state.R_MODE] == state.MODE_REPLACE && text.ch(x,orig,add,p) != '\n') {
+        spans = edit.span_cost(x,p,text.nextc(x,orig,add,p)-p); ops += 1;
+        cost = buf.chunks(x,encoded_n)+4;
+    }
+    I64 indent_bytes = 0;
+    if (k == '}' && text.in_indent(x,orig,add,p) && r[state.R_CAN_SI] != 0) {
+        I64 match = motion.open_before(x,orig,add,p,'{');
+        I64 ind = max(text.indent(x,orig,add,l)-text.TS,0);
+        if (match >= 0) { ind = text.indent(x,orig,add,text.lineof(x,orig,add,match)); }
+        I64 ls = text.lstart(x,orig,add,l); I64 e = text.first_nonblank(x,orig,add,l,false);
+        if (e-ls != ind || text.indent(x,orig,add,l) != ind) {
+            indent_bytes = ind; spans += edit.span_cost(x,ls,e-ls);
+            ops += 1+edit.blank_ops(ind); cost += 2+edit.blank_cost(x,ind)+buf.chunks(x,encoded_n)+2;
+            if (r[state.R_MODE] == state.MODE_REPLACE) { spans += 4; ops += 1; cost += 2; }
+        }
+    }
+    if (!edit.reserve(r,x,add,sp,u,encoded_n+extra+indent_bytes,spans,ops+extra,cost)) { return; }
+    if (r[state.R_MODE] == state.MODE_REPLACE && r[state.R_RS_N] >= state.RS_MAX) {
+        r[state.R_FULL] = 1; r[state.R_BELL] = 1; return;
+    }
+    if (k == '}' && text.in_indent(x, orig, add, p) && r[state.R_CAN_SI] != 0) {
+        I64 match = motion.open_before(x, orig, add, p, '{');
+        I64 ind = max(text.indent(x, orig, add, l) - text.TS, 0);
+        if (match >= 0) { ind = text.indent(x, orig, add, text.lineof(x, orig, add, match)); }
+        if (!edit.set_indent(r, x, orig, add, sp, u, l, ind)) { return; }
+        p = r[state.R_CUR];
+    }
+    if (r[state.R_MODE] == state.MODE_REPLACE) {
+        I64 old = -1;
+        if (text.ch(x, orig, add, p) != '\n') {
+            old = text.code_at(x, orig, add, p);
+            if (!edit.del(r, x, orig, add, sp, u, p, text.nextc(x, orig, add, p) - p)) { return; }
+        }
+        if (r[state.R_RS_N] < state.RS_MAX) {
+            r[state.R_RS0 + r[state.R_RS_N]] = old;
+            r[state.R_RS_N] += 1;
+        }
+    }
+    U8[4] s;
+    I64 n = text.encode_utf8(k, s);
+    if (edit.ins(r, x, orig, add, u, p, s[0..n])) { r[state.R_CUR] = p + n; }
+    r[state.R_DID_AI] = 0;
+    r[state.R_CAN_SI] = 0;
+}
+
+// Repetition is rare and bounded by the input log. Reserve its whole suffix before applying any of it.
+// Indent can grow by at most four cells per logged key, beyond the largest existing indent.
+Bool replay_room(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, in I64[_] sp, in I64[_] u) {
+    I64 repeats = max(r[state.R_INS_COUNT]-1,0);
+    I64 bytes = 0; I64 spans = 0; I64 ops = 0; I64 pieces = 0;
+    I64 max_ind = 0;
+    Bool may_ai = false;
+    if (repeats > undo.OPS && (r[state.R_LOG_N] > 0 || r[state.R_INS_CMD] == 'o' || r[state.R_INS_CMD] == 'O')) {
+        r[state.R_FULL] = 1; r[state.R_BELL] = 1; return false;
+    }
+    I64 stack = 0;
+    if (repeats > 0) {
+        for l in 0..text.nlines(x) { max_ind = max(max_ind,text.indent(x,orig,add,l)); }
+        max_ind += 4*(r[state.R_LOG_N]+1)*repeats;
+        for j in 0..r[state.R_LOG_N] {
+            I64 k = r[state.R_LOG0+j];
+            if (k == keys.K_ENTER || k == '}') {
+                may_ai = true;
+                bytes += 1+max_ind; ops += 3+2*edit.blank_ops(max_ind);
+                pieces += 7+2*edit.blank_cost(x,max_ind); spans += r[state.R_PBOUND];
+            } else if (k == keys.K_TAB) {
+                bytes += 4; ops += 3; pieces += buf.chunks(x,4)+7; stack += 4;
+                if (r[state.R_MODE] == state.MODE_REPLACE) { spans += 4; }
+            } else if (k == keys.K_BACKSPACE || k == keys.K_DELETE) {
+                bytes += 4; spans += 4; ops += 2; pieces += buf.chunks(x,4)+4;
+            } else if (k >= 32 && k <= 1114111) {
+                U8[4] enc; I64 n = text.encode_utf8(k,enc);
+                bytes += n; ops += 1; pieces += buf.chunks(x,n)+2; stack += 1;
+                if (r[state.R_MODE] == state.MODE_REPLACE) { spans += 4; ops += 1; pieces += 2; }
+            }
+        }
+        if (r[state.R_INS_CMD] == 'o' || r[state.R_INS_CMD] == 'O') {
+            may_ai = true;
+            bytes += 1+max_ind; ops += 1+edit.blank_ops(max_ind); pieces += 3+edit.blank_cost(x,max_ind);
+        }
+        if (r[state.R_MODE] == state.MODE_REPLACE && stack*repeats > state.RS_MAX-r[state.R_RS_N]) {
+            r[state.R_FULL] = 1; r[state.R_BELL] = 1; return false;
+        }
+        bytes *= repeats; spans *= repeats; ops *= repeats; pieces *= repeats;
+        if (!edit.reserve(r,x,add,sp,u,bytes,spans,ops,pieces)) { return false; }
+        if (spans > 0) { spans += pieces*repeats; }
+        if (buf.total(x) == 0) { bytes += 1; ops += 1; pieces += 3; }
+    }
+    if (may_ai) { spans += r[state.R_PBOUND]+pieces; ops += 1; pieces += 2; }
+    else if (repeats == 0 && r[state.R_DID_AI] != 0) {
+        I64 l = text.lineof(x,orig,add,r[state.R_CUR]);
+        I64 ls = text.lstart(x,orig,add,l); I64 e = text.lend(x,orig,add,l);
+        if (e > ls && text.first_nonblank(x,orig,add,l,false) == e) {
+            spans += edit.span_cost(x,ls,e-ls); ops += 1; pieces += 2;
+        }
+    }
+    return edit.reserve(r,x,add,sp,u,bytes,spans,ops,pieces);
+}
+
+export void step(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                 inout I64[_] u, I64 k) {
+    if (k == keys.K_ESC || k == keys.M_CTRL + '[') {
+        if (!replay_room(r,x,orig,add,sp,u)) { return; }
+        I64 rep = r[state.R_INS_COUNT];
+        r[state.R_REPLAY] = 1;
+        if (r[state.R_LOG_N] == 0 && r[state.R_INS_CMD] != 'o' && r[state.R_INS_CMD] != 'O') { rep = 1; }
+        for repeat_index in 1..rep {
+            if (r[state.R_INS_CMD] == 'o' || r[state.R_INS_CMD] == 'O') {
+                r[state.R_CUR] = text.lend(x, orig, add, text.lineof(x, orig, add, r[state.R_CUR]));
+                newline(r, x, orig, add, sp, u, false);
+                if (r[state.R_FULL] != 0) { return; }
+            }
+            for j in 0..r[state.R_LOG_N] {
+                typed(r, x, orig, add, sp, u, r[state.R_LOG0+j]);
+                if (r[state.R_FULL] != 0) { return; }
+            }
+        }
+        r[state.R_REPLAY] = 0;
+        clean_ai(r, x, orig, add, sp, u);
+        if (r[state.R_FULL] != 0) { return; }
+        I64 p = r[state.R_CUR];
+        if (text.off_start(x, orig, add, p)) { p = text.prevc(x, orig, add, p); }
+        r[state.R_CUR] = text.normal_pos(x, orig, add, p);
+        r[state.R_MODE] = state.MODE_NORMAL;
+        r[state.R_WANT] = -1;
+        undo.close_step(r);
+        return;
+    }
+    I64 before_cur = r[state.R_CUR];
+    I64 before_add = r[state.R_ST_ADD];
+    I64 before_total = buf.total(x);
+    typed(r, x, orig, add, sp, u, k);
+    if (r[state.R_FULL] != 0) { return; }
+    if (k != keys.K_UP && k != keys.K_DOWN && k != keys.K_END
+        && (r[state.R_CUR] != before_cur || r[state.R_ST_ADD] != before_add || buf.total(x) != before_total)) {
+        r[state.R_WANT] = -1;
+    }
+    if (r[state.R_LOG_N] < state.LOG_MAX) {
+        r[state.R_LOG0 + r[state.R_LOG_N]] = k;
+        r[state.R_LOG_N] += 1;
+    } else { r[state.R_INS_COUNT] = 1; }
+}
+// SPDX-License-Identifier: Apache-2.0

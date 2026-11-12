@@ -1,0 +1,750 @@
+{
+  "classes": [
+    {
+      "encoding": "Big5",
+      "classification": "mapped HKSCS scalar changed to private-use",
+      "count": 5054,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2724
+      },
+      "representative": {
+        "case": 57062,
+        "encoding": "Big5",
+        "data": [
+          135,
+          64
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            17392
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            62054
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            17392
+          ]
+        },
+        "primary_support": {
+          "index": "big5",
+          "pointer": 942,
+          "pinned": 17392
+        }
+      }
+    },
+    {
+      "encoding": "Big5",
+      "classification": "mapped scalar changed or rejected",
+      "count": 34,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2724
+      },
+      "representative": {
+        "case": 61374,
+        "encoding": "Big5",
+        "data": [
+          163,
+          192
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            9216
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            65533
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            9216
+          ]
+        },
+        "primary_support": {
+          "index": "big5",
+          "pointer": 5432,
+          "pinned": 9216
+        }
+      }
+    },
+    {
+      "encoding": "EUC-KR",
+      "classification": "mapped UHC pair treated differently",
+      "count": 8824,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 3366
+      },
+      "representative": {
+        "case": 104115,
+        "encoding": "EUC-KR",
+        "data": [
+          129,
+          65
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            44034
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            129,
+            65
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            44034
+          ]
+        },
+        "primary_support": {
+          "index": "euc-kr",
+          "pointer": 0,
+          "pinned": 44034
+        }
+      }
+    },
+    {
+      "encoding": "Big5",
+      "classification": "null-cell accepted as private-use scalar",
+      "count": 1159,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2724
+      },
+      "representative": {
+        "case": 121163,
+        "encoding": "Big5",
+        "data": [
+          129,
+          64
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            64
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            61112
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            64
+          ]
+        },
+        "primary_support": {
+          "index": "big5",
+          "pointer": 0,
+          "pinned": null
+        }
+      }
+    },
+    {
+      "encoding": "Shift_JIS",
+      "classification": "null-cell ASCII replay omitted",
+      "count": 492,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 3254
+      },
+      "representative": {
+        "case": 122476,
+        "encoding": "Shift_JIS",
+        "data": [
+          130,
+          64
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            64
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            65533
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            64
+          ]
+        },
+        "primary_support": {
+          "index": "jis0208",
+          "pointer": 188,
+          "pinned": null,
+          "rule": "null mapping restores ASCII trailing byte"
+        }
+      }
+    },
+    {
+      "encoding": "EUC-JP",
+      "classification": "unassigned JIS0212 cell accepted",
+      "count": 21,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2827
+      },
+      "representative": {
+        "case": 128668,
+        "encoding": "EUC-JP",
+        "data": [
+          143,
+          243,
+          161
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            8560
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533
+          ]
+        },
+        "primary_support": {
+          "index": "jis0212",
+          "pointer": 7708,
+          "pinned": null
+        }
+      }
+    },
+    {
+      "encoding": "EUC-KR",
+      "classification": "null-cell error/replay differs",
+      "count": 2400,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 3366
+      },
+      "representative": {
+        "case": 129796,
+        "encoding": "EUC-KR",
+        "data": [
+          129,
+          91
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            91
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            129,
+            91
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            91
+          ]
+        },
+        "primary_support": {
+          "index": "euc-kr",
+          "pointer": 26,
+          "pinned": null
+        }
+      }
+    },
+    {
+      "encoding": "Big5",
+      "classification": "special two-scalar mapping changed",
+      "count": 5,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2724
+      },
+      "representative": {
+        "case": 139786,
+        "encoding": "Big5",
+        "data": [
+          136,
+          98,
+          136,
+          100,
+          136,
+          163,
+          136,
+          165
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            202,
+            772,
+            202,
+            780,
+            234,
+            772,
+            234,
+            780
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            62245,
+            62247,
+            62276,
+            62278
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            202,
+            772,
+            202,
+            780,
+            234,
+            772,
+            234,
+            780
+          ]
+        },
+        "primary_support": {
+          "rule": "Big5 decoder special table: pointers 1133,1135,1164,1166 return two code points"
+        }
+      }
+    },
+    {
+      "encoding": "EUC-JP",
+      "classification": "malformed JIS0212 replacement count differs",
+      "count": 1,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2827
+      },
+      "representative": {
+        "case": 139811,
+        "encoding": "EUC-JP",
+        "data": [
+          143,
+          161,
+          60
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            60
+          ]
+        },
+        "actual": {
+          "terminal": -2,
+          "points": []
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            60
+          ]
+        },
+        "primary_support": {
+          "rule": "0x8F 0xA1 selects JIS0212; invalid trail returns one error and restores ASCII"
+        }
+      }
+    },
+    {
+      "encoding": "Shift_JIS",
+      "classification": "standalone 0x80 rejected",
+      "count": 1,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 3254
+      },
+      "representative": {
+        "case": 139837,
+        "encoding": "Shift_JIS",
+        "data": [
+          128,
+          161,
+          223
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            128,
+            65377,
+            65439
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            65533,
+            65377,
+            65439
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            128,
+            65377,
+            65439
+          ]
+        },
+        "primary_support": {
+          "rule": "standalone 0x80 returns U+0080"
+        }
+      }
+    },
+    {
+      "encoding": "EUC-KR",
+      "classification": "invalid-trail error/replay differs",
+      "count": 1,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 3366
+      },
+      "representative": {
+        "case": 139845,
+        "encoding": "EUC-KR",
+        "data": [
+          129,
+          60
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            60
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            129,
+            60
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            60
+          ]
+        },
+        "primary_support": {
+          "rule": "leading 0x81..0xFE; invalid trailing byte restores ASCII before error"
+        }
+      }
+    },
+    {
+      "encoding": "EUC-KR",
+      "classification": "invalid-trail fatal outcome differs",
+      "count": 1,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 3366
+      },
+      "representative": {
+        "case": 139851,
+        "encoding": "EUC-KR",
+        "data": [
+          129,
+          60
+        ],
+        "fatal": true,
+        "bom": false,
+        "expected": {
+          "terminal": -2,
+          "points": []
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            129,
+            60
+          ]
+        },
+        "native": {
+          "terminal": -2,
+          "points": []
+        },
+        "primary_support": {
+          "rule": "leading 0x81..0xFE; invalid trailing byte restores ASCII before error"
+        }
+      }
+    },
+    {
+      "encoding": "gb18030",
+      "classification": "unclassified",
+      "count": 4,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": null
+      },
+      "representative": {
+        "case": 139852,
+        "encoding": "gb18030",
+        "data": [
+          129,
+          48,
+          60
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            48,
+            60
+          ]
+        },
+        "actual": {
+          "terminal": -2,
+          "points": []
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            48,
+            60
+          ]
+        },
+        "primary_support": {}
+      }
+    },
+    {
+      "encoding": "ISO-2022-JP",
+      "classification": "escape EOF restored byte omitted",
+      "count": 2,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2939
+      },
+      "representative": {
+        "case": 139881,
+        "encoding": "ISO-2022-JP",
+        "data": [
+          27,
+          36
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            36
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            65533
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            36
+          ]
+        },
+        "primary_support": {
+          "rule": "escape state at EOF restores leading 0x24, restores output state and returns error"
+        }
+      }
+    },
+    {
+      "encoding": "ISO-2022-JP",
+      "classification": "unclassified",
+      "count": 4,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 2939
+      },
+      "representative": {
+        "case": 139888,
+        "encoding": "ISO-2022-JP",
+        "data": [
+          27,
+          36,
+          60
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            36,
+            60
+          ]
+        },
+        "actual": {
+          "terminal": -2,
+          "points": []
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            36,
+            60
+          ]
+        },
+        "primary_support": {}
+      }
+    },
+    {
+      "encoding": "EUC-KR",
+      "classification": "unclassified",
+      "count": 2,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": 3366
+      },
+      "representative": {
+        "case": 140033,
+        "encoding": "EUC-KR",
+        "data": [
+          129
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533
+          ]
+        },
+        "actual": {
+          "terminal": -1,
+          "points": [
+            129
+          ]
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533
+          ]
+        },
+        "primary_support": {}
+      }
+    },
+    {
+      "encoding": "GBK",
+      "classification": "unclassified",
+      "count": 2,
+      "primary_section": {
+        "path": "vendor/whatwg-encoding/encoding.bs",
+        "line": null
+      },
+      "representative": {
+        "case": 140775,
+        "encoding": "GBK",
+        "data": [
+          129,
+          48,
+          255
+        ],
+        "fatal": false,
+        "bom": false,
+        "expected": {
+          "terminal": -1,
+          "points": [
+            65533,
+            48,
+            65533
+          ]
+        },
+        "actual": {
+          "terminal": -2,
+          "points": []
+        },
+        "native": {
+          "terminal": -1,
+          "points": [
+            65533,
+            48,
+            65533
+          ]
+        },
+        "primary_support": {}
+      }
+    }
+  ],
+  "unresolved": [
+    "gb18030: unclassified",
+    "ISO-2022-JP: unclassified",
+    "EUC-KR: unclassified",
+    "GBK: unclassified"
+  ],
+  "fatal_comparison": "byte streaming retains output before a thrown fatal error; astral, UTF16 and fatal-prefix controls pass; four two-scalar serialization controls pass independently of Node mapping conformance",
+  "native_basis": "all four native batches exactly equal independent primary expectations",
+  "primary_expectations_revised": false
+}

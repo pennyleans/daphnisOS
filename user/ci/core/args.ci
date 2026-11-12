@@ -1,0 +1,181 @@
+// user/ci/core/args.ci: a core tool's arguments and options (docs/specs/2026-11-06-c-core.md section 4). main's args
+// are argv[1] on, each NUL-ended. Options follow XBD 12.2: letters clustered after one '-' (-lw), a value joined or
+// next (-n5, -n 5), `--` ends them, and a lone `-` or the first word not starting with '-' is the first operand.
+// A letter in neither set is refused by name; an option without its value is a usage error.
+import user.ci.core.msg;
+
+I64[2048] at;      // where argument i starts in args; it ends at its NUL
+I64 nargs = 0;
+U8[128] seen;      // 1 for each option letter given
+I64[128] when;     // the place of each letter's last use among all given (CT-2: -f and -i, the last one wins)
+I64 tick = 0;
+I64[128] vat;      // the value's start for a valued option, the last one given
+I64[128] vend;
+I64 first = 0;     // the index of the first operand
+U8[256] ol;        // CT-3: every valued option given, in order (grep -e and -f): its letter and its value
+I64[256] os;
+I64[256] oe;
+I64 on = 0;
+
+void keep(U8 c, I64 s, I64 e) {
+    if (on == 256) { msg.limit(b"ARGS_MAX"); }
+    ol[on] = c;
+    os[on] = s;
+    oe[on] = e;
+    on = on + 1;
+}
+
+Bool in_set(in U8[_] set, U8 c) {
+    for i in 0..len(set) {
+        if (set[i] == c) { return true; }
+    }
+    return false;
+}
+
+// Splits args, takes the options: flags is the set of letters without a value, valued those with one.
+export void parse(in U8[_] args, in U8[_] flags, in U8[_] valued) {
+    nargs = 0;
+    on = 0;
+    I64 s = 0;
+    for i in 0..len(args) {
+        if (args[i] == 0) {
+            if (nargs == 2048) { msg.limit(b"ARGS_MAX"); }
+            at[nargs] = s;
+            nargs = nargs + 1;
+            s = i + 1;
+        }
+    }
+    tick = 0;
+    for c in 0..128 {
+        seen[c] = 0;
+        when[c] = 0;
+        vat[c as I64] = -1;
+        vend[c] = -1;
+    }
+    I64 k = 0;
+    Bool going = true;
+    while (going && k < nargs) {
+        I64 a = at[k];
+        I64 e = stop(args, k);
+        if (e - a < 2 || args[a] != '-') {
+            going = false;
+        } else if (e - a == 2 && args[a + 1] == '-') {
+            k = k + 1;
+            going = false;
+        } else {
+            I64 j = a + 1;
+            Bool more = true;
+            while (more && j < e) {
+                U8 c = args[j];
+                if (c >= 128) { msg.refuse(c); }
+                tick = tick + 1;
+                if (in_set(flags, c)) {
+                    seen[c as I64] = 1;
+                    when[c as I64] = tick;
+                    j = j + 1;
+                } else if (in_set(valued, c)) {
+                    seen[c as I64] = 1;
+                    when[c as I64] = tick;
+                    if (j + 1 < e) {
+                        vat[c as I64] = j + 1;
+                        vend[c as I64] = e;
+                        keep(c, j + 1, e);
+                    } else {
+                        k = k + 1;
+                        if (k == nargs) {
+                            msg.needs(c);
+                        }
+                        vat[c as I64] = at[k];
+                        vend[c as I64] = stop(args, k);
+                        keep(c, at[k], vend[c as I64]);
+                    }
+                    more = false;
+                } else {
+                    msg.refuse(c);
+                }
+            }
+            k = k + 1;
+        }
+    }
+    first = k;
+}
+
+// The end (its NUL) of argument i.
+export I64 stop(in U8[_] args, I64 i) {
+    I64 e = at[i];
+    while (args[e] != 0) { e = e + 1; }
+    return e;
+}
+
+export Bool has(U8 c) {
+    return seen[c as I64] == 1;
+}
+
+// Of the letters of set given, the one given last; 0 when none was.
+export U8 last(in U8[_] set) {
+    U8 got = 0;
+    I64 at_most = 0;
+    for i in 0..len(set) {
+        if (when[set[i] as I64] > at_most) {
+            at_most = when[set[i] as I64];
+            got = set[i];
+        }
+    }
+    return got;
+}
+
+export I64 operands() {
+    return nargs - first;
+}
+
+// Operand i's bytes are args[op_start(i)..op_stop(args, i)].
+export I64 op_start(I64 i) {
+    return at[first + i];
+}
+
+export I64 op_stop(in U8[_] args, I64 i) {
+    return stop(args, first + i);
+}
+
+// Valued option c's bytes are args[val_start(c)..val_stop(c)]; -1 when not given.
+export I64 val_start(U8 c) {
+    return vat[c as I64];
+}
+
+export I64 val_stop(U8 c) {
+    return vend[c as I64];
+}
+
+// args[a..e] as a decimal nargs (an optional leading '+'); a bad digit is a usage error, past 2^62 a limit.
+export I64 count_of(in U8[_] args, I64 a, I64 e, in U8[_] what) {
+    I64 i = a;
+    if (i < e && args[i] == '+') { i = i + 1; }
+    if (i == e) { msg.usage(what); }
+    I64 v = 0;
+    while (i < e) {
+        U8 c = args[i];
+        if (c < '0' || c > '9') { msg.usage(what); }
+        if (v > 461168601842738790) { msg.limit(b"COUNT"); }
+        v = v * 10 + ((c - 48) as I64);
+        i = i + 1;
+    }
+    return v;
+}
+
+// CT-3: the valued options in the order given: how many, and the i-th one's letter and value args[s..e].
+export I64 values() {
+    return on;
+}
+
+export U8 value_letter(I64 i) {
+    return ol[i];
+}
+
+export I64 value_start(I64 i) {
+    return os[i];
+}
+
+export I64 value_stop(I64 i) {
+    return oe[i];
+}
+// SPDX-License-Identifier: Apache-2.0

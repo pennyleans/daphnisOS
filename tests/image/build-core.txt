@@ -1,0 +1,10 @@
+./grant disk ./sh <<'EOF'
+cd home/src
+for t in cat wc ls head tail stat du tee mktemp mkdir rmdir rm cp mv find xargs env echo sleep date grep sort uniq cut tr cmp sha256sum true false test bracket printf basename dirname sync seq rev truncate md5sum fetch ln chmod touch uname cish hdesk; do
+    if /home/opt/cint/cib ../out/$t user/ci/$t.ci; then rm -r ../out/$t.cib; /sha256sum ../out/$t; else echo "cib $t: failed"; fi
+done
+sync
+EOF
+echo grant: $?
+exit 0
+

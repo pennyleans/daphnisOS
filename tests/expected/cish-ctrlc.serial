@@ -1,0 +1,49 @@
+Daphnis CS: cish
+daphnis: image 2447280 bytes from the loader module
+daphnis: input 0 bytes
+daphnis: run ctrlc pid 1
+ctrlc: start: @> 
+ctrlc: cat: run
+ctrlc: cat reads: x..x..
+ctrlc: after Ctrl-C: @> 
+ctrlc: status: s1=130
+ctrlc: prompt: @> 
+ctrlc: loop: loop
+ctrlc: pipeline reads: y..y..
+ctrlc: after Ctrl-C: @> 
+ctrlc: status: s2=130
+ctrlc: prompt: @> 
+ctrlc: cat: quit
+ctrlc: cat reads: z..z..
+ctrlc: after Ctrl-\: @> 
+ctrlc: status: s3=131
+ctrlc: prompt: @> 
+ctrlc: the shell ended
+daphnis: state 6cc39d898023561dad4693411121f8f5ad6bd7835fd5c4f4b30d7b150e4823c0
+daphnis: exit 0
+daphnis: pid 1 forked 1
+daphnis: run ctrlc pid 2
+ctrlc: start: @> 
+ctrlc: cat: run
+ctrlc: cat reads: x..x..
+ctrlc: after Ctrl-C: @> 
+ctrlc: status: s1=130
+ctrlc: prompt: @> 
+ctrlc: loop: loop
+ctrlc: pipeline reads: y..y..
+ctrlc: after Ctrl-C: @> 
+ctrlc: status: s2=130
+ctrlc: prompt: @> 
+ctrlc: cat: quit
+ctrlc: cat reads: z..z..
+ctrlc: after Ctrl-\: @> 
+ctrlc: status: s3=131
+ctrlc: prompt: @> 
+ctrlc: the shell ended
+daphnis: state 6cc39d898023561dad4693411121f8f5ad6bd7835fd5c4f4b30d7b150e4823c0
+daphnis: exit 0
+daphnis: pid 2 forked 1
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 12 frames held
+daphnis: pool frames free 16371 of 16383
+cish: done

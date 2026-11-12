@@ -1,0 +1,179 @@
+// user/ci/cvim/state.ci: the registers of cvim's editing core (docs/specs/2026-11-07-cv-cvim.md sections 5 and 14,
+// CV-2a). The core is a function of its inputs (ced's D-2): one I64 table r holds every scalar of the session, and
+// the text (buf.ci's x, orig, add), the spans (sp) and the undo record (u) are tables the caller owns. r is also
+// buf.ci's st: its first two elements are buf.ST_ORIG and buf.ST_ADD.
+
+export const I64 R_ST_ORIG = 0;
+export const I64 R_ST_ADD = 1;
+export const I64 R_MODE = 2;
+// The cursor, a byte offset; on a line's line feed only in Insert mode or on an empty line.
+export const I64 R_CUR = 3;
+// The screen column j and k aim for (Vim's curswant): -1 until a vertical move asks, WANT_END after $.
+export const I64 R_WANT = 4;
+// The count being typed, the operator waiting for its motion and the count typed before it.
+export const I64 R_COUNT = 5;
+export const I64 R_OP = 6;
+export const I64 R_OPCOUNT = 7;
+// A key waiting for its second key: g, f, F, t, T or r.
+export const I64 R_PREFIX = 8;
+// The last f, F, t or T and its character, for ; and ,.
+export const I64 R_FIND_CMD = 9;
+export const I64 R_FIND_CH = 10;
+// After a key: the key outside cvim's subset that rang the bell (the message line names it), and the bell.
+export const I64 R_MSG = 11;
+export const I64 R_BELL = 12;
+// What the last motion was: inclusive, linewise, failed, and what it does to R_WANT.
+export const I64 R_MINCL = 13;
+export const I64 R_MLINE = 14;
+export const I64 R_MFAIL = 15;
+export const I64 R_MWANT = 16;
+// The unnamed register: spans [R_REG_FROM, R_REG_TO) of sp, and whether it holds whole lines.
+export const I64 R_REG_FROM = 17;
+export const I64 R_REG_TO = 18;
+export const I64 R_REG_LINE = 19;
+// The next free span of sp.
+export const I64 R_SPTOP = 20;
+// The Insert session: the command that began it, its count, the keys typed (for the count), Vim's autoindent and
+// smartindent flags (did_ai, did_si, can_si, can_si_back), the replace stack's depth, and whether keys are replayed.
+export const I64 R_INS_CMD = 21;
+export const I64 R_INS_COUNT = 22;
+export const I64 R_LOG_N = 23;
+export const I64 R_DID_AI = 24;
+export const I64 R_DID_SI = 25;
+export const I64 R_CAN_SI = 26;
+export const I64 R_CAN_SI_BACK = 27;
+export const I64 R_RS_N = 28;
+export const I64 R_REPLAY = 29;
+// The undo record (undo.ci): steps kept, steps applied, operations used, and whether a step is open.
+export const I64 R_U_N = 30;
+export const I64 R_U_AT = 31;
+export const I64 R_U_OPS = 32;
+export const I64 R_U_OPEN = 33;
+// A failed edit (a full table): the core refuses the key and says so.
+export const I64 R_FULL = 34;
+// An admitted bound on live pieces across retained history and intermediate inverse states.
+export const I64 R_PBOUND = 35;
+// Replay potential of every retained operation and of the applied prefix; the fixed buffer chunk.
+export const I64 R_U_POT = 36;
+export const I64 R_U_APOT = 37;
+export const I64 R_CHUNK = 38;
+// CV-2b. The register a command names ('"' then a name; 0 for none) and the register the unnamed one shows (Vim's
+// y_previous, an index of the register table).
+export const I64 R_REGNAME = 39;
+export const I64 R_PREV = 40;
+// The window: its text rows (an input, key.window), its top line (Vim's w_topline) and Vim's 'scroll'.
+export const I64 R_HEIGHT = 41;
+export const I64 R_TOP = 42;
+export const I64 R_SCROLL = 43;
+// Visual mode: its kind ('v', 'V' or Ctrl+V; 0 when off), where it began, and the last selection for gv.
+export const I64 R_VMODE = 44;
+export const I64 R_VSTART = 45;
+export const I64 R_GV_MODE = 46;
+export const I64 R_GV_START = 47;
+export const I64 R_GV_END = 48;
+export const I64 R_GV_WANT = 49;
+// Repeat: keys of the command being typed, whether the last change is still taking keys (an Insert session), and
+// the keys of the last change. A Visual change keeps its extent (Vim's redo_VIsual).
+export const I64 R_PEND_N = 50;
+export const I64 R_DOT_OPEN = 51;
+export const I64 R_DOT_N = 52;
+export const I64 R_RV_MODE = 53;
+export const I64 R_RV_LINES = 54;
+export const I64 R_RV_VCOL = 55;
+export const I64 R_RV_COUNT = 56;
+export const I64 R_RV_BUSY = 57;
+// Macros: the register being recorded (0 when not), keys recorded, the last register run (@@) and the typeahead's
+// depth. R_MSG_PRE: the key before R_MSG when a two-key command rang the bell (the message line says "g?").
+export const I64 R_REC = 58;
+export const I64 R_REC_N = 59;
+export const I64 R_LAST_AT = 60;
+export const I64 R_TA_N = 61;
+export const I64 R_MSG_PRE = 62;
+// The count the command ran with (for a Visual repeat) and whether the command changed the text.
+export const I64 R_DOT_CHANGED = 63;
+
+// The keys of the Insert session, then the replace stack (the code point each typed key replaced, -1 for none).
+export const I64 R_LOG0 = 64;
+export const I64 LOG_MAX = 960;
+export const I64 R_RS0 = 1024;
+export const I64 RS_MAX = 1024;
+// CV-2b tables past the CV-2a registers. The register table: per register, spans [from, to) of sp, its kind and a
+// block's width. 0 to 9, a to z (10 to 35), '-' (36).
+export const I64 R_X0 = 2048;
+// A text object's start, end, whether the end is inclusive and whether it is linewise (obj.ci).
+export const I64 R_OBJ_S = 2048;
+export const I64 R_OBJ_E = 2049;
+export const I64 R_OBJ_INCL = 2050;
+export const I64 R_OBJ_LINE = 2051;
+// A Visual block's Insert or Append waiting for Esc: its kind ('I', 'A', 'c'; 0 for none), lines, screen column, the
+// first line's length before and where typing began.
+export const I64 R_BI_CMD = 2052;
+export const I64 R_BI_L0 = 2053;
+export const I64 R_BI_L1 = 2054;
+export const I64 R_BI_VCOL = 2055;
+export const I64 R_BI_LEN = 2056;
+export const I64 R_BI_POS = 2057;
+export const I64 R_BI_END = 2058;
+// The insert key log was reset by an arrow key (Vim's arrow_used): the next typed key restarts the repeat as "1i".
+export const I64 R_DOT_ARROW = 2059;
+// The motion always writes "1 when it deletes (Vim's use_reg_one: % { } ` ').
+export const I64 R_USE_ONE = 2060;
+// The count the last change ran with, and the count of the command being typed (for the repeat buffer).
+export const I64 R_DOT_COUNT = 2061;
+export const I64 R_DOT_PCOUNT = 2062;
+// gv: the last selection's lines and columns.
+export const I64 R_GV_SCOL = 2063;
+export const I64 R_GV_ECOL = 2064;
+// CV-3: the first screen column the text area shows (nowrap's w_leftcol) and the undo step the file was read or
+// saved at (the buffer is modified while R_U_AT differs).
+export const I64 R_LEFT = 2065;
+export const I64 R_SAVED_AT = 2066;
+// CV-4a: :set nonumber (1) hides the number gutter; 0, the sheet's default, shows it.
+export const I64 R_NONUM = 2067;
+// CV-4b: 'ignorecase' and 'smartcase' turned off (0: on, cvim's default, section 6), for :s, :g and :v.
+export const I64 R_NOIC = 2068;
+export const I64 R_NOSCS = 2069;
+// CV-8: the last build's errors and other diagnostics in the current file (the status line's counts).
+export const I64 R_DIAG_EN = 2070;
+export const I64 R_DIAG_WN = 2071;
+// The register table.
+export const I64 R_REG0 = 2112;
+export const I64 REG_W = 4;
+export const I64 REG_N = 37;
+export const I64 REG_MINUS = 36;
+export const I64 KIND_NONE = 0;
+export const I64 KIND_CHAR = 1;
+export const I64 KIND_LINE = 2;
+export const I64 KIND_BLOCK = 3;
+// Marks a to z: line and byte column, line -1 when unset.
+export const I64 R_MARK0 = 2304;
+// The command being typed, the last change, the typeahead (a stack: its top is the next key) and a recording.
+export const I64 R_PEND0 = 2400;
+export const I64 PEND_MAX = 96;
+export const I64 R_DOT0 = 2560;
+export const I64 DOT_MAX = 1472;
+export const I64 R_TA0 = 4096;
+export const I64 TA_MAX = 8192;
+export const I64 R_REC0 = 12288;
+export const I64 REC_MAX = 4096;
+export const I64 REGS = 16384;
+// Keys run for one typed key at most: a macro that calls itself without failing stops here.
+export const I64 WORK_MAX = 1000000;
+// A key of the repeat buffer only: redo the Visual extent kept in R_RV_*.
+export const I64 K_REDO_VISUAL = 1114200;
+// A recording's K_IGNORE: Vim records one where the cursor's form returns to Normal mode's (after Esc leaves Insert
+// mode, after r's character).
+export const I64 K_REC_IGNORE = 1114201;
+
+export const I64 MODE_NORMAL = 0;
+export const I64 MODE_INSERT = 1;
+export const I64 MODE_REPLACE = 2;
+export const I64 MODE_VISUAL = 3;
+
+export const I64 WANT_END = 1099511627776;
+
+// Motions with two keys, after their g.
+export const I64 M_GG = 1000;
+export const I64 M_GE = 1001;
+export const I64 M_GEB = 1002;
+// SPDX-License-Identifier: Apache-2.0

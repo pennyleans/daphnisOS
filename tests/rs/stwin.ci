@@ -1,0 +1,113 @@
+// tests/rs/stwin.ci: the proofs' Settings window (RS-SET0; frame 48): a float at (24, 24) on MANTLE, 720 x 480
+// unless set_size() says otherwise, its FILL bar with Settings and DN-23's four glyphs, its PAPER body inset 1 px
+// (DN-36), and kit/stbox.ci's frame in the body: the sidebar inline in a wide box, folded in a narrow one. A page
+// proof draws its page between frame_row and over_row, at stbox's y0_at and yb_at; corners_row comes last. The bar is
+// the proofs' own drawing of the desk's float bar, not the desk's code.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.shape;
+import user.ci.kit.blend;
+import user.ci.kit.wbglyph;
+import user.ci.kit.stbox;
+
+export const I64 WX = 24;
+export const I64 WY = 24;
+export const I64 BAR = 32;
+export const I64 MAX_W = 2048;         // a proof's widest row in device pixels
+
+I64 ww = 720;
+I64 wh = 480;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// The window w x h; the frame placed in its body.
+export void set_size(I64 w, I64 h) {
+    ww = w;
+    wh = h;
+    stbox.place(x0(), y0(), xr(), yb());
+}
+
+// A size from a proof's argument: "N" narrow (480 x 400), "W" wide (976 x 400), else 720 x 480.
+export void size_of(U8 c) {
+    if (c == 'N') {
+        set_size(480, 400);
+    } else if (c == 'W') {
+        set_size(976, 400);
+    } else {
+        set_size(720, 480);
+    }
+}
+
+// The proof's frame at 1x.
+export I64 fw() { return WX + ww + 24; }
+export I64 fh() { return WY + wh + 24; }
+
+// The content box: its left, top, right and bottom; the page's column.
+export I64 x0() { return WX + 1; }
+export I64 y0() { return WY + BAR; }
+export I64 xr() { return WX + ww - 1; }
+export I64 yb() { return WY + wh - 1; }
+export I64 cx() { return stbox.cx(); }
+export I64 cr() { return stbox.cr(); }
+
+// Device row dy at zoom z: the ground, the window, its bar and its body, and the frame under the page.
+export void frame_row(inout U32[_] row, I64 dy, I64 z) {
+    pen.at(0, 0, z, dy);
+    I64 y = dy / z;
+    for x in 0..fw() * z { row[x] = tok(tokens.MANTLE); }
+    pen.round(row, WX, WY, WX + ww, WY + wh, 8, tok(tokens.FILL));
+    if (y < WY + BAR) {
+        I64 e = pen.text(row, WX + 12, WY + 21, WX + 200, b"Settings", 8, tok(tokens.ON_FILL), faces.NAME_BOLD);
+        for k in 0..4 {
+            I64 gx = (WX + ww - 4 - 26 * (4 - k) + 6) * z;
+            I64 gy = (WY + 10) * z;
+            if (dy >= gy && dy < gy + 12 * z) {
+                for q in 0..12 * z {
+                    I64 c = wbglyph.at(k, z, q, dy - gy);
+                    if (c > 0) { row[gx + q] = blend.mix_px(row[gx + q], tok(tokens.ON_FILL), c * 16); }
+                }
+            }
+        }
+        return;
+    }
+    if (y < yb()) { stbox.under_row(row, y, false); }
+}
+
+// Whether device row dy is in the body, where a page draws.
+export Bool in_body(I64 dy, I64 z) { return dy / z >= y0() && dy / z < yb(); }
+
+// The frame over the page: the laid sidebar and its shadow.
+export void over_row(inout U32[_] row, I64 dy, I64 z) {
+    if (in_body(dy, z)) { stbox.over_row(row, x0() * z, xr() * z, dy / z, false); }
+}
+
+// The window's lower corners again over whatever the page drew: MANTLE outside the shape, FILL between it and the
+// body's 7 px corners.
+export void corners_row(inout U32[_] row, I64 dy, I64 z) {
+    I64 y = dy / z;
+    if (y < WY + wh - 10 || y >= WY + wh) { return; }
+    U32[2048] m;
+    for x in 0..fw() * z { m[x] = 1 as U32; }
+    shape.rounded(m, dy, WX * z, WY * z, (WX + ww) * z, (WY + wh) * z, 8 * z, 2 as U32);
+    shape.lower_rounded(m, dy, (WX + 1) * z, (WY + BAR) * z, (WX + ww - 1) * z, (WY + wh - 1) * z, 7 * z, 3 as U32);
+    for x in 0..fw() * z {
+        if (m[x] == 1 as U32) { row[x] = tok(tokens.MANTLE); }
+        if (m[x] == 2 as U32) { row[x] = tok(tokens.FILL); }
+    }
+}
+
+// Row dy's runs on standard output: `r RGB COUNT ...`.
+export void emit(in U32[_] row, I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+// SPDX-License-Identifier: Apache-2.0

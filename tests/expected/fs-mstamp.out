@@ -1,0 +1,12 @@
+mstamp: a file written at once (want 0) = 0
+mstamp: the long-running program slept 3 s and writes /early (want 3) = 3
+mstamp: the fresh program: its own CLOCK_REALTIME, unchanged by the ruling (want 0) = 0
+mstamp: the fresh program writes /late: its stamp (want 3) = 3
+mstamp: /late is not earlier than /early (want 1) = 1
+mstamp: utimensat with no times on /early, from the fresh program (want 0) = 0
+mstamp: /early after it (want 3) = 3
+mstamp: after the fresh program slept 2 s, behind the furthest clock: /later (want 3) = 3
+mstamp: after 2 s more, its clock at 4, past the furthest: /last (want 4) = 4
+mstamp: the long-running program again, its clock at 3: /after is not earlier than /last (want 1) = 1
+mstamp: /after (want 4) = 4
+mstamp: done = 0

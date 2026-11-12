@@ -1,0 +1,399 @@
+// user/ci/kit/stpage.ci: the Settings pages' kit of parts (RS-SET0 of stage RS, docs/specs/2026-11-11-rs-rel-s1-units.md
+// edition 2; frames 33 to 38 of the design sheet, approved by DN-58, l 2026-11-11 17:15Z). One place for a page's
+// rhythm and its controls, so the page modules (kit/stdesk.ci, stacct.ci, stnet.ci, sttime.ci, stkeys.ci and
+// ststore.ci) draw the same parts the same way, and the desk hosts each one by the same three calls.
+//
+// Geometry, at 1x through kit/pen.ci (the host has called pen.at for the row being drawn): a page is the content box
+// right of the 200 px sidebar (kit/stside.ci). Its text runs from cx, 32 px in, to cr, 32 px from the right edge, and
+// from y0, the content box's top, to yb, its bottom. The title's 20 px line is at y0 + 24; blocks follow 24 apart from
+// y0 + 68. A row is 40 high and the next starts 49 below it (4, a 1 px SURF1 rule, 4); the small rows of frames 35 and
+// 38 are 32 high. A section label (LABEL, INK_DIM) stands 6 above its block. The controls, as the frames draw them:
+// a button 32 high on SURF1, radius 6, 14 px each side of its name; a menu button 176 x 32 with the bank's down
+// chevron; a segmented pill on MANTLE; a 44 x 24 switch; a 240 x 20 slider with its end words; a 16 px check box.
+// A row that cannot work is drawn and then faded to 40 percent over PAPER (fade; DN-58 item 12) and takes no focus.
+// Keyboard focus is DN-40's ring outside the control: 2 px of the ground, then 2 px of ULTRAMARINE.
+// Frame 48: in a box under 640 (kit/stbox.ci) the page runs 20 from each side and the title moves 40 right for a
+// 28 px button before it, SURF1, radius 6, its sidebar symbol mono in INK (fold).
+//
+// Hosting (no edit to the desk here; the desk wires it): a page module answers row_at(row, cx, y0, cr, yb, y),
+// click(cx, y0, cr, yb, px, py) and key(code), and enter() or enter_last() when the keyboard moves in from the sidebar
+// at the page's first stop or its last (false: the page has none, and the sidebar keeps the keyboard); y, px and py
+// are 1x rows and points in the same frame as cx and y0. click and key return an action: NONE, DRAW (the page
+// changed: draw it again), BACK (the keyboard returns to the sidebar), or the page's own from ACT, whose argument
+// the page's arg() gives. The page writes no file and calls no kernel entry; the host does what an action asks with
+// the rights it has, and a refusal raises the approval prompt of frame 17, never a message (DN-58 item 12).
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.pen;
+import user.ci.kit.blend;
+import user.ci.kit.shade;
+import user.ci.kit.symbols;
+
+export const I64 SIDE = 200;           // the sidebar's width
+export const I64 PAD = 32;             // the page's sides
+export const I64 TOP = 24;             // the title's line from the content box's top
+export const I64 BODY = 68;            // the first block
+export const I64 GAP = 24;             // between blocks
+export const I64 FOOT = 24;            // under the last block: a page's tall() ends there (frame 48)
+export const I64 ROW = 40;
+export const I64 PITCH = 49;           // a row's top to the next row's: 40, 4, the rule, 4
+export const I64 ROW_S = 32;           // a small row (frames 35 and 38)
+export const I64 LAB = 17;             // a section label's 11 px line and the 6 to its block
+export const I64 BTN = 32;             // a button's height
+export const I64 R_CTRL = 6;           // a button's and a menu button's radius
+export const I64 MENU_W = 176;         // a menu button's width (frames 36 and 37)
+export const I64 SEG_W = 176;          // a two-part segmented pill's width (frames 34 and 36)
+export const I64 SW_W = 44;            // the switch
+export const I64 SW_H = 24;
+export const I64 SL_W = 240;           // the slider's track
+export const I64 SL_H = 20;
+export const I64 BOX = 16;             // the check box
+export const I64 FADE = 154;           // PAPER over a row that cannot work, in 256ths: the row at 40 percent
+export const I64 EDGE = 46;            // note 62: a light knob's 1 px edge, INK at 18 percent over the track
+export const I64 M_ROW = 28;           // a menu's row, and 2 between rows; 6 in from its edge
+export const I64 M_RAD = 8;
+export const I64 M_SHADOW = 3;         // High, as the Resolution menu (MS-4)
+export const I64 T_BTN = 28;           // frame 48: the narrow form's button before the title, its top 4 above TOP
+export const I64 T_LEAD = 40;          // and the title 12 after it
+
+export const I64 NONE = 0;
+export const I64 DRAW = 1;
+export const I64 BACK = 2;
+export const I64 ACT = 16;
+
+// Keys, as the desk receives them (Linux input codes).
+export const I64 K_ESC = 1;
+export const I64 K_BACKSPACE = 14;
+export const I64 K_TAB = 15;
+export const I64 K_ENTER = 28;
+export const I64 K_SPACE = 57;
+export const I64 K_HOME = 102;
+export const I64 K_UP = 103;
+export const I64 K_PGUP = 104;
+export const I64 K_LEFT = 105;
+export const I64 K_RIGHT = 106;
+export const I64 K_END = 107;
+export const I64 K_DOWN = 108;
+export const I64 K_PGDN = 109;
+export const I64 K_DELETE = 111;
+export const I64 K_BACKTAB = 65551;    // Shift+Tab: the host folds Shift into Tab's code, past Linux's (0x10000 + 15)
+
+// The desk's keys (design's rule, plan 20:58Z): Tab and Shift+Tab step from control to control in reading order, the
+// sidebar one stop and the page's controls top to bottom, then the sidebar again; arrows work inside the stop that
+// holds the focus (Up and Down along the sidebar and a list, Left and Right on a pick and a slider); Space or Enter
+// takes a button or flips a switch or a box; the ring shows after the first Tab or arrow.
+export Bool is_tab(I64 c) { return c == K_TAB || c == K_BACKTAB; }
+export Bool is_arrow(I64 c) { return c == K_UP || c == K_DOWN || c == K_LEFT || c == K_RIGHT; }
+export Bool is_press(I64 c) { return c == K_ENTER || c == K_SPACE; }
+
+// Tab's direction: 1, or -1 for Shift+Tab.
+export I64 tab_d(I64 c) {
+    if (c == K_BACKTAB) { return -1; }
+    return 1;
+}
+
+// A page's stops are 0 to n - 1 in reading order; bit k of can says stop k can take the focus (a row at 40 percent
+// takes none). The stop d (1 or -1) from p, passing those that cannot; p -1 is no stop, so Tab takes the first and
+// Shift+Tab the last. -1 past either end: the keyboard goes back to the sidebar.
+export I64 tab_to(I64 p, I64 d, I64 n, I64 can) {
+    I64 t = p + d;
+    if (p < 0 && d < 0) { t = n - 1; }
+    while (t >= 0 && t < n && ((can >> t) & 1) == 0) { t = t + d; }
+    if (t < 0 || t >= n) { return -1; }
+    return t;
+}
+
+// Design note 62: Network green, dark and light (frame 35's status dot).
+U32[2] GREEN = [0x008ec07c, 0x003f7d3a];
+
+Bool folded = false;                   // frame 48: the narrow form (kit/stbox.ci sets it)
+
+export void fold(Bool f) { folded = f; }
+export Bool is_folded() { return folded; }
+
+export U32 tok(I64 t) { return tokens.word(t); }
+export U32 green() { return GREEN[tokens.theme()]; }
+
+// The width of s[0..n] in face f at 1x.
+export I64 tw(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+
+// The baseline of a 13 px or 12 px line centered in a box h high from top (the frames' line height 1).
+export I64 base(I64 top, I64 h) { return top + h / 2 + 5; }
+
+// Whether 1x row y crosses [top, top + h).
+export Bool on(I64 y, I64 top, I64 h) { return y >= top && y < top + h; }
+
+// The k-th row's top of a block of rows from top (PITCH apart).
+export I64 row_y(I64 top, I64 k) { return top + PITCH * k; }
+
+// t[0..n] into dst in capitals (a section label); its length.
+export I64 upper(in U8[_] t, I64 n, inout U8[_] dst) {
+    I64 m = min(n, len(dst));
+    for k in 0..m {
+        U8 c = t[k];
+        if (c >= 'a' && c <= 'z') { c = c - 32; }
+        dst[k] = c;
+    }
+    return m;
+}
+
+// t into dst at at; the end.
+export I64 put(inout U8[_] dst, I64 at, in U8[_] t) {
+    I64 m = min(len(t), len(dst) - at);
+    for q in 0..m { dst[at + q] = t[q]; }
+    return at + m;
+}
+
+// The decimal digits of v (0 or more) into dst at at; the end.
+export I64 digits(inout U8[_] dst, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 x = v;
+    if (x < 0) { x = 0; }
+    while (n == 0 || x > 0) {
+        d[n] = ('0' as I64 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    I64 at2 = at;
+    while (n > 0 && at2 < len(dst)) {
+        n = n - 1;
+        dst[at2] = d[n];
+        at2 = at2 + 1;
+    }
+    return at2;
+}
+
+// s[0..n] in face f in c from x0 on baseline b, none past x1; the device pen after.
+export I64 text(inout U32[_] row, I64 x0, I64 b, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text(row, x0, b, x1, s, n, c, f);
+}
+
+// The same ending at xr.
+export I64 right(inout U32[_] row, I64 xr, I64 b, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text_right(row, xr, b, s, n, c, f);
+}
+
+// The page's title t[0..n] in TITLE, its 20 px line at y0 + TOP; folded, after the button that lays the sidebar.
+export void title(inout U32[_] row, I64 cx, I64 y0, I64 cr, in U8[_] t, I64 n, I64 y) {
+    if (!on(y, y0 + TOP - 4, 28)) { return; }
+    I64 tx = cx;
+    if (folded) {
+        pen.round(row, cx, y0 + TOP - 4, cx + T_BTN, y0 + TOP - 4 + T_BTN, R_CTRL, tok(tokens.SURF1));
+        sym(row, cx + 6, y0 + TOP + 2, symbols.SIDEBAR_MONO, tok(tokens.INK));
+        tx = cx + T_LEAD;
+    }
+    I64 e = pen.text(row, tx, y0 + TOP + 19, cr, t, n, tok(tokens.INK), faces.TITLE);
+}
+
+// A section label t[0..n] (already in capitals), its 11 px line from ly.
+export void section(inout U32[_] row, I64 cx, I64 ly, I64 cr, in U8[_] t, I64 n, I64 y) {
+    if (on(y, ly - 2, 15)) { I64 e = pen.text(row, cx, ly + 10, cr, t, n, tok(tokens.INK_DIM), faces.LABEL); }
+}
+
+// A row's label t[0..n] in NAME, INK, centered in the row [ry, ry + h), none past x1.
+export void label(inout U32[_] row, I64 cx, I64 ry, I64 h, I64 x1, in U8[_] t, I64 n) {
+    I64 e = pen.text(row, cx, base(ry, h), x1, t, n, tok(tokens.INK), faces.NAME);
+}
+
+// A row's value t[0..n] in face f and c, ending at cr, centered in [ry, ry + h).
+export void value(inout U32[_] row, I64 cr, I64 ry, I64 h, in U8[_] t, I64 n, U32 c, I64 f) {
+    I64 e = pen.text_right(row, cr, base(ry, h), t, n, c, f);
+}
+
+// The 1 px SURF1 rule at yr from cx to cr.
+export void rule(inout U32[_] row, I64 cx, I64 yr, I64 cr) { pen.rect(row, cx, yr, cr, yr + 1, tok(tokens.SURF1)); }
+
+// The rule between row k - 1 and row k of a block of PITCH rows from top (k 1 up).
+export void rule_before(inout U32[_] row, I64 cx, I64 top, I64 cr, I64 k) {
+    rule(row, cx, row_y(top, k) - 5, cr);
+}
+
+// [x0, x1) of the pen's row at 40 percent: PAPER mixed over what is drawn there (DN-58 item 12).
+export void fade(inout U32[_] row, I64 x0, I64 x1) {
+    blend.mix(row, pen.x(x0), pen.x(x1), tok(tokens.PAPER), FADE);
+}
+
+// DN-40's keyboard focus around [x0, x1) x [y0, y1), corners r, on PAPER.
+export void focus(inout U32[_] row, I64 x0, I64 y0, I64 x1, I64 y1, I64 r) {
+    pen.focus_ring(row, x0, y0, x1, y1, r, tok(tokens.PAPER), tok(tokens.ULTRAMARINE));
+}
+
+// A button's width for name t[0..n] in face f: the name and 14 px each side (frames 33 to 38).
+export I64 bw(in U8[_] t, I64 n, I64 f) { return tw(t, n, f) + 28; }
+
+// A button w x h at (x0, y0): SURF1, radius 6, its name t[0..n] in face f and c, centered.
+export void button(inout U32[_] row, I64 x0, I64 y0, I64 w, I64 h, in U8[_] t, I64 n, U32 c, I64 f) {
+    pen.round(row, x0, y0, x0 + w, y0 + h, R_CTRL, tok(tokens.SURF1));
+    I64 e = pen.text_mid(row, x0, w, base(y0, h), x0 + w, t, n, c, f);
+}
+
+// The 32 px button ending at xr, its name t[0..n] in NAME, INK, centered in the 40 px row from ry; its left edge.
+export I64 row_button(inout U32[_] row, I64 xr, I64 ry, in U8[_] t, I64 n) {
+    I64 w = bw(t, n, faces.NAME);
+    button(row, xr - w, ry + 4, w, BTN, t, n, tok(tokens.INK), faces.NAME);
+    return xr - w;
+}
+
+// A segmented pill wd x 32 at (x0, y0) (DN-6, DN-10): a MANTLE track of radius 16; n parts 2 px in, their labels in
+// labs separated by `|`; part sel FILL, radius 14, its label in NAME on ON_FILL; the others BODY, INK_DIM.
+export void seg(inout U32[_] row, I64 x0, I64 y0, I64 wd, in U8[_] labs, I64 n, I64 sel) {
+    pen.round(row, x0, y0, x0 + wd, y0 + 32, 16, tok(tokens.MANTLE));
+    I64 sw = (wd - 4) / n;
+    I64 at = 0;
+    for k in 0..n {
+        I64 b = at;
+        while (b < len(labs) && labs[b] != '|') { b = b + 1; }
+        I64 sx = x0 + 2 + sw * k;
+        I64 e = 0;
+        if (k == sel) {
+            pen.round(row, sx, y0 + 2, sx + sw, y0 + 30, 14, tok(tokens.FILL));
+            e = pen.text_mid(row, sx, sw, y0 + 21, sx + sw, labs[at..b], b - at, tok(tokens.ON_FILL), faces.NAME);
+        } else {
+            e = pen.text_mid(row, sx, sw, y0 + 21, sx + sw, labs[at..b], b - at, tok(tokens.INK_DIM), faces.BODY);
+        }
+        at = b + 1;
+    }
+}
+
+// The part of an n-part pill wd wide at x0 under px, or -1.
+export I64 seg_hit(I64 x0, I64 wd, I64 n, I64 px) {
+    I64 sw = (wd - 4) / n;
+    if (px < x0 + 2 || px >= x0 + 2 + sw * n) { return -1; }
+    return (px - x0 - 2) / sw;
+}
+
+// A light knob's 1 px edge (note 62) on the light theme: a disc one pixel wider in INK at 18 percent over the track.
+void knob(inout U32[_] row, I64 x0, I64 y0, I64 d, U32 under) {
+    if (tokens.theme() == tokens.LIGHT) {
+        pen.round(row, x0 - 1, y0 - 1, x0 + d + 1, y0 + d + 1, d / 2 + 1, blend.mix_px(under, tok(tokens.INK), EDGE));
+    }
+    pen.round(row, x0, y0, x0 + d, y0 + d, d / 2, tok(tokens.ON_FILL));
+}
+
+// The 44 x 24 switch ending at xr, its top yt: on, FILL with the knob right; off, RULE with it left (frame 33).
+export void switch_at(inout U32[_] row, I64 xr, I64 yt, Bool is_on) {
+    U32 tr = tok(tokens.RULE);
+    I64 kx = xr - SW_W + 2;
+    if (is_on) {
+        tr = tok(tokens.FILL);
+        kx = xr - 22;
+    }
+    pen.round(row, xr - SW_W, yt, xr, yt + SW_H, 12, tr);
+    knob(row, kx, yt + 2, 20, tr);
+}
+
+// The slider's filled width for v of vmax on a track w wide: 20 at the least, so the knob stays on the track.
+export I64 fill_w(I64 w, I64 v, I64 vmax) {
+    if (vmax <= 0) { return 20; }
+    I64 c = max(0, min(v, vmax));
+    return 20 + (w - 20) * c / vmax;
+}
+
+// The slider's value of vmax at px on a track w wide from x0 (the knob's middle 10 px from the fill's end).
+export I64 slider_at(I64 x0, I64 w, I64 vmax, I64 px) {
+    I64 f = px - x0 + 10;
+    if (f <= 20) { return 0; }
+    if (f >= w) { return vmax; }
+    return ((f - 20) * vmax + (w - 20) / 2) / (w - 20);
+}
+
+// A slider w x 20 from x0 at yt (frame 37, the Sound page's volume): MANTLE, radius 10; v of vmax in ULTRAMARINE
+// from the left; the 16 px knob 2 px in from the fill's end.
+export void slider(inout U32[_] row, I64 x0, I64 yt, I64 w, I64 v, I64 vmax) {
+    pen.round(row, x0, yt, x0 + w, yt + SL_H, 10, tok(tokens.MANTLE));
+    I64 fw = fill_w(w, v, vmax);
+    pen.round(row, x0, yt, x0 + fw, yt + SL_H, 10, tok(tokens.ULTRAMARINE));
+    knob(row, x0 + fw - 18, yt + 2, 16, tok(tokens.ULTRAMARINE));
+}
+
+// A slider row's track: lo and hi its end words in CAPTION, INK_DIM, 10 px from the track, hi ending at cr; the
+// track's left edge (frame 37).
+export I64 slider_x(I64 cr, in U8[_] hi, I64 hn) { return cr - tw(hi, hn, faces.CAPTION) - 10 - SL_W; }
+
+export void slider_words(inout U32[_] row, I64 x0, I64 yt, in U8[_] lo, I64 ln, in U8[_] hi, I64 hn) {
+    I64 e = pen.text_right(row, x0 - 10, yt + 14, lo, ln, tok(tokens.INK_DIM), faces.CAPTION);
+    e = pen.text_dev(row, pen.x(x0 + SL_W + 10), yt + 14, hi, hn, tok(tokens.INK_DIM), faces.CAPTION);   // any zoom
+}
+
+// A menu button w x 32 at (x0, y0) (frames 36 and 37): SURF1, radius 6, its value t[0..n] in face f from 12 in, the
+// bank's down chevron at the right, centered where the frames' 10 px one is.
+export void menu_button(inout U32[_] row, I64 x0, I64 y0, I64 w, in U8[_] t, I64 n, I64 f) {
+    pen.round(row, x0, y0, x0 + w, y0 + 32, R_CTRL, tok(tokens.SURF1));
+    I64 e = pen.text(row, x0 + 12, base(y0, 32), x0 + w - 28, t, n, tok(tokens.INK), f);
+    symbols.row_at(row, pen.row_y(), pen.x(x0 + w - 23), pen.y(y0 + 8), symbols.DOWN_MONO, pen.zoom(), tok(tokens.INK),
+                   tokens.theme(), 256);
+}
+
+// A 16 px check box at (x0, y0) (frame 34): on, FILL with the bank's check in ON_FILL; off, PAPER in a 1 px INK_DIM
+// edge, radius 4.
+export void check(inout U32[_] row, I64 x0, I64 y0, Bool is_on) {
+    if (is_on) {
+        pen.round(row, x0, y0, x0 + BOX, y0 + BOX, 4, tok(tokens.FILL));
+        symbols.row_at(row, pen.row_y(), pen.x(x0), pen.y(y0), symbols.CHECK_MONO, pen.zoom(), tok(tokens.ON_FILL),
+                       tokens.theme(), 256);
+    } else {
+        pen.round(row, x0, y0, x0 + BOX, y0 + BOX, 4, tok(tokens.PAPER));
+        pen.ring(row, x0, y0, x0 + BOX, y0 + BOX, 4, 1, tok(tokens.INK_DIM));
+    }
+}
+
+// A d px dot of c at (x0, y0).
+export void disc(inout U32[_] row, I64 x0, I64 y0, I64 d, U32 c) { pen.round(row, x0, y0, x0 + d, y0 + d, d / 2, c); }
+
+// Symbol k (kit/symbols.ci) at 16 px, its square's top left at (x0, y0), its ink in c.
+export void sym(inout U32[_] row, I64 x0, I64 y0, I64 k, U32 c) {
+    symbols.row_at(row, pen.row_y(), pen.x(x0), pen.y(y0), k, pen.zoom(), c, tokens.theme(), 256);
+}
+
+// --- a menu: the list a menu button opens (the Resolution menu's look, DN-10) ---
+
+// A menu's height for r rows shown.
+export I64 menu_h(I64 r) { return 12 + M_ROW * r + 2 * (r - 1); }
+
+// The menu w wide at (x0, y0) showing r rows from row top of n: SURF1, radius 8, 6 px in, a 28 px pill a row, 2 apart;
+// row sel FILL with its name in ON_FILL, the rest INK; names[at[k]..at[k + 1]] a row's name in face f; its shadow High.
+// lo and hi bound the pen's row, in device pixels, for the shadow.
+export void menu(inout U32[_] row, I64 lo, I64 hi, I64 x0, I64 y0, I64 w, in U8[_] names, in I64[_] at, I64 n, I64 top,
+                 I64 r, I64 sel, I64 f, I64 y) {
+    I64 mh = menu_h(r);
+    shade.shade_row(row, lo, hi, pen.row_y(), pen.x(x0), pen.y(y0), pen.x(x0 + w), pen.y(y0 + mh), M_RAD, M_SHADOW,
+                    tokens.theme(), pen.zoom());
+    if (!on(y, y0, mh)) { return; }
+    pen.round(row, x0, y0, x0 + w, y0 + mh, M_RAD, tok(tokens.SURF1));
+    for i in 0..r {
+        I64 k = top + i;
+        if (k >= n) { break; }
+        I64 ry = y0 + 6 + (M_ROW + 2) * i;
+        if (on(y, ry, M_ROW)) {
+            U32 fg = tok(tokens.INK);
+            if (k == sel) {
+                pen.round(row, x0 + 6, ry, x0 + w - 6, ry + M_ROW, 14, tok(tokens.FILL));
+                fg = tok(tokens.ON_FILL);
+            }
+            I64 e = pen.text(row, x0 + 16, base(ry, M_ROW), x0 + w - 16, names[at[k]..at[k + 1]], at[k + 1] - at[k], fg, f);
+        }
+    }
+}
+
+// The menu row under (px, py) of a menu drawn as above, or -1.
+export I64 menu_hit(I64 x0, I64 y0, I64 w, I64 n, I64 top, I64 r, I64 px, I64 py) {
+    if (px < x0 + 6 || px >= x0 + w - 6) { return -1; }
+    for i in 0..r {
+        I64 ry = y0 + 6 + (M_ROW + 2) * i;
+        if (py >= ry && py < ry + M_ROW && top + i < n) { return top + i; }
+    }
+    return -1;
+}
+
+// The first row a menu shows so row sel is among the r shown from top, of n.
+export I64 menu_top(I64 top, I64 sel, I64 r, I64 n) {
+    I64 t = top;
+    if (sel < t) { t = sel; }
+    if (sel >= t + r) { t = sel - r + 1; }
+    if (t > n - r) { t = n - r; }
+    if (t < 0) { t = 0; }
+    return t;
+}
+// SPDX-License-Identifier: Apache-2.0

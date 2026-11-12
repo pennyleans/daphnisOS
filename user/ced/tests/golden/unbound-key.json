@@ -1,0 +1,25 @@
+{
+  "id": "unbound-key",
+  "rules": [
+    "KEY-9"
+  ],
+  "text": "ab",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    1,
+    1
+  ],
+  "chunks": [
+    "1b5b31357e"
+  ],
+  "expect": {
+    "text": "ab",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

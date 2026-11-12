@@ -1,0 +1,151 @@
+// tests/set/settings_test.ci: U-SET's store (user/ci/kit/settings.ci; docs/specs/2026-11-11-u-set.md), hosted: keys
+// and values in and out, order kept, unknown keys kept on rewrite, bad lines dropped and never fatal, the limits.
+// Run by check.sh: cint test --root . tests/set/settings_test.ci
+import user.ci.kit.settings;
+
+U8[8192] o;
+
+// The store's text equals want.
+Bool is(in U8[_] want) {
+    I64 n = settings.text(o);
+    if (n != len(want)) { return false; }
+    for i in 0..n {
+        if (o[i] != want[i]) { return false; }
+    }
+    return true;
+}
+
+// key's value equals want.
+Bool has(in U8[_] key, in U8[_] want) {
+    U8[64] v;
+    if (settings.get(key, v) != len(want)) { return false; }
+    for i in 0..len(want) {
+        if (v[i] != want[i]) { return false; }
+    }
+    return true;
+}
+
+test "an empty store has nothing, and its defaults" {
+    settings.clear();
+    U8[8] v;
+    assert(settings.entries() == 0 && settings.get(b"desk.background", v) == -1);
+    assert(settings.num(b"time.24-hour", 7) == 7);
+    assert(is(b""));
+}
+
+test "set, get and the text, in the order first set" {
+    settings.clear();
+    assert(settings.set(b"desk.background", b"/home/sam/Pictures/a.png") == 0);
+    assert(settings.set_num(b"time.24-hour", 1) == 0);
+    assert(settings.set(b"calendar.week-starts", b"monday") == 0);
+    assert(settings.set(b"desk.background", b"/home/sam/b.png") == 0);
+    assert(is(b"desk.background=/home/sam/b.png\ntime.24-hour=1\ncalendar.week-starts=monday\n"));
+    assert(has(b"calendar.week-starts", b"monday") && settings.num(b"time.24-hour", 0) == 1);
+    assert(settings.entries() == 3);
+}
+
+test "a key is no prefix of another" {
+    settings.clear();
+    assert(settings.set(b"ab", b"2") == 0 && settings.set(b"a", b"1") == 0);
+    assert(has(b"a", b"1") && has(b"ab", b"2"));
+    U8[8] v;
+    assert(settings.get(b"abc", v) == -1 && settings.get(b"b", v) == -1);
+}
+
+test "unknown keys are kept when a page rewrites its own" {
+    _ = settings.read(b"zz.later=keep me\ndesk.background=/a.png\nyy=\n");
+    assert(settings.set(b"desk.background", b"/b.png") == 0);
+    assert(is(b"zz.later=keep me\ndesk.background=/b.png\nyy=\n"));
+}
+
+test "bad lines are dropped, never fatal" {
+    I64 n = settings.read(b"good=1\nno equals\nUpper=1\n1digit=2\na b=3\n=x\n\nnul=a\x00b\nsecond=two\n");
+    assert(n == 2 && settings.dropped() == 6);
+    assert(is(b"good=1\nsecond=two\n"));
+}
+
+test "a key set twice keeps the last value, where it was first" {
+    _ = settings.read(b"a=1\nb=2\na=3\n");
+    assert(settings.entries() == 2 && is(b"a=3\nb=2\n") && settings.dropped() == 0);
+}
+
+test "CR LF lines and a last line without LF are read" {
+    _ = settings.read(b"a=1\r\nb=two\r\nc=3");
+    assert(is(b"a=1\nb=two\nc=3\n"));
+}
+
+test "a value may hold '=', spaces and UTF-8, or be empty" {
+    settings.clear();
+    assert(settings.set(b"k", b"a=b c") == 0 && has(b"k", b"a=b c"));
+    assert(settings.set(b"name", b"caf\xc3\xa9") == 0 && has(b"name", b"caf\xc3\xa9"));
+    assert(settings.set(b"empty", b"") == 0 && has(b"empty", b""));
+    _ = settings.read(b"k=a=b\n");
+    assert(has(b"k", b"a=b"));
+}
+
+test "num reads decimals of 18 digits at most, else the default" {
+    _ = settings.read(b"a=12\nb=-3\nc=007\nd=1x\ne=\nf=-\ng=1234567890123456789\nh=-999999999999999999\ni= 4\n");
+    assert(settings.num(b"a", 0) == 12 && settings.num(b"b", 0) == -3 && settings.num(b"c", 0) == 7);
+    assert(settings.num(b"d", 9) == 9 && settings.num(b"e", 9) == 9 && settings.num(b"f", 9) == 9);
+    assert(settings.num(b"g", 9) == 9 && settings.num(b"h", 9) == 0 - settings.NUM_MAX);
+    assert(settings.num(b"i", 9) == 9 && settings.num(b"absent", 9) == 9);
+}
+
+test "set_num writes what num reads, within 18 digits" {
+    settings.clear();
+    assert(settings.set_num(b"z", 0) == 0 && settings.set_num(b"n", -45) == 0);
+    assert(settings.set_num(b"m", settings.NUM_MAX) == 0 && settings.set_num(b"l", 0 - settings.NUM_MAX) == 0);
+    assert(is(b"z=0\nn=-45\nm=999999999999999999\nl=-999999999999999999\n"));
+    assert(settings.num(b"m", 0) == settings.NUM_MAX && settings.num(b"l", 0) == 0 - settings.NUM_MAX);
+    assert(settings.set_num(b"x", settings.NUM_MAX + 1) == settings.E_VALUE);
+}
+
+test "refusals leave the store as it was" {
+    settings.clear();
+    assert(settings.set(b"a", b"1") == 0);
+    assert(settings.set(b"", b"1") == settings.E_KEY);
+    assert(settings.set(b"Desk", b"1") == settings.E_KEY);
+    assert(settings.set(b"9a", b"1") == settings.E_KEY);
+    assert(settings.set(b"a b", b"1") == settings.E_KEY);
+    assert(settings.set(b"a=b", b"1") == settings.E_KEY);
+    assert(settings.set(b"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvw", b"1") == settings.E_KEY);
+    assert(settings.set(b"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv", b"1") == 0);
+    assert(settings.set(b"a", b"x\ny") == settings.E_VALUE);
+    assert(settings.set(b"a", b"x\ry") == settings.E_VALUE);
+    assert(settings.set(b"a", b"x\x00y") == settings.E_VALUE);
+    assert(is(b"a=1\nabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv=1\n"));
+}
+
+test "a value of VALUE_MAX bytes fits, one more does not; the store fills to SIZE and no further" {
+    settings.clear();
+    U8[4097] v;
+    for i in 0..4097 { v[i] = 'p'; }
+    assert(settings.set(b"long", v[0..4097]) == settings.E_VALUE);
+    assert(settings.set(b"long", v[0..4096]) == 0);           // 4102 bytes
+    assert(settings.set(b"more", v[0..4083]) == 0);           // 4089: 8191 in all
+    assert(settings.set(b"x", b"") == settings.E_FULL);       // 3 more would pass 8192
+    assert(settings.set(b"more", v[0..4084]) == 0);           // 8192 exactly
+    assert(settings.set(b"more", v[0..4085]) == settings.E_FULL);
+    U8[64] small;
+    assert(settings.get(b"long", small) == 4096 && small[63] == 'p');
+    U8[100] tiny;
+    assert(settings.text(tiny) == settings.E_FULL);
+    assert(settings.text(o) == 8192);
+    _ = settings.read(o);
+    assert(settings.entries() == 2 && settings.dropped() == 0);
+}
+
+test "drop takes a setting out" {
+    _ = settings.read(b"a=1\nb=2\nc=3\n");
+    assert(settings.drop(b"b") && !settings.drop(b"b") && !settings.drop(b"zz"));
+    assert(is(b"a=1\nc=3\n"));
+    assert(settings.drop(b"c") && settings.drop(b"a") && is(b""));
+}
+
+test "a second read replaces the first" {
+    _ = settings.read(b"a=1\n");
+    _ = settings.read(b"b=2\njunk\n");
+    U8[8] v;
+    assert(settings.get(b"a", v) == -1 && has(b"b", b"2") && settings.dropped() == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

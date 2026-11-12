@@ -1,0 +1,13 @@
+# tests/core/sha256sum.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Run in tests/core/search.
+text.txt | - | -
+text.txt nonl.txt empty long.txt utf8.txt | - | -
+ | long.txt | -
+- | text.txt | -
+missing text.txt | - | -
+-c sums.txt | - | -
+-c bad.sums | - | -
+-c -s bad.sums | - | -
+-c -w bad.sums | - | -
+-c | sums.txt | -
+-c missing | - | -
+-b text.txt | - | D-1

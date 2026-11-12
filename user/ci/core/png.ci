@@ -1,0 +1,140 @@
+// user/ci/core/png.ci: the PNG writer (U-PNG, docs/specs/2026-11-11-u-png.md), the counterpart of img.ci's reader,
+// for the screenshot key and anything else that saves a picture. 8 bits a channel, RGB (color type 2) or RGBA (6), no
+// interlace, one IDAT. Each row takes the filter whose bytes, read as signed, sum smallest (the PNG specification's
+// heuristic, section 12.8); the filtered rows go to raw, then deflate.ci's zlib stream of them into the file.
+//   rows(w, h, ch): the bytes raw must hold; bound(w, h, ch): the most bytes the file can take.
+//   encode(px, w, h, ch, raw, file): px holds w * h pixels of ch bytes, row by row, top first; the file's length in
+//   file, or a failure below 0.
+import user.ci.core.deflate;
+
+export const I64 E_ARGS = -1;       // w or h not positive, ch not 3 or 4, or px shorter than w * h * ch
+export const I64 E_ROOM = -2;       // raw shorter than rows(), or file shorter than the PNG
+
+U64[256] crc_t;                     // CRC-32 (ISO 3309), the table img.ci builds for reading
+Bool crc_ready = false;
+
+void crc_init() {
+    if (crc_ready) { return; }
+    for i in 0..256 {
+        U64 c = i as U64;
+        for k in 0..8 {
+            if ((c & 1) != 0) { c = 0xEDB88320 ^ (c >> 1); } else { c = c >> 1; }
+        }
+        crc_t[i] = c;
+    }
+    crc_ready = true;
+}
+
+I64 crc[m](in U8[m] f, I64 at, I64 n) {
+    crc_init();
+    U64 c = 0xFFFFFFFF;
+    for k in 0..n {
+        c = crc_t[((c ^ (f[at + k] as U64)) & 255) as I64] ^ (c >> 8);
+    }
+    return (c ^ 0xFFFFFFFF) as I64;
+}
+
+export I64 rows(I64 w, I64 h, I64 ch) {
+    return h * (1 + w * ch);
+}
+
+// 8 signature, 25 IHDR, 12 the IDAT's length, type and CRC, 12 IEND.
+export I64 bound(I64 w, I64 h, I64 ch) {
+    return 57 + deflate.bound(rows(w, h, ch));
+}
+
+void be32[m](inout U8[m] o, I64 at, I64 v) {
+    o[at] = ((v >> 24) & 255) as U8;
+    o[at + 1] = ((v >> 16) & 255) as U8;
+    o[at + 2] = ((v >> 8) & 255) as U8;
+    o[at + 3] = (v & 255) as U8;
+}
+
+void tag[m](inout U8[m] o, I64 at, in U8[_] t) {
+    for k in 0..4 { o[at + k] = t[k]; }
+}
+
+I64 paeth(I64 a, I64 b, I64 c) {
+    I64 p = a + b - c;
+    I64 pa = p - a;
+    I64 pb = p - b;
+    I64 pc = p - c;
+    if (pa < 0) { pa = 0 - pa; }
+    if (pb < 0) { pb = 0 - pb; }
+    if (pc < 0) { pc = 0 - pc; }
+    if (pa <= pb && pa <= pc) { return a; }
+    if (pb <= pc) { return b; }
+    return c;
+}
+
+// Byte i of the row at px[p), rb bytes a row, under filter f: 0 .. 255.
+I64 filt(in U8[_] px, I64 p, I64 i, I64 rb, I64 bpp, Bool up, I64 f) {
+    I64 x = px[p + i] as I64;
+    if (f == 0) { return x; }
+    I64 a = 0;
+    I64 b = 0;
+    I64 c = 0;
+    if (i >= bpp) { a = px[p + i - bpp] as I64; }
+    if (up) { b = px[p - rb + i] as I64; }
+    if (up && i >= bpp) { c = px[p - rb + i - bpp] as I64; }
+    I64 v = x;
+    if (f == 1) { v = x - a; }
+    else if (f == 2) { v = x - b; }
+    else if (f == 3) { v = x - (a + b) / 2; }
+    else { v = x - paeth(a, b, c); }
+    return (v + 256) % 256;
+}
+
+export I64 encode[m, k](in U8[_] px, I64 w, I64 h, I64 ch, inout U8[m] raw, inout U8[k] file) {
+    if (w <= 0 || h <= 0 || (ch != 3 && ch != 4)) { return E_ARGS; }
+    if (w > len(px) || h > len(px) || w * h * ch > len(px)) { return E_ARGS; }
+    I64 rb = w * ch;
+    I64 nr = rows(w, h, ch);
+    if (nr > m || k < 41) { return E_ROOM; }
+    for y in 0..h {
+        I64 p = y * rb;
+        Bool up = y > 0;
+        I64 best = 0;
+        I64 least = -1;
+        for f in 0..5 {
+            I64 s = 0;
+            I64 i = 0;
+            while (i < rb && (least < 0 || s < least)) {
+                I64 v = filt(px, p, i, rb, ch, up, f);
+                if (v < 128) { s = s + v; } else { s = s + 256 - v; }
+                i = i + 1;
+            }
+            if (least < 0 || s < least) {
+                least = s;
+                best = f;
+            }
+        }
+        I64 o = y * (rb + 1);
+        raw[o] = best as U8;
+        for i in 0..rb { raw[o + 1 + i] = filt(px, p, i, rb, ch, up, best) as U8; }
+    }
+    U8[8] sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    for i in 0..8 { file[i] = sig[i]; }
+    be32(file, 8, 13);
+    tag(file, 12, b"IHDR");
+    be32(file, 16, w);
+    be32(file, 20, h);
+    file[24] = 8;
+    file[25] = 2;
+    if (ch == 4) { file[25] = 6; }
+    file[26] = 0;
+    file[27] = 0;
+    file[28] = 0;
+    be32(file, 29, crc(file, 12, 17));
+    tag(file, 37, b"IDAT");
+    I64 e = deflate.zlib(raw, 0, nr, file, 41);
+    if (e < 0 || e + 16 > k) { return E_ROOM; }
+    be32(file, 33, e - 41);
+    be32(file, e, crc(file, 37, e - 37));
+    e = e + 4;
+    be32(file, e, 0);
+    tag(file, e + 4, b"IEND");
+    be32(file, e + 8, crc(file, e + 4, 4));
+    return e + 12;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,12 @@
+// user/ci/udp.ci: a UDP socket of a cint program in ring 3 (user/ci/host.c), stage N-2.
+//   udp_open(): socket(AF_INET, SOCK_DGRAM, 0) with a 2 s receive timeout (SO_RCVTIMEO; Daphnis accepts and
+//     ignores it, its wait is WAIT_MAX); the descriptor, or -errno
+//   udp_send(fd, ip, port, bytes): sendto ip:port, ip as a word (10.0.2.2 is 0x0A000202); the count, or -errno
+//   udp_recv(fd, buf): recvfrom into buf; the count, or -errno; the sender is udp_from(0) (ip) and udp_from(1) (port)
+export extern unrestricted I64 udp_open();
+export extern unrestricted I64 udp_send(I64 fd, U64 ip, I64 port, in U8[_] bytes);
+export extern unrestricted I64 udp_recv(I64 fd, out U8[_] buf);
+export extern observe U64 udp_from(I64 i);
+// stdout_put(bytes): bytes to descriptor 1 whole, as a print statement's are; the count, or -errno
+export extern unrestricted I64 stdout_put(in U8[_] bytes);
+// SPDX-License-Identifier: Apache-2.0

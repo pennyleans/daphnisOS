@@ -1,0 +1,485 @@
+// user/ci/sort.ci: sort [-c|-C|-m] [-bdfinru] [-s] [-t C] [-k KEY]... [-o OUT] [FILE...]
+// (docs/specs/2026-11-06-c-core.md, CT-3; POSIX XCU sort). Lines are held in memory (SORT_MAX: 262,144 bytes and
+// 16,384 lines; no temporary files). KEY is F[.C][mods][,F[.C][mods]] with mods from bdfinr; a key with mods of its
+// own takes none of the global ones. Fields are split at each -t byte, else each starts at its leading blanks. Lines
+// with equal keys compare whole and bytewise last (not with -s); -r reverses that too. -u keeps the first of each run
+// of equal keys. -n reads [-]digits[.digits] after blanks, anything else as 0 (no exponents or hex, D-34). -c reports
+// the first disorder (status 1), -C says nothing; -m sorts as a whole, which merges sorted inputs. -o is written after
+// all input is read, so it may name an input. -g, -h and -M are refused: Daphnis has no floating point.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+import user.ci.core.line;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 POOL = 262144;    // SORT_MAX bytes: four arrays of 65,536 (an array holds at most 65,536 elements)
+const I64 LINES = 16384;    // SORT_MAX lines
+const I64 SHIFT = 1048576;  // a line is start * SHIFT + length
+
+const I64 M_BS = 1;         // b on the start
+const I64 M_BE = 2;         // b on the end
+const I64 M_D = 4;
+const I64 M_F = 8;
+const I64 M_I = 16;
+const I64 M_N = 32;
+const I64 M_R = 64;
+
+U8[65536] p0;
+U8[65536] p1;
+U8[65536] p2;
+U8[65536] p3;
+I64 used = 0;
+I64[16384] ln;
+I64[16384] tmp;
+I64 nl = 0;
+U8[65536] lb;
+
+I64[16] kf1;   // start field, start char (1 on)
+I64[16] kc1;
+I64[16] kf2;   // end field (0: the line's end), end char (0: the field's end)
+I64[16] kc2;
+I64[16] km;
+I64 nk = 0;
+I64 gm = 0;    // the global mods
+I64 tab = -1;  // the -t byte, -1 for blank-separated fields
+Bool stable = false;
+
+U8 at(I64 i) {
+    I64 o = i & 65535;
+    I64 c = i >> 16;
+    if (c == 0) { return p0[o]; }
+    if (c == 1) { return p1[o]; }
+    if (c == 2) { return p2[o]; }
+    return p3[o];
+}
+
+void keep_byte(I64 i, U8 b) {
+    I64 o = i & 65535;
+    I64 c = i >> 16;
+    if (c == 0) { p0[o] = b; }
+    else if (c == 1) { p1[o] = b; }
+    else if (c == 2) { p2[o] = b; }
+    else { p3[o] = b; }
+}
+
+Bool blank(U8 c) { return c == ' ' || c == '\t'; }
+
+// The offset in the line (start s, n bytes) where field f (1 on) begins.
+I64 field_at(I64 s, I64 n, I64 f) {
+    I64 i = 0;
+    for k in 1..f {
+        if (tab >= 0) {
+            while (i < n && (at(s + i) as I64) != tab) { i = i + 1; }
+            if (i == n) { return n; }
+            i = i + 1;
+        } else {
+            while (i < n && blank(at(s + i))) { i = i + 1; }
+            while (i < n && !blank(at(s + i))) { i = i + 1; }
+        }
+    }
+    return i;
+}
+
+// Where the field beginning at offset i ends.
+I64 field_end(I64 s, I64 n, I64 i0) {
+    I64 i = i0;
+    if (tab >= 0) {
+        while (i < n && (at(s + i) as I64) != tab) { i = i + 1; }
+        return i;
+    }
+    while (i < n && blank(at(s + i))) { i = i + 1; }
+    while (i < n && !blank(at(s + i))) { i = i + 1; }
+    return i;
+}
+
+I64 key_start(I64 s, I64 n, I64 k, I64 m) {
+    I64 i = field_at(s, n, kf1[k]);
+    if ((m & M_BS) != 0) {
+        while (i < n && blank(at(s + i))) { i = i + 1; }
+    }
+    i = i + kc1[k] - 1;
+    if (i > n) { i = n; }
+    return i;
+}
+
+I64 key_end(I64 s, I64 n, I64 k, I64 m) {
+    if (kf2[k] == 0) { return n; }
+    I64 i = field_at(s, n, kf2[k]);
+    if (kc2[k] == 0) { return field_end(s, n, i); }
+    if ((m & M_BE) != 0) {
+        while (i < n && blank(at(s + i))) { i = i + 1; }
+    }
+    i = i + kc2[k];
+    if (i > n) { i = n; }
+    return i;
+}
+
+// -n: [-]digits[.digits] after blanks; the sign, then the integer part, then the fraction.
+I64 num_sign(I64 a, I64 e) {
+    I64 i = a;
+    while (i < e && blank(at(i))) { i = i + 1; }
+    Bool neg = i < e && at(i) == '-';
+    if (neg) { i = i + 1; }
+    Bool point = false;
+    while (i < e) {
+        U8 c = at(i);
+        if (c == '.' && !point) {
+            point = true;
+        } else if (c >= '0' && c <= '9') {
+            if (c != '0') {
+                if (neg) { return -1; }
+                return 1;
+            }
+        } else {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Where the digits begin (after blanks and a '-').
+I64 num_from(I64 a, I64 e) {
+    I64 i = a;
+    while (i < e && blank(at(i))) { i = i + 1; }
+    if (i < e && at(i) == '-') { i = i + 1; }
+    return i;
+}
+
+I64 int_stop(I64 i0, I64 e) {
+    I64 i = i0;
+    while (i < e && at(i) >= '0' && at(i) <= '9') { i = i + 1; }
+    return i;
+}
+
+I64 num_cmp(I64 a, I64 ae, I64 b, I64 be) {
+    I64 sa = num_sign(a, ae);
+    I64 sb = num_sign(b, be);
+    if (sa != sb) {
+        if (sa < sb) { return -1; }
+        return 1;
+    }
+    if (sa == 0) { return 0; }
+    I64 ia = num_from(a, ae);
+    I64 ib = num_from(b, be);
+    while (ia < ae && at(ia) == '0') { ia = ia + 1; }
+    while (ib < be && at(ib) == '0') { ib = ib + 1; }
+    I64 ja = int_stop(ia, ae);
+    I64 jb = int_stop(ib, be);
+    I64 r = 0;
+    if (ja - ia != jb - ib) {
+        r = 1;
+        if (ja - ia < jb - ib) { r = -1; }
+    } else {
+        for k in 0..(ja - ia) {
+            if (r == 0 && at(ia + k) != at(ib + k)) {
+                r = 1;
+                if (at(ia + k) < at(ib + k)) { r = -1; }
+            }
+        }
+    }
+    if (r == 0) {
+        // the fractions, digit by digit, a missing digit as 0
+        I64 fa = ja;
+        I64 fb = jb;
+        I64 ea = ja;
+        I64 eb = jb;
+        if (fa < ae && at(fa) == '.') {
+            fa = fa + 1;
+            ea = int_stop(fa, ae);
+        }
+        if (fb < be && at(fb) == '.') {
+            fb = fb + 1;
+            eb = int_stop(fb, be);
+        }
+        while (r == 0 && (fa < ea || fb < eb)) {
+            U8 x = '0';
+            U8 y = '0';
+            if (fa < ea) { x = at(fa); }
+            if (fb < eb) { y = at(fb); }
+            if (x != y) {
+                r = 1;
+                if (x < y) { r = -1; }
+            }
+            fa = fa + 1;
+            fb = fb + 1;
+        }
+    }
+    return r * sa;
+}
+
+Bool skip(U8 c, I64 m) {
+    if ((m & M_D) != 0 && !(blank(c) || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) {
+        return true;
+    }
+    if ((m & M_I) != 0 && (c < 32 || c > 126)) { return true; }
+    return false;
+}
+
+U8 fold(U8 c, I64 m) {
+    if ((m & M_F) != 0 && c >= 'a' && c <= 'z') { return c - 32; }
+    return c;
+}
+
+I64 text_cmp(I64 a, I64 ae, I64 b, I64 be, I64 m) {
+    I64 i = a;
+    I64 j = b;
+    while (true) {
+        while (i < ae && skip(at(i), m)) { i = i + 1; }
+        while (j < be && skip(at(j), m)) { j = j + 1; }
+        if (i == ae || j == be) {
+            if (i == ae && j == be) { return 0; }
+            if (i == ae) { return -1; }
+            return 1;
+        }
+        U8 x = fold(at(i), m);
+        U8 y = fold(at(j), m);
+        if (x != y) {
+            if (x < y) { return -1; }
+            return 1;
+        }
+        i = i + 1;
+        j = j + 1;
+    }
+    return 0;
+}
+
+I64 span_cmp(I64 a, I64 ae, I64 b, I64 be, I64 m) {
+    I64 r = 0;
+    if ((m & M_N) != 0) {
+        r = num_cmp(a, ae, b, be);
+    } else {
+        r = text_cmp(a, ae, b, be, m);
+    }
+    if ((m & M_R) != 0) { return 0 - r; }
+    return r;
+}
+
+// The keys of lines x and y (packed); whole lines with the global mods when no -k.
+I64 keys_cmp(I64 x, I64 y) {
+    I64 xs = x / SHIFT;
+    I64 xn = x % SHIFT;
+    I64 ys = y / SHIFT;
+    I64 yn = y % SHIFT;
+    if (nk == 0) {
+        I64 a = 0;
+        I64 b = 0;
+        if ((gm & M_BS) != 0) {
+            while (a < xn && blank(at(xs + a))) { a = a + 1; }
+            while (b < yn && blank(at(ys + b))) { b = b + 1; }
+        }
+        return span_cmp(xs + a, xs + xn, ys + b, ys + yn, gm);
+    }
+    for k in 0..nk {
+        I64 m = km[k];
+        if ((m & (M_D | M_F | M_I | M_N | M_R | M_BS | M_BE)) == 0) { m = gm; }
+        I64 a = key_start(xs, xn, k, m);
+        I64 ae = key_end(xs, xn, k, m);
+        I64 b = key_start(ys, yn, k, m);
+        I64 be = key_end(ys, yn, k, m);
+        if (ae < a) { ae = a; }
+        if (be < b) { be = b; }
+        I64 r = span_cmp(xs + a, xs + ae, ys + b, ys + be, m);
+        if (r != 0) { return r; }
+    }
+    return 0;
+}
+
+// The full order: the keys, then (not with -s) the bytes, reversed by a global -r.
+I64 order(I64 x, I64 y) {
+    I64 r = keys_cmp(x, y);
+    if (r != 0 || stable) { return r; }
+    r = text_cmp(x / SHIFT, x / SHIFT + x % SHIFT, y / SHIFT, y / SHIFT + y % SHIFT, 0);
+    if ((gm & M_R) != 0) { return 0 - r; }
+    return r;
+}
+
+// Bottom-up merge sort of ln[0..nl), stable.
+void merge_sort() {
+    I64 w = 1;
+    while (w < nl) {
+        I64 lo = 0;
+        while (lo < nl) {
+            I64 mid = lo + w;
+            I64 hi = lo + 2 * w;
+            if (mid > nl) { mid = nl; }
+            if (hi > nl) { hi = nl; }
+            I64 i = lo;
+            I64 j = mid;
+            I64 k = lo;
+            while (i < mid || j < hi) {
+                if (j == hi || (i < mid && order(ln[i], ln[j]) <= 0)) {
+                    tmp[k] = ln[i];
+                    i = i + 1;
+                } else {
+                    tmp[k] = ln[j];
+                    j = j + 1;
+                }
+                k = k + 1;
+            }
+            lo = hi;
+        }
+        for k in 0..nl { ln[k] = tmp[k]; }
+        w = w * 2;
+    }
+}
+
+void hold(I64 n) {
+    if (nl == LINES || used + n > POOL) { msg.limit(b"SORT_MAX"); }
+    for k in 0..n { keep_byte(used + k, lb[k]); }
+    ln[nl] = used * SHIFT + n;
+    nl = nl + 1;
+    used = used + n;
+}
+
+void read_from(I64 fd) {
+    line.begin(fd);
+    I64 n = line.next(lb);
+    while (n >= 0) {
+        hold(n);
+        n = line.next(lb);
+    }
+}
+
+// A number in a key at a[i..e): its value and where it stops (in nx[0]); a bad one is a usage error.
+I64 key_num(in U8[_] a, I64 i, I64 e, inout I64[_] nx) {
+    I64 v = 0;
+    I64 j = i;
+    while (j < e && a[j] >= '0' && a[j] <= '9') {
+        if (v > 100000000) { msg.limit(b"COUNT"); }
+        v = v * 10 + (a[j] - '0') as I64;
+        j = j + 1;
+    }
+    if (j == i) { msg.usage(b"invalid key"); }
+    nx[0] = j;
+    return v;
+}
+
+I64 key_mods(in U8[_] a, I64 i, I64 e, Bool end, inout I64[_] nx) {
+    I64 m = 0;
+    I64 j = i;
+    while (j < e && a[j] != ',') {
+        U8 c = a[j];
+        if (c == 'b') {
+            if (end) { m = m | M_BE; } else { m = m | M_BS; }
+        } else if (c == 'd') { m = m | M_D; }
+        else if (c == 'f') { m = m | M_F; }
+        else if (c == 'i') { m = m | M_I; }
+        else if (c == 'n') { m = m | M_N; }
+        else if (c == 'r') { m = m | M_R; }
+        else { msg.usage(b"invalid key"); }
+        j = j + 1;
+    }
+    nx[0] = j;
+    return m;
+}
+
+void add_key(in U8[_] a, I64 s, I64 e) {
+    if (nk == 16) { msg.limit(b"KEYS_MAX"); }
+    I64[1] nx;
+    I64 f = key_num(a, s, e, nx);
+    I64 c = 1;
+    I64 i = nx[0];
+    if (i < e && a[i] == '.') {
+        c = key_num(a, i + 1, e, nx);
+        i = nx[0];
+    }
+    if (f == 0 || c == 0) { msg.usage(b"invalid key"); }
+    I64 m = key_mods(a, i, e, false, nx);
+    i = nx[0];
+    kf1[nk] = f;
+    kc1[nk] = c;
+    kf2[nk] = 0;
+    kc2[nk] = 0;
+    if (i < e) {
+        // a ','
+        kf2[nk] = key_num(a, i + 1, e, nx);
+        i = nx[0];
+        if (kf2[nk] == 0) { msg.usage(b"invalid key"); }
+        if (i < e && a[i] == '.') {
+            kc2[nk] = key_num(a, i + 1, e, nx);
+            i = nx[0];
+        }
+        m = m | key_mods(a, i, e, true, nx);
+        if (nx[0] != e) { msg.usage(b"invalid key"); }
+    }
+    km[nk] = m;
+    nk = nk + 1;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"sort");
+    args.parse(a, b"bcCdfimnrsu", b"kot");
+    if (args.has('b')) { gm = gm | M_BS | M_BE; }
+    if (args.has('d')) { gm = gm | M_D; }
+    if (args.has('f')) { gm = gm | M_F; }
+    if (args.has('i')) { gm = gm | M_I; }
+    if (args.has('n')) { gm = gm | M_N; }
+    if (args.has('r')) { gm = gm | M_R; }
+    stable = args.has('s');
+    Bool uniq = args.has('u');
+    Bool check = args.has('c') || args.has('C');
+    Bool quiet = args.has('C');
+    if (args.has('t')) {
+        if (args.val_stop('t') - args.val_start('t') != 1) { msg.usage(b"-t needs one byte"); }
+        tab = a[args.val_start('t')] as I64;
+    }
+    for v in 0..args.values() {
+        if (args.value_letter(v) == 'k') { add_key(a, args.value_start(v), args.value_stop(v)); }
+    }
+    I64 n = args.operands();
+    if (check && n > 1) { msg.usage(b"-c takes one file"); }
+    if (n == 0) {
+        read_from(0);
+    }
+    for i in 0..n {
+        I64 fd = get.open(a[args.op_start(i)..args.op_stop(a, i)]);
+        if (fd < 0) { msg.finish_with(2); }
+        read_from(fd);
+        if (line.failed() != 0) {
+            msg.file(a[args.op_start(i)..args.op_stop(a, i)], line.failed());
+            msg.finish_with(2);
+        }
+        get.close(fd);
+    }
+    if (check) {
+        for k in 1..nl {
+            I64 r = order(ln[k - 1], ln[k]);
+            if (uniq) { r = keys_cmp(ln[k - 1], ln[k]); }
+            if (r > 0 || (uniq && r == 0)) {
+                if (!quiet) {
+                    msg.begin();
+                    if (n == 0) { msg.text(b"-"); } else { msg.text(a[args.op_start(0)..args.op_stop(a, 0)]); }
+                    msg.text(b":");
+                    msg.num(k + 1);
+                    msg.text(b": disorder: ");
+                    I64 s = ln[k] / SHIFT;
+                    for j in 0..(ln[k] % SHIFT) { msg.byte(at(s + j)); }
+                    msg.send();
+                }
+                msg.finish_with(1);
+            }
+        }
+        msg.finish_with(0);
+    }
+    merge_sort();
+    if (args.has('o')) {
+        I64 w = shctl.sh_open(a[args.val_start('o')..args.val_stop('o')], 0x241, 438);
+        if (w < 0) {
+            msg.file(a[args.val_start('o')..args.val_stop('o')], 0 - w);
+            msg.finish_with(2);
+        }
+        put.to(w);
+    }
+    for k in 0..nl {
+        if (!(uniq && k > 0 && keys_cmp(ln[k - 1], ln[k]) == 0)) {
+            I64 s = ln[k] / SHIFT;
+            for j in 0..(ln[k] % SHIFT) { put.byte(at(s + j)); }
+            put.byte('\n');
+        }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

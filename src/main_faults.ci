@@ -1,0 +1,10 @@
+// src/main_faults.ci: K3. The probes of src/probes.ci, one per entry. The kernel runs this
+// main in a loop (rt/ctx.c): entry i gets the text of i as its argument, a fault is printed as
+// a canonical record and the loop goes on; the hosted twin runs the same program once per i.
+
+import src.probes;
+
+void main(in U8[_] args) {
+    probes.run(args);
+}
+// SPDX-License-Identifier: Apache-2.0

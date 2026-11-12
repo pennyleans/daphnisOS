@@ -1,0 +1,59 @@
+// src/exepath.ci: AC-T2 (docs/specs/2026-11-11-ac-t2-image-path.md), the record of FBIO_TILE_INFO kinds 13 and 14:
+// the program a window's process runs, as the kernel loaded it. Pure: src/proc.ci passes the bytes it keeps for the
+// process (`exe`, written when a program is loaded and copied by fork, never by a call of the process) and the
+// volume inode it came from; the hosted tests read the record back (tests/ac/exepath_test.ci).
+//
+// The record, RECORD_BYTES bytes, little-endian:
+//   0   vpid, u32: the process as the desk sees it
+//   4   source, u32: SRC_IMAGE (an image member, under /) or SRC_VOLUME (a regular file of the volume)
+//   8   the path's length in bytes, u32, 1 to PATH_MAX
+//   12  0, u32
+//   16  the path, what /proc/self/exe names: `/` and the member's name, or the volume path as it is; every byte
+//       after it to the end of the record is NUL
+// The path's bytes are the kernel's copy of what was loaded; a process cannot write them, and prctl or a comm
+// changes nothing here.
+
+export const I64 RECORD_BYTES = 64;
+export const I64 PATH_AT = 16;
+export const I64 PATH_MAX = 33;               // `/` and the 32 bytes the kernel keeps
+export const I64 KEPT = 32;                   // bytes src/proc.ci keeps a process
+export const U64 SRC_IMAGE = 0;
+export const U64 SRC_VOLUME = 1;
+
+void word32(inout U8[64] b, I64 at, U64 v) {
+    for i in 0..4 {
+        b[at + i] = ((v >> (8 * i) as U64) & 0xFF) as U8;
+    }
+}
+
+// The record for the process the desk knows as vpid, whose kept bytes are exe[0..kept_n] and whose program came from
+// volume inode ino (0 for an image member). kept_n outside 0..KEPT is taken as the nearest end of that range.
+export void record(inout U8[64] b, U64 vpid, I64 ino, in U8[32] exe, I64 kept_n) {
+    for i in 0..RECORD_BYTES {
+        b[i] = 0;
+    }
+    I64 k = kept_n;
+    if (k < 0) {
+        k = 0;
+    }
+    if (k > KEPT) {
+        k = KEPT;
+    }
+    I64 n = 0;
+    if (k == 0 || exe[0] != 47) {
+        b[PATH_AT] = 47;
+        n = 1;
+    }
+    for i in 0..k {
+        b[PATH_AT + n + i] = exe[i];
+    }
+    n += k;
+    U64 src = SRC_IMAGE;
+    if (ino != 0) {
+        src = SRC_VOLUME;
+    }
+    word32(b, 0, vpid);
+    word32(b, 4, src);
+    word32(b, 8, n as U64);
+}
+// SPDX-License-Identifier: Apache-2.0

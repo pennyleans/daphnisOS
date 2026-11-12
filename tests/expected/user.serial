@@ -1,0 +1,739 @@
+Daphnis F: ring 3
+daphnis: framebuffer 640x480 stride 2560
+daphnis: keyboard and mouse on
+daphnis: image 1664016 bytes from the loader module
+daphnis: input 3664 bytes
+daphnis: run hello pid 1
+hello from ring 3
+daphnis: state 5c6d6d6e0a037abbcfa5d73c0498412515e00277227de3571ad7b498c263099d
+daphnis: exit 0
+daphnis: run args pid 2
+args
+daphnis: state 2073fed2ebb1210737b8d33c1de4ade78a69ad692c81efbc7657ef74f0875cc6
+daphnis: exit 1
+daphnis: run efault pid 3
+daphnis: state 3fd3b0534aaa61bc02ae165429686d3084473195d38e1866490880bb5031269e
+daphnis: exit 14
+daphnis: run nosys pid 4
+daphnis: state f1a5abfff58b8a47fe8fa98143a9a80143f064b1f3f730ecd8fc2fb6a9395d80
+daphnis: exit 38
+daphnis: run segv pid 5
+about to fault
+daphnis: fault vector 14 error 0x4 addr 0x0 rip 0x400092
+daphnis: state 11d20fe9da6fecbc5886fed28cc91c5e909aa9e22fee793d2740622023c97d92
+daphnis: signal 11
+daphnis: run ud pid 6
+daphnis: fault vector 6 error 0x0 addr 0x0 rip 0x400078
+daphnis: state 4e60ebbc102d4ff9834a305168a413fe30858e5be00003a6491178bb0ad5e95b
+daphnis: signal 4
+daphnis: together spin pids 7 to 8
+daphnis: run spin pid 7
+spin done
+daphnis: state d394ec786bf84bbb521608c549f6ac10419dbc8ff221d717d614cdc333251cce
+daphnis: exit 0
+daphnis: run spin pid 8
+spin done
+daphnis: state d394ec786bf84bbb521608c549f6ac10419dbc8ff221d717d614cdc333251cce
+daphnis: exit 0
+daphnis: pid 7 preempted yes
+daphnis: pid 8 preempted yes
+daphnis: run hello pid 9
+hello from ring 3
+daphnis: state 5c6d6d6e0a037abbcfa5d73c0498412515e00277227de3571ad7b498c263099d
+daphnis: exit 0
+daphnis: desync hello pid 9 (other frames) against pid 1: none
+daphnis: desync spin pid 8 (other schedule) against pid 7: none
+daphnis: run hello pid 10 canary: bit 0 of register 13 flipped
+hello from ring 3
+daphnis: state ddf0b2e3d6f80ecc1723b1a9e9865bc26a2c64edef427c0463300654bb2f3912
+daphnis: exit 0
+daphnis: desync hello pid 10 (canary) against pid 1: DESYNC
+daphnis: run mprintf pid 11
+mprintf: argc 1
+[-42] [   42] [42   |] [00042]
+[4000000000] [18446744073709551615] [beef] [0xdaf1]
+[desync] [    cint] [ring3   |] [mus]
+[Dap] [%]
+daphnis: state e7acc4b2bf816241f952dc2c678add442812b0864d69220b5b1560e7642bb1c9
+daphnis: exit 0
+daphnis: run mmalloc pid 12
+mmalloc: 1 args, sum 1792
+daphnis: state 5a2ba75086f4786c1de64e0d0d72ed6ea0ce8d05eef03507c0d9477674c037ee
+daphnis: exit 3
+daphnis: run mbrk pid 13
+brk up 65536
+top byte 42
+brk down 0, now 0
+daphnis: state 9d4aa7780b1679b12937759def8ca10c6b3023a10d5c0cb959779849b370ade3
+daphnis: exit 0
+daphnis: run mprot pid 14
+read 9 after mprotect
+daphnis: fault vector 14 error 0x7 addr 0x7ffefffff064 rip 0x40149b
+daphnis: state d8916622e6f0964e236f4a67229160f26854a65f8df73298859c5811e5378aca
+daphnis: signal 11
+daphnis: run mlimit pid 0
+mlimit: as MiB 60
+mlimit: map MiB 16 touched, sum 522240
+mlimit: brk up MiB 40, last byte 7, down
+mlimit: full after 3 maps of 16 MiB, errno ENOMEM
+mlimit: after unmap, 16 MiB granted
+daphnis: state 19873c3bcabd6e924061e4cfb348a1170eb3be9426b8657b5efae59bb033cef9
+daphnis: exit 0
+daphnis: run mpoll pid 0
+mpoll: empty 0 revents 0
+mpoll: one byte 2 revents 1 4
+mpoll: timeout 0 revents 0, 100 ms passed yes
+mpoll: sleep 0
+mpoll: no writer 1 revents 10
+mpoll: no reader 1 revents c
+mpoll: file, negative, closed 2 revents 5 0 20
+mpoll: ppoll 1 revents 10
+daphnis: state eef8ba3e734284d4d514a03c57f418aa2332b2392845a486776dc4b28996e8e0
+daphnis: exit 0
+daphnis: run mclock pid 15
+monotonic yes
+slept yes
+realtime after 2026 yes
+daphnis: state ff60431f3c836833ff0289b7da5aea5804c7435210f37e3a286803155b2f1a9a
+daphnis: exit 0
+daphnis: run mtls pid 16
+mtls tls counter 42
+daphnis: state f774b428e851b29ca9cdea3160e9014c97e436896abcf64b85cb9a7be219a8ea
+daphnis: exit 0
+daphnis: run ssea pid 17
+ssea: c79a03c3 c32466df d57c971e cf0de67c
+daphnis: state e8c2338ab30fcee81686afc94fed44968e7e69fd6146742c2954e9f53c3eeea7
+daphnis: exit 0
+daphnis: together ssea sseb pids 18 to 19
+daphnis: run ssea pid 18
+ssea: c79a03c3 c32466df d57c971e cf0de67c
+daphnis: state e8c2338ab30fcee81686afc94fed44968e7e69fd6146742c2954e9f53c3eeea7
+daphnis: exit 0
+daphnis: run sseb pid 19
+sseb: 12eddec9 85284b0c 6c507a3f d20300bc
+daphnis: state c34480492d820e6a2f97edcd654c276ffe34e50987192050cd3d5d0c0b42b2ba
+daphnis: exit 0
+daphnis: pid 18 preempted yes
+daphnis: pid 19 preempted yes
+daphnis: desync ssea pid 18 (beside sseb) against pid 17: none
+daphnis: run mmalloc pid 20
+mmalloc: 1 args, sum 1792
+daphnis: state 5a2ba75086f4786c1de64e0d0d72ed6ea0ce8d05eef03507c0d9477674c037ee
+daphnis: exit 3
+daphnis: desync mmalloc pid 20 (other frames) against pid 12: none
+daphnis: run mprintf pid 21 canary: bit 0 of MXCSR flipped
+mprintf: argc 1
+[-42] [   42] [42   |] [00042]
+[4000000000] [18446744073709551615] [beef] [0xdaf1]
+[desync] [    cint] [ring3   |] [mus]
+[Dap] [%]
+daphnis: state ff774d2c1e5161aac39fd5ec88bdf3e9d60a0c30ef0c94a45ebc93ab0fc95201
+daphnis: exit 0
+daphnis: desync mprintf pid 21 (MXCSR canary) against pid 11: DESYNC
+daphnis: run mcat pid 22
+size 33
+hello from the image
+second line
+daphnis: state a0b25400c280826cea08e75e34985387b8be7d60551b3c18585ffa67f90ecc18
+daphnis: exit 0
+daphnis: run mls pid 23
+args       472
+cvim       978080
+efault     368
+etc        dir
+grant      87712
+hello      456
+hello.txt  33
+lines.txt  243
+mbrk       62952
+mcat       62952
+mci        83616
+mcifb      104096
+mclock     62952
+mdirs      62952
+mexec      62952
+mfb        62952
+mfd        62952
+mfork      62952
+mkeys      62952
+mlimit     62952
+mlitter    62952
+mls        62952
+mmalloc    62952
+mmouse     62952
+mpipe      62952
+mpipeline  62952
+mpoll      62952
+mprintf    62952
+mprot      62952
+msha       100000
+mstdin     62952
+mtls       62952
+mwrite     62952
+nosys      352
+segv       456
+sh         239408
+spin       456
+ssea       62952
+sseb       62952
+ud         336
+40 entries
+daphnis: state 09df7959927ca3b0b01653d5c794b198f628360243026f8ecb42a4c8be4eb876
+daphnis: exit 0
+daphnis: run mwrite pid 24
+read back 8 bytes: one
+two
+after append 14 bytes
+open after unlink: -1, errno 2
+daphnis: state 0b13b19988566d522602601fc294219318f660d421fc10a42017c52a266ac23d
+daphnis: exit 0
+daphnis: run mfd pid 25
+open 3 dup 4 dup2 9 dupfd 5
+after close 4: open gives 4
+getfl 0
+lseek end 243
+lseek 7 then cur 7
+readv [of l][ines]
+pread [line 2 of l], shared offset 15
+close bad fd: -1
+daphnis: state 2c44389ad1a60953361a34f63162752c62c6d0527ab18f85d36f92d45b3ad02a
+daphnis: exit 0
+daphnis: run mstdin pid 26
+512 bytes, 15 lines
+ECHO HELLO FROM BUSYBOX SH
+LS
+CAT HELLO.TXT | WC -L
+GREP -C LINE LINES.TXT
+ECHO WRITTEN BY SH > OUT.TXT; CAT OUT.TXT; RM OUT.TXT
+LS | HEAD -3 | TR A-Z A-Z
+FOR F IN HELLO.TXT LINES.TXT; DO WC -C $F; DONE
+./MPRINTF | TAIL -1
+X=$((6 * 7)); ECHO "SIX TIMES SEVEN IS $X"
+TEST -F HELLO.TXT && ECHO HELLO.TXT EXISTS
+CAT < LINES.TXT | SORT -R | HEAD -2
+SEQ 1 5 | XARGS ECHO
+CAT ETC/MOTD
+MKDIR -P A/B/C; ECHO NESTED > A/B/C/N.TXT; CAT A/B/C/N.TXT
+CD A/B; PWD; CAT C/N.TXT; CD ../..; PWD
+MV A/B/C/N.TXT A/M.TXT; MV A/B A/D
+daphnis: state 0fffdea2b1831153e57099f3b7e50c0768cec10420f9a96fafb6f57012d8107c
+daphnis: exit 0
+daphnis: run mlitter pid 27
+daphnis: state f57577ccbf97be918f615fffcd3a6d8183eb944b29d0536b7d3e688a0330bd7f
+daphnis: exit 0
+daphnis: fs reset: the image's view again
+daphnis: run mcat pid 28
+size 33
+hello from the image
+second line
+daphnis: state a0b25400c280826cea08e75e34985387b8be7d60551b3c18585ffa67f90ecc18
+daphnis: exit 0
+daphnis: desync mcat pid 28 (after mlitter and the reset) against pid 22: none
+daphnis: run mfork pid 29
+child: parent is the forker
+parent: waited for the child, exit 7
+parent: second wait: 10
+daphnis: state e1062d4316a7a09285d115fb45be2094a56501455aba7514162ec71a2ceda553
+daphnis: exit 0
+daphnis: pid 29 forked 1
+daphnis: run mpipe pid 30
+read 21 bytes:
+ping 0
+ping 1
+ping 2
+child exit 0
+daphnis: state 456c50c2198328e2128df62b2d5aecef23a4cbaed2de7110a1bb8760a5e8dbcb
+daphnis: exit 0
+daphnis: pid 30 forked 1
+daphnis: run mexec pid 31
+exec mprintf with 3 args
+mprintf: argc 3
+[-42] [   42] [42   |] [00042]
+[4000000000] [18446744073709551615] [beef] [0xdaf1]
+[desync] [    cint] [ring3   |] [mus]
+[Dap] [%]
+daphnis: state bdc49d96f35f14833f734a094482fcadece1bccaf4baab7b65ab11f4d7bf3cb7
+daphnis: exit 0
+daphnis: run mpipeline pid 32
+41 bytes, 3 lines
+SIZE 33
+HELLO FROM THE IMAGE
+SECOND LINE
+
+pipeline: mcat exit 0, mstdin exit 0
+daphnis: state e7efa7ba2047083f9cbe1d6d1c418357975f2dbdf201308c6bf6d624115ef855
+daphnis: exit 0
+daphnis: pid 32 forked 2
+daphnis: run mpipeline pid 33
+41 bytes, 3 lines
+SIZE 33
+HELLO FROM THE IMAGE
+SECOND LINE
+
+pipeline: mcat exit 0, mstdin exit 0
+daphnis: state e7efa7ba2047083f9cbe1d6d1c418357975f2dbdf201308c6bf6d624115ef855
+daphnis: exit 0
+daphnis: pid 33 forked 2
+daphnis: desync mpipeline pid 33 (other frames) against pid 32: none
+daphnis: run sh pid 34
+hello from busybox sh
+args
+cvim
+efault
+etc
+grant
+hello
+hello.txt
+lines.txt
+mbrk
+mcat
+mci
+mcifb
+mclock
+mdirs
+mexec
+mfb
+mfd
+mfork
+mkeys
+mlimit
+mlitter
+mls
+mmalloc
+mmouse
+mpipe
+mpipeline
+mpoll
+mprintf
+mprot
+msha
+mstdin
+mtls
+mwrite
+nosys
+segv
+sh
+spin
+ssea
+sseb
+ud
+2
+12
+written by sh
+ARGS
+CVIM
+EFAULT
+33 hello.txt
+243 lines.txt
+[Dap] [%]
+six times seven is 42
+hello.txt exists
+line 9 of lines.txt
+line 8 of lines.txt
+1 2 3 4 5
+Daphnis: a small Unix on a checked kernel.
+nested
+/a/b
+nested
+/
+a:
+d
+m.txt
+
+a/d:
+c
+
+a/d/c:
+args
+cvim
+efault
+etc
+grant
+hello
+hello.txt
+lines.txt
+mbrk
+mcat
+mci
+mcifb
+mclock
+mdirs
+mexec
+mfb
+mfd
+mfork
+mkeys
+mlimit
+mlitter
+mls
+mmalloc
+mmouse
+mpipe
+mpipeline
+mpoll
+mprintf
+mprot
+msha
+mstdin
+mtls
+mwrite
+nosys
+segv
+sh
+spin
+ssea
+sseb
+ud
+two hundred
+1
+sh: can't create yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy: Filename too long
+deep
+/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+args
+cvim
+efault
+etc
+grant
+hello
+hello.txt
+lines.txt
+mbrk
+mcat
+mci
+mcifb
+mclock
+mdirs
+mexec
+mfb
+mfd
+mfork
+mkeys
+mlimit
+mlitter
+mls
+mmalloc
+mmouse
+mpipe
+mpipeline
+mpoll
+mprintf
+mprot
+msha
+mstdin
+mtls
+mwrite
+nosys
+segv
+sh
+spin
+ssea
+sseb
+ud
+daphnis: state 216e0bd31adc37637e5151171a38eb916f20159fa49febb0db8319b45375f85a
+daphnis: exit 3
+daphnis: pid 34 forked 33
+daphnis: run sh pid 35
+hello from busybox sh
+args
+cvim
+efault
+etc
+grant
+hello
+hello.txt
+lines.txt
+mbrk
+mcat
+mci
+mcifb
+mclock
+mdirs
+mexec
+mfb
+mfd
+mfork
+mkeys
+mlimit
+mlitter
+mls
+mmalloc
+mmouse
+mpipe
+mpipeline
+mpoll
+mprintf
+mprot
+msha
+mstdin
+mtls
+mwrite
+nosys
+segv
+sh
+spin
+ssea
+sseb
+ud
+2
+12
+written by sh
+ARGS
+CVIM
+EFAULT
+33 hello.txt
+243 lines.txt
+[Dap] [%]
+six times seven is 42
+hello.txt exists
+line 9 of lines.txt
+line 8 of lines.txt
+1 2 3 4 5
+Daphnis: a small Unix on a checked kernel.
+nested
+/a/b
+nested
+/
+a:
+d
+m.txt
+
+a/d:
+c
+
+a/d/c:
+args
+cvim
+efault
+etc
+grant
+hello
+hello.txt
+lines.txt
+mbrk
+mcat
+mci
+mcifb
+mclock
+mdirs
+mexec
+mfb
+mfd
+mfork
+mkeys
+mlimit
+mlitter
+mls
+mmalloc
+mmouse
+mpipe
+mpipeline
+mpoll
+mprintf
+mprot
+msha
+mstdin
+mtls
+mwrite
+nosys
+segv
+sh
+spin
+ssea
+sseb
+ud
+two hundred
+1
+sh: can't create yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy: Filename too long
+deep
+/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+args
+cvim
+efault
+etc
+grant
+hello
+hello.txt
+lines.txt
+mbrk
+mcat
+mci
+mcifb
+mclock
+mdirs
+mexec
+mfb
+mfd
+mfork
+mkeys
+mlimit
+mlitter
+mls
+mmalloc
+mmouse
+mpipe
+mpipeline
+mpoll
+mprintf
+mprot
+msha
+mstdin
+mtls
+mwrite
+nosys
+segv
+sh
+spin
+ssea
+sseb
+ud
+daphnis: state 216e0bd31adc37637e5151171a38eb916f20159fa49febb0db8319b45375f85a
+daphnis: exit 3
+daphnis: pid 35 forked 33
+daphnis: desync sh pid 35 (other frames) against pid 34: none
+daphnis: run mfb pid 36 (device)
+fb: daphnis 640x480 stride 2560 bpp 32 red 16 green 8 blue 0 len 1228800
+fb: drew 640x480, pixel (1, 2) 00000103
+daphnis: state 8aa37280cd47970a89d9b72f5a5261dac08e21ab268e14037cf393f21480970b
+daphnis: exit 0
+daphnis: surface 640x480 stride 2560 sha256 5ce934ae6461a82f2c9b7221efbbdfaa8c22789282dc596230037693c8fa3ef5
+daphnis: run mfb pid 37 (device)
+fb: daphnis 640x480 stride 2560 bpp 32 red 16 green 8 blue 0 len 1228800
+fb: drew 640x480, pixel (1, 2) 00000103
+daphnis: state 8aa37280cd47970a89d9b72f5a5261dac08e21ab268e14037cf393f21480970b
+daphnis: exit 0
+daphnis: surface 640x480 stride 2560 sha256 5ce934ae6461a82f2c9b7221efbbdfaa8c22789282dc596230037693c8fa3ef5
+daphnis: desync surface pid 37 (other frames) against pid 36: none
+daphnis: desync mfb pid 37 (other frames) against pid 36: none
+daphnis: run mkeys pid 38 (device)
+key 30 1
+key 30 0
+key 48 1
+key 48 0
+key 46 1
+key 46 0
+syn 6
+keys: nothing more queued, EAGAIN
+daphnis: state 86ba2dc23ac1a753685715cd1fda07ec6eb57fbcfc3e64aa0f43b5215ea5fc18
+daphnis: exit 0
+daphnis: run mkeys pid 39 (device)
+key 30 1
+key 30 0
+key 48 1
+key 48 0
+key 46 1
+key 46 0
+syn 6
+keys: nothing more queued, EAGAIN
+daphnis: state 86ba2dc23ac1a753685715cd1fda07ec6eb57fbcfc3e64aa0f43b5215ea5fc18
+daphnis: exit 0
+daphnis: desync mkeys pid 39 (other frames) against pid 38: none
+daphnis: run mmouse pid 40 (device)
+button 272 1
+button 272 0
+button 273 1
+button 273 0
+rel x 10 y -5, syn 5
+daphnis: state 8c883ce24a4ed8a264e2140df987bf0184ed06202fc988432855b78938e3da67
+daphnis: exit 0
+daphnis: run mmouse pid 41 (device)
+button 272 1
+button 272 0
+button 273 1
+button 273 0
+rel x 10 y -5, syn 5
+daphnis: state 8c883ce24a4ed8a264e2140df987bf0184ed06202fc988432855b78938e3da67
+daphnis: exit 0
+daphnis: desync mmouse pid 41 (other frames) against pid 40: none
+daphnis: run mci pid 42
+mci: hello from cint in ring 3
+mci: fib(90) = 2880067194370816120
+mci: the clock does not go back
+mci: surface words before fb_open: 0
+mci: now fib(93), which does not fit
+fault[E_OVERFLOW]: add.checked.i64 at user/ci/mci.ci:10:19
+daphnis: state 3bdb8c11e3024ba419b57bfa940c07d20e9226bf8cdd182d9b30e89ba6943bfa
+daphnis: exit 1
+daphnis: run mci pid 43
+mci: hello from cint in ring 3
+mci: fib(90) = 2880067194370816120
+mci: the clock does not go back
+mci: surface words before fb_open: 0
+mci: now fib(93), which does not fit
+fault[E_OVERFLOW]: add.checked.i64 at user/ci/mci.ci:10:19
+daphnis: state 3bdb8c11e3024ba419b57bfa940c07d20e9226bf8cdd182d9b30e89ba6943bfa
+daphnis: exit 1
+daphnis: desync mci pid 43 (other frames) against pid 42: none
+daphnis: run msha pid 44
+msha: 4 MiB sha256 04ac01bf62aafda524b0e948f4c2f2d7448e3f2c8cf9e73d0b50c57bb84dae52
+daphnis: state 04339ab55a50a1dd5fdbe62d0d7eaabc6ea2f307a6f1f36932e74ba7d466f1e3
+daphnis: exit 0
+daphnis: run mcifb pid 45 (device)
+mcifb: surface 640x480 stride 2560
+mcifb: drawn
+daphnis: state 2ec09a148ab9581c37ec39d6999eb7b3274f5a17458262e4bb14ad22553f15d6
+daphnis: exit 0
+daphnis: surface 640x480 stride 2560 sha256 5ce934ae6461a82f2c9b7221efbbdfaa8c22789282dc596230037693c8fa3ef5
+daphnis: desync surface pid 45 (cint) against pid 37: none
+daphnis: run mdirs pid 47
+mkdir d1                           0 errno 0
+mkdir d1 again                     -1 errno 17
+mkdir d1/d2/                       0 errno 0
+mkdir nope/d3                      -1 errno 2
+mkdir hello.txt/d                  -1 errno 20
+open d1/d2/f                       0 errno 0
+write                              7 errno 0
+open hello.txt/                    -1 errno 20
+open d1 for writing                -1 errno 21
+open hello.txt O_DIRECTORY         -1 errno 20
+open d1 O_DIRECTORY                0 errno 0
+openat d1 d2/f: nested
+mkdirat d1 d4                      0 errno 0
+renameat d1 d2/f d1 d4/g           0 errno 0
+stat d1/d4/g                       7 errno 0
+fstatat d1 d4 is a directory       1 errno 0
+stat d1/./d4/../d2                 1 errno 0
+rmdir d1                           -1 errno 39
+rmdir d1/.                         -1 errno 22
+rename d1 d1/d4/x                  -1 errno 22
+rename d1/d4/g d1/d2               -1 errno 21
+rename d1/d2 hello.txt             -1 errno 20
+unlinkat d1 d4 AT_REMOVEDIR        -1 errno 39
+unlink d1/d4                       -1 errno 21
+chdir hello.txt                    -1 errno 20
+chdir d1/d4                        0 errno 0
+getcwd /d1/d4
+read g: nested
+chdir ../..                        0 errno 0
+getcwd /
+getcwd into 1 byte                 -1 errno 34
+fchdir d1                          0 errno 0
+getcwd /d1
+child chdir d2                     0 errno 0
+getcwd /d1/d2
+after the child: getcwd /d1
+chdir ..                           0 errno 0
+rename d1/d2 d1/d4/d2              0 errno 0
+rename d1/d4/g d1/d4/d2/h          0 errno 0
+stat d1/d4/d2/h                    7 errno 0
+mkdir d5                           0 errno 0
+chdir d5                           0 errno 0
+rmdir ../d5                        0 errno 0
+getcwd in a removed directory      -1 errno 2
+create in a removed directory      -1 errno 2
+chdir ..                           0 errno 0
+getcwd /
+unlink d1/d4/d2/h                  0 errno 0
+rmdir d1/d4/d2                     0 errno 0
+unlinkat d1 d4 AT_REMOVEDIR        0 errno 0
+rmdir d1                           0 errno 0
+access d1                          -1 errno 2
+daphnis: state 29d2b412b0095b08b744f4a2ef761d0ca31c42ef3469ec71e71cce4b8d518c1c
+daphnis: exit 0
+daphnis: pid 47 forked 1
+daphnis: run grant pid 46
+grant: usage: grant disk|net|audio[,...] CMD [ARG...]
+daphnis: state e0ef902a10e030870b013e10f619d8f7c26301322d8c289ee11c9bd8f33cdc06
+daphnis: exit 2
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16366 of 16383
+user: done

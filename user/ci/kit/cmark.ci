@@ -1,0 +1,87 @@
+// user/ci/kit/cmark.ci: K-5 and K-7 (docs/specs/2026-11-07-k-kit2.md), the color open-cut mark (E2-1, E2-3):
+// user/ci/kit/cmark.svg, agy's ui_daphnis_logo_opencut_mini_bauhaus.svg (the design's mark), drawn at
+// any size n from the SVG's geometry in checked integers. A pixel takes the color of its center under the SVG's
+// shapes, painted in the SVG's order; there is no bitmap. The 1-bit mark (mark.ci, MK-1) stays for the boot stamp.
+// Coordinates are the SVG's tenths times n, so every test is exact: pixel x's center is (2x + 1) * 160.
+import user.ci.kit.tokens;
+
+I64 sq(I64 v) { return v * v; }
+
+// The center (cx, cy) and radius r in SVG tenths: the point (u, v) is inside.
+Bool disk(I64 n, I64 u, I64 v, I64 cx, I64 cy, I64 r) {
+    return sq(u - cx * n) + sq(v - cy * n) <= sq(r * n);
+}
+
+// The SVG's triangle 4,26 13,26 7.5,17: (u, v) on no edge's outer side (y down, the corners clockwise).
+Bool tri(I64 n, I64 u, I64 v) {
+    I64 ax = 40 * n;
+    I64 ay = 260 * n;
+    I64 bx = 130 * n;
+    I64 cx = 75 * n;
+    I64 cy = 170 * n;
+    I64 e1 = (bx - ax) * (v - ay);
+    I64 e2 = (cx - bx) * (v - ay) - (cy - ay) * (u - bx);
+    I64 e3 = (ax - cx) * (v - cy) - (ay - cy) * (u - cx);
+    return e1 <= 0 && e2 <= 0 && e3 <= 0;
+}
+
+// The token of pixel (x, y) of the n x n mark, or -1 where it is clear (the ground shows).
+export I64 at(I64 n, I64 x, I64 y) {
+    I64 u = (2 * x + 1) * 160;
+    I64 v = (2 * y + 1) * 160;
+    I64 t = -1;
+    if (u >= 60 * n && u < 160 * n && v >= 20 * n && v < 50 * n) { t = tokens.INK; }    // the counterweight bar
+    if (disk(n, u, v, 90, 80, 22)) { t = tokens.OCHRE; }                                 // the shepherd moon
+    Bool big = disk(n, u, v, 160, 155, 105);
+    if (big) { t = tokens.ULTRAMARINE; }                                                 // the circle
+    if (u >= 160 * n && u < 270 * n && v >= 20 * n && v < 260 * n) { t = tokens.CADMIUM; }   // the ascender
+    if (big && u >= 160 * n) { t = tokens.PAPER; }                                       // the right half cut out
+    if (u <= 160 * n && disk(n, u, v, 160, 155, 57)) { t = tokens.INK; }                 // the counter
+    Bool chock = tri(n, u, v);
+    if (chock) { t = tokens.OCHRE; }                                                     // the chock
+    if (chock && big) { t = tokens.PAPER; }                                              // its cut through the circle
+    if (u >= 40 * n && u < 270 * n && v >= 280 * n && v < 300 * n) { t = tokens.INK; }   // the datum rule
+    return t;
+}
+
+// MS-R5: the rows of the n x n mark kept once as runs, so a desk painted again does not ask `at` for each pixel. A
+// run is a word: where it ends (x, below 65536) above 16 bits, its token plus one below (0 where the mark is clear).
+// Rows of one size at a time; past the store a row is not kept, and the caller asks `at`.
+const I64 ROW_MAX = 4096;
+const I64 RUN_MAX = 8192;
+U32[8192] rr;                             // the runs of the rows kept, in the order they were made
+I64[4096] rr_at;                          // row y's: (first run << 16) | runs, or -1
+I64 rr_n = 0;                             // the size the rows are of
+I64 rr_used = 0;
+
+// Row y of the n x n mark as runs in dst: their count, or -1 when it is not kept (it does not fit).
+export I64 runs(I64 n, I64 y, inout U32[_] dst) {
+    if (n <= 0 || n >= 65536 || y < 0 || y >= n || n > ROW_MAX) { return -1; }
+    if (n != rr_n) {
+        for k in 0..ROW_MAX { rr_at[k] = -1; }
+        rr_n = n;
+        rr_used = 0;
+    }
+    if (rr_at[y] < 0) {
+        I64 st = rr_used;
+        I64 m = 0;
+        I64 x = 0;
+        while (x < n) {
+            I64 t = at(n, x, y);
+            I64 e = x + 1;
+            while (e < n && at(n, e, y) == t) { e = e + 1; }
+            if (st + m >= RUN_MAX) { return -1; }
+            rr[st + m] = ((e as U32) << 16) | ((t + 1) as U32);
+            m = m + 1;
+            x = e;
+        }
+        rr_at[y] = (st << 16) | m;
+        rr_used = st + m;
+    }
+    I64 st = rr_at[y] >> 16;
+    I64 m = rr_at[y] & 65535;
+    if (m > len(dst)) { return -1; }
+    copy(dst[0..m], rr[st..st + m]);
+    return m;
+}
+// SPDX-License-Identifier: Apache-2.0

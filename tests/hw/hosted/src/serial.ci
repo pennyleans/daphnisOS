@@ -1,0 +1,38 @@
+// tests/hw/hosted/src/serial.ci: src/serial.ci's face for the hosted I219-V tests: what the driver prints is kept,
+// so a test can ask whether a line was said.
+
+U8[8192] text_out;
+I64 n = 0;
+
+export void serial_putc(U8 c) {
+    if (n < 8192) {
+        text_out[n] = c;
+        n += 1;
+    }
+}
+
+export void serial_write(in U8[_] s) {
+    for i in 0..len(s) {
+        serial_putc(s[i]);
+    }
+}
+
+export void clear_said() {
+    n = 0;
+}
+
+// True when the text printed since clear_said() holds needle.
+export Bool said(in U8[_] needle) {
+    I64 m = len(needle);
+    I64 at = 0;
+    while (at + m <= n) {
+        I64 k = 0;
+        while (k < m && text_out[at + k] == needle[k]) { k += 1; }
+        if (k == m) {
+            return true;
+        }
+        at += 1;
+    }
+    return false;
+}
+// SPDX-License-Identifier: Apache-2.0

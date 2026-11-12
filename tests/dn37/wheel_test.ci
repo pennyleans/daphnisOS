@@ -1,0 +1,87 @@
+// tests/dn37/wheel_test.ci: DN-37 and DN-38, the loading wheel (user/ci/kit/wheel.ci): 16, 24 and 32 px at 0, 25, 50
+// and 100 percent and the unknown arc at 0, 300, 600 and 900 ms, at 1x and 2x on both themes, and the Busy pointer,
+// each frame's sum equal to tools/wheel.py's twin (--sums). Run by check.sh.
+import user.ci.kit.wheel;
+
+U32[64] row;
+
+I64 frame_sum(I64 q, I64 z, I64 th, I64 share, I64 t) {
+    I64 px = (q * z + 3) / 4;
+    I64 s = 0;
+    U32 g = 0x001e2124 as U32;
+    if (th == wheel.LIGHT) { g = 0x00f4f2ee as U32; }
+    for y in 0..px {
+        for x in 0..px { row[x] = g; }
+        wheel.row_at(row, y, 0, 0, q, z, th, share, t, true);
+        for x in 0..px { s = (s * 31 + row[x] as I64) % 1000000007; }
+    }
+    return s;
+}
+
+I64 busy_sum(I64 z, I64 t) {
+    I64 s = 0;
+    for y in 0..30 * z {
+        for x in 0..30 * z { row[x] = 0x00f4f2ee as U32; }
+        wheel.busy_row(row, y, 0, 0, z, t, true);
+        for x in 0..30 * z { s = (s * 31 + row[x] as I64) % 1000000007; }
+    }
+    return s;
+}
+
+test "the frames equal the twin's (tools/wheel.py --sums): sizes, shares, the unknown arc, 1x and 2x, both themes" {
+    I64[3] qs = [64, 96, 128];
+    I64[4] shares = [0, 25, 50, 100];
+    I64[4] ts = [0, 300, 600, 900];
+    I64[96] want = [455237968, 979287119, 423024830, 614423003, 557079374, 770395564,
+                    978814576, 655263508, 541855033, 514281477, 179469567, 300470748,
+                    436319581, 282205851, 799075672, 415461225, 157023418, 915968369,
+                    453757089, 427772095, 189372990, 515924244, 285508595, 455694538,
+                    779972757, 446614635, 30654932, 36609943, 2102565, 698222687,
+                    557064220, 426528305, 979287119, 620068918, 614423003, 122735601,
+                    770395564, 217665123, 655263508, 798421442, 514281477, 477517371,
+                    300470748, 27919192, 282205851, 314576888, 415461225, 617959885,
+                    557079374, 770395564, 978814576, 655263508, 31794056, 641021895,
+                    547521368, 941009062, 813410172, 275356616, 515945029, 23727187,
+                    232611260, 760338924, 396023010, 578703351, 189372990, 515924244,
+                    285508595, 455694538, 381122088, 782433901, 90221044, 698765068,
+                    246336901, 96120359, 191852139, 750829409, 595750898, 292449716,
+                    891444827, 936235781, 770395564, 217665123, 655263508, 798421442,
+                    641021895, 369899887, 941009062, 737389256, 275356616, 152186505,
+                    23727187, 647606116, 760338924, 109439309, 578703351, 755239930];
+    I64 k = 0;
+    for f in 0..24 {
+        I64 q = qs[(f % 12) / 4];
+        I64 sh = -1;
+        I64 t = 0;
+        if (f < 12) { sh = shares[f % 4]; } else { t = ts[f % 4]; }
+        for th in 0..2 {
+            for z in 1..3 {
+                I64 got = frame_sum(q, z, th, sh, t);
+                if (got != want[k]) { "frame {f} theme {th} z {z}: {got}\n"; }
+                assert(got == want[k]);
+                k = k + 1;
+            }
+        }
+    }
+}
+
+test "the Busy pointer: the arrow and the dark wheel beside it, at 1x and 2x, at 0 and 600 ms" {
+    I64[4] want = [409024561, 605493444, 624965811, 864130384];
+    assert(busy_sum(1, 0) == want[0] && busy_sum(1, 600) == want[1]);
+    assert(busy_sum(2, 0) == want[2] && busy_sum(2, 600) == want[3]);
+}
+
+test "motion off: the unknown arc stands still at 12 o'clock" {
+    U32[64] a;
+    U32[64] b;
+    for y in 0..24 {
+        for x in 0..64 {
+            a[x] = 0 as U32;
+            b[x] = 0 as U32;
+        }
+        wheel.row_at(a, y, 0, 0, wheel.S24, 1, wheel.DARK, wheel.UNKNOWN, 0, false);
+        wheel.row_at(b, y, 0, 0, wheel.S24, 1, wheel.DARK, wheel.UNKNOWN, 700, false);
+        for x in 0..64 { assert(a[x] == b[x]); }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

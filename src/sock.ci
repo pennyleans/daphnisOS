@@ -1,0 +1,431 @@
+// src/sock.ci: the socket calls for AF_INET (docs/specs/2026-11-05-n-net.md section 2). SOCK_DGRAM (N-2): socket,
+// bind, sendto, recvfrom, getsockname, setsockopt (accepted, ignored); a socket is a description of kind
+// fs.KIND_SOCK over a slot of src/udp.ci. SOCK_STREAM (N-3): connect, listen, accept, accept4, getpeername,
+// shutdown, and read, write, readv, writev, sendto and recvfrom without an address, over a slot of src/tcp.ci
+// (fs.KIND_TCP). A write sends at most one segment (stop and wait) and returns that count: Linux's blocking
+// write would return the whole count, and a caller that loops on short writes, as busybox does, sees the
+// same stream. A recvfrom with nothing queued, or a sendto whose next hop's
+// address is still being asked for, waits as a read of the event stream does: src/proc.ci halts for an
+// interrupt and calls again, and every call is a network tick. Results are Linux's.
+
+import src.fs;
+import src.eth;
+import src.tcp;
+import src.udp;
+import src.uvm;
+import src.input;
+
+const I64 AF_INET = 2;
+const I64 SOCK_DGRAM = 2;
+const I64 SOCK_STREAM = 1;
+const U64 SOCK_NONBLOCK = 0x800;
+const U64 SOCK_CLOEXEC = 0x80000;
+const U64 MSG_DONTWAIT = 0x40;
+const I64 EAGAIN = 11;
+const I64 EACCES = 13;
+const I64 EFAULT = 14;
+const I64 EINVAL = 22;
+const I64 EDESTADDRREQ = 89;
+const I64 EMSGSIZE = 90;
+const I64 EPROTONOSUPPORT = 93;
+const I64 ESOCKTNOSUPPORT = 94;
+const I64 EAFNOSUPPORT = 97;
+
+// The sockaddr_in at va: sets s_addr and s_port; 0 or -errno.
+I64 s_addr = 0;
+I64 s_port = 0;
+I64 read_addr(I64 pid, U64 va, U64 alen) {
+    if (alen < 16) {
+        return 0 - EINVAL;
+    }
+    U8[16] b;
+    if (uvm.peek(pid, va, b, 16) != 16) {
+        return 0 - EFAULT;
+    }
+    if (b[0] != 2 || b[1] != 0) {
+        return 0 - EAFNOSUPPORT;
+    }
+    s_port = ((b[2] as I64) << 8) | (b[3] as I64);
+    s_addr = ((b[4] as I64) << 24) | ((b[5] as I64) << 16) | ((b[6] as I64) << 8) | (b[7] as I64);
+    return 0;
+}
+
+// Writes the sockaddr_in of addr:port at va, cut to the length at alenp, and 16 at alenp; 0 or -EFAULT.
+I64 write_addr(I64 pid, U64 va, U64 alenp, I64 addr, I64 port) {
+    U8[4] l;
+    if (uvm.peek(pid, alenp, l, 4) != 4) {
+        return 0 - EFAULT;
+    }
+    I64 want = (l[0] as I64) | ((l[1] as I64) << 8) | ((l[2] as I64) << 16) | (((l[3] & 0x7F) as I64) << 24);
+    if ((l[3] & 0x80) != 0) {
+        return 0 - EINVAL;
+    }
+    U8[16] b;
+    for i in 0..16 {
+        b[i] = 0;
+    }
+    b[0] = AF_INET as U8;
+    b[2] = ((port >> 8) & 0xFF) as U8;
+    b[3] = (port & 0xFF) as U8;
+    b[4] = ((addr >> 24) & 0xFF) as U8;
+    b[5] = ((addr >> 16) & 0xFF) as U8;
+    b[6] = ((addr >> 8) & 0xFF) as U8;
+    b[7] = (addr & 0xFF) as U8;
+    if (want > 16) {
+        want = 16;
+    }
+    if (uvm.poke(pid, va, b, want, true) != want) {
+        return 0 - EFAULT;
+    }
+    l[0] = 16;
+    l[1] = 0;
+    l[2] = 0;
+    l[3] = 0;
+    if (uvm.poke(pid, alenp, l, 4, true) != 4) {
+        return 0 - EFAULT;
+    }
+    return 0;
+}
+
+export I64 sys_socket(I64 pid, U64 domain, U64 ty, U64 proto) {
+    if (domain != AF_INET as U64) {
+        return 0 - EAFNOSUPPORT;
+    }
+    U64 flags = ty & (0xFFFFFFFFFFFFFFFF - 0xF);
+    if ((flags & (0xFFFFFFFFFFFFFFFF - SOCK_NONBLOCK - SOCK_CLOEXEC)) != 0) {
+        return 0 - EINVAL;
+    }
+    if (!fs.held(pid, fs.GRANT_NET)) {
+        return 0 - EACCES;             // N-4, GR-1 A: no net grant (Linux's place: after the family and type checks)
+    }
+    if ((ty & 0xF) == SOCK_STREAM as U64) {
+        if (proto != 0 && proto != 6) {
+            return 0 - EPROTONOSUPPORT;
+        }
+        I64 c = tcp.open();
+        if (c < 0) {
+            return c;
+        }
+        return fs.sock_open(pid, fs.KIND_TCP, c, flags);
+    }
+    if ((ty & 0xF) != SOCK_DGRAM as U64) {
+        return 0 - ESOCKTNOSUPPORT;
+    }
+    if (proto != 0 && proto != 17) {
+        return 0 - EPROTONOSUPPORT;
+    }
+    I64 s = udp.open();
+    if (s < 0) {
+        return s;
+    }
+    return fs.sock_open(pid, fs.KIND_SOCK, s, flags);
+}
+
+export I64 sys_bind(I64 pid, I64 fd, U64 va, U64 alen) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0 - EACCES;             // GV-1b: the net grant was revoked
+    }
+    I64 r = read_addr(pid, va, alen);
+    if (r < 0) {
+        return r;
+    }
+    if (is_tcp(pid, fd)) {
+        if (s_addr != 0 && (eth.our_ip() == 0 || s_addr != eth.our_ip())) {
+            return 0 - 99;             // EADDRNOTAVAIL
+        }
+        return tcp.bind(s, s_port);
+    }
+    return udp.bind(s, s_addr, s_port);
+}
+
+export I64 sys_getsockname(I64 pid, I64 fd, U64 va, U64 alenp) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (is_tcp(pid, fd)) {
+        I64 a = 0;
+        if (tcp.remote_addr(s) != 0) {
+            a = eth.our_ip();
+        }
+        return write_addr(pid, va, alenp, a, tcp.local_port(s));
+    }
+    return write_addr(pid, va, alenp, udp.local_addr(s), udp.local_port(s));
+}
+
+export I64 sys_setsockopt(I64 pid, I64 fd) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    return 0;
+}
+
+// GV-1b (docs/specs/2026-11-11-gv-revoke.md section 3, option A): the net grant is tested at every use of a socket,
+// not only when it is made. A process that no longer holds it (the desk's revoke, or its own drop) finds its sockets
+// shut: a read ends (0), a write, a connect, a bind, a listen and an accept fail with -EACCES. The descriptor stays
+// its own and is closed as ever; nothing ends the program. Ring 0 holds every grant (fs.held).
+Bool shut_out(I64 pid) {
+    return !fs.held(pid, fs.GRANT_NET);
+}
+
+Bool is_tcp(I64 pid, I64 fd) {
+    return fs.fd_kind(pid, fd) == fs.KIND_TCP;
+}
+
+Bool waits(I64 pid, I64 fd, U64 flags) {
+    return !fs.nonblock(pid, fd) && (flags & MSG_DONTWAIT) == 0;
+}
+
+export I64 sys_sendto(I64 pid, I64 fd, U64 buf, U64 n, U64 flags, U64 va, U64 alen) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0 - EACCES;             // GV-1b: the net grant was revoked: a write fails
+    }
+    if (is_tcp(pid, fd)) {
+        return stream_write(pid, fd, buf, n, flags);   // the address, if any, is ignored, as Linux does once connected
+    }
+    if (va == 0) {
+        return 0 - EDESTADDRREQ;
+    }
+    I64 r = read_addr(pid, va, alen);
+    if (r < 0) {
+        return r;
+    }
+    if (n > udp.DGRAM_MAX as U64) {
+        return 0 - EMSGSIZE;
+    }
+    I64 k = n as I64;
+    U8[1514] f;
+    if (k > 0 && uvm.peek(pid, buf, f[udp.HDR..udp.HDR + k], k) != k) {
+        return 0 - EFAULT;
+    }
+    I64 sent = udp.send(s, s_addr, s_port, f, k);
+    if (sent == udp.WAIT) {
+        if (waits(pid, fd, flags)) {
+            return input.WOULD_BLOCK_DEV;
+        }
+        return 0 - EAGAIN;
+    }
+    return sent;
+}
+
+export I64 sys_recvfrom(I64 pid, I64 fd, U64 buf, U64 n, U64 flags, U64 va, U64 alenp) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0;             // GV-1b: the net grant was revoked: a read ends
+    }
+    if (is_tcp(pid, fd)) {
+        I64 r = stream_read(pid, fd, buf, n, flags);
+        if (r > 0 && va != 0) {
+            I64 w = write_addr(pid, va, alenp, tcp.remote_addr(s), tcp.remote_port(s));
+            if (w < 0) {
+                return w;
+            }
+        }
+        return r;
+    }
+    U8[1514] f;
+    I64 got = udp.take(s, f);
+    if (got == udp.WAIT) {
+        if (waits(pid, fd, flags)) {
+            return input.WOULD_BLOCK_DEV;
+        }
+        return 0 - EAGAIN;
+    }
+    I64 k = got;
+    if (n < k as U64) {
+        k = n as I64;                  // the rest of the datagram is dropped, as Linux does
+    }
+    if (k > 0 && uvm.poke(pid, buf, f[udp.HDR..udp.HDR + k], k, true) != k) {
+        return 0 - EFAULT;
+    }
+    if (va != 0) {
+        I64 w = write_addr(pid, va, alenp, udp.took_src(), udp.took_port());
+        if (w < 0) {
+            return w;
+        }
+    }
+    return k;
+}
+
+// --- SOCK_STREAM (N-3) ---
+
+U8[4096] sbuf;
+
+// The TCP slot behind fd, or -errno (-ENOTSOCK, or -EOPNOTSUPP for a datagram socket).
+I64 tcp_of(I64 pid, I64 fd) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s >= 0 && !is_tcp(pid, fd)) {
+        return 0 - 95;                 // EOPNOTSUPP
+    }
+    return s;
+}
+
+// What a TCP call that must wait returns: WOULD_BLOCK_DEV (the call is made again), or -EAGAIN.
+I64 wait_or(I64 pid, I64 fd, U64 flags, I64 nb) {
+    if (waits(pid, fd, flags)) {
+        return input.WOULD_BLOCK_DEV;
+    }
+    return 0 - nb;
+}
+
+// read, readv, recvfrom on a TCP socket: at most n bytes.
+export I64 stream_read(I64 pid, I64 fd, U64 buf, U64 n, U64 flags) {
+    I64 s = tcp_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0;             // GV-1b: the net grant was revoked: a read ends
+    }
+    if (n == 0) {
+        return 0;
+    }
+    I64 k = 4096;
+    if (n < 4096) {
+        k = n as I64;
+    }
+    I64 r = tcp.recv(s, sbuf, k);
+    if (r == tcp.WAIT) {
+        return wait_or(pid, fd, flags, EAGAIN);
+    }
+    if (r > 0 && uvm.poke(pid, buf, sbuf[0..r], r, true) != r) {
+        return 0 - EFAULT;             // the bytes are gone, as they would be from Linux's queue: no retry sees them
+    }
+    return r;
+}
+
+// write, writev, sendto on a TCP socket: up to 4,096 bytes into the connection's send buffer.
+export I64 stream_write(I64 pid, I64 fd, U64 buf, U64 n, U64 flags) {
+    I64 s = tcp_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0 - EACCES;             // GV-1b: the net grant was revoked: a write fails
+    }
+    if (n == 0) {
+        return 0;
+    }
+    I64 k = 4096;
+    if (n < 4096) {
+        k = n as I64;
+    }
+    if (uvm.peek(pid, buf, sbuf[0..k], k) != k) {
+        return 0 - EFAULT;
+    }
+    I64 r = tcp.send(s, sbuf, k);
+    if (r == tcp.WAIT) {
+        return wait_or(pid, fd, flags, EAGAIN);
+    }
+    return r;
+}
+
+export I64 sys_connect(I64 pid, I64 fd, U64 va, U64 alen) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0 - EACCES;             // GV-1b: the net grant was revoked
+    }
+    I64 r = read_addr(pid, va, alen);
+    if (r < 0) {
+        return r;
+    }
+    if (!is_tcp(pid, fd)) {
+        return 0 - 95;                 // a connected datagram socket is not in stage N (EOPNOTSUPP)
+    }
+    I64 c = tcp.connect(s, s_addr, s_port);
+    if (c == tcp.WAIT) {
+        if (fs.nonblock(pid, fd)) {
+            return 0 - 115;            // EINPROGRESS
+        }
+        return input.WOULD_BLOCK_DEV;
+    }
+    return c;
+}
+
+export I64 sys_listen(I64 pid, I64 fd) {
+    I64 s = tcp_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0 - EACCES;             // GV-1b: the net grant was revoked
+    }
+    return tcp.listen(s);
+}
+
+// accept and accept4 (flags SOCK_NONBLOCK, SOCK_CLOEXEC): a new descriptor for a connection made through
+// the listener, the peer's address at va when va is not 0.
+export I64 sys_accept(I64 pid, I64 fd, U64 va, U64 alenp, U64 flags) {
+    I64 s = tcp_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (shut_out(pid)) {
+        return 0 - EACCES;             // GV-1b: the net grant was revoked
+    }
+    if ((flags & (0xFFFFFFFFFFFFFFFF - SOCK_NONBLOCK - SOCK_CLOEXEC)) != 0) {
+        return 0 - EINVAL;
+    }
+    if (tcp.state(s) != tcp.LISTEN) {
+        return 0 - EINVAL;
+    }
+    I64 c = tcp.accept(s);
+    if (c == tcp.WAIT) {
+        return wait_or(pid, fd, 0, EAGAIN);
+    }
+    if (va != 0) {
+        I64 w = write_addr(pid, va, alenp, tcp.remote_addr(c), tcp.remote_port(c));
+        if (w < 0) {
+            tcp.release(c);
+            return w;
+        }
+    }
+    return fs.sock_open(pid, fs.KIND_TCP, c, flags);
+}
+
+export I64 sys_getpeername(I64 pid, I64 fd, U64 va, U64 alenp) {
+    I64 s = fs.sock_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (!is_tcp(pid, fd) || tcp.remote_addr(s) == 0 || tcp.state(s) < tcp.ESTABLISHED) {
+        return 0 - 107;                // ENOTCONN
+    }
+    return write_addr(pid, va, alenp, tcp.remote_addr(s), tcp.remote_port(s));
+}
+
+// shutdown: SHUT_WR and SHUT_RDWR send our FIN after what is in flight; SHUT_RD is accepted and changes
+// nothing that a reader of this stage can see.
+export I64 sys_shutdown(I64 pid, I64 fd, U64 how) {
+    I64 s = tcp_of(pid, fd);
+    if (s < 0) {
+        return s;
+    }
+    if (how > 2) {
+        return 0 - EINVAL;
+    }
+    I64 t = tcp.state(s);
+    if (t < tcp.ESTABLISHED) {
+        return 0 - 107;                // ENOTCONN
+    }
+    if (how >= 1) {
+        tcp.shut(s);
+    }
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

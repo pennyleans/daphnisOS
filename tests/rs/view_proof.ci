@@ -1,0 +1,95 @@
+// tests/rs/view_proof.ci: RS-VIEW's proof twins (frame 39, design note 64): View's body drawn by the kit
+// (kit/viewpad.ci, kit/ctxmenu.ci's PICTURE list) in the dark and light themes at 1x and 2x: frame 39's picture with
+// the right wedge, the same with the picture menu open (Properties dimmed), and the window with no picture. The
+// picture is frame 39's composition, drawn here. Prints `frame NAME W H` and each row as runs `r rgb count`;
+// tools/rsproof.py writes the PNGs. Run: cint run --root . tests/rs/view_proof.ci | python3 tools/rsproof.py OUTDIR
+import user.ci.kit.tokens;
+import user.ci.kit.viewpad;
+import user.ci.kit.ctxmenu;
+
+const I64 W = 566;                  // frame 39's window body: 568 less its sides, 386 less the bar and the bottom
+const I64 H = 353;
+
+U32[1144] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+// Channel v moved toward t by a / 256.
+I64 toward(I64 v, I64 t, I64 a) { return v + (t - v) * a / 256; }
+
+// Frame 39's composition, painted in its order, into px (RGBA, W a row).
+void compose(inout U8[_] px) {
+    for y in 0..H {
+        for x in 0..W {
+            I64 c = 0xe9e1cd;
+            if (x < 190) { c = 0x1a4b8c; }
+            I64 dx = 2 * x + 1 - 412;
+            I64 dy = 2 * y + 1 - 340;
+            if (dx * dx + dy * dy <= 220 * 220) { c = 0xd62828; }
+            if (x >= 286 && x < 298) { c = 0x141413; }
+            if (x >= 298 && x < 538 && y >= 214 && y < 226) { c = 0x141413; }
+            if (x >= 352 && x < 472 && y >= 48 && y < 168) { c = 0xe5a900; }
+            if (x >= 392 && x < 512 && y >= 88 && y < 208) {
+                I64 r = toward((c >> 16) & 255, 0x14, 225);
+                I64 g = toward((c >> 8) & 255, 0x14, 225);
+                I64 b = toward(c & 255, 0x13, 225);
+                c = (r << 16) | (g << 8) | b;
+            }
+            I64 ex = 2 * x + 1 - 724;
+            I64 ey = 2 * y + 1 - 568;
+            if (ex * ex + ey * ey <= 64 * 64) { c = 0x1a4b8c; }
+            if (x >= 420 && x < 504 && y >= 268 && y < 300) { c = 0x9e4724; }
+            I64 o = 4 * (y * W + x);
+            px[o] = ((c >> 16) & 255) as U8;
+            px[o + 1] = ((c >> 8) & 255) as U8;
+            px[o + 2] = (c & 255) as U8;
+            px[o + 3] = 255;
+        }
+    }
+}
+
+export void main(in U8[_] a) {
+    U8[799192] px;
+    compose(px);
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            viewpad.surface(W, H);
+            viewpad.picture(W, H);
+            "frame view_{th}_{z}x {W * z} {H * z}\n";
+            for y in 0..H * z {
+                viewpad.picture_row(row, y, z, px);
+                viewpad.wedge_row(row, y, 2, z);
+                emit(W * z);
+            }
+            ctxmenu.begin(ctxmenu.PICTURE, false);
+            ctxmenu.row_dim(ctxmenu.PROPERTIES);
+            ctxmenu.open_at(300, 40, 0, 0, W, H, false);
+            "frame view_menu_{th}_{z}x {W * z} {H * z}\n";
+            for y in 0..H * z {
+                viewpad.picture_row(row, y, z, px);
+                ctxmenu.row_at(row, y, z, th, 1000);
+                emit(W * z);
+            }
+            ctxmenu.close();
+            viewpad.surface(viewpad.EMPTY_W, viewpad.EMPTY_H);
+            "frame view_empty_{th}_{z}x {viewpad.EMPTY_W * z} {viewpad.EMPTY_H * z}\n";
+            for y in 0..viewpad.EMPTY_H * z {
+                viewpad.empty_row(row, y, z, b"No picture is open.");
+                emit(viewpad.EMPTY_W * z);
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

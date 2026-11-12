@@ -1,0 +1,351 @@
+$ text.txt
+eerht owt eno
+evif  ruof
+
+thgie neves	xis
+enin
+status 0
+$ nonl.txt
+dne eht ta enilwen onstatus 0
+$  < text.txt
+eerht owt eno
+evif  ruof
+
+thgie neves	xis
+enin
+status 0
+$ - < long.txt
+ txt.gnol fo 0 enil
+x txt.gnol fo 1 enil
+xx txt.gnol fo 2 enil
+xxx txt.gnol fo 3 enil
+xxxx txt.gnol fo 4 enil
+xxxxx txt.gnol fo 5 enil
+xxxxxx txt.gnol fo 6 enil
+xxxxxxx txt.gnol fo 7 enil
+xxxxxxxx txt.gnol fo 8 enil
+xxxxxxxxx txt.gnol fo 9 enil
+xxxxxxxxxx txt.gnol fo 01 enil
+xxxxxxxxxxx txt.gnol fo 11 enil
+xxxxxxxxxxxx txt.gnol fo 21 enil
+xxxxxxxxxxxxx txt.gnol fo 31 enil
+xxxxxxxxxxxxxx txt.gnol fo 41 enil
+xxxxxxxxxxxxxxx txt.gnol fo 51 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 61 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 71 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 81 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 91 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 02 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 12 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 22 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 32 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 42 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 52 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 62 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 72 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 82 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 92 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 03 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 13 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 23 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 33 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 43 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 53 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 63 enil
+ txt.gnol fo 73 enil
+x txt.gnol fo 83 enil
+xx txt.gnol fo 93 enil
+xxx txt.gnol fo 04 enil
+xxxx txt.gnol fo 14 enil
+xxxxx txt.gnol fo 24 enil
+xxxxxx txt.gnol fo 34 enil
+xxxxxxx txt.gnol fo 44 enil
+xxxxxxxx txt.gnol fo 54 enil
+xxxxxxxxx txt.gnol fo 64 enil
+xxxxxxxxxx txt.gnol fo 74 enil
+xxxxxxxxxxx txt.gnol fo 84 enil
+xxxxxxxxxxxx txt.gnol fo 94 enil
+xxxxxxxxxxxxx txt.gnol fo 05 enil
+xxxxxxxxxxxxxx txt.gnol fo 15 enil
+xxxxxxxxxxxxxxx txt.gnol fo 25 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 35 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 45 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 55 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 65 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 75 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 85 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 95 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 06 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 16 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 26 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 36 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 46 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 56 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 66 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 76 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 86 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 96 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 07 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 17 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 27 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 37 enil
+ txt.gnol fo 47 enil
+x txt.gnol fo 57 enil
+xx txt.gnol fo 67 enil
+xxx txt.gnol fo 77 enil
+xxxx txt.gnol fo 87 enil
+xxxxx txt.gnol fo 97 enil
+xxxxxx txt.gnol fo 08 enil
+xxxxxxx txt.gnol fo 18 enil
+xxxxxxxx txt.gnol fo 28 enil
+xxxxxxxxx txt.gnol fo 38 enil
+xxxxxxxxxx txt.gnol fo 48 enil
+xxxxxxxxxxx txt.gnol fo 58 enil
+xxxxxxxxxxxx txt.gnol fo 68 enil
+xxxxxxxxxxxxx txt.gnol fo 78 enil
+xxxxxxxxxxxxxx txt.gnol fo 88 enil
+xxxxxxxxxxxxxxx txt.gnol fo 98 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 09 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 19 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 29 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 39 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 49 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 59 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 69 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 79 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 89 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 99 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 001 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 101 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 201 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 301 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 401 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 501 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 601 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 701 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 801 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 901 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 011 enil
+ txt.gnol fo 111 enil
+x txt.gnol fo 211 enil
+xx txt.gnol fo 311 enil
+xxx txt.gnol fo 411 enil
+xxxx txt.gnol fo 511 enil
+xxxxx txt.gnol fo 611 enil
+xxxxxx txt.gnol fo 711 enil
+xxxxxxx txt.gnol fo 811 enil
+xxxxxxxx txt.gnol fo 911 enil
+xxxxxxxxx txt.gnol fo 021 enil
+xxxxxxxxxx txt.gnol fo 121 enil
+xxxxxxxxxxx txt.gnol fo 221 enil
+xxxxxxxxxxxx txt.gnol fo 321 enil
+xxxxxxxxxxxxx txt.gnol fo 421 enil
+xxxxxxxxxxxxxx txt.gnol fo 521 enil
+xxxxxxxxxxxxxxx txt.gnol fo 621 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 721 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 821 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 921 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 031 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 131 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 231 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 331 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 431 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 531 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 631 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 731 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 831 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 931 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 041 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 141 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 241 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 341 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 441 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 541 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 641 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 741 enil
+ txt.gnol fo 841 enil
+x txt.gnol fo 941 enil
+xx txt.gnol fo 051 enil
+xxx txt.gnol fo 151 enil
+xxxx txt.gnol fo 251 enil
+xxxxx txt.gnol fo 351 enil
+xxxxxx txt.gnol fo 451 enil
+xxxxxxx txt.gnol fo 551 enil
+xxxxxxxx txt.gnol fo 651 enil
+xxxxxxxxx txt.gnol fo 751 enil
+xxxxxxxxxx txt.gnol fo 851 enil
+xxxxxxxxxxx txt.gnol fo 951 enil
+xxxxxxxxxxxx txt.gnol fo 061 enil
+xxxxxxxxxxxxx txt.gnol fo 161 enil
+xxxxxxxxxxxxxx txt.gnol fo 261 enil
+xxxxxxxxxxxxxxx txt.gnol fo 361 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 461 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 561 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 661 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 761 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 861 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 961 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 071 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 171 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 271 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 371 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 471 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 571 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 671 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 771 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 871 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 971 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 081 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 181 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 281 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 381 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 481 enil
+ txt.gnol fo 581 enil
+x txt.gnol fo 681 enil
+xx txt.gnol fo 781 enil
+xxx txt.gnol fo 881 enil
+xxxx txt.gnol fo 981 enil
+xxxxx txt.gnol fo 091 enil
+xxxxxx txt.gnol fo 191 enil
+xxxxxxx txt.gnol fo 291 enil
+xxxxxxxx txt.gnol fo 391 enil
+xxxxxxxxx txt.gnol fo 491 enil
+xxxxxxxxxx txt.gnol fo 591 enil
+xxxxxxxxxxx txt.gnol fo 691 enil
+xxxxxxxxxxxx txt.gnol fo 791 enil
+xxxxxxxxxxxxx txt.gnol fo 891 enil
+xxxxxxxxxxxxxx txt.gnol fo 991 enil
+xxxxxxxxxxxxxxx txt.gnol fo 002 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 102 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 202 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 302 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 402 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 502 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 602 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 702 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 802 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 902 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 012 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 112 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 212 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 312 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 412 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 512 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 612 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 712 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 812 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 912 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 022 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 122 enil
+ txt.gnol fo 222 enil
+x txt.gnol fo 322 enil
+xx txt.gnol fo 422 enil
+xxx txt.gnol fo 522 enil
+xxxx txt.gnol fo 622 enil
+xxxxx txt.gnol fo 722 enil
+xxxxxx txt.gnol fo 822 enil
+xxxxxxx txt.gnol fo 922 enil
+xxxxxxxx txt.gnol fo 032 enil
+xxxxxxxxx txt.gnol fo 132 enil
+xxxxxxxxxx txt.gnol fo 232 enil
+xxxxxxxxxxx txt.gnol fo 332 enil
+xxxxxxxxxxxx txt.gnol fo 432 enil
+xxxxxxxxxxxxx txt.gnol fo 532 enil
+xxxxxxxxxxxxxx txt.gnol fo 632 enil
+xxxxxxxxxxxxxxx txt.gnol fo 732 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 832 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 932 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 042 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 142 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 242 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 342 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 442 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 542 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 642 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 742 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 842 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 942 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 052 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 152 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 252 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 352 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 452 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 552 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 652 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 752 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 852 enil
+ txt.gnol fo 952 enil
+x txt.gnol fo 062 enil
+xx txt.gnol fo 162 enil
+xxx txt.gnol fo 262 enil
+xxxx txt.gnol fo 362 enil
+xxxxx txt.gnol fo 462 enil
+xxxxxx txt.gnol fo 562 enil
+xxxxxxx txt.gnol fo 662 enil
+xxxxxxxx txt.gnol fo 762 enil
+xxxxxxxxx txt.gnol fo 862 enil
+xxxxxxxxxx txt.gnol fo 962 enil
+xxxxxxxxxxx txt.gnol fo 072 enil
+xxxxxxxxxxxx txt.gnol fo 172 enil
+xxxxxxxxxxxxx txt.gnol fo 272 enil
+xxxxxxxxxxxxxx txt.gnol fo 372 enil
+xxxxxxxxxxxxxxx txt.gnol fo 472 enil
+xxxxxxxxxxxxxxxx txt.gnol fo 572 enil
+xxxxxxxxxxxxxxxxx txt.gnol fo 672 enil
+xxxxxxxxxxxxxxxxxx txt.gnol fo 772 enil
+xxxxxxxxxxxxxxxxxxx txt.gnol fo 872 enil
+xxxxxxxxxxxxxxxxxxxx txt.gnol fo 972 enil
+xxxxxxxxxxxxxxxxxxxxx txt.gnol fo 082 enil
+xxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 182 enil
+xxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 282 enil
+xxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 382 enil
+xxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 482 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 582 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 682 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 782 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 882 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 982 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 092 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 192 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 292 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 392 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 492 enil
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx txt.gnol fo 592 enil
+ txt.gnol fo 692 enil
+x txt.gnol fo 792 enil
+xx txt.gnol fo 892 enil
+xxx txt.gnol fo 992 enil
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+status 0
+$ text.txt nonl.txt empty
+eerht owt eno
+evif  ruof
+
+thgie neves	xis
+enin
+dne eht ta enilwen onstatus 0
+$ bin.dat
+	 
+	 ÿþýüûúùø÷öõôóòñðïîíìëêéèçæåäãâáàßÞÝÜÛÚÙØ×ÖÕÔÓÒÑÐÏÎÍÌËÊÉÈÇÆÅÄÃÂÁÀ¿¾½¼»º¹¸·¶µ´³²±°¯®­¬«ª©¨§¦¥¤£¢¡ Ÿžœ›š™˜—–•”“’‘ŽŒ‹Š‰ˆ‡†…„ƒ‚€~}|{zyxwvutsrqponmlkjihgfedcba`_^]\[ZYXWVUTSRQPONMLKJIHGFEDCBA@?>=<;:9876543210/.-,+*)('&%$#"! 
+ÿþýüûúùø÷öõôóòñðïîíìëêéèçæåäãâáàßÞÝÜÛÚÙØ×ÖÕÔÓÒÑÐÏÎÍÌËÊÉÈÇÆÅÄÃÂÁÀ¿¾½¼»º¹¸·¶µ´³²±°¯®­¬«ª©¨§¦¥¤£¢¡ Ÿžœ›š™˜—–•”“’‘ŽŒ‹Š‰ˆ‡†…„ƒ‚€~}|{zyxwvutsrqponmlkjihgfedcba`_^]\[ZYXWVUTSRQPONMLKJIHGFEDCBA@?>=<;:9876543210/.-,+*)('&%$#"! status 0
+$ utf8.txt
+dlr¶Ãw oll©Ãh
+©Ã
+5 ¬‚â
+status 0
+$ missing text.txt
+eerht owt eno
+evif  ruof
+
+thgie neves	xis
+enin
+-- stderr
+rev: missing: No such file or directory
+status 1
+$ look/sp\ ace.txt
+ecaps
+status 0
+$ -x
+-- stderr
+rev: not supported: -x
+status 2

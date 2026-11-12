@@ -1,0 +1,294 @@
+// user/ci/kit/stbox.ci: frame 48 (BoxSizes; DN-66, l 2026-11-11 19:34Z): the Settings window in any box. Parts
+// never scale; a larger box gives more room. The box is the window's body, the content box at 1x from (x0, y0) to
+// (xr, yb); the desk sizes it, so Settings needs no RS-SURF.
+//   Wide, a box 640 or wider: the sidebar (kit/stside.ci) 200 wide at its left, and the page one column, at most 640
+//   wide, centered in the rest and at least 32 from each side (stpage.PAD).
+//   Narrow, under 640 (DN-55, as Index): the sidebar folds away and the page runs 20 from each side. stpage.title
+//   draws a 28 px button before the title (stpage.fold); the button lays the sidebar over the page, from the box's
+//   top to its bottom, with the High shadow (MS-3 level 3); a choice, Esc or a click outside closes it.
+//   Both: a page taller than the box scrolls under its title. The band from the box's top to BAND below it is the
+//   page's head and never moves; the rest is the page lifted by lift(). A new page starts at its top. A sidebar
+//   taller than the box scrolls the same way under the pointer, and the keyboard's page stays whole in it.
+// The frame also keeps the page shown and whether the keyboard is in the sidebar (DN-40), the sidebar being one stop
+// of the desk's Tab order (kit/stpage.ci): Up and Down there show the page above or below, and Left only shows the
+// ring; Tab, Right and Enter take the keyboard into the page at its first stop, Shift+Tab at its last. In the narrow
+// form the keyboard in the sidebar lays it over the page (a page's BACK, or the box folding with the keyboard
+// there), and Esc closes it as a click outside does. Settings opens with the keyboard in the sidebar in a wide box
+// and in the page in a narrow one, the ring hidden until a Tab or an arrow (ST-K1).
+//
+// Hosting (no edit to the desk here; the desk wires it): open() with the box and the first page when Settings
+// opens, place() on every later change of the box, show() when the desk itself turns Settings to a page, and
+// set_tall() whenever a page opens (tall is its module's tall()); under_row(), then the page's row_at with y0_at(y)
+// and yb_at(y), then over_row(), for each 1x row y of the box, kbd being keyed(); click() and key() before the
+// page's, which gets the point (with y0_at(py) and yb_at(py)) or key only when they answer NONE; Shift+Tab as
+// stpage.K_BACKTAB; a wheel notch to the page's own list first, then scroll(). PAGE says the page shown changed
+// (page()); ENTER and ENTER_LAST say the keyboard moves into the page (its enter() and enter_last()): a page that
+// answers false has no stop, so back(), and one that answers true is revealed as after a key. A page's BACK is
+// back(). After each key the page takes, and each enter() or enter_last() that answers true, reveal() with its
+// focus_top() and focus_bottom(). Pure: no file, no kernel entry.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.shade;
+import user.ci.kit.blend;
+import user.ci.kit.stpage;
+import user.ci.kit.stside;
+
+export const I64 NARROW = 640;         // a box narrower than this folds the sidebar
+export const I64 COL = 640;            // the page's widest column
+export const I64 PAD_N = 20;           // a narrow page's sides
+export const I64 BAND = 56;            // the page's head: its title row, a button in it and that button's focus ring
+export const I64 STEP = 49;            // a wheel notch: one row's pitch (stpage.PITCH)
+export const I64 SHADOW = 3;           // High: the laid sidebar's shadow (frame 48's SH)
+export const I64 CLEAR = 16;           // the keyboard's row from the head and the foot: DN-40's ring 4 out, then 12 of
+                                       // page ground, as the sidebar keeps for its chosen pill (design, 21:13Z)
+
+export const I64 NONE = 0;             // not the frame's: the page takes it
+export const I64 DRAW = 1;             // the frame took it: draw again
+export const I64 PAGE = 2;             // the page shown changed: page()
+export const I64 ENTER = 3;            // the keyboard moves into the page, at its first stop
+export const I64 ENTER_LAST = 4;       // Shift+Tab: the keyboard moves into the page at its last stop
+
+I64 bx = 0;                            // the box
+I64 bt = 0;
+I64 bxr = 0;
+I64 byb = 0;
+I64 shown = 0;                         // the page shown (stside's numbers)
+Bool side = false;                     // the keyboard is in the sidebar
+Bool laid = false;                     // narrow: the sidebar lies over the page
+Bool keyed_ = false;                   // a Tab or an arrow since the last click: the rings show
+I64 lift = 0;                          // how far the page is scrolled
+I64 slift = 0;                         // how far the sidebar is scrolled
+I64 tall_h = 0;                        // the page's height from its top (its module's tall())
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- the box ---
+
+// Settings opens on page p in the box: the page at its top, nothing laid, the ring hidden; the keyboard in the
+// sidebar when the box is wide, in the page when it is narrow (ST-K1).
+export void open(I64 x0, I64 y0, I64 xr, I64 yb, I64 p) {
+    side = false;
+    keyed_ = false;
+    place(x0, y0, xr, yb);
+    show(p);
+    side = !narrow();
+}
+
+export void place(I64 x0, I64 y0, I64 xr, I64 yb) {
+    bx = x0;
+    bt = y0;
+    bxr = xr;
+    byb = yb;
+    laid = narrow() && side;           // narrow, the keyboard's sidebar lies over the page; wide, it is inline
+    stpage.fold(narrow());
+    lift = max(0, min(lift, room()));
+    side_keep();
+}
+
+export Bool narrow() { return bxr - bx < NARROW; }
+
+// The page's column: its left and right.
+export I64 cx() {
+    if (narrow()) { return bx + PAD_N; }
+    I64 pw = bxr - bx - stside.W;
+    return bx + stside.W + (pw - col_w(pw)) / 2;
+}
+
+export I64 cr() {
+    if (narrow()) { return bxr - PAD_N; }
+    return cx() + col_w(bxr - bx - stside.W);
+}
+
+I64 col_w(I64 pw) { return max(0, min(COL, pw - 2 * stpage.PAD)); }
+
+// --- the page shown, the keyboard, the laid sidebar ---
+
+export void show(I64 p) {
+    shown = max(0, min(p, stside.N - 1));
+    lift = 0;
+    side_keep();
+}
+
+export I64 page() { return shown; }
+export Bool in_side() { return side; }
+export Bool keyed() { return keyed_; }
+export Bool is_laid() { return laid; }
+
+// The page answered BACK: the keyboard goes to the sidebar, which a narrow box lays over the page.
+export void back() {
+    side = true;
+    if (narrow()) { laid = true; }
+}
+
+// The keyboard into the page: the laid sidebar closes.
+void enter_page() {
+    side = false;
+    laid = false;
+}
+
+// --- scrolling ---
+
+export void set_tall(I64 h) {
+    tall_h = max(0, h);
+    lift = max(0, min(lift, room()));
+}
+
+export I64 lifted() { return lift; }
+
+// How far the page can lift: what of it the box cannot hold.
+I64 room() { return max(0, tall_h - (byb - bt)); }
+
+// The sidebar: its height (12 under the last pill, as above the first), how far it can lift, its top as drawn.
+I64 side_h() { return stside.row_y(0, stside.N - 1) + stside.PILL + 12; }
+I64 side_room() { return max(0, side_h() - (byb - bt)); }
+export I64 side_lifted() { return slift; }
+I64 side_y0() { return bt - slift; }
+
+// Whether 1x x px is over the sidebar, inline or laid.
+Bool over_side(I64 px) { return (laid || !narrow()) && px >= bx && px < bx + stside.W; }
+
+// The shown page's pill whole in the box, with the 12 the sidebar keeps above its first and under its last.
+void side_keep() {
+    I64 t = stside.row_y(0, shown) - 12;
+    I64 b = stside.row_y(0, shown) + stside.PILL + 12 - (byb - bt);
+    if (slift > t) { slift = t; }
+    if (slift < b) { slift = b; }
+    slift = max(0, min(slift, side_room()));
+}
+
+// d wheel notches down (up when negative) with the pointer at 1x x px: the sidebar's under it, else the page's;
+// whether either moved.
+export Bool scroll(I64 px, I64 d) {
+    if (over_side(px)) {
+        I64 s = max(0, min(slift + d * STEP, side_room()));
+        if (s == slift) { return false; }
+        slift = s;
+        return true;
+    }
+    I64 l = max(0, min(lift + d * STEP, room()));
+    if (l == lift) { return false; }
+    lift = l;
+    return true;
+}
+
+// The page's rows t to b (from its top) whole under the head, CLEAR from the head's foot and the box's, the top
+// first when they cannot both show: whether the page moved. A row in the head (t under BAND) never moves; t < 0 is
+// no row.
+export Bool reveal(I64 t, I64 b) {
+    if (t < BAND) { return false; }
+    I64 l = max(lift, b + CLEAR - (byb - bt));
+    l = max(0, min(min(l, t - CLEAR - BAND), room()));
+    if (l == lift) { return false; }
+    lift = l;
+    return true;
+}
+
+// The y0 and yb a page is drawn and asked with at 1x row (or point) y: the head as placed, the rest lifted and as
+// tall as the page.
+export I64 y0_at(I64 y) {
+    if (y < bt + BAND) { return bt; }
+    return bt - lift;
+}
+
+export I64 yb_at(I64 y) {
+    if (y < bt + BAND) { return byb; }
+    return bt - lift + max(byb - bt, tall_h);
+}
+
+// --- the pointer and the keys ---
+
+// Whether (px, py) is on the narrow form's button before the title.
+export Bool on_button(I64 px, I64 py) {
+    I64 t = bt + stpage.TOP - 4;
+    return narrow() && px >= cx() && px < cx() + stpage.T_BTN && py >= t && py < t + stpage.T_BTN;
+}
+
+export I64 click(I64 px, I64 py) {
+    keyed_ = false;
+    if (laid) {
+        if (px >= bx && px < bx + stside.W && py >= bt && py < byb) {
+            I64 p = stside.hit(bx, side_y0(), px, py);
+            if (p < 0) { return DRAW; }
+            show(p);
+            enter_page();
+            return PAGE;
+        }
+        enter_page();                  // a click outside only closes
+        return DRAW;
+    }
+    if (on_button(px, py)) {
+        laid = true;
+        side = true;
+        return DRAW;
+    }
+    if (!narrow() && px >= bx && px < bx + stside.W) {
+        I64 p = stside.hit(bx, side_y0(), px, py);
+        side = true;
+        if (p < 0 || p == shown) { return DRAW; }
+        show(p);
+        return PAGE;
+    }
+    side = false;
+    return NONE;
+}
+
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { keyed_ = true; }
+    if (!side) { return NONE; }
+    if (stpage.is_tab(code)) {
+        enter_page();
+        if (code == stpage.K_BACKTAB) { return ENTER_LAST; }
+        return ENTER;
+    }
+    if (code == stpage.K_UP || code == stpage.K_DOWN) {
+        I64 d = 1;
+        if (code == stpage.K_UP) { d = -1; }
+        show(stside.step(shown, d));
+        return PAGE;
+    }
+    if (code == stpage.K_RIGHT || code == stpage.K_ENTER) {
+        enter_page();
+        return ENTER;
+    }
+    if (code == stpage.K_ESC && laid) {           // as a click outside: the page has the keyboard, no stop shown
+        enter_page();
+        return DRAW;
+    }
+    if (code == stpage.K_LEFT) { return DRAW; }    // nothing left of the sidebar: the ring shows
+    return NONE;
+}
+
+// --- drawing, through kit/pen.ci (the host has called pen.at for the row) ---
+
+// Row y under the page: PAPER over the box and, in a wide box, the sidebar; kbd says the keyboard is in use (DN-40).
+export void under_row(inout U32[_] row, I64 y, Bool kbd) {
+    pen.rect(row, bx, y, bxr, y + 1, tok(tokens.PAPER));
+    if (!narrow()) { side_row(row, y, kbd); }
+}
+
+// The sidebar's row y and, when it scrolls, its thumb: 4 px in the 8 px gutter right of the pills, 4 from the box's
+// top and bottom, at least 18 high (as the Time Zone plate's, kit/sttime.ci).
+void side_row(inout U32[_] row, I64 y, Bool kbd) {
+    stside.row_at(row, bx, side_y0(), byb, shown, side && kbd, y);
+    I64 r = side_room();
+    if (r == 0) { return; }
+    I64 lh = byb - bt - 8;
+    I64 th = max(18, lh * (byb - bt) / side_h());
+    I64 ty = bt + 4 + (lh - th) * slift / r;
+    if (y >= ty && y < ty + th) {
+        pen.round(row, bx + stside.W - 6, ty, bx + stside.W - 2, ty + th, 2,
+                  blend.mix_px(tok(tokens.SURF1), tok(tokens.INK_DIM), 128));
+    }
+}
+
+// Row y over the page: the laid sidebar and its shadow, which falls on the page only (square: radius 1, the least
+// kit/shade.ci draws, as the sidebar's corners are the box's); lo and hi bound the pen's row in device pixels.
+export void over_row(inout U32[_] row, I64 lo, I64 hi, I64 y, Bool kbd) {
+    if (!laid || y < bt || y >= byb) { return; }
+    I64 l = max(lo, pen.x(bx + stside.W));
+    I64 h = min(hi, pen.x(bxr));
+    shade.shade_row(row, l, h, pen.row_y(), pen.x(bx), pen.y(bt), pen.x(bx + stside.W), pen.y(byb), 1, SHADOW,
+                    tokens.theme(), pen.zoom());
+    side_row(row, y, kbd);
+}
+// SPDX-License-Identifier: Apache-2.0

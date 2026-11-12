@@ -1,0 +1,34 @@
+{
+  "id": "save-clears-modified",
+  "rules": [
+    "UNDO-5",
+    "KEY-7"
+  ],
+  "text": "hi",
+  "size": [
+    5,
+    60
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "58",
+    "13"
+  ],
+  "expect": {
+    "text": "Xhi",
+    "sel": [
+      1,
+      1
+    ],
+    "screen": [
+      "Xhi",
+      "",
+      "",
+      " x  saved                                               1:2",
+      "^S save  ^Q quit  ^F find  ^X cut  ^Z undo  ^Y redo  ^G line"
+    ]
+  }
+}

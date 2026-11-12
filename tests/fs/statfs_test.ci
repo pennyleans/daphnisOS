@@ -1,0 +1,111 @@
+// tests/fs/statfs_test.ci: KF-1 (docs/specs/2026-11-11-kf-facts.md section 2), hosted. The record's bytes
+// (src/statfs.ci), and the counts statfs gives for the volume (src/ext2.ci as it is, on the volume of
+// tests/fs/ext2_vol.ci in the hosted disk) against the counts dumpe2fs prints for that volume: as made, and after
+// the same file and directory debugfs made there. check.sh runs it beside tests/fs/times_test.ci.
+
+import src.blk;
+import src.ext2;
+import src.statfs;
+import tests.fs.ext2_vol;
+
+const I64 ROOT = 2;
+
+void volume() {
+    blk.blank(ext2_vol.SECTORS);
+    for k in 0..ext2_vol.RUNS {
+        blk.load(ext2_vol.start(k), ext2_vol.span(k), ext2_vol.value(k));
+    }
+    assert(ext2.mount() == 0);
+}
+
+// Word k of the record b.
+U64 word(in U8[120] b, I64 k) {
+    U64 v = 0;
+    for i in 0..8 {
+        v = v | ((b[8 * k + i] as U64) << (8 * i) as U64);
+    }
+    return v;
+}
+
+test "the record is Linux's struct statfs: 15 words, each field in its place" {
+    U8[120] b;
+    for i in 0..120 {
+        b[i] = 0xAA;
+    }
+    statfs.record(b, statfs.EXT2, 4096, 64, 53, 50, 64, 51, 255);
+    assert(statfs.BYTES == 120);
+    assert(word(b, 0) == 0xEF53);
+    assert(word(b, 1) == 4096);
+    assert(word(b, 2) == 64 && word(b, 3) == 53 && word(b, 4) == 50);
+    assert(word(b, 5) == 64 && word(b, 6) == 51);
+    assert(word(b, 7) == 0);
+    assert(word(b, 8) == 255);
+    assert(word(b, 9) == 4096);
+    for k in 10..15 {
+        assert(word(b, k) == 0);
+    }
+}
+
+test "the record carries a count past 32 bits whole" {
+    U8[120] b;
+    statfs.record(b, statfs.RAMFS, 4096, 0x123456789A, 0x1FFFFFFFF, 0x1FFFFFFFE, 7, 3, 255);
+    assert(word(b, 0) == 0x858458F6);
+    assert(word(b, 2) == 0x123456789A && word(b, 3) == 0x1FFFFFFFF && word(b, 4) == 0x1FFFFFFFE);
+}
+
+test "no volume mounted: every count is 0" {
+    assert(ext2.blocks_total() == 0 && ext2.blocks_free() == 0 && ext2.blocks_reserved() == 0);
+    assert(ext2.inodes_total() == 0 && ext2.inodes_free() == 0);
+}
+
+test "the volume as made: dumpe2fs's counts" {
+    volume();
+    assert(ext2.block_size() == 4096);
+    assert(ext2.blocks_total() == ext2_vol.BLOCKS);
+    assert(ext2.blocks_free() == ext2_vol.FREE_BLOCKS);
+    assert(ext2.blocks_reserved() == ext2_vol.RESERVED_BLOCKS);
+    assert(ext2.inodes_total() == ext2_vol.INODES);
+    assert(ext2.inodes_free() == ext2_vol.FREE_INODES);
+}
+
+test "after a 5,000-byte file and a directory: dumpe2fs's counts for the same; removed, the first counts again" {
+    volume();
+    I64 f = ext2.create(ROOT, "a", 1, 0x1A4, 1000);
+    assert(f > 0);
+    U8[250] b;
+    for i in 0..250 {
+        b[i] = ((7 * i + 1) & 0xFF) as U8;
+    }
+    for k in 0..20 {
+        assert(ext2.write_at(f, 250 * k, b, 0, 250, 1000) == 250);
+    }
+    assert(ext2.file_size(f) == 5000);
+    I64 d = ext2.mkdir(ROOT, "d", 1, 0x1ED, 1000);
+    assert(d > 0);
+    assert(ext2.blocks_free() == ext2_vol.FREE_BLOCKS_AFTER);
+    assert(ext2.inodes_free() == ext2_vol.FREE_INODES_AFTER);
+    assert(ext2.blocks_total() == ext2_vol.BLOCKS && ext2.inodes_total() == ext2_vol.INODES);
+    assert(ext2.unlink(ROOT, "a", 1, 1001) == f);
+    ext2.release(f);
+    assert(ext2.rmdir(ROOT, "d", 1, 1001) == d);
+    ext2.release(d);
+    assert(ext2.blocks_free() == ext2_vol.FREE_BLOCKS);
+    assert(ext2.inodes_free() == ext2_vol.FREE_INODES);
+}
+
+test "a truncate to nothing gives the file's blocks back" {
+    volume();
+    I64 f = ext2.create(ROOT, "a", 1, 0x1A4, 1000);
+    U8[250] b;
+    for i in 0..250 {
+        b[i] = 9;
+    }
+    for k in 0..40 {
+        assert(ext2.write_at(f, 250 * k, b, 0, 250, 1000) == 250);
+    }
+    assert(ext2.blocks_free() == ext2_vol.FREE_BLOCKS - 3);
+    ext2.truncate(f, 0, 1001);
+    assert(ext2.blocks_free() == ext2_vol.FREE_BLOCKS);
+    assert(ext2.inodes_free() == ext2_vol.FREE_INODES - 1);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,435 @@
+// user/ci/core/img.ci: the image readers of cview (BP-3, docs/specs/2026-11-07-bp-basics.md section 4): PNG, QOI and
+// the Netpbm P2, P3, P5 and P6 forms, each to RGBA, 8 bits a channel, row by row. decode(file, n, raw, px) returns
+// 0 or a failure below 0 (why() names it); width() and height() give the image. raw holds a PNG's inflated rows.
+import user.ci.core.inflate;
+
+export const I64 PIXELS_MAX = 8294400;      // 3840 x 2160 (RS-VIEW); RGBA 33,177,600 bytes
+
+export const I64 E_FORM = -10;      // not PNG, QOI or Netpbm
+export const I64 E_TRUNC = -11;     // the file ends inside the image
+export const I64 E_CRC = -12;       // a PNG chunk's CRC differs
+export const I64 E_HDR = -13;       // a header out of its range
+export const I64 E_PIXELS = -14;    // past PIXELS_MAX
+export const I64 E_ZLIB = -15;      // the IDAT stream does not inflate
+export const I64 E_ROWS = -16;      // the inflated rows are not the size the header gives, or a bad filter
+export const I64 E_PALETTE = -17;   // an index past the palette
+export const I64 E_ROOM = -18;      // raw cannot hold the rows
+
+I64 w = 0;
+I64 h = 0;
+I64 why_z = 0;
+
+U64[256] crc_t;
+Bool crc_ready = false;
+
+U8[1024] pal;       // RGBA of each palette entry
+I64 npal = 0;
+I64 tr_kind = 0;    // 0 none, 1 gray, 2 rgb
+I64 tr_g = 0;
+I64 tr_r = 0;
+I64 tr_b = 0;
+
+export I64 width() { return w; }
+export I64 height() { return h; }
+export I64 zlib_failure() { return why_z; }
+
+I64 be32(in U8[_] f, I64 at) {
+    return ((f[at] as I64) << 24) | ((f[at + 1] as I64) << 16) | ((f[at + 2] as I64) << 8) | (f[at + 3] as I64);
+}
+
+I64 be16(in U8[_] f, I64 at) {
+    return ((f[at] as I64) << 8) | (f[at + 1] as I64);
+}
+
+void crc_init() {
+    if (crc_ready) { return; }
+    for i in 0..256 {
+        U64 c = i as U64;
+        for k in 0..8 {
+            if ((c & 1) != 0) { c = 0xEDB88320 ^ (c >> 1); } else { c = c >> 1; }
+        }
+        crc_t[i] = c;
+    }
+    crc_ready = true;
+}
+
+I64 crc(in U8[_] f, I64 at, I64 n) {
+    crc_init();
+    U64 c = 0xFFFFFFFF;
+    for k in 0..n {
+        c = crc_t[((c ^ (f[at + k] as U64)) & 255) as I64] ^ (c >> 8);
+    }
+    return (c ^ 0xFFFFFFFF) as I64;
+}
+
+void put_px[m](inout U8[m] px, I64 x, I64 y, I64 r, I64 g, I64 b, I64 a) {
+    I64 o = 4 * (y * w + x);
+    px[o] = r as U8;
+    px[o + 1] = g as U8;
+    px[o + 2] = b as U8;
+    px[o + 3] = a as U8;
+}
+
+I64 mag(I64 v) {
+    if (v < 0) { return 0 - v; }
+    return v;
+}
+
+// Reverses the filters of rows rows of rb bytes each from raw[at), bpp bytes a pixel for the filter.
+Bool unfilter[m](inout U8[m] raw, I64 at, I64 rows, I64 rb, I64 bpp) {
+    for y in 0..rows {
+        I64 p = at + y * (rb + 1);
+        I64 f = raw[p] as I64;
+        if (f > 4) { return false; }
+        for i in 0..rb {
+            I64 x = raw[p + 1 + i] as I64;
+            I64 a = 0;
+            I64 b = 0;
+            I64 c = 0;
+            if (i >= bpp) { a = raw[p + 1 + i - bpp] as I64; }
+            if (y > 0) { b = raw[p - rb + i] as I64; }
+            if (y > 0 && i >= bpp) { c = raw[p - rb - bpp + i] as I64; }
+            I64 v = x;
+            if (f == 1) { v = x + a; }
+            else if (f == 2) { v = x + b; }
+            else if (f == 3) { v = x + (a + b) / 2; }
+            else if (f == 4) {
+                I64 q = a + b - c;
+                I64 pa = mag(q - a);
+                I64 pb = mag(q - b);
+                I64 pc = mag(q - c);
+                if (pa <= pb && pa <= pc) { v = x + a; } else if (pb <= pc) { v = x + b; } else { v = x + c; }
+            }
+            raw[p + 1 + i] = (v & 255) as U8;
+        }
+    }
+    return true;
+}
+
+I64 ch_of(I64 ct) {
+    if (ct == 0 || ct == 3) { return 1; }
+    if (ct == 2) { return 3; }
+    if (ct == 4) { return 2; }
+    return 4;
+}
+
+// Sample c of pixel x in the row whose bytes start at raw[p).
+I64 sample[m](in U8[m] raw, I64 p, I64 x, I64 c, I64 ch, I64 d) {
+    if (d < 8) {
+        I64 bit = x * d;
+        I64 v = raw[p + bit / 8] as I64;
+        return (v >> (8 - d - bit % 8)) & ((1 << d) - 1);
+    }
+    if (d == 8) { return raw[p + x * ch + c] as I64; }
+    return be16(raw, p + 2 * (x * ch + c));
+}
+
+I64 eight(I64 v, I64 d) {
+    if (d == 16) { return v >> 8; }
+    if (d == 8) { return v; }
+    return v * 255 / ((1 << d) - 1);
+}
+
+I64[7] sx7 = [0, 4, 0, 2, 0, 1, 0];
+I64[7] sy7 = [0, 0, 4, 0, 2, 0, 1];
+I64[7] dx7 = [8, 8, 4, 4, 2, 2, 1];
+I64[7] dy7 = [8, 8, 8, 4, 4, 2, 2];
+
+I64 png[m, pn](inout U8[_] f, I64 n, inout U8[m] raw, inout U8[pn] px) {
+    if (n < 33 || be32(f, 8) != 13 || be32(f, 12) != 0x49484452) { return E_HDR; }
+    w = be32(f, 16);
+    h = be32(f, 20);
+    I64 d = f[24] as I64;
+    I64 ct = f[25] as I64;
+    I64 il = f[28] as I64;
+    Bool ok = w > 0 && h > 0 && f[26] == 0 && f[27] == 0 && il <= 1;
+    if (ct == 0) { ok = ok && (d == 1 || d == 2 || d == 4 || d == 8 || d == 16); }
+    else if (ct == 3) { ok = ok && (d == 1 || d == 2 || d == 4 || d == 8); }
+    else if (ct == 2 || ct == 4 || ct == 6) { ok = ok && (d == 8 || d == 16); }
+    else { ok = false; }
+    if (!ok) { return E_HDR; }
+    if (w > PIXELS_MAX || h > PIXELS_MAX || w * h > PIXELS_MAX || 4 * w * h > len(px)) { return E_PIXELS; }
+    npal = 0;
+    tr_kind = 0;
+    for i in 0..256 {
+        pal[4 * i + 3] = 255;
+    }
+    I64 at = 8;
+    I64 z = 0;           // the IDAT bytes, gathered at the front of f
+    Bool done = false;
+    while (!done) {
+        if (at + 12 > n) { return E_TRUNC; }
+        I64 l = be32(f, at);
+        I64 t = be32(f, at + 4);
+        if (l < 0 || l > n - at - 12) { return E_TRUNC; }
+        if (crc(f, at + 4, l + 4) != be32(f, at + 8 + l)) { return E_CRC; }
+        I64 data = at + 8;
+        if (t == 0x504C5445) {                       // PLTE
+            if (l % 3 != 0 || l > 768) { return E_HDR; }
+            npal = l / 3;
+            for i in 0..npal {
+                pal[4 * i] = f[data + 3 * i];
+                pal[4 * i + 1] = f[data + 3 * i + 1];
+                pal[4 * i + 2] = f[data + 3 * i + 2];
+            }
+        } else if (t == 0x74524E53) {                // tRNS
+            if (ct == 3) {
+                for i in 0..l {
+                    if (i < 256) { pal[4 * i + 3] = f[data + i]; }
+                }
+            } else if (ct == 0 && l >= 2) {
+                tr_kind = 1;
+                tr_g = be16(f, data);
+            } else if (ct == 2 && l >= 6) {
+                tr_kind = 2;
+                tr_r = be16(f, data);
+                tr_g = be16(f, data + 2);
+                tr_b = be16(f, data + 4);
+            }
+        } else if (t == 0x49444154) {                // IDAT: moved down to f[z)
+            for i in 0..l {
+                f[z + i] = f[data + i];
+            }
+            z = z + l;
+        } else if (t == 0x49454E44) {                // IEND
+            done = true;
+        }
+        at = at + 12 + l;
+    }
+    if (ct == 3 && npal == 0) { return E_PALETTE; }
+    I64 ch = ch_of(ct);
+    I64 bits = ch * d;
+    I64 bpp = (bits + 7) / 8;
+    I64 want = 0;
+    for p in 0..7 {
+        I64 pw = w;
+        I64 ph = h;
+        if (il == 1) {
+            pw = (w - sx7[p] + dx7[p] - 1) / dx7[p];
+            ph = (h - sy7[p] + dy7[p] - 1) / dy7[p];
+            if (w <= sx7[p]) { pw = 0; }
+            if (h <= sy7[p]) { ph = 0; }
+        }
+        if ((il == 1 || p == 0) && pw > 0 && ph > 0) { want = want + ph * (1 + (pw * bits + 7) / 8); }
+    }
+    if (want > len(raw)) { return E_ROOM; }
+    I64 got = inflate.unzlib(f, 0, z, raw);
+    if (got < 0) {
+        why_z = got;
+        return E_ZLIB;
+    }
+    if (got != want) { return E_ROWS; }
+    I64 at2 = 0;
+    for p in 0..7 {
+        I64 pw = w;
+        I64 ph = h;
+        I64 x0 = 0;
+        I64 y0 = 0;
+        I64 ddx = 1;
+        I64 ddy = 1;
+        if (il == 1) {
+            x0 = sx7[p];
+            y0 = sy7[p];
+            ddx = dx7[p];
+            ddy = dy7[p];
+            pw = (w - x0 + ddx - 1) / ddx;
+            ph = (h - y0 + ddy - 1) / ddy;
+            if (w <= x0) { pw = 0; }
+            if (h <= y0) { ph = 0; }
+        }
+        if ((il == 1 || p == 0) && pw > 0 && ph > 0) {
+            I64 rb = (pw * bits + 7) / 8;
+            if (!unfilter(raw, at2, ph, rb, bpp)) { return E_ROWS; }
+            for j in 0..ph {
+                I64 row = at2 + j * (rb + 1) + 1;
+                for i in 0..pw {
+                    I64 r = 0;
+                    I64 g = 0;
+                    I64 b = 0;
+                    I64 a = 255;
+                    if (ct == 3) {
+                        I64 v = sample(raw, row, i, 0, 1, d);
+                        if (v >= npal) { return E_PALETTE; }
+                        r = pal[4 * v] as I64;
+                        g = pal[4 * v + 1] as I64;
+                        b = pal[4 * v + 2] as I64;
+                        a = pal[4 * v + 3] as I64;
+                    } else if (ct == 0 || ct == 4) {
+                        I64 v = sample(raw, row, i, 0, ch, d);
+                        r = eight(v, d);
+                        g = r;
+                        b = r;
+                        if (ct == 4) { a = eight(sample(raw, row, i, 1, ch, d), d); }
+                        if (tr_kind == 1 && v == tr_g) { a = 0; }
+                    } else {
+                        I64 vr = sample(raw, row, i, 0, ch, d);
+                        I64 vg = sample(raw, row, i, 1, ch, d);
+                        I64 vb = sample(raw, row, i, 2, ch, d);
+                        r = eight(vr, d);
+                        g = eight(vg, d);
+                        b = eight(vb, d);
+                        if (ct == 6) { a = eight(sample(raw, row, i, 3, ch, d), d); }
+                        if (tr_kind == 2 && vr == tr_r && vg == tr_g && vb == tr_b) { a = 0; }
+                    }
+                    put_px(px, x0 + i * ddx, y0 + j * ddy, r, g, b, a);
+                }
+            }
+            at2 = at2 + ph * (rb + 1);
+        }
+    }
+    return 0;
+}
+
+I64 qoi[pn](in U8[_] f, I64 n, inout U8[pn] px) {
+    if (n < 22) { return E_TRUNC; }
+    w = be32(f, 4);
+    h = be32(f, 8);
+    I64 chs = f[12] as I64;
+    if (w <= 0 || h <= 0 || (chs != 3 && chs != 4) || f[13] > 1) { return E_HDR; }
+    if (w > PIXELS_MAX || h > PIXELS_MAX || w * h > PIXELS_MAX || 4 * w * h > len(px)) { return E_PIXELS; }
+    U8[256] seen;
+    for i in 0..256 {
+        seen[i] = 0;
+    }
+    I64 r = 0;
+    I64 g = 0;
+    I64 b = 0;
+    I64 a = 255;
+    I64 at = 14;
+    I64 run = 0;
+    I64 total = w * h;
+    for k in 0..total {
+        if (run > 0) {
+            run = run - 1;
+        } else {
+            if (at >= n - 8) { return E_TRUNC; }
+            I64 op = f[at] as I64;
+            at = at + 1;
+            if (op == 0xFE) {
+                r = f[at] as I64;
+                g = f[at + 1] as I64;
+                b = f[at + 2] as I64;
+                at = at + 3;
+            } else if (op == 0xFF) {
+                r = f[at] as I64;
+                g = f[at + 1] as I64;
+                b = f[at + 2] as I64;
+                a = f[at + 3] as I64;
+                at = at + 4;
+            } else if ((op >> 6) == 0) {
+                r = seen[4 * op] as I64;
+                g = seen[4 * op + 1] as I64;
+                b = seen[4 * op + 2] as I64;
+                a = seen[4 * op + 3] as I64;
+            } else if ((op >> 6) == 1) {
+                r = (r + ((op >> 4) & 3) - 2) & 255;
+                g = (g + ((op >> 2) & 3) - 2) & 255;
+                b = (b + (op & 3) - 2) & 255;
+            } else if ((op >> 6) == 2) {
+                I64 dg = (op & 63) - 32;
+                I64 nx = f[at] as I64;
+                at = at + 1;
+                r = (r + dg - 8 + ((nx >> 4) & 15)) & 255;
+                g = (g + dg) & 255;
+                b = (b + dg - 8 + (nx & 15)) & 255;
+            } else {
+                run = op & 63;
+            }
+            I64 hsh = (r * 3 + g * 5 + b * 7 + a * 11) % 64;
+            seen[4 * hsh] = r as U8;
+            seen[4 * hsh + 1] = g as U8;
+            seen[4 * hsh + 2] = b as U8;
+            seen[4 * hsh + 3] = a as U8;
+        }
+        put_px(px, k % w, k / w, r, g, b, a);
+    }
+    return 0;
+}
+
+// Netpbm: the next decimal token at pnm_at (blanks and # comments before it), or -1.
+I64 pnm_at = 0;
+I64 token(in U8[_] f, I64 n) {
+    Bool skipping = true;
+    while (skipping && pnm_at < n) {
+        U8 c = f[pnm_at];
+        if (c == '#') {
+            while (pnm_at < n && f[pnm_at] != '\n') { pnm_at = pnm_at + 1; }
+        } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 11 || c == 12) {
+            pnm_at = pnm_at + 1;
+        } else {
+            skipping = false;
+        }
+    }
+    I64 v = 0;
+    I64 k = 0;
+    while (pnm_at < n && f[pnm_at] >= '0' && f[pnm_at] <= '9') {
+        if (v > 100000000) { return -1; }
+        v = v * 10 + (f[pnm_at] - '0') as I64;
+        pnm_at = pnm_at + 1;
+        k = k + 1;
+    }
+    if (k == 0) { return -1; }
+    return v;
+}
+
+I64 pnm[pn](in U8[_] f, I64 n, inout U8[pn] px) {
+    I64 form = (f[1] - '0') as I64;
+    pnm_at = 2;
+    w = token(f, n);
+    h = token(f, n);
+    I64 maxv = token(f, n);
+    if (w <= 0 || h <= 0 || maxv <= 0 || maxv > 65535) { return E_HDR; }
+    if (w > PIXELS_MAX || h > PIXELS_MAX || w * h > PIXELS_MAX || 4 * w * h > len(px)) { return E_PIXELS; }
+    I64 chs = 1;
+    if (form == 3 || form == 6) { chs = 3; }
+    Bool text = form == 2 || form == 3;
+    I64 bytes = 1;
+    if (maxv > 255) { bytes = 2; }
+    if (!text) {
+        pnm_at = pnm_at + 1;      // the one blank after maxval
+        if (n - pnm_at < w * h * chs * bytes) { return E_TRUNC; }
+    }
+    I64[3] v;
+    for k in 0..w * h {
+        for c in 0..chs {
+            I64 s = 0;
+            if (text) {
+                s = token(f, n);
+                if (s < 0) { return E_TRUNC; }
+                if (s > maxv) { return E_HDR; }
+            } else if (bytes == 1) {
+                s = f[pnm_at] as I64;
+                pnm_at = pnm_at + 1;
+            } else {
+                s = be16(f, pnm_at);
+                pnm_at = pnm_at + 2;
+            }
+            if (s > maxv) { s = maxv; }
+            v[c] = (s * 255 + maxv / 2) / maxv;
+        }
+        if (chs == 1) {
+            put_px(px, k % w, k / w, v[0], v[0], v[0], 255);
+        } else {
+            put_px(px, k % w, k / w, v[0], v[1], v[2], 255);
+        }
+    }
+    return 0;
+}
+
+// The image in f[0..n) into px as RGBA: 0, or a failure below 0.
+export I64 decode[m, pn](inout U8[_] f, I64 n, inout U8[m] raw, inout U8[pn] px) {
+    w = 0;
+    h = 0;
+    why_z = 0;
+    if (n >= 8 && f[0] == 137 && f[1] == 'P' && f[2] == 'N' && f[3] == 'G' && f[4] == 13 && f[5] == 10 && f[6] == 26 && f[7] == 10) {
+        return png(f, n, raw, px);
+    }
+    if (n >= 4 && f[0] == 'q' && f[1] == 'o' && f[2] == 'i' && f[3] == 'f') {
+        return qoi(f, n, px);
+    }
+    if (n >= 3 && f[0] == 'P' && (f[1] == '2' || f[1] == '3' || f[1] == '5' || f[1] == '6')) {
+        return pnm(f, n, px);
+    }
+    return E_FORM;
+}
+// SPDX-License-Identifier: Apache-2.0

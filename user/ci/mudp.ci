@@ -1,0 +1,119 @@
+// user/ci/mudp.ci: eight datagrams to an echo and what comes back (docs/specs/2026-11-05-n-net.md, N-2).
+// `mudp A.B.C.D PORT`: datagram k (0 to 7) is "mudp datagram k of 8, " then 8 * k + 8 bytes of 'a' + k;
+// each is sent, its reply awaited, and printed. A reply from another sender than A.B.C.D:PORT is printed as
+// such. The output names neither address, so the same program against the same echo on Linux prints the same.
+import user.ci.udp;
+import user.ci.dev;
+
+U8[64] word;
+U8[128] dgram;
+U8[1500] got;
+
+void usage() {
+    "mudp: usage: mudp A.B.C.D PORT\n";
+    dev.exit_now(2);
+}
+
+// Argument k (from 0) into `word`: its length, or -1 past the last.
+I64 arg(in U8[_] args, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(args)) { return -1; }
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return -1; }
+    I64 n = 0;
+    while (args[at + n] != 0) {
+        if (n == len(word)) { usage(); }
+        word[n] = args[at + n];
+        n = n + 1;
+    }
+    return n;
+}
+
+// s into dgram from at; the index after it.
+I64 put(I64 at, in U8[_] s) {
+    for i in 0..len(s) {
+        dgram[at + i] = s[i];
+    }
+    return at + len(s);
+}
+
+// The decimal in word[from..to], at most `most`; -1 if not one.
+I64 decimal(I64 from, I64 to, I64 most) {
+    if (to <= from || to - from > 5) { return -1; }
+    I64 v = 0;
+    for i in from..to {
+        if (word[i] < '0' || word[i] > '9') { return -1; }
+        v = 10 * v + (word[i] - '0') as I64;
+    }
+    if (v > most) { return -1; }
+    return v;
+}
+
+// word[0..n] as a dotted quad: the address as a word, or -1.
+I64 quad(I64 n) {
+    I64 v = 0;
+    I64 from = 0;
+    I64 parts = 0;
+    for i in 0..n + 1 {
+        if (i == n || word[i] == '.') {
+            I64 b = decimal(from, i, 255);
+            if (b < 0) { return -1; }
+            v = 256 * v + b;
+            parts = parts + 1;
+            from = i + 1;
+        }
+    }
+    if (parts != 4) { return -1; }
+    return v;
+}
+
+void main(in U8[_] args) {
+    I64 ip = quad(arg(args, 0));
+    I64 n = arg(args, 1);
+    if (ip < 0 || n < 0 || arg(args, 2) >= 0) { usage(); }
+    n = arg(args, 1);
+    I64 port = decimal(0, n, 65535);
+    if (port < 1) { usage(); }
+    I64 fd = udp.udp_open();
+    if (fd < 0) {
+        "mudp: socket {fd}\n";
+        dev.exit_now(1);
+    }
+    I64 replies = 0;
+    for k in 0..8 {
+        I64 at = 0;
+        at = put(at, b"mudp datagram ");
+        dgram[at] = ('0' as I64 + k) as U8;
+        at = at + 1;
+        at = put(at, b" of 8, ");
+        for i in 0..8 * k + 8 {
+            dgram[at] = ('a' as I64 + k) as U8;
+            at = at + 1;
+        }
+        I64 sent = udp.udp_send(fd, ip as U64, port, dgram[0..at]);
+        if (sent != at) {
+            "mudp: send {k}: {sent}\n";
+            dev.exit_now(1);
+        }
+        I64 r = udp.udp_recv(fd, got);
+        if (r < 0) {
+            "mudp: reply {k}: none ({r})\n";
+        } else {
+            if (udp.udp_from(0) != ip as U64 || udp.udp_from(1) != port as U64) {
+                "mudp: reply {k} from another sender, ";
+            } else {
+                "mudp: reply {k}, ";
+            }
+            "{r} bytes: ";
+            I64 w = udp.stdout_put(got[0..r]);
+            "\n";
+            if (r == at && equal(got[0..r], dgram[0..at])) { replies = replies + 1; }
+        }
+    }
+    "mudp: {replies} of 8 replies equal their datagrams\n";
+}
+// SPDX-License-Identifier: Apache-2.0

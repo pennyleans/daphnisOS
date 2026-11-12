@@ -1,0 +1,555 @@
+// src/dhcp.ci: IPv4 address configuration, NW-5 (docs/specs/2026-11-07-nw-window.md section 3).
+//
+// Boot policy:
+//   - No `daphnis.net=` and QEMU's user-network MAC (52:54:00:12:34:56): keep Stage N's fixed
+//     10.0.2.15/24 and gateway 10.0.2.2 silently so existing records and transcripts do not move.
+//   - `daphnis.net=dhcp`, or no `daphnis.net=` on any other MAC (real hardware): RFC 2131 client
+//     (DISCOVER, OFFER, REQUEST, ACK/NAK; options 1 subnet, 3 router, 6 DNS, 50 requested IP,
+//     51 lease time, 53 message type, 54 server identifier, 55 parameter list; renewal at half the
+//     lease, T1, and broadcast rebind at 7/8 of the lease, T2).
+//   - `daphnis.net=ADDR/PREFIX,GATEWAY,DNS`: static configuration without a server.
+//
+// Taking an address sends one gratuitous ARP (src/eth.ci). Fixed XID 0x44415048 keeps live and
+// replay frames deterministic.
+
+import src.serial;
+import src.bootarg;
+import src.text;
+import src.net;
+import src.eth;
+import src.ip;
+
+const I64 UDP_HDR = 42;            // Ethernet (14) + IPv4 (20) + UDP (8)
+const I64 BOOTP_MIN = 300;         // RFC 951 / SLIRP minimum BOOTP UDP payload
+const I64 COOKIE = 0x63825363;     // 99.130.83.99
+const I64 XID = 0x44415048;        // "DAPH"
+const I64 PORT_SRV = 67;
+const I64 PORT_CLI = 68;
+const I64 RETRY_TICKS = 100;       // 1 s at 100 Hz, in net.timers() (NW-1's timer wakes, as tcp.ci's RTO)
+const I64 REQUEST_TRIES = 4;       // REQUESTs for an offer before discovery starts again (review on PR 282)
+
+const I64 MSG_DISCOVER = 1;
+const I64 MSG_OFFER = 2;
+const I64 MSG_REQUEST = 3;
+const I64 MSG_ACK = 5;
+const I64 MSG_NAK = 6;
+
+const I64 ST_OFF = 0;
+const I64 ST_SELECTING = 1;
+const I64 ST_REQUESTING = 2;
+const I64 ST_BOUND = 3;
+const I64 ST_RENEWING = 4;
+const I64 ST_REBINDING = 5;
+
+const I64 MODE_NONE = 0;
+const I64 MODE_DHCP = 1;
+const I64 MODE_STATIC = 2;
+const I64 MODE_BAD = 3;
+
+I64 mode = 0;
+I64 st = 0;
+// sent_at, bound_at, t1_ticks and t2_ticks are net.timers() counts: the 100 Hz timer wakes NW-1's udp.wait() counts
+// live and replays from the journal. Never net.ticks(): a key or a frame is a pump too, so pumps run ahead of time.
+I64 sent_at = 0;
+I64 bound_at = 0;
+I64 lease_secs = 0;
+I64 t1_ticks = 0;
+I64 t2_ticks = 0;
+I64 offer_ip = 0;
+I64 req_sent = 0;                  // REQUESTs sent for the offer taken
+I64 srv_ip = 0;
+U8[1514] txf;
+
+void put_dec(I64 v) {
+    U8[24] d;
+    I64 n = text.dec_digits(v, d);
+    for i in 0..n {
+        serial.serial_putc(d[i]);
+    }
+}
+
+export void put_ip(I64 a) {
+    put_dec((a >> 24) & 0xFF);
+    serial.serial_putc(46);
+    put_dec((a >> 16) & 0xFF);
+    serial.serial_putc(46);
+    put_dec((a >> 8) & 0xFF);
+    serial.serial_putc(46);
+    put_dec(a & 0xFF);
+}
+
+// Parses s[a..b) as an IPv4 dotted quad, returning 0..0xFFFFFFFF or -1.
+I64 parse_quad[m](in U8[m] s, I64 a, I64 b) {
+    if (a >= b) {
+        return -1;
+    }
+    I64 v = 0;
+    I64 cur = 0;
+    I64 digits = 0;
+    I64 parts = 0;
+    for i in a..b + 1 {
+        if (i == b || s[i] == 46) {
+            if (digits == 0 || cur > 255) {
+                return -1;
+            }
+            v = (v << 8) | cur;
+            parts += 1;
+            cur = 0;
+            digits = 0;
+        } else {
+            if (s[i] < 48 || s[i] > 57 || digits == 3) {
+                return -1;
+            }
+            cur = 10 * cur + ((s[i] - 48) as I64);
+            digits += 1;
+        }
+    }
+    if (parts != 4) {
+        return -1;
+    }
+    return v;
+}
+
+// Parses s[a..b) as a prefix length 1..32, or -1.
+I64 parse_prefix[m](in U8[m] s, I64 a, I64 b) {
+    if (a >= b || b - a > 2) {
+        return -1;
+    }
+    I64 p = 0;
+    for i in a..b {
+        if (s[i] < 48 || s[i] > 57) {
+            return -1;
+        }
+        p = 10 * p + ((s[i] - 48) as I64);
+    }
+    if (p < 1 || p > 32) {
+        return -1;
+    }
+    return p;
+}
+
+// Parses `ADDR/PREFIX[,GATEWAY[,DNS]]` in s[0..n). True on valid input.
+I64 st_ip = 0;
+I64 st_mask = 0;
+I64 st_gw = 0;
+I64 st_dns = 0;
+
+Bool parse_static[m](in U8[m] s, I64 n) {
+    I64 slash = -1;
+    I64 c1 = -1;
+    I64 c2 = -1;
+    for i in 0..n {
+        if (s[i] == 47 && slash < 0 && c1 < 0) {
+            slash = i;
+        } else if (s[i] == 44) {
+            if (c1 < 0) {
+                c1 = i;
+            } else if (c2 < 0) {
+                c2 = i;
+            } else {
+                return false;
+            }
+        }
+    }
+    if (slash <= 0) {
+        return false;
+    }
+    I64 pend = n;
+    if (c1 >= 0) {
+        pend = c1;
+    }
+    I64 addr = parse_quad(s, 0, slash);
+    I64 pfx = parse_prefix(s, slash + 1, pend);
+    if (addr <= 0 || addr == eth.BROADCAST || pfx < 0) {
+        return false;
+    }
+    I64 gw = 0;
+    if (c1 >= 0) {
+        I64 gend = n;
+        if (c2 >= 0) {
+            gend = c2;
+        }
+        if (gend > c1 + 1) {
+            gw = parse_quad(s, c1 + 1, gend);
+            if (gw < 0 || gw == eth.BROADCAST) {
+                return false;
+            }
+        }
+    }
+    I64 dns = 0;
+    if (c2 >= 0 && n > c2 + 1) {
+        dns = parse_quad(s, c2 + 1, n);
+        if (dns < 0 || dns == eth.BROADCAST) {
+            return false;
+        }
+    }
+    I64 host_bits = 32 - pfx;
+    st_ip = addr;
+    st_mask = (0xFFFFFFFF - ((1 << host_bits) - 1)) & 0xFFFFFFFF;
+    st_gw = gw;
+    st_dns = dns;
+    return true;
+}
+
+// Sends txf[UDP_HDR..UDP_HDR + plen) from src_ip:68 to dst_ip:67.
+Bool send_udp(I64 src_ip, I64 dst_ip, I64 plen) {
+    I64 ulen = 8 + plen;
+    eth.put16(txf, ip.DATA, PORT_CLI);
+    eth.put16(txf, ip.DATA + 2, PORT_SRV);
+    eth.put16(txf, ip.DATA + 4, ulen);
+    eth.put16(txf, ip.DATA + 6, 0);
+    I64 ps = ((src_ip >> 16) & 0xFFFF) + (src_ip & 0xFFFF)
+        + ((dst_ip >> 16) & 0xFFFF) + (dst_ip & 0xFFFF)
+        + ip.PROTO_UDP + ulen;
+    I64 c = 0xFFFF - ip.csum(txf, ip.DATA, ulen, ps);
+    if (c == 0) {
+        c = 0xFFFF;
+    }
+    eth.put16(txf, ip.DATA + 6, c);
+    return ip.output_from(src_ip, dst_ip, ip.PROTO_UDP, txf, ulen);
+}
+
+// Builds and transmits a DHCPDISCOVER or DHCPREQUEST.
+Bool send_dhcp(I64 mtype, I64 ciaddr, I64 req_ip, I64 req_srv, I64 dst_ip) {
+    for i in 0..BOOTP_MIN {
+        txf[UDP_HDR + i] = 0;
+    }
+    txf[UDP_HDR] = 1;                  // BOOTREQUEST
+    txf[UDP_HDR + 1] = 1;              // Ethernet
+    txf[UDP_HDR + 2] = 6;
+    eth.put32(txf, UDP_HDR + 4, XID);
+    eth.put32(txf, UDP_HDR + 12, ciaddr);
+    for i in 0..6 {
+        txf[UDP_HDR + 28 + i] = net.mac_byte(i);
+    }
+    eth.put32(txf, UDP_HDR + 236, COOKIE);
+    I64 at = UDP_HDR + 240;
+    txf[at] = 53;
+    txf[at + 1] = 1;
+    txf[at + 2] = mtype as U8;
+    at += 3;
+    if (req_ip != 0) {
+        txf[at] = 50;
+        txf[at + 1] = 4;
+        eth.put32(txf, at + 2, req_ip);
+        at += 6;
+    }
+    if (req_srv != 0) {
+        txf[at] = 54;
+        txf[at + 1] = 4;
+        eth.put32(txf, at + 2, req_srv);
+        at += 6;
+    }
+    // Option 55: subnet mask (1), router (3), DNS server (6), lease time (51)
+    txf[at] = 55;
+    txf[at + 1] = 4;
+    txf[at + 2] = 1;
+    txf[at + 3] = 3;
+    txf[at + 4] = 6;
+    txf[at + 5] = 51;
+    at += 6;
+    txf[at] = 255;
+    at += 1;
+    I64 plen = at - UDP_HDR;
+    if (plen < BOOTP_MIN) {
+        plen = BOOTP_MIN;
+    }
+    return send_udp(ciaddr, dst_ip, plen);
+}
+
+void start_discover() {
+    eth.set_unconfigured();
+    offer_ip = 0;
+    srv_ip = 0;
+    st = ST_SELECTING;
+    _ = send_dhcp(MSG_DISCOVER, 0, 0, 0, eth.BROADCAST);
+    sent_at = net.timers();
+}
+
+export Bool wants_port68() {
+    return st != ST_OFF;
+}
+
+export Bool bound() {
+    return st == ST_BOUND || st == ST_RENEWING || st == ST_REBINDING;
+}
+
+// Begins boot address setup. True when DHCP is in progress and the caller should pump until bound().
+export Bool boot_begin() {
+    U8[128] arg;
+    I64 n = bootarg.boot_net(arg);
+    if (n == 0) {
+        if (eth.is_qemu_user_mac()) {
+            mode = MODE_NONE;
+            st = ST_OFF;
+            return false;
+        }
+        mode = MODE_DHCP;
+        start_discover();
+        return true;
+    }
+    if (n == 4 && arg[0] == 100 && arg[1] == 104 && arg[2] == 99 && arg[3] == 112) {
+        mode = MODE_DHCP;
+        start_discover();
+        return true;
+    }
+    if (parse_static(arg, n)) {
+        mode = MODE_STATIC;
+        st = ST_OFF;
+        eth.configure(st_ip, st_mask, st_gw, st_dns, true);
+        return false;
+    }
+    mode = MODE_BAD;
+    st = ST_OFF;
+    eth.set_unconfigured();
+    return false;
+}
+
+// Prints the boot address line for DHCP or static mode; silent in Stage N default mode.
+export void report_boot(I64 limit_ticks) {
+    if (mode == MODE_NONE) {
+        return;
+    }
+    if (mode == MODE_BAD) {
+        serial.serial_write("daphnis: net bad daphnis.net argument\n");
+        return;
+    }
+    if (mode == MODE_DHCP && !bound()) {
+        serial.serial_write("daphnis: net no dhcp lease in ");
+        put_dec(limit_ticks);
+        serial.serial_write(" ticks\n");
+        return;
+    }
+    if (mode == MODE_DHCP) {
+        serial.serial_write("daphnis: net dhcp ");
+    } else {
+        serial.serial_write("daphnis: net static ");
+    }
+    put_ip(eth.our_ip());
+    serial.serial_putc(47);
+    put_dec(eth.prefix_len());
+    if (eth.gateway() != 0) {
+        serial.serial_write(" gateway ");
+        put_ip(eth.gateway());
+    }
+    if (eth.dns_ip() != 0) {
+        serial.serial_write(" dns ");
+        put_ip(eth.dns_ip());
+    }
+    if (mode == MODE_DHCP) {
+        serial.serial_write(" lease ");
+        put_dec(lease_secs);
+        serial.serial_write("s");
+    }
+    serial.serial_write("\n");
+}
+
+// Processes a BOOTP/DHCP reply payload of plen bytes at f[UDP_HDR..UDP_HDR + plen).
+export void input(in U8[1514] f, I64 plen) {
+    if (st == ST_OFF || plen < 240 || UDP_HDR + plen > eth.FRAME) {
+        return;
+    }
+    if (f[UDP_HDR] != 2 || f[UDP_HDR + 1] != 1 || f[UDP_HDR + 2] != 6) {
+        return;
+    }
+    if (eth.get32(f, UDP_HDR + 4) != XID || eth.get32(f, UDP_HDR + 236) != COOKIE) {
+        return;
+    }
+    for i in 0..6 {
+        if (f[UDP_HDR + 28 + i] != net.mac_byte(i)) {
+            return;
+        }
+    }
+    I64 yiaddr = eth.get32(f, UDP_HDR + 16);
+    I64 mtype = 0;
+    I64 opt_mask = 0;
+    I64 opt_gw = 0;
+    I64 opt_dns = 0;
+    I64 opt_lease = 0;
+    I64 opt_srv = 0;
+    I64 i = UDP_HDR + 240;
+    I64 end = UDP_HDR + plen;
+    Bool done = false;
+    while (i < end && !done) {
+        I64 code = f[i] as I64;
+        if (code == 255) {
+            done = true;
+        } else if (code == 0) {
+            i += 1;
+        } else {
+            if (i + 2 > end) {
+                return;
+            }
+            I64 olen = f[i + 1] as I64;
+            if (i + 2 + olen > end) {
+                return;
+            }
+            if (code == 53 && olen >= 1) {
+                mtype = f[i + 2] as I64;
+            } else if (code == 1 && olen >= 4) {
+                opt_mask = eth.get32(f, i + 2);
+            } else if (code == 3 && olen >= 4) {
+                opt_gw = eth.get32(f, i + 2);
+            } else if (code == 6 && olen >= 4) {
+                opt_dns = eth.get32(f, i + 2);
+            } else if (code == 51 && olen >= 4) {
+                opt_lease = eth.get32(f, i + 2);
+            } else if (code == 54 && olen >= 4) {
+                opt_srv = eth.get32(f, i + 2);
+            }
+            i = i + 2 + olen;
+        }
+    }
+    if (mtype == MSG_OFFER && st == ST_SELECTING && yiaddr != 0 && yiaddr != eth.BROADCAST) {
+        offer_ip = yiaddr;
+        srv_ip = opt_srv;
+        if (srv_ip == 0) {
+            srv_ip = ip.src();
+        }
+        st = ST_REQUESTING;
+        _ = send_dhcp(MSG_REQUEST, 0, offer_ip, srv_ip, eth.BROADCAST);
+        req_sent = 1;
+        sent_at = net.timers();
+        return;
+    }
+    if (mtype == MSG_NAK && (st == ST_REQUESTING || st == ST_RENEWING || st == ST_REBINDING)) {
+        start_discover();
+        return;
+    }
+    if (mtype == MSG_ACK && (st == ST_REQUESTING || st == ST_RENEWING || st == ST_REBINDING)
+        && yiaddr != 0 && yiaddr != eth.BROADCAST) {
+        I64 mask = opt_mask;
+        if (mask == 0) {
+            mask = eth.NETMASK;
+        }
+        I64 gw = opt_gw;
+        if (gw == 0 && st != ST_REQUESTING) {
+            gw = eth.gateway();
+        }
+        I64 dns = opt_dns;
+        if (dns == 0 && st != ST_REQUESTING) {
+            dns = eth.dns_ip();
+        }
+        I64 ls = opt_lease;
+        if (ls <= 0) {
+            ls = 3600;
+        }
+        if (opt_srv != 0) {
+            srv_ip = opt_srv;
+        } else if (srv_ip == 0) {
+            srv_ip = ip.src();
+        }
+        Bool changed = eth.our_ip() != yiaddr;
+        eth.configure(yiaddr, mask, gw, dns, changed);
+        lease_secs = ls;
+        bound_at = net.timers();
+        t1_ticks = (ls * 100) / 2;
+        if (t1_ticks < 1) {
+            t1_ticks = 1;
+        }
+        t2_ticks = (ls * 100 * 7) / 8;
+        if (t2_ticks <= t1_ticks) {
+            t2_ticks = t1_ticks + 1;
+        }
+        st = ST_BOUND;
+    }
+}
+
+// Retransmits pending DISCOVER/REQUEST and triggers half-lease T1 renewal / T2 rebind.
+export void timers() {
+    if (st == ST_OFF) {
+        return;
+    }
+    I64 now = net.timers();
+    if (st == ST_SELECTING) {
+        if (now - sent_at >= RETRY_TICKS) {
+            _ = send_dhcp(MSG_DISCOVER, 0, 0, 0, eth.BROADCAST);
+            sent_at = now;
+        }
+        return;
+    }
+    if (st == ST_REQUESTING) {
+        if (now - sent_at >= RETRY_TICKS && req_sent >= REQUEST_TRIES) {
+            start_discover();          // the offer's server went quiet: another may answer a DISCOVER
+        } else if (now - sent_at >= RETRY_TICKS) {
+            _ = send_dhcp(MSG_REQUEST, 0, offer_ip, srv_ip, eth.BROADCAST);
+            req_sent = req_sent + 1;
+            sent_at = now;
+        }
+        return;
+    }
+    if (st == ST_BOUND) {
+        if (now - bound_at >= t1_ticks) {
+            I64 dst = srv_ip;
+            if (dst == 0) {
+                dst = eth.BROADCAST;
+                st = ST_REBINDING;
+            } else {
+                st = ST_RENEWING;
+            }
+            if (send_dhcp(MSG_REQUEST, eth.our_ip(), 0, 0, dst)) {
+                sent_at = now;
+            } else {
+                sent_at = now - RETRY_TICKS + 2;
+            }
+        }
+        return;
+    }
+    if (st == ST_RENEWING) {
+        if (now - bound_at >= lease_secs * 100) {
+            start_discover();
+            return;
+        }
+        if (now - bound_at >= t2_ticks) {
+            st = ST_REBINDING;
+            _ = send_dhcp(MSG_REQUEST, eth.our_ip(), 0, 0, eth.BROADCAST);
+            sent_at = now;
+            return;
+        }
+        if (now - sent_at >= RETRY_TICKS) {
+            if (send_dhcp(MSG_REQUEST, eth.our_ip(), 0, 0, srv_ip)) {
+                sent_at = now;
+            } else {
+                sent_at = now - RETRY_TICKS + 2;
+            }
+        }
+        return;
+    }
+    if (st == ST_REBINDING) {
+        if (now - bound_at >= lease_secs * 100) {
+            start_discover();
+            return;
+        }
+        if (now - sent_at >= RETRY_TICKS) {
+            _ = send_dhcp(MSG_REQUEST, eth.our_ip(), 0, 0, eth.BROADCAST);
+            sent_at = now;
+        }
+    }
+}
+
+// KF-3c (facts kind 3): where the address came from: 0 the kernel's fixed address (no `daphnis.net=` on QEMU's user
+// network, or boot_begin never ran), 1 DHCP, 2 the boot argument (a static configuration, or one that did not parse
+// and left no address).
+export I64 source() {
+    if (mode == MODE_DHCP) {
+        return 1;
+    }
+    if (mode == MODE_STATIC || mode == MODE_BAD) {
+        return 2;
+    }
+    return 0;
+}
+
+// KF-3c: the lease's seconds left as this client counts them (its timer wakes, net.timers(), 100 a second, the clock
+// its renewals run on); 0 with no lease.
+export I64 lease_left() {
+    if (!bound()) {
+        return 0;
+    }
+    I64 left = lease_secs - (net.timers() - bound_at) / 100;
+    if (left < 0) {
+        return 0;
+    }
+    return left;
+}
+// SPDX-License-Identifier: Apache-2.0

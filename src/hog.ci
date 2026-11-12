@@ -1,0 +1,57 @@
+// src/hog.ci: seven nested calls, each with a 4,096 byte local array (U64[512]): 28,672 bytes of C
+// stack. The frame arena counts elements, and 7 * 512 is under its 4,096, so cint charges nothing
+// (a chain of U8[4000] frames is charged and refused with arena.alloc, never reaching the
+// stack). 28,672 bytes is more than the 16 KiB task stack of the shep flavor (RT_TASK_STACK in
+// the Makefile): only the guard pages stop it. A C compiler may inline the chain into one frame
+// that steps over a guard page in one subtraction; -fstack-clash-protection (Makefile) makes it
+// touch every page of a large frame instead. Each array is passed to src/hogleaf.ci, a module of
+// its own, so no C compiler can drop it or share its slot with another.
+
+import src.hogleaf;
+
+I64 f7(I64 x) {
+    U64[512] a;
+    hogleaf.touch(a);
+    return (a[0] as I64) + 1;
+}
+
+I64 f6(I64 x) {
+    U64[512] a;
+    hogleaf.touch(a);
+    return f7(x + 1) + (a[0] as I64);
+}
+
+I64 f5(I64 x) {
+    U64[512] a;
+    hogleaf.touch(a);
+    return f6(x + 1) + (a[0] as I64);
+}
+
+I64 f4(I64 x) {
+    U64[512] a;
+    hogleaf.touch(a);
+    return f5(x + 1) + (a[0] as I64);
+}
+
+I64 f3(I64 x) {
+    U64[512] a;
+    hogleaf.touch(a);
+    return f4(x + 1) + (a[0] as I64);
+}
+
+I64 f2(I64 x) {
+    U64[512] a;
+    hogleaf.touch(a);
+    return f3(x + 1) + (a[0] as I64);
+}
+
+I64 f1(I64 x) {
+    U64[512] a;
+    hogleaf.touch(a);
+    return f2(x + 1) + (a[0] as I64);
+}
+
+export I64 run() {
+    return f1(0);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,177 @@
+// user/ci/calc.ci: calc, the Calc window (stage RS, RS-CALC; docs/specs/2026-11-11-rs-rel-s1-units.md section 3,
+// frame 39 approved by DN-58). It asks a surface of the body (user/ci/kit/calcpad.ci, 286 x 411 at 1x), names
+// nothing on the bar, and draws the body centered in what the desk gives. Keys: digits and the operators type into the
+// line (the US layout, the number pad too); Enter, or `=` anywhere but after a name alone, evaluates; Backspace erases
+// the last token; Esc clears the line. A click presses a key, or puts a tape line back. Ctrl chords are left to the
+// desk. Alt is not held: the desk keeps its Alt chords. The desk tells a window nothing when the focus moves, and a
+// key let go in another window never reaches this one, so Shift and Ctrl are forgotten at each sign the focus may
+// have moved (forget). The arithmetic is ccalc's (user/ci/core/calc.ci).
+import user.ci.dev;
+import user.ci.corectl;
+import user.ci.tilewin;
+import user.ci.tilepoint;
+import user.ci.keymap;
+import user.ci.kit.appmenu;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.calcpad;
+
+const I64 EV_KEY = 1;
+const I64 EV_ABS = 3;
+const I64 KEY_ESC = 1;
+const I64 KEY_BACKSPACE = 14;
+const I64 KEY_EQUAL = 13;
+const I64 KEY_ENTER = 28;
+const I64 KEY_KPENTER = 96;
+const I64 KEY_LEFTALT = 56;
+const I64 KEY_RIGHTALT = 100;
+const I64 BTN_LEFT = 272;
+
+// the number pad: its key codes and the bytes they type
+I64[16] kp_code = [71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 98, 55, 0];
+U8[16] kp_byte = ['7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.', '/', '*', 0];
+
+U8[24] ev;
+U32[1920] row;
+U8[7680] obuf;
+I64 sw = 0;
+I64 sh = 0;
+I64 ox = 0;             // the body's corner on the surface
+I64 oy = 0;
+I64 px_x = 0;
+I64 px_y = 0;
+Bool shift = false;
+Bool ctrl = false;
+Bool inside = false;    // the pointer last told over the surface
+
+void paint() {
+    U32 paper = tokens.word(tokens.PAPER);
+    for y in 0..sh {
+        draw.paint(row, 0, sw, paper);
+        if (y >= oy && y < oy + calcpad.H) {
+            calcpad.row_at(row[ox..ox + calcpad.W], y - oy, 1);
+        }
+        for x in 0..sw {
+            U32 v = row[x];
+            for k in 0..4 { obuf[4 * x + k] = ((v >> ((8 * k) as U32)) & 255) as U8; }
+        }
+        dev.fb_row(y, obuf[0..4 * sw]);
+    }
+}
+
+I64 kp_of(I64 c) {
+    for i in 0..15 {
+        if (kp_code[i] == c) { return i; }
+    }
+    return -1;
+}
+
+// Shift and Ctrl let go: at Alt (Alt+Tab starts and ends there), a press, and the pointer entering or leaving the
+// surface (hdesk sends -1 when the focus moves), since a release in another window never reaches this one.
+void forget() {
+    shift = false;
+    ctrl = false;
+}
+
+// A key down (or repeating); whether the display changed.
+Bool key(I64 c) {
+    if (ctrl) { return false; }
+    if (c == KEY_ESC) { calcpad.clear(); return true; }
+    if (c == KEY_BACKSPACE) { calcpad.erase_one(); return true; }
+    if (c == KEY_ENTER || c == KEY_KPENTER) { calcpad.equals(); return true; }
+    if (c == KEY_EQUAL && !shift) { calcpad.typed_equals(); return true; }
+    I64 k = kp_of(c);
+    if (k >= 0) { calcpad.typed(kp_byte[k]); return true; }
+    I64 b = keymap.byte_of(c, shift, false);
+    if (b < 32 || b > 126) { return false; }
+    calcpad.typed(b as U8);
+    return true;
+}
+
+Bool click() {
+    I64 h = calcpad.hit(px_x - ox, px_y - oy);
+    if (h < 0) { return false; }
+    if (h >= calcpad.TAPE_HIT) {
+        calcpad.tape_back(h - calcpad.TAPE_HIT);
+    } else {
+        calcpad.press(h);
+    }
+    return true;
+}
+
+// The app menu (AM-2, AM-4, frame 41): About; Settings, dimmed (plan ruling A: Calc has no settings of its own yet);
+// Copy Result Ctrl+C and Paste Ctrl+V, dimmed (no desk clipboard yet, DN-58 item 12, as Read's Copy); Clear Tape. A
+// kernel without AM-4's rows refuses the whole declaration, so About and Settings are declared again alone, and
+// About alone when a kernel without the dimmed Settings refuses that too.
+const I64 M_SETTINGS = 1;
+const I64 M_COPY = 2;
+const I64 M_PASTE = 3;
+const I64 M_CLEAR_TAPE = 4;
+
+void declare() {
+    U8[1220] am_rec;
+    I64 am_n = appmenu.record(am_rec, b"Calc", b"0.1.0", b"The calculator, on ccalc's arithmetic.", M_SETTINGS);
+    appmenu.settings_dim(am_rec);
+    I64 base = am_n;
+    am_n = appmenu.item(am_rec, M_COPY, 0, b"Copy Result", b"Ctrl+C", appmenu.DIM);
+    am_n = appmenu.item(am_rec, M_PASTE, 0, b"Paste", b"Ctrl+V", appmenu.DIM);
+    am_n = appmenu.item(am_rec, M_CLEAR_TAPE, 0, b"Clear Tape", b"", 0);
+    if (tilewin.win_menu(am_rec[0..am_n]) < 0) {
+        am_rec[0] = ((base - 4) / 32) as U8;
+        if (tilewin.win_menu(am_rec[0..base]) < 0) {
+            am_n = appmenu.record(am_rec, b"Calc", b"0.1.0", b"The calculator, on ccalc's arithmetic.", -1);
+            _ = tilewin.win_menu(am_rec[0..am_n]);
+        }
+    }
+}
+
+void main(in U8[_] a) {
+    _ = tilewin.win_want(calcpad.W, calcpad.H);
+    I64 s = dev.fb_open();
+    declare();
+    if (s < 0) {
+        "calc: no surface ({0 - s})\n";
+        dev.exit_now(3);
+    }
+    _ = tilepoint.win_point(1);
+    sw = dev.fb_word(0) as I64;
+    sh = dev.fb_word(1) as I64;
+    if (sw > 1920) { sw = 1920; }
+    if (sw > calcpad.W) { ox = (sw - calcpad.W) / 2; }
+    if (sh > calcpad.H) { oy = (sh - calcpad.H) / 2; }
+    calcpad.reset();
+    paint();
+    Bool going = true;
+    while (going) {
+        I64 got = dev.ev_read(ev);
+        if (got < 0) {
+            going = false;
+        } else if (got == 0) {
+            _ = corectl.co_sleep(20000000);
+        } else {
+            I64 t = (ev[16] as I64) | ((ev[17] as I64) << 8);
+            I64 c = (ev[18] as I64) | ((ev[19] as I64) << 8);
+            I64 v = (ev[20] as I64) | ((ev[21] as I64) << 8) | ((ev[22] as I64) << 16) | ((ev[23] as I64) << 24);
+            if (v >= 0x80000000) { v = v - 0x100000000; }
+            if (t == EV_KEY && (c == keymap.KEY_LEFTSHIFT || c == keymap.KEY_RIGHTSHIFT)) { shift = v != 0; }
+            if (t == EV_KEY && (c == keymap.KEY_LEFTCTRL || c == keymap.KEY_RIGHTCTRL)) { ctrl = v != 0; }
+            if (t == EV_KEY && (c == KEY_LEFTALT || c == KEY_RIGHTALT)) { forget(); }
+            if (t == appmenu.EV_MENU && c == M_CLEAR_TAPE) {   // a chosen row of the app menu (AM-4)
+                calcpad.clear_tape();
+                paint();
+            } else if (t == EV_KEY && v == 1 && c == BTN_LEFT) {
+                forget();
+                if (click()) { paint(); }
+            } else if (t == EV_KEY && v != 0 && c < BTN_LEFT) {
+                if (key(c)) { paint(); }
+            } else if (t == EV_ABS) {
+                if ((v >= 0) != inside) { forget(); }
+                inside = v >= 0;
+                if (c == 0) { px_x = v; }
+                if (c == 1) { px_y = v; }
+            }
+        }
+    }
+    "calc: ended\n";
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,83 @@
+// tests/seat/seat_test.ci: hosted tests of whose the desk's seat is (LO-1, src/seat.ci; docs/user.md section 19).
+// Run by check.sh: cint test --root . tests/seat/seat_test.ci
+
+import src.seat;
+
+// The sweep reads a slot's uid, whether it lives and its family, nothing else: not its session, not what it ignores.
+test "the sweep of 1000: a setsid child that ignores SIGTERM ends, a fork loop's children end, the desk and 1001 stay" {
+    // 0 the desk; 1 the session's shell; 2 a job ignoring SIGTERM; 3 a child that left with setsid, ignoring SIGTERM;
+    // 4 to 6 a fork loop's children; 7 another account's daemon; 8 authd (the desk's, uid 0); 9 ended, not waited for
+    I64[10] uid = [0, 1000, 1000, 1000, 1000, 1000, 1000, 1001, 0, 1000];
+    Bool[10] live = [true, true, true, true, true, true, true, true, true, false];
+    I64 ended = 0;
+    for p in 0..10 {
+        Bool e = seat.ends(1000, uid[p], live[p], true);
+        assert(e == (p >= 1 && p <= 6));
+        if (e) {
+            ended += 1;
+        }
+    }
+    assert(ended == 6);
+    assert(!seat.ends(1000, 1000, true, false));             // another family's
+}
+
+test "uid 0, the desk's own, is never swept, nor a uid out of range" {
+    assert(!seat.ends(0, 0, true, true));
+    assert(!seat.ends(-1, -1, true, true));
+    assert(!seat.ends(65536, 65536, true, true));
+    assert(seat.ends(65535, 65535, true, true));
+    assert(seat.ends(1, 1, true, true));
+}
+
+test "over a small range: a slot ends exactly when live, of the family and of the swept uid" {
+    for t in 0..6 {
+        for u in 0..6 {
+            assert(seat.ends(t, u, true, true) == (t >= 1 && u == t));
+            assert(!seat.ends(t, u, false, true));
+            assert(!seat.ends(t, u, true, false));
+        }
+    }
+}
+test "the offered tile: any process's until a desk names a seat, then the named account's alone, no one's between" {
+    assert(seat.account() == seat.OPEN);
+    assert(seat.binds(0));                                   // before LO-1's desk: as before, any process
+    assert(seat.binds(1000));
+    assert(seat.name(1000) == 0);                            // login as 1000
+    assert(seat.account() == 1000);
+    assert(seat.binds(1000));
+    assert(!seat.binds(1001));                               // another account's daemon
+    assert(!seat.binds(0));
+    assert(seat.name(seat.NONE) == 0);                       // log out: until the next login, no one
+    assert(!seat.binds(1000));                               // a program the account left running
+    assert(!seat.binds(0));
+    assert(seat.name(1001) == 0);                            // the next login
+    assert(!seat.binds(1000));
+    assert(seat.binds(1001));
+    assert(seat.name(0) == 0);                               // accounts off: uid 0
+    assert(seat.binds(0));
+    assert(!seat.binds(1000));
+}
+
+test "a seat out of range changes nothing; OPEN is never named again" {
+    assert(seat.name(1000) == 0);
+    assert(seat.name(-2) == -22);
+    assert(seat.name(65536) == -22);
+    assert(seat.name(-3) == -22);
+    assert(seat.account() == 1000);
+    assert(seat.name(65535) == 0);
+    assert(seat.binds(65535));
+}
+
+test "over a small range: a named seat binds exactly its uid, none binds no one" {
+    for named in 0..6 {
+        assert(seat.name(named) == 0);
+        for u in 0..6 {
+            assert(seat.binds(u) == (u == named));
+        }
+    }
+    assert(seat.name(seat.NONE) == 0);
+    for u in 0..6 {
+        assert(!seat.binds(u));
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,124 @@
+// tests/shot/shot_proof.ci: RS-SHOT's proof twins (frame 43): the area select and the picture plate drawn by the kit
+// (user/ci/kit/shotsel.ci) over a desk drawn here, in the dark and light themes at 1x and 2x: frame 43 itself (the
+// area 400 x 260 from (168, 132), the pointer at its lower right, the plate of that area at the lower right), the
+// screen before the press, the label above an area at the screen's foot, and the plate alone over the live screen.
+// The overlay and the plate are the same in both themes; the desk under them takes the theme. Prints `frame NAME W H`
+// and each row as runs `r rgb count`; tools/rsproof.py writes the PNGs.
+// Run: cint run --root . tests/shot/shot_proof.ci | python3 tools/rsproof.py OUTDIR
+import user.ci.kit.tokens;
+import user.ci.kit.shape;
+import user.ci.kit.shotsel;
+
+const I64 W = 1024;
+const I64 H = 768;
+
+U32[2048] row;
+U8[8192] line;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+// Frame 39's composition at its point (x, y), as frame 43's left window shows it.
+U32 composition(I64 x, I64 y) {
+    I64 c = 0xe9e1cd;
+    if (x < 190) { c = 0x1a4b8c; }
+    I64 dx = 2 * x + 1 - 412;
+    I64 dy = 2 * y + 1 - 340;
+    if (dx * dx + dy * dy <= 220 * 220) { c = 0xd62828; }
+    if (x >= 286 && x < 298) { c = 0x141413; }
+    if (x >= 298 && x < 538 && y >= 214 && y < 226) { c = 0x141413; }
+    if (x >= 352 && x < 472 && y >= 48 && y < 168) { c = 0xe5a900; }
+    if (x >= 392 && x < 512 && y >= 88 && y < 208) { c = 0x141413; }
+    I64 ex = 2 * x + 1 - 724;
+    I64 ey = 2 * y + 1 - 568;
+    if (ex * ex + ey * ey <= 64 * 64) { c = 0x1a4b8c; }
+    if (x >= 420 && x < 504 && y >= 268 && y < 300) { c = 0x9e4724; }
+    return c as U32;
+}
+
+// Row y (device) of the desk at zoom z: the plane, the bar, frame 43's two windows.
+void desk(I64 y, I64 z) {
+    I64 n = W * z;
+    U32 g = tokens.word(tokens.MANTLE);
+    for x in 0..n { row[x] = g; }
+    if (y < 28 * z) {
+        for x in 0..n { row[x] = tokens.word(tokens.BAR); }
+        return;
+    }
+    shape.rounded(row, y, 48 * z, 64 * z, 608 * z, 444 * z, 8 * z, tokens.word(tokens.SURF1));
+    if (y >= 96 * z && y < 443 * z) {
+        for x in 49 * z..607 * z { row[x] = composition(x / z - 49, y / z - 96); }
+    }
+    shape.rounded(row, y, 520 * z, 300 * z, 960 * z, 660 * z, 8 * z, tokens.word(tokens.ULTRAMARINE));
+    if (y >= 332 * z && y < 659 * z) {
+        for x in 521 * z..959 * z { row[x] = tokens.word(tokens.PAPER); }
+    }
+}
+
+// The desk's row y as fb_peek gives it, from x0, n pixels.
+void peek(I64 y, I64 z, I64 x0, I64 n) {
+    desk(y, z);
+    for i in 0..n {
+        U32 c = row[x0 + i];
+        line[4 * i] = (c & 255) as U8;
+        line[4 * i + 1] = ((c >> 8) & 255) as U8;
+        line[4 * i + 2] = ((c >> 16) & 255) as U8;
+        line[4 * i + 3] = 0;
+    }
+}
+
+// The plate's picture of the area (x, y, w, h), all at zoom z.
+void plate(I64 x, I64 y, I64 w, I64 h, I64 z) {
+    shotsel.plate_begin(w, h, z, W * z, H * z);
+    I64 sy = shotsel.plate_next();
+    while (sy >= 0) {
+        peek(y + sy, z, x, w);
+        shotsel.plate_feed(line[0..4 * w]);
+        sy = shotsel.plate_next();
+    }
+}
+
+// One frame: the select as it stands (unless bare), and the plate when shown.
+void frame(I64 k, I64 th, I64 z, Bool bare, Bool shown) {
+    "frame shot_";
+    if (k == 0) { "area"; } else if (k == 1) { "before"; } else if (k == 2) { "above"; } else { "plate"; }
+    "_{th}_{z}x {W * z} {H * z}\n";
+    for y in 0..H * z {
+        desk(y, z);
+        if (!bare) { shotsel.row_at(row, y); }
+        if (shown) { shotsel.plate_row_at(row, y); }
+        emit(W * z);
+    }
+}
+
+void main() {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            plate(168 * z, 132 * z, 400 * z, 260 * z, z);
+            shotsel.begin(W * z, H * z, z);
+            _ = shotsel.press(168 * z, 132 * z);
+            _ = shotsel.point(568 * z, 392 * z);
+            frame(0, th, z, false, true);
+            shotsel.begin(W * z, H * z, z);
+            _ = shotsel.point(568 * z, 392 * z);
+            frame(1, th, z, false, false);
+            shotsel.begin(W * z, H * z, z);
+            _ = shotsel.press(600 * z, 520 * z);
+            _ = shotsel.point(900 * z, 760 * z);
+            frame(2, th, z, false, false);
+            frame(3, th, z, true, true);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

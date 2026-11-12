@@ -1,0 +1,517 @@
+// user/ci/cvim/hl.ci: cvim's highlighting lexer (CV-6, docs/specs/2026-11-07-cv-cvim.md section 7). It lexes one
+// line at a time from the state the line before left, for three languages: cint (.ci), the shell (.sh, cish's
+// rules) and plain text (no spans). Each span is a token's start and length in the line, its kind and its role;
+// theme.ci turns a role into SGR.
+//
+// cint: the tokens are compiler/scan.ci's (vendored at the cint pin under user/cvim/scan/): the same kinds, starts
+// and lengths on every file scan.ci accepts (tests/cvim/hl_gate.py checks the conformance corpus), with comments
+// as spans of their own. Where scan.ci refuses, this lexer goes on: an unfinished string or character colors to the
+// line's end, an unfinished block comment to the file's (its state carries the nesting depth), a byte scan.ci
+// rejects is an ERROR span. Strings do not cross lines (SPEC-04: C1034).
+// The shell: # comments (at a word's start), '...' and "..." (which may cross lines), $names, ${...}, $( and the
+// special parameters, numbers, cish's reserved words, the control operators.
+//
+// States: 0 none; cint 1 + d inside a block comment of depth d; sh 1 inside '...', 2 inside "...".
+// Pure: no state of its own.
+
+export const I64 LANG_TEXT = 0;
+export const I64 LANG_CINT = 1;
+export const I64 LANG_SH = 2;
+
+// The roles (theme.ci's table).
+export const I64 NORMAL = 0;
+export const I64 KEYWORD = 1;
+export const I64 TYPE = 2;
+export const I64 BUILTIN = 3;
+export const I64 NUMBER = 4;
+export const I64 STRING = 5;
+export const I64 COMMENT = 6;
+export const I64 OPERATOR = 7;
+export const I64 PUNCT = 8;
+export const I64 DECL = 9;
+export const I64 ERROR = 10;
+export const I64 PREPROC = 11;
+export const I64 ROLES = 12;
+
+// The kinds: scan.ci's TK_ numbers, and a comment.
+export const I64 K_IDENT = 1;
+export const I64 K_KEYWORD = 2;
+export const I64 K_INT = 3;
+export const I64 K_FRAC = 4;
+export const I64 K_CHAR = 5;
+export const I64 K_STRING = 6;
+export const I64 K_BYTES = 7;
+export const I64 K_FIXED = 8;
+export const I64 K_OP = 9;
+export const I64 K_ERROR = 10;
+export const I64 K_COMMENT = 100;
+export const I64 K_SH = 200;              // a shell span (its role says what)
+
+export const I64 SPAN = 4;                // start, length, kind, role; sp[0] is the count
+
+// The language a file name asks for.
+export I64 lang_of(in U8[_] name) {
+    I64 n = len(name);
+    if (n >= 3 && name[n - 3] == '.' && name[n - 2] == 'c' && name[n - 1] == 'i') { return LANG_CINT; }
+    if (n >= 3 && name[n - 3] == '.' && name[n - 2] == 's' && name[n - 1] == 'h') { return LANG_SH; }
+    return LANG_TEXT;
+}
+
+void emit(inout I64[_] sp, I64 start, I64 n, I64 kind, I64 role) {
+    I64 k = sp[0];
+    if (1 + SPAN * (k + 1) > len(sp)) { return; }
+    sp[1 + SPAN * k] = start;
+    sp[2 + SPAN * k] = n;
+    sp[3 + SPAN * k] = kind;
+    sp[4 + SPAN * k] = role;
+    sp[0] = k + 1;
+}
+
+I64 at(in U8[_] s, I64 i) {
+    if (i < 0 || i >= len(s)) { return -1; }
+    return s[i] as I64;
+}
+
+Bool digit(I64 c) { return c >= '0' && c <= '9'; }
+Bool hexd(I64 c) { return digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+Bool letter(I64 c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+Bool wordc(I64 c) { return letter(c) || digit(c); }
+
+Bool spells(in U8[_] s, I64 a, I64 n, in U8[_] w) {
+    if (n != len(w)) { return false; }
+    for i in 0..n {
+        if (s[a + i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+// scan.ci's reserved words (SPEC-04 3.4).
+Bool keyword(in U8[_] s, I64 a, I64 n) {
+    if (n == 2) {
+        return spells(s, a, n, b"as") || spells(s, a, n, b"by") || spells(s, a, n, b"do") ||
+               spells(s, a, n, b"if") || spells(s, a, n, b"in");
+    }
+    if (n == 3) {
+        return spells(s, a, n, b"for") || spells(s, a, n, b"out") || spells(s, a, n, b"try") ||
+               spells(s, a, n, b"var");
+    }
+    if (n == 4) {
+        return spells(s, a, n, b"case") || spells(s, a, n, b"else") || spells(s, a, n, b"enum") ||
+               spells(s, a, n, b"over") || spells(s, a, n, b"test") || spells(s, a, n, b"true") ||
+               spells(s, a, n, b"type") || spells(s, a, n, b"void");
+    }
+    if (n == 5) {
+        return spells(s, a, n, b"break") || spells(s, a, n, b"catch") || spells(s, a, n, b"const") ||
+               spells(s, a, n, b"defer") || spells(s, a, n, b"error") || spells(s, a, n, b"false") ||
+               spells(s, a, n, b"inout") || spells(s, a, n, b"where") || spells(s, a, n, b"while");
+    }
+    if (n == 6) {
+        return spells(s, a, n, b"assert") || spells(s, a, n, b"export") || spells(s, a, n, b"extern") ||
+               spells(s, a, n, b"import") || spells(s, a, n, b"kernel") || spells(s, a, n, b"reduce") ||
+               spells(s, a, n, b"return") || spells(s, a, n, b"secret") || spells(s, a, n, b"struct") ||
+               spells(s, a, n, b"switch");
+    }
+    if (n == 7) { return spells(s, a, n, b"default") || spells(s, a, n, b"profile"); }
+    if (n == 8) {
+        return spells(s, a, n, b"continue") || spells(s, a, n, b"distinct") || spells(s, a, n, b"in_place") ||
+               spells(s, a, n, b"schedule") || spells(s, a, n, b"errdefer") || spells(s, a, n, b"requires");
+    }
+    if (n == 11) { return spells(s, a, n, b"fallthrough"); }
+    if (n == 12) { return spells(s, a, n, b"expect_fault"); }
+    if (n == 13) { return spells(s, a, n, b"static_assert"); }
+    return false;
+}
+
+// A type's name: scan.ci's identifier classes (the scalar types, Bool, Str, the ternary types, Arena, Pool,
+// Handle) and the reserved form [IUQT] then digits.
+Bool type_name(in U8[_] s, I64 a, I64 n) {
+    I64 c0 = s[a] as I64;
+    if (n >= 2 && (c0 == 'I' || c0 == 'U' || c0 == 'Q' || c0 == 'T')) {
+        Bool all = true;
+        for j in a + 1..a + n {
+            if (!digit(s[j] as I64)) { all = false; }
+        }
+        if (all) { return true; }
+    }
+    return spells(s, a, n, b"Bool") || spells(s, a, n, b"Str") || spells(s, a, n, b"PT5") ||
+           spells(s, a, n, b"PT4") || spells(s, a, n, b"Arena") || spells(s, a, n, b"Pool") ||
+           spells(s, a, n, b"Handle") || spells(s, a, n, b"Grants");
+}
+
+// The language's built-in functions (SPEC-01 IM-77 and the view functions).
+Bool builtin(in U8[_] s, I64 a, I64 n) {
+    return spells(s, a, n, b"len") || spells(s, a, n, b"min") || spells(s, a, n, b"max") ||
+           spells(s, a, n, b"sum") || spells(s, a, n, b"count") || spells(s, a, n, b"dot") ||
+           spells(s, a, n, b"copy") || spells(s, a, n, b"transpose") || spells(s, a, n, b"fold_checked") ||
+           spells(s, a, n, b"sum_wrap") || spells(s, a, n, b"sum_sat") || spells(s, a, n, b"fill") ||
+           spells(s, a, n, b"swap") || spells(s, a, n, b"lower") || spells(s, a, n, b"utf8");
+}
+
+// scan.ci's operator_at: the length of the longest operator at i (maximal munch), 0 for none.
+I64 op_len(in U8[_] s, I64 i) {
+    I64 c = at(s, i);
+    I64 d = at(s, i + 1);
+    I64 e = at(s, i + 2);
+    I64 f = at(s, i + 3);
+    if (c == '+' || c == '-' || c == '*') {
+        if ((d == '%' || d == '|') && e == '=') { return 3; }
+        if (d == '%' || d == '|' || d == '=') { return 2; }
+        if ((c == '+' && d == '+') || (c == '-' && d == '-')) { return 2; }
+        return 1;
+    }
+    if (c == '<') {
+        if (d == '<' && e == '%' && f == '=') { return 4; }
+        if (d == '<' && (e == '%' || e == '=')) { return 3; }
+        if (d == '<' || d == '=') { return 2; }
+        return 1;
+    }
+    if (c == '>') {
+        if (d == '>' && e == '=') { return 3; }
+        if (d == '>' || d == '=') { return 2; }
+        return 1;
+    }
+    if (c == '.') {
+        if (d == '.' && e == '=') { return 3; }
+        if (d == '.') { return 2; }
+        return 1;
+    }
+    if (c == '=' || c == '!' || c == '/' || c == '%' || c == '^') {
+        if (d == '=') { return 2; }
+        return 1;
+    }
+    if (c == '&') {
+        if (d == '&' || d == '=') { return 2; }
+        return 1;
+    }
+    if (c == '|') {
+        if (d == '|' || d == '=') { return 2; }
+        return 1;
+    }
+    if (c == '~' || c == '?' || c == ':' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' ||
+        c == ',' || c == ';' || c == '@') {
+        return 1;
+    }
+    return 0;
+}
+
+Bool punct(I64 c) {
+    return c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}' || c == ',' || c == ';' || c == '.';
+}
+
+// A quoted body from i (after the opening quote q): the index after the closing quote, or the line's length when
+// it does not close (scan.ci's string_body: a backslash takes the next byte).
+I64 quoted(in U8[_] s, I64 i0, I64 q) {
+    I64 i = i0;
+    while (i < len(s)) {
+        I64 c = s[i] as I64;
+        if (c == q) { return i + 1; }
+        if (c == 92 && i + 1 < len(s)) { i += 2; } else { i += 1; }
+    }
+    return len(s);
+}
+
+// --- cint ---
+
+I64 cint_line(in U8[_] s, I64 st0, inout I64[_] sp) {
+    I64 n = len(s);
+    I64 i = 0;
+    I64 depth = 0;
+    if (st0 > 0) { depth = st0 - 1; }
+    Bool decl_next = false;
+    if (depth > 0) {
+        // inside a block comment from the line before
+        I64 a = 0;
+        while (i < n && depth > 0) {
+            if (at(s, i) == '/' && at(s, i + 1) == '*') {
+                depth += 1;
+                i += 2;
+            } else if (at(s, i) == '*' && at(s, i + 1) == '/') {
+                depth -= 1;
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        emit(sp, a, i - a, K_COMMENT, COMMENT);
+        if (depth > 0) { return 1 + depth; }
+    }
+    while (i < n) {
+        I64 c = s[i] as I64;
+        if (c == ' ' || c == 9 || c == 13) {
+            i += 1;
+            continue;
+        }
+        I64 a = i;
+        if (c == '/' && at(s, i + 1) == '/') {
+            emit(sp, a, n - a, K_COMMENT, COMMENT);
+            return 0;
+        }
+        if (c == '/' && at(s, i + 1) == '*') {
+            depth = 1;
+            i += 2;
+            while (i < n && depth > 0) {
+                if (at(s, i) == '/' && at(s, i + 1) == '*') {
+                    depth += 1;
+                    i += 2;
+                } else if (at(s, i) == '*' && at(s, i + 1) == '/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            emit(sp, a, i - a, K_COMMENT, COMMENT);
+            if (depth > 0) { return 1 + depth; }
+            continue;
+        }
+        if (letter(c)) {
+            if (c == 'b' && at(s, i + 1) == '"') {
+                i = quoted(s, i + 2, '"');
+                emit(sp, a, i - a, K_BYTES, STRING);
+                decl_next = false;
+                continue;
+            }
+            while (wordc(at(s, i))) { i += 1; }
+            I64 bl = i - a;
+            I64 x = at(s, i);
+            if (bl == 2 && c == 'a' && s[a + 1] == 's' && (x == '%' || x == '|' || x == '?')) {
+                i += 1;
+                emit(sp, a, i - a, K_OP, KEYWORD);
+                continue;
+            }
+            if (bl >= 2 && c == 'Q' && s[a + 1] != '0' && x == '.' && digit(at(s, i + 1))) {
+                Bool all = true;
+                for j in a + 1..i {
+                    if (!digit(s[j] as I64)) { all = false; }
+                }
+                if (all) {
+                    i += 1;
+                    while (digit(at(s, i))) { i += 1; }
+                    emit(sp, a, i - a, K_FIXED, TYPE);
+                    continue;
+                }
+            }
+            if (bl > 255) {
+                emit(sp, a, bl, K_ERROR, ERROR);
+                continue;
+            }
+            if (keyword(s, a, bl)) {
+                I64 role = KEYWORD;
+                if (spells(s, a, bl, b"import") || spells(s, a, bl, b"export") || spells(s, a, bl, b"extern") ||
+                    spells(s, a, bl, b"requires")) {
+                    role = PREPROC;
+                }
+                emit(sp, a, bl, K_KEYWORD, role);
+                decl_next = spells(s, a, bl, b"struct") || spells(s, a, bl, b"enum") || spells(s, a, bl, b"type") ||
+                            spells(s, a, bl, b"distinct");
+                continue;
+            }
+            I64 r = NORMAL;
+            if (decl_next) { r = DECL; }
+            else if (type_name(s, a, bl)) { r = TYPE; }
+            else if (builtin(s, a, bl) && at(s, i) == '(') { r = BUILTIN; }
+            emit(sp, a, bl, K_IDENT, r);
+            decl_next = false;
+            continue;
+        }
+        decl_next = false;
+        if (digit(c)) {
+            while (wordc(at(s, i))) { i += 1; }
+            I64 radix = 10;
+            if (c == '0' && (at(s, a + 1) == 'x')) { radix = 16; }
+            else if (c == '0' && (at(s, a + 1) == 'o' || at(s, a + 1) == 'b' || at(s, a + 1) == 't')) { radix = 2; }
+            I64 d = at(s, i + 1);
+            if (at(s, i) == '.' && ((radix == 16 && hexd(d)) || (radix == 10 && digit(d)))) {
+                i += 1;
+                while (wordc(at(s, i))) { i += 1; }
+                emit(sp, a, i - a, K_FRAC, NUMBER);
+                continue;
+            }
+            emit(sp, a, i - a, K_INT, NUMBER);
+            continue;
+        }
+        if (c == 39) {
+            i = quoted(s, i + 1, 39);
+            emit(sp, a, i - a, K_CHAR, STRING);
+            continue;
+        }
+        if (c == '"') {
+            i = quoted(s, i + 1, '"');
+            emit(sp, a, i - a, K_STRING, STRING);
+            continue;
+        }
+        I64 ol = op_len(s, i);
+        if (ol > 0) {
+            i += ol;
+            I64 r = OPERATOR;
+            if (ol == 1 && punct(c)) { r = PUNCT; }
+            emit(sp, a, ol, K_OP, r);
+            continue;
+        }
+        // a byte scan.ci refuses (C1013 non-ASCII, C1050): the whole code point is one ERROR span
+        i += 1;
+        while (i < n && ((s[i] as I64) & 192) == 128) { i += 1; }
+        emit(sp, a, i - a, K_ERROR, ERROR);
+    }
+    return 0;
+}
+
+// --- the shell ---
+
+Bool sh_word(in U8[_] s, I64 a, I64 n) {
+    return spells(s, a, n, b"if") || spells(s, a, n, b"then") || spells(s, a, n, b"else") ||
+           spells(s, a, n, b"elif") || spells(s, a, n, b"fi") || spells(s, a, n, b"for") ||
+           spells(s, a, n, b"while") || spells(s, a, n, b"until") || spells(s, a, n, b"do") ||
+           spells(s, a, n, b"done") || spells(s, a, n, b"case") || spells(s, a, n, b"esac") ||
+           spells(s, a, n, b"in") || spells(s, a, n, b"function") || spells(s, a, n, b"return") ||
+           spells(s, a, n, b"break") || spells(s, a, n, b"continue") || spells(s, a, n, b"export") ||
+           spells(s, a, n, b"local") || spells(s, a, n, b"exit");
+}
+
+// A $ form at i: its end.
+I64 sh_dollar(in U8[_] s, I64 i) {
+    I64 d = at(s, i + 1);
+    if (d == '{') {
+        I64 j = i + 2;
+        while (j < len(s) && s[j] != '}') { j += 1; }
+        return min(j + 1, len(s));
+    }
+    if (d == '(') { return i + 2; }
+    if (letter(d)) {
+        I64 j = i + 1;
+        while (wordc(at(s, j))) { j += 1; }
+        return j;
+    }
+    if (digit(d) || d == '?' || d == '#' || d == '@' || d == '*' || d == '$' || d == '!' || d == '-') { return i + 2; }
+    return i + 1;
+}
+
+// A "..." body from i0 (its string span from run0, the quote): its end (after the quote, or the line's length), $ forms inside as builtin spans.
+I64 sh_dquote(in U8[_] s, I64 run0, I64 i0, inout I64[_] sp, inout I64[1] closed) {
+    I64 i = i0;
+    I64 run = run0;
+    closed[0] = 0;
+    while (i < len(s)) {
+        I64 c = s[i] as I64;
+        if (c == '"') {
+            emit(sp, run, i + 1 - run, K_SH, STRING);
+            closed[0] = 1;
+            return i + 1;
+        }
+        if (c == 92 && i + 1 < len(s)) {
+            i += 2;
+            continue;
+        }
+        if (c == '$') {
+            if (i > run) { emit(sp, run, i - run, K_SH, STRING); }
+            I64 e = sh_dollar(s, i);
+            emit(sp, i, e - i, K_SH, BUILTIN);
+            i = e;
+            run = i;
+            continue;
+        }
+        i += 1;
+    }
+    if (len(s) > run) { emit(sp, run, len(s) - run, K_SH, STRING); }
+    return len(s);
+}
+
+I64 sh_line(in U8[_] s, I64 st0, inout I64[_] sp) {
+    I64 n = len(s);
+    I64 i = 0;
+    I64[1] closed;
+    if (st0 == 1) {
+        while (i < n && s[i] != 39) { i += 1; }
+        if (i >= n) {
+            emit(sp, 0, n, K_SH, STRING);
+            return 1;
+        }
+        i += 1;
+        emit(sp, 0, i, K_SH, STRING);
+    } else if (st0 == 2) {
+        i = sh_dquote(s, 0, 0, sp, closed);
+        if (closed[0] == 0) { return 2; }
+    }
+    Bool word_start = true;
+    while (i < n) {
+        I64 c = s[i] as I64;
+        I64 a = i;
+        if (c == ' ' || c == 9 || c == 13) {
+            i += 1;
+            word_start = true;
+            continue;
+        }
+        if (c == '#' && word_start) {
+            emit(sp, a, n - a, K_SH, COMMENT);
+            return 0;
+        }
+        if (c == 39) {
+            I64 j = i + 1;
+            while (j < n && s[j] != 39) { j += 1; }
+            if (j >= n) {
+                emit(sp, a, n - a, K_SH, STRING);
+                return 1;
+            }
+            emit(sp, a, j + 1 - a, K_SH, STRING);
+            i = j + 1;
+            word_start = false;
+            continue;
+        }
+        if (c == '"') {
+            i = sh_dquote(s, i, i + 1, sp, closed);
+            if (closed[0] == 0) { return 2; }
+            word_start = false;
+            continue;
+        }
+        if (c == '$') {
+            i = sh_dollar(s, i);
+            emit(sp, a, i - a, K_SH, BUILTIN);
+            word_start = false;
+            continue;
+        }
+        if (c == '|' || c == '&' || c == ';' || c == '<' || c == '>' || c == '(' || c == ')') {
+            i += 1;
+            while (i < n && (s[i] == c as U8 || s[i] == '>' || s[i] == '&')) { i += 1; }
+            emit(sp, a, i - a, K_SH, OPERATOR);
+            word_start = true;
+            continue;
+        }
+        if (c == 92) {
+            i = min(i + 2, n);
+            word_start = false;
+            continue;
+        }
+        // a word: a reserved word at a word's start, a number, or plain
+        I64 j = i;
+        while (j < n && s[j] != ' ' && s[j] != 9 && s[j] != ';' && s[j] != '|' && s[j] != '&' && s[j] != '<' &&
+               s[j] != '>' && s[j] != '(' && s[j] != ')' && s[j] != '"' && s[j] != 39 && s[j] != '$') {
+            j += 1;
+        }
+        if (j == i) { j = i + 1; }
+        Bool num = true;
+        for q in i..j {
+            if (!digit(s[q] as I64)) { num = false; }
+        }
+        if (word_start && sh_word(s, i, j - i)) { emit(sp, a, j - a, K_SH, KEYWORD); }
+        else if (num) { emit(sp, a, j - a, K_SH, NUMBER); }
+        i = j;
+        word_start = false;
+    }
+    return 0;
+}
+
+// The line s (no line feed) of a file in lang, from state st: its spans into sp (sp[0] their count, then SPAN
+// words a span), and the state the next line starts in.
+export I64 line(in U8[_] s, I64 lang, I64 st, inout I64[_] sp) {
+    sp[0] = 0;
+    if (lang == LANG_CINT) { return cint_line(s, st, sp); }
+    if (lang == LANG_SH) { return sh_line(s, st, sp); }
+    return 0;
+}
+
+export I64 n_spans(in I64[_] sp) { return sp[0]; }
+export I64 span_start(in I64[_] sp, I64 k) { return sp[1 + SPAN * k]; }
+export I64 span_len(in I64[_] sp, I64 k) { return sp[2 + SPAN * k]; }
+export I64 span_kind(in I64[_] sp, I64 k) { return sp[3 + SPAN * k]; }
+export I64 span_role(in I64[_] sp, I64 k) { return sp[4 + SPAN * k]; }
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,32 @@
+$ 0
+status 0
+$ 1
+status 0
+$ 00
+status 0
+$ 4294967296
+-- stderr
+sleep: invalid number: 4294967296
+status 2
+$ x
+-- stderr
+sleep: invalid number: x
+status 2
+$ +1
+-- stderr
+sleep: invalid number: +1
+status 2
+$ 
+-- stderr
+sleep: one operand: TIME
+status 2
+$ -- 0
+status 0
+$ 0 1
+-- stderr
+sleep: one operand: TIME
+status 2
+$ -1
+-- stderr
+sleep: not supported: -1
+status 2

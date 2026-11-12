@@ -1,0 +1,6 @@
+// tests/kfz/defects/d2_usb.ci: findings in HW-4m's USB disk, each a case that fails at its base and passes once its
+// finding is fixed; tests/kfz/run.sh --defects runs them. None is open.
+// KFZ-4 to KFZ-6 (a late answer into a frame given back, both ways; a short read with residue 0) failed before PR 346
+// and pass after it. KFZ-7 (registers read past the BAR) and KFZ-8 (an Enable Slot answering a slot a device holds)
+// failed after PR 346 too and pass on the follow-up of PR 367. Their cases are tests/kfz/k5_usb.ci's.
+// SPDX-License-Identifier: Apache-2.0

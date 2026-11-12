@@ -1,0 +1,43 @@
+// user/ci/sleep.ci: sleep TIME (docs/specs/2026-11-06-c-core.md, CT-4): waits TIME seconds, a decimal integer from 0
+// to 4,294,967,295 (busybox's range), with nanosleep: real time on Linux, the virtual clock under Daphnis, which
+// moves by TIME and returns at once. Any other operand is a usage error (DIFFS D-3).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+
+void main(in U8[_] a) {
+    msg.name(b"sleep");
+    args.parse(a, b"", b"");
+    if (args.operands() != 1) { msg.usage(b"one operand: TIME"); }
+    I64 s = args.op_start(0);
+    I64 e = args.op_stop(a, 0);
+    if (s == e) { msg.usage(b"invalid number: "); }
+    I64 v = 0;
+    for i in s..e {
+        U8 d = a[i];
+        if (d < '0' || d > '9') {
+            msg.begin();
+            msg.text(b"invalid number: ");
+            msg.text(a[s..e]);
+            msg.send();
+            dev.exit_now(2);
+        }
+        v = v * 10 + ((d - 48) as I64);
+        if (v > 4294967295) {
+            msg.begin();
+            msg.text(b"invalid number: ");
+            msg.text(a[s..e]);
+            msg.send();
+            dev.exit_now(2);
+        }
+    }
+    I64 r = corectl.co_sleep(v * 1000000000);
+    if (r < 0) {
+        msg.file(a[s..e], 0 - r);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

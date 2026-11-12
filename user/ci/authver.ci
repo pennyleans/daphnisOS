@@ -1,0 +1,15 @@
+// user/ci/authver.ci: the verifier of AC-D9 (docs/specs/2026-11-08-ac-accounts.md section 3), authd's one copy for
+// its passphrase checks and its store operations (user/ci/authd.ci, user/ci/authop.ci).
+import user.ci.argon2;
+import user.ci.blake2b;
+
+// ver's 32 bytes: BLAKE2b-256(key = Argon2id(pass[0..n), salt's 16 bytes, m KiB, t passes, one lane),
+// "daphnis-verify"), never the tag itself, which is wiped. mem holds argon2.words_needed(m, 1) words or more.
+export void verifier(in U8[_] pass, I64 n, I64 m, I64 t, in U8[_] salt, inout U64[_] mem, inout U8[_] ver) {
+    U8[0] none;
+    U8[32] tag;
+    argon2.argon2id(pass, n, salt, 16, none, 0, none, 0, t, m, 1, mem, tag, 32);
+    blake2b.b2_digest("daphnis-verify", 14, tag, 32, ver, 32);
+    for i in 0..32 { tag[i] = 0; }
+}
+// SPDX-License-Identifier: Apache-2.0

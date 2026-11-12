@@ -1,0 +1,7 @@
+# tests/core/ps.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-11-kf-facts.md section 2, KF-3b). On Linux the call ps
+# asks, Daphnis's facts (1007), does not exist, so every run here ends at the first one: `ps: facts: Function not
+# implemented`, status 1, where busybox reads /proc (D-65; the gate's oracle build has no ps). The rows themselves
+# are Daphnis's: the mfacts probe (check-tiler.sh) proves who sees which, and a guest session prints them.
+ | - | D-65
+-x | - | D-1
+extra | - | D-3

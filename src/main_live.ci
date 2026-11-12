@@ -1,0 +1,82 @@
+// src/main_live.ci: G-1, live play (docs/specs/2026-11-05-g-episode.md). The doom flavor's kernel and image
+// with another main: the surface, the keyboard and the mouse on, then `doom --live --warp 6` (the bundle
+// carries E1M6 only until G-3's e1.wad) as pid 1, reading /dev/input/event0 non-blocking; Esc ends it. The
+// run is not sealed and not pinned: check-doom.sh types a key and mouse script through the QEMU monitor and
+// checks that the player moved, turned and fired (tools/check-live.py).
+// G-4: with a volume attached it is mounted on /home, and the live run is `grant disk doom --live --record
+// home/g.lmp --warp 6`: the record outlives the run on the volume; then pid 2 is `doom --sealed --demo
+// home/g.lmp`, which must print the chain the live run printed at its end and the same pose.
+
+import src.serial;
+import src.trap;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.pool;
+import src.surface;
+import src.input;
+import src.blk;
+import src.ext2;
+
+void main() {
+    serial.serial_write("Daphnis G: live play\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    user.user_init();
+    fs.init();
+    if (user.fb_init() > 0) {
+        fs.set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        serial.serial_write("daphnis: framebuffer\n");
+    } else {
+        serial.serial_write("daphnis: no framebuffer\n");
+    }
+    pit.pic_remap();
+    pit.pit_start(11932);
+    if (input.devices_on()) {
+        serial.serial_write("daphnis: keyboard and mouse on\n");
+    } else {
+        serial.serial_write("daphnis: keyboard on, no mouse\n");
+    }
+    fs.set_input(true);
+    Bool disk = blk.init() > 0 && fs.mount_disk();
+    if (disk) {
+        serial.serial_write("daphnis: /home mounted, ext2, block ");
+        proc.put_dec(ext2.block_size());
+        serial.serial_write("\n");
+        proc.push_arg("disk");
+        proc.push_arg("doom");
+        proc.push_arg("--live");
+        proc.push_arg("--record");
+        proc.push_arg("home/g.lmp");
+        proc.push_arg("--warp");
+        proc.push_arg("6");
+        proc.run_device(1, "grant");
+    } else {
+        serial.serial_write("daphnis: no disk, no record\n");
+        proc.push_arg("--live");
+        proc.push_arg("--warp");
+        proc.push_arg("6");
+        proc.run_device(1, "doom");
+    }
+    surface.print();
+    if (disk) {
+        proc.report_pool();
+        proc.push_arg("--sealed");
+        proc.push_arg("--demo");
+        proc.push_arg("home/g.lmp");
+        proc.run_device(2, "doom");
+        surface.print();
+    }
+    if (input.dropped() != 0) {
+        serial.serial_write("daphnis: input dropped ");
+        proc.put_dec(input.dropped());
+        serial.serial_write("\n");
+        input.say_dropped(0);
+    }
+    proc.report_pool();
+    serial.serial_write("daphnis: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,15 @@
+nofollow: symlink to the file (want 0) = 0
+nofollow: symlink to the directory (want 0) = 0
+nofollow: symlink to nothing (want 0) = 0
+nofollow: open the file, O_NOFOLLOW (want 0) = 0
+nofollow: open the link (want 0) = 0
+nofollow: open the link, O_NOFOLLOW (want -ELOOP -40) = -40
+nofollow: open the link for writing, O_NOFOLLOW (want -40) = -40
+nofollow: open the link, O_NOFOLLOW|O_CREAT (want -40) = -40
+nofollow: open the link, O_NOFOLLOW|O_CREAT|O_EXCL (want -EEXIST -17) = -17
+nofollow: open the dangling link, O_NOFOLLOW (want -40) = -40
+nofollow: open the dangling link (want -ENOENT -2) = -2
+nofollow: open through a link in the directories, O_NOFOLLOW (want 0) = 0
+nofollow: open the directory link, O_NOFOLLOW|O_DIRECTORY (want -ENOTDIR -20) = -20
+nofollow: open a name that is not there, O_NOFOLLOW (want -2) = -2
+nofollow: fstat the descriptor: a regular file (want 1) = 1

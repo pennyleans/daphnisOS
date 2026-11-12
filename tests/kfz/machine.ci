@@ -1,0 +1,445 @@
+// tests/kfz/machine.ci: the machine under the hosted kernel of tests/kfz (tests/kfz/hostroot.py). Each function
+// <module>_<name> stands for the extern <name> of src/<module>.ci; every other extern returns 0 and writes zeros.
+// Physical memory is the pool's window only, as rt/phys.c allows it to be written: frames are kept on first write,
+// and any access outside the pool, or a 64-bit access off its alignment, stops the test (rt/phys.c refuses both,
+// which faults the kernel). A byte never written reads as POISON, as a board's pool holds what the firmware left
+// there (rt/boot.c does not clear it; QEMU's RAM starts at zero, which would hide a read of a byte never written);
+// k0_kit.ci's kz_call finds any that reaches a page of the caller's. The registers are the ones src/user.ci names.
+// The serial line (COM1) is kept for the tests to read; the boot line is what a test sets; the PS/2 rings hold the
+// bytes a test gives, and the timer's tick is one a test may hold. PCI configuration and the USB controller are
+// tests/kfz/xhc.ci's. The kfz_ functions are the tests'.
+
+const U64 POOL_LO = 33554432;          // src/frames.ci POOL_BASE
+const U64 POOL_HI = 100663296;         // POOL_BASE + FRAMES * 4096: the gates' pool, which nothing here widens
+const I64 KEYS = 4096;                 // open addressing over frame numbers
+const I64 SLOTS = 1536;                // frames kept, 6 MiB: 12 banks of 128 (cint keeps an array to 65,536 elements)
+I64[4096] key;                         // the frame number held in each key slot, plus 1; 0 for none
+I64[4096] at_slot;
+U64[65536] m0;
+U64[65536] m1;
+U64[65536] m2;
+U64[65536] m3;
+U64[65536] m4;
+U64[65536] m5;
+U64[65536] m6;
+U64[65536] m7;
+U64[65536] m8;
+U64[65536] m9;
+U64[65536] m10;
+U64[65536] m11;
+I64 kept = 0;
+const U64 POISON = 0xDBDBDBDBDBDBDBDB;
+I64 refused = 0;                       // accesses outside the window (each also fails its test)
+
+U64[2048] regs;                        // 64 processes x 32 registers
+U64[8] fb;                             // src/user.ci fb_word: w, h, stride, ..., [5] the source
+U8[48] brand;
+I64 mhz = 0;
+I64 ticks = 0;
+U8[65536] image;                       // the loader module (src/user.ci initrd_*), a newc cpio (kfz_image)
+I64 image_n = 0;
+I64 exit_byte = -1;                    // the last byte the kernel wrote to port 0xF4 (rt/rt.h's exits) since kfz_said_clear
+U8[16384] said;                        // what the kernel wrote to COM1 since kfz_said_clear, to 16 KiB
+I64 said_n = 0;
+U8[256] line;                          // the boot line (src/bootarg.ci)
+I64 line_n = 0;
+
+// Word i of the kept frames (slot * 512 + word), and its store.
+U64 word(I64 i) {
+    I64 b = i / 65536;
+    I64 j = i % 65536;
+    if (b == 0) { return m0[j]; }
+    if (b == 1) { return m1[j]; }
+    if (b == 2) { return m2[j]; }
+    if (b == 3) { return m3[j]; }
+    if (b == 4) { return m4[j]; }
+    if (b == 5) { return m5[j]; }
+    if (b == 6) { return m6[j]; }
+    if (b == 7) { return m7[j]; }
+    if (b == 8) { return m8[j]; }
+    if (b == 9) { return m9[j]; }
+    if (b == 10) { return m10[j]; }
+    if (b == 11) { return m11[j]; }
+    assert(false);
+    return 0;
+}
+
+void set(I64 i, U64 v) {
+    I64 b = i / 65536;
+    I64 j = i % 65536;
+    if (b == 0) { m0[j] = v; }
+    if (b == 1) { m1[j] = v; }
+    if (b == 2) { m2[j] = v; }
+    if (b == 3) { m3[j] = v; }
+    if (b == 4) { m4[j] = v; }
+    if (b == 5) { m5[j] = v; }
+    if (b == 6) { m6[j] = v; }
+    if (b == 7) { m7[j] = v; }
+    if (b == 8) { m8[j] = v; }
+    if (b == 9) { m9[j] = v; }
+    if (b == 10) { m10[j] = v; }
+    if (b == 11) { m11[j] = v; }
+}
+
+// The slot of frame f, made when make (every byte POISON until written); -1 for a frame never written.
+I64 slot(U64 f, Bool make) {
+    I64 h = ((f * 2654435761) % (KEYS as U64)) as I64;
+    for k in 0..KEYS {
+        I64 i = (h + k) % KEYS;
+        if (key[i] == (f as I64) + 1) {
+            return at_slot[i];
+        }
+        if (key[i] == 0) {
+            if (!make) {
+                return -1;
+            }
+            assert(kept < SLOTS);      // the hosted machine is out of frames: raise SLOTS
+            key[i] = (f as I64) + 1;
+            at_slot[i] = kept;
+            for w in 0..512 {
+                set(kept * 512 + w, POISON);
+            }
+            kept += 1;
+            return kept - 1;
+        }
+    }
+    assert(false);
+    return -1;
+}
+
+Bool inside(U64 base, I64 n) {
+    if (base < POOL_LO || base > POOL_HI || (n as U64) > POOL_HI - base) {
+        refused += 1;
+        return false;
+    }
+    return true;
+}
+
+U8 get8(U64 a) {
+    I64 s = slot(a >> 12, false);
+    if (s < 0) {
+        return (POISON & 0xFF) as U8;
+    }
+    U64 w = word(s * 512 + ((a & 4095) >> 3) as I64);
+    return ((w >> (8 * (a & 7))) & 0xFF) as U8;
+}
+
+void put8(U64 a, U8 v) {
+    I64 s = slot(a >> 12, true);
+    I64 i = s * 512 + ((a & 4095) >> 3) as I64;
+    U64 sh = 8 * (a & 7);
+    U64 ff = 0xFF;
+    set(i, (word(i) & ~(ff << sh)) | ((v as U64) << sh));
+}
+
+export void phys_phys_read8(U64 base, inout U8[_] dst) {
+    assert(inside(base, len(dst)));
+    for k in 0..len(dst) {
+        dst[k] = get8(base + k as U64);
+    }
+}
+
+export void phys_phys_write8(U64 base, in U8[_] src) {
+    assert(inside(base, len(src)));
+    for k in 0..len(src) {
+        put8(base + k as U64, src[k]);
+    }
+}
+
+export void phys_phys_read64(U64 base, inout U64[_] dst) {
+    assert((base & 7) == 0 && inside(base, 8 * len(dst)));
+    for k in 0..len(dst) {
+        U64 a = base + (8 * k) as U64;
+        I64 s = slot(a >> 12, false);
+        dst[k] = POISON;
+        if (s >= 0) {
+            dst[k] = word(s * 512 + ((a & 4095) >> 3) as I64);
+        }
+    }
+}
+
+export void phys_phys_write64(U64 base, in U64[_] src) {
+    assert((base & 7) == 0 && inside(base, 8 * len(src)));
+    for k in 0..len(src) {
+        U64 a = base + (8 * k) as U64;
+        set(slot(a >> 12, true) * 512 + ((a & 4095) >> 3) as I64, src[k]);
+    }
+}
+
+export U64 user_user_reg(I64 pid, I64 i) {
+    return regs[32 * pid + i];
+}
+
+export void user_user_set_reg(I64 pid, I64 i, U64 v) {
+    regs[32 * pid + i] = v;
+}
+
+// G5: the display's rows (rt/fb.c). Each answers what the test set with kfz_fb_rows, and 0, rt's success, until one
+// does. fb_backing_add checks the frames it is handed are the pool's and keeps the count; fb_mode_commit takes the
+// new size into the fb words, as rt/fb.c does.
+I64[6] fb_says;                        // fb_prepare, fb_need, fb_finish, fb_backing_add, fb_mode_need, fb_mode_commit
+I64 fb_backed = 0;                     // pages fb_backing_add took
+
+export I64 user_fb_prepare() {
+    return fb_says[0];
+}
+
+export I64 user_fb_need() {
+    return fb_says[1];
+}
+
+export I64 user_fb_finish() {
+    return fb_says[2];
+}
+
+export I64 user_fb_backing_add(U64 pa, I64 pages) {
+    assert(pages > 0 && (pa & 4095) == 0 && inside(pa, 4096 * pages));
+    if (fb_says[3] != 0) {
+        return fb_says[3];
+    }
+    fb_backed += pages;
+    return 0;
+}
+
+export I64 user_fb_mode_need(U64 w, U64 h) {
+    _ = w;
+    _ = h;
+    return fb_says[4];
+}
+
+export I64 user_fb_mode_commit(U64 w, U64 h) {
+    if (fb_says[5] != 0) {
+        return fb_says[5];
+    }
+    fb[0] = w;
+    fb[1] = h;
+    fb[2] = 4 * w;
+    return 0;
+}
+
+export U64 user_fb_word(I64 i) {
+    if (i < 0 || i >= 8) {
+        return 0;
+    }
+    return fb[i];
+}
+
+// The loader module's bytes, set before the boot reads them (k0_kit.ci's kz_boot), or before fs.reset() scans them
+// again (tests/kfz/k3_image.ci).
+export void kfz_image(in U8[_] b) {
+    assert(len(b) <= 65536);
+    for k in 0..len(b) {
+        image[k] = b[k];
+    }
+    image_n = len(b);
+}
+
+export I64 user_initrd_size() {
+    return image_n;
+}
+
+export I64 user_initrd_read(I64 off, inout U8[_] dst) {
+    I64 n = 0;
+    for k in 0..len(dst) {
+        dst[k] = 0;
+        if (off >= 0 && off + k < image_n) {
+            dst[k] = image[off + k];
+            n += 1;
+        }
+    }
+    return n;
+}
+
+// The PS/2 rings: the bytes a test gave (kfz_ps2), each once, in order; none past them, as rt/ps2.c's empty ring.
+U8[512] ps2_bytes;    // keyboard (which 0) at 0, mouse (1) at 256
+I64[2] ps2_head;
+I64[2] ps2_n;
+
+export void kfz_ps2(I64 which, in U8[_] b) {
+    for k in 0..len(b) {
+        assert(ps2_n[which] < 256);
+        ps2_bytes[256 * which + (ps2_head[which] + ps2_n[which]) % 256] = b[k];
+        ps2_n[which] += 1;
+    }
+}
+
+export I64 user_ps2_get(I64 which) {
+    if (which < 0 || which > 1 || ps2_n[which] == 0) {
+        return -1;
+    }
+    I64 v = ps2_bytes[256 * which + ps2_head[which]] as I64;
+    ps2_head[which] = (ps2_head[which] + 1) % 256;
+    ps2_n[which] -= 1;
+    return v;
+}
+
+// The timer's tick: one more at each read, or, once a test set one (kfz_tick, RS-KR's repeats), that tick until it
+// sets the next; -1 lets it run on again.
+I64 tick_at = -1;
+
+export void kfz_tick(I64 t) {
+    tick_at = t;
+}
+
+export I64 trap_timer_ticks() {
+    if (tick_at >= 0) {
+        return tick_at;
+    }
+    ticks += 1;
+    return ticks;
+}
+
+export I64 proc_cpu_brand(inout U8[_] dst) {
+    for k in 0..len(dst) {
+        dst[k] = 0;
+        if (k < 48) {
+            dst[k] = brand[k];
+        }
+    }
+    return 48;
+}
+
+export I64 proc_cpu_mhz() {
+    return mhz;
+}
+
+// Every port reads as all ones, as one with nothing behind it does; COM1's line status so says it is ready.
+export U8 portio_port_in8(U16 port) {
+    _ = port;
+    return 0xFF;
+}
+
+export U16 portwide_port_in16(U16 port) {
+    _ = port;
+    return 0xFFFF;
+}
+
+export void portio_port_out8(U16 port, U8 v) {
+    if ((port as I64) == 0x3F8 && said_n < 16384) {
+        said[said_n] = v;
+        said_n += 1;
+    }
+    if ((port as I64) == 0xF4) {
+        exit_byte = v as I64;          // a boot would end here; the tests go on and look at what came before
+    }
+}
+
+export I64 bootarg_boot_cmdline(inout U8[_] dst) {
+    for k in 0..len(dst) {
+        dst[k] = 0;
+        if (k < line_n) {
+            dst[k] = line[k];
+        }
+    }
+    if (line_n < len(dst)) {
+        return line_n;
+    }
+    return len(dst);
+}
+
+// --- the tests' side ---
+
+export void kfz_fb(U64 w, U64 h, U64 source) {
+    for k in 0..8 {
+        fb[k] = 0;
+    }
+    fb[0] = w;
+    fb[1] = h;
+    fb[2] = 4 * w;
+    fb[5] = source;
+}
+
+export void kfz_cpu[n](in U8[n] b, I64 m) {
+    for k in 0..48 {
+        brand[k] = 0;
+        if (k < n) {
+            brand[k] = b[k];
+        }
+    }
+    mhz = m;
+}
+
+export void kfz_fb_rows(I64 prepare, I64 need, I64 finish, I64 backing, I64 mode_need, I64 commit) {
+    fb_says[0] = prepare;
+    fb_says[1] = need;
+    fb_says[2] = finish;
+    fb_says[3] = backing;
+    fb_says[4] = mode_need;
+    fb_says[5] = commit;
+}
+
+export I64 kfz_fb_backed() {
+    return fb_backed;
+}
+
+export I64 kfz_refused() {
+    return refused;
+}
+
+export I64 kfz_kept() {
+    return kept;
+}
+
+// The words of the frame at pa that read POISON: 512 for a frame never written.
+export I64 kfz_poisoned(U64 pa) {
+    I64 s = slot(pa >> 12, false);
+    if (s < 0) {
+        return 512;
+    }
+    I64 n = 0;
+    for w in 0..512 {
+        if (word(s * 512 + w) == POISON) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+export void kfz_cmdline[n](in U8[n] s) {
+    for k in 0..256 {
+        line[k] = 0;
+        if (k < n) {
+            line[k] = s[k];
+        }
+    }
+    line_n = n;
+}
+
+export void kfz_cmdline_clear() {
+    for k in 0..256 {
+        line[k] = 0;
+    }
+    line_n = 0;
+}
+
+// RS-CLK2: no authenticated journal stream, so src/rng.ci looks for rng.journal in the image (a test's replay).
+export I64 rng_journal_size(I64 kind) {
+    return -1;
+}
+
+export void kfz_said_clear() {
+    said_n = 0;
+    exit_byte = -1;
+}
+
+// The byte the kernel last wrote to port 0xF4 since kfz_said_clear (0x1F: RT_EXIT_PANIC), or -1 for none.
+export I64 kfz_exit() {
+    return exit_byte;
+}
+
+// True when the serial line since kfz_said_clear holds s.
+export Bool kfz_said[n](in U8[n] s) {
+    for i in 0..said_n {
+        if (i + n <= said_n) {
+            Bool same = true;
+            for k in 0..n {
+                same = same && said[i + k] == s[k];
+            }
+            if (same) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+// SPDX-License-Identifier: Apache-2.0

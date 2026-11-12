@@ -1,0 +1,575 @@
+// tests/kfz/k0_kit.ci: the kit the kfz tests share. tests/kfz/hostroot.py appends this file and the other
+// tests/kfz/k*.ci to a copy of src/proc.ci, so the code below is in the kernel's own module: it sees the process
+// table and calls syscall(pid), the dispatcher, as the scheduler does. A test process is made as start_as makes
+// one, without a program loaded: its own family, the console descriptors, and this map of its memory:
+//   KZ_RW    4 writable pages from 0x400000
+//   KZ_RO    1 read-only page after them
+//   KZ_GAP   the page after that, never mapped
+//   PATHS    1 writable page after the gap: the path strings a test passes, which the checks below skip
+//   KZ_LZ    1 writable page right after PATHS, and KZ_LZ_RO, 1 read-only page: promises in both modes
+//   KZ_TOP   1 writable page, the last below USER_HI
+// A mapped page is a promise (M-2) until something touches it: uvm.back gives it a zeroed frame out of the pool's
+// hold, at the kernel's touch inside a call (uvm.translate) as at ring 3's. In the backed mode (KZ_LAZY false) the kit
+// fills every page but KZ_LZ and KZ_LZ_RO with KZ_FILL before the first call, so a call's writes are found by what is
+// no longer KZ_FILL. In the promised mode (KZ_LAZY true: tests/kfz/run.sh's second pass, hostroot.py --lazy) a page
+// stays a promise until the kit writes a test's input into it, which fills it first; so a call's buffers are
+// untouched promises, as a fresh stack, heap or bss is. A page the call backed reads 0 where the call wrote nothing.
+
+const U64 KZ_RW = 0x400000;
+const U64 KZ_RO = 0x404000;
+const U64 KZ_GAP = 0x405000;
+const U64 KZ_TOP = 0x7FFFFFFFF000;        // uvm.USER_HI - 4096
+const U8 KZ_FILL = 0xA5;
+const U64 PATHS = 0x406000;
+const U64 KZ_LZ = 0x407000;
+const U64 KZ_LZ_RO = 0x408000;
+const Bool KZ_LAZY = false;                 // hostroot.py --lazy makes it true
+const U64 KZ_O_RDWR = 2;
+const U64 KZ_O_CREAT = 0x40;
+const U64 KZ_O_EXCL = 0x80;
+const U64 KZ_O_TRUNC = 0x200;
+const U64 KZ_O_DIRECTORY = 0x10000;
+const U64 KZ_O_NOFOLLOW = 0x20000;
+
+const I64 E_PERM = -1;
+const I64 E_NOENT = -2;
+const I64 E_SRCH = -3;
+const I64 E_BADF = -9;
+const I64 E_ACCES = -13;
+const I64 E_FAULT = -14;
+const I64 E_BUSY = -16;
+const I64 E_EXIST = -17;
+const I64 E_XDEV = -18;
+const I64 E_NOTDIR = -20;
+const I64 E_ISDIR = -21;
+const I64 E_INVAL = -22;
+const I64 E_NOTTY = -25;
+const I64 E_ROFS = -30;
+const I64 E_NOSYS = -38;
+const I64 E_NOTEMPTY = -39;
+const I64 E_LOOP = -40;
+
+I64 kz_next_vp = 100;
+Bool kz_ready = false;
+U64 kz_seed = 0;
+
+// The loader module the boot reads (AC-D4, exec keeps the mark): one program, /kzx, so execve loads through load()
+// as on a board; nothing runs it here. A newc cpio: kzx, then TRAILER!!!. kzx is an ELF64 of one PT_LOAD, read and
+// write, at KZ_RW over the kit's four pages there, so a process that ran execve still has them for its calls.
+const I64 KZ_X_BYTES = 120;
+
+void kz_hex8(inout U8[512] b, I64 at, I64 v) {
+    I64 x = v;
+    for i in 0..8 {
+        I64 d = x % 16;
+        if (d < 10) {
+            b[at + 7 - i] = (48 + d) as U8;
+        } else {
+            b[at + 7 - i] = (55 + d) as U8;
+        }
+        x = x / 16;
+    }
+}
+
+void kz_le(inout U8[512] b, I64 at, U64 v, I64 n) {
+    U64 x = v;
+    for i in 0..n {
+        b[at + i] = (x & 0xFF) as U8;
+        x = x >> 8;
+    }
+}
+
+void kz_bytes[m](inout U8[512] b, I64 at, in U8[m] s) {
+    for k in 0..m {
+        b[at + k] = s[k];
+    }
+}
+
+// A newc header at `at`: inode, mode, the data's bytes and the name's length with its NUL (the name follows it).
+// Where the data starts.
+I64 kz_cpio_head(inout U8[512] b, I64 at, I64 ino, I64 mode, I64 bytes, I64 ns) {
+    kz_bytes(b, at, "070701");
+    I64[13] f = [ino, mode, 0, 0, 1, 0, bytes, 0, 0, 0, 0, ns, 0];
+    for k in 0..13 {
+        kz_hex8(b, at + 6 + 8 * k, f[k]);
+    }
+    return cpio.data_at(at, ns);
+}
+
+void kz_image() {
+    U8[512] b;
+    for k in 0..512 {
+        b[k] = 0;
+    }
+    I64 x = kz_cpio_head(b, 0, 1, 0x81ED, KZ_X_BYTES, 4);
+    kz_bytes(b, 110, "kzx");
+    kz_le(b, x, 0x00010102464C457F, 8);                    // ELF, 64-bit, little-endian, version 1
+    kz_le(b, x + 16, 2, 2);                                  // ET_EXEC
+    kz_le(b, x + 18, 62, 2);                                 // x86-64
+    kz_le(b, x + 20, 1, 4);
+    kz_le(b, x + 24, KZ_RW + KZ_X_BYTES as U64, 8);         // the entry
+    kz_le(b, x + 32, 64, 8);                                 // the program headers, after this one
+    kz_le(b, x + 52, 64, 2);
+    kz_le(b, x + 54, 56, 2);
+    kz_le(b, x + 56, 1, 2);
+    kz_le(b, x + 64, 1, 4);                                  // PT_LOAD
+    kz_le(b, x + 68, 6, 4);                                  // read and write
+    kz_le(b, x + 80, KZ_RW, 8);
+    kz_le(b, x + 88, KZ_RW, 8);
+    kz_le(b, x + 96, KZ_X_BYTES as U64, 8);
+    kz_le(b, x + 104, 16384, 8);                             // the kit's four pages at KZ_RW
+    kz_le(b, x + 112, 4096, 8);
+    I64 t = cpio.next_at(0, 4, KZ_X_BYTES);
+    _ = kz_cpio_head(b, t, 0, 0, 0, 11);
+    kz_bytes(b, t + 110, "TRAILER!!!");
+    machine.kfz_image(b[0..cpio.next_at(t, 11, 0)]);
+}
+
+// The kernel's state as a boot leaves it before the first program: the file tree of the kit's image (kz_image), a
+// 1024 x 768 surface (so /dev/fb0 exists), and the processor the machine reports.
+void kz_boot() {
+    if (kz_ready) {
+        return;
+    }
+    kz_ready = true;
+    kz_image();
+    fs.init();
+    machine.kfz_fb(1024, 768, 1);
+    fs.set_fb(1024, 768, 4096);
+    machine.kfz_cpu("Hosted kfz CPU", 2400);
+}
+
+// A new process of its own family: uid, gid and ceiling as login sets them, then grant as its word. Its slot.
+I64 kz_proc(I64 uid, U64 ceil, U64 grant) {
+    kz_boot();
+    I64 p = -1;
+    for s in 1..uvm.PROCS {
+        if (p < 0 && state[s] == FREE) {
+            p = s;
+        }
+    }
+    assert(p > 0);                     // the table is full: a test leaks processes
+    kz_next_vp += 1;
+    state[p] = FREE;
+    vpid[p] = kz_next_vp;
+    set_comm(p, "kfz");
+    parent[p] = -1;
+    root[p] = p;
+    out_owner[p] = p;
+    forks[p] = 0;
+    window[p] = 0;
+    exec_at[p] = 0;
+    clock[p] = 0;
+    zero_at[p] = 0;
+    began[p] = 0;
+    job.start(p, p, kz_next_vp);
+    tile.reset(p);
+    assert(uvm.create(p) == 0);
+    for k in 0..4 {
+        assert(uvm.map(p, KZ_RW + (4096 * k) as U64, true, false) == 0);
+    }
+    assert(uvm.map(p, KZ_RO, false, false) == 0);
+    assert(uvm.map(p, PATHS, true, false) == 0);
+    assert(uvm.map(p, KZ_LZ, true, false) == 0);
+    assert(uvm.map(p, KZ_LZ_RO, false, false) == 0);
+    assert(uvm.map(p, KZ_TOP, true, false) == 0);
+    fs.proc_init(p);
+    fs.set_login(p, uid, uid, ceil);
+    if (grant != 0) {
+        fs.grant_add(p, grant);
+        if ((grant & fs.GRANT_KERN) != 0) {
+            fs.kern_set(p, true);
+        }
+    }
+    state[p] = READY;
+    kz_fill(p);
+    return p;
+}
+
+// A child of p in p's family, as the desk's fork makes one: a window of its own when p is the desk, else p's.
+I64 kz_child(I64 p, I64 uid) {
+    I64 c = kz_proc(uid, fs.GRANT_ALL, 0);
+    parent[c] = p;
+    root[c] = root[p];
+    exec_at[c] = exec_at[p];
+    if (p == tile.tiler_pid()) {
+        windows += 1;
+        window[c] = windows;
+    } else {
+        window[c] = window[p];
+    }
+    return c;
+}
+
+// The process ends as exit ends it (finish: its frames, descriptors, request and tile go), and its slot is free
+// again, as a parent's wait leaves it.
+void kz_end(I64 p) {
+    finish(p, 0, false);
+    state[p] = FREE;
+}
+
+const U64 NR_FORK = 57;
+
+// A child of p as fork makes one, in p's family, session and group, holding p's descriptors: its slot. (The pool's
+// books move for the child's own promises, so the call goes without kz_call's check.)
+I64 kz_fork(I64 p) {
+    I64 v = kz_call_raw(p, NR_FORK, 0, 0, 0, 0, 0, 0);
+    assert(v > 0);
+    I64 c = slot_of(p, v);
+    assert(c > 0 && parent[c] == p);
+    return c;
+}
+
+// G4 (the kernel read of PR 344): a process as the kernel makes one, forked (new_child) from the kit's parent, then
+// given uid, ceiling and grant as kz_proc gives them; its pages as the mode starts them. The kit's parent is a uid 0
+// process of its own family, made once a test. Its slot.
+I64 kz_init = -1;
+I64 kz_spawn(I64 uid, U64 ceil, U64 grant) {
+    if (kz_init < 0) {
+        kz_init = kz_proc(0, fs.GRANT_ALL, 0);
+    }
+    I64 c = kz_fork(kz_init);
+    fs.set_login(c, uid, uid, ceil);
+    if (grant != 0) {
+        fs.grant_add(c, grant);
+        if ((grant & fs.GRANT_KERN) != 0) {
+            fs.kern_set(c, true);
+        }
+    }
+    kz_fill(c);
+    return c;
+}
+
+// G4: c ends as exit ends it and its parent's wait4 takes it, so its slot is free for the next fork, as on a board.
+void kz_reap(I64 c) {
+    I64 pa = parent[c];
+    I64 v = vpid[c];
+    _ = kz_call_raw(c, 60, 7, 0, 0, 0, 0, 0);
+    assert(state[c] == ZOMBIE);
+    assert(kz_call(pa, 61, v as U64, 0, 0, 0, 0, 0) == v);
+    assert(state[c] == FREE);
+}
+
+// The desk: a uid 0 process that opened /dev/fb0 and became the tiler (FBIO_TILER), its descriptor in kz_fb_fd.
+I64 kz_fb_fd = -1;
+I64 kz_desk() {
+    I64 d = kz_proc(0, fs.GRANT_ALL, 0);
+    kz_put(d, KZ_RW, "/dev/fb0");
+    kz_fb_fd = kz_call(d, 2, KZ_RW, KZ_O_RDWR, 0, 0, 0, 0);
+    assert(kz_fb_fd >= 3);
+    assert(kz_call(d, 16, kz_fb_fd as U64, tile.FBIO_TILER, 0, 0, 0, 0) == 0);
+    assert(tile.tiler_pid() == d);
+    kz_fill(d);
+    return d;
+}
+
+// The call nr with its six words, as the CPU hands it over: its answer as the process reads RAX. A call that would
+// wait leaves the process WAITING; that reads as fs.WOULD_BLOCK here.
+// Every call is also held to the pool's books: a frame leaves the hold only for a page of the caller's that the call
+// backed, and the caller's count of frames does not move for it (the promise was counted when it was made). And no
+// byte of the pool that no one wrote reaches a page of the caller's (G2).
+I64 kz_call(I64 p, U64 nr, U64 a0, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5) {
+    I64 held = frames.held_count();
+    I64 backed = kz_backed_count(p);
+    I64 owned = uvm.frames_owned(p);
+    I64 r = kz_call_raw(p, nr, a0, a1, a2, a3, a4, a5);
+    assert(held - frames.held_count() == kz_backed_count(p) - backed);
+    assert(uvm.frames_owned(p) == owned);
+    assert(kz_poisoned(p) == 0);
+    return r;
+}
+
+I64 kz_call_raw(I64 p, U64 nr, U64 a0, U64 a1, U64 a2, U64 a3, U64 a4, U64 a5) {
+    user.user_set_reg(p, user.R_RAX, nr);
+    user.user_set_reg(p, user.R_RDI, a0);
+    user.user_set_reg(p, user.R_RSI, a1);
+    user.user_set_reg(p, user.R_RDX, a2);
+    user.user_set_reg(p, user.R_R10, a3);
+    user.user_set_reg(p, user.R_R8, a4);
+    user.user_set_reg(p, user.R_R9, a5);
+    syscall(p);
+    if (state[p] == WAITING) {
+        state[p] = READY;
+        return fs.WOULD_BLOCK;
+    }
+    return signed_of(user.user_reg(p, user.R_RAX));
+}
+
+// The bytes of s and a NUL at va in p's memory, written as the loader writes (read-only pages too).
+void kz_put[m](I64 p, U64 va, in U8[m] s) {
+    U8[257] b;
+    assert(m < 257);
+    for k in 0..m {
+        b[k] = s[k];
+    }
+    b[m] = 0;
+    kz_own(p, va, (m + 1) as U64);
+    assert(uvm.poke(p, va, b, m + 1, false) == m + 1);
+}
+
+// The 16 bytes at va in p's memory as words, little-endian.
+U64 kz_u64(I64 p, U64 va) {
+    U8[8] b;
+    assert(uvm.peek(p, va, b, 8) == 8);
+    U64 v = 0;
+    for k in 0..8 {
+        v = v | ((b[k] as U64) << ((8 * k) as U64));
+    }
+    return v;
+}
+
+void kz_set_u32(I64 p, U64 va, U64 v) {
+    U8[4] b;
+    for k in 0..4 {
+        b[k] = ((v >> ((8 * k) as U64)) & 0xFF) as U8;
+    }
+    kz_own(p, va, 4);
+    assert(uvm.poke(p, va, b, 4, false) == 4);
+}
+
+// The kit's pages of p: 0 to 3 KZ_RW's, 4 KZ_RO, 5 PATHS, 6 KZ_LZ, 7 KZ_LZ_RO, 8 KZ_TOP.
+const I64 KZ_PAGES = 9;
+U64 kz_page(I64 pg) {
+    if (pg < 4) { return KZ_RW + (4096 * pg) as U64; }
+    if (pg == 4) { return KZ_RO; }
+    if (pg == 5) { return PATHS; }
+    if (pg == 6) { return KZ_LZ; }
+    if (pg == 7) { return KZ_LZ_RO; }
+    return KZ_TOP;
+}
+
+// The kit's page that holds va, or -1.
+I64 kz_page_of(U64 va) {
+    for pg in 0..KZ_PAGES {
+        U64 b = kz_page(pg);
+        if (va >= b && va - b < 4096) {
+            return pg;
+        }
+    }
+    return -1;
+}
+
+Bool[576] kz_filled;                        // uvm.PROCS x KZ_PAGES: the kit filled the page with KZ_FILL
+
+// The frame of the page at va of p, its entry present at all four levels; 0 for none. Reads the tables only, so it
+// backs nothing (uvm.peek would).
+U64 kz_frame(I64 p, U64 va) {
+    U64 t = uvm.root(p);
+    U64[1] w;
+    for level in 0..4 {
+        U64 shift = (39 - 9 * level) as U64;
+        machine.phys_phys_read64(t + 8 * ((va >> shift) & 511), w);
+        if ((w[0] & 1) == 0) {
+            return 0;
+        }
+        t = w[0] & 0x000FFFFFFFFFF000;
+    }
+    return t;
+}
+
+Bool kz_backed(I64 p, U64 va) {
+    return kz_frame(p, va) != 0;
+}
+
+// G2: the 8-byte words of p's backed pages that read as the machine's POISON, bytes no one wrote (machine.ci).
+I64 kz_poisoned(I64 p) {
+    I64 n = 0;
+    for pg in 0..KZ_PAGES {
+        U64 f = kz_frame(p, kz_page(pg));
+        if (f != 0) {
+            n += machine.kfz_poisoned(f);
+        }
+    }
+    return n;
+}
+
+I64 kz_backed_count(I64 p) {
+    I64 n = 0;
+    for pg in 0..KZ_PAGES {
+        if (kz_backed(p, kz_page(pg))) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+// What a byte of p's page pg reads when no call wrote it: KZ_FILL where the kit filled the page, 0 where a call's
+// touch backed it.
+U8 kz_base(I64 p, I64 pg) {
+    if (kz_filled[KZ_PAGES * p + pg]) {
+        return KZ_FILL;
+    }
+    return 0;
+}
+
+// The pages under [va, va + n) of p filled with KZ_FILL, where the kit has not yet: a test's input goes on a page as
+// in the backed mode.
+void kz_own(I64 p, U64 va, U64 n) {
+    U8[4096] b;
+    for k in 0..4096 {
+        b[k] = KZ_FILL;
+    }
+    U64 a = va - (va & 4095);
+    while (a < va + n) {
+        I64 pg = kz_page_of(a);
+        if (pg >= 0 && !kz_filled[KZ_PAGES * p + pg]) {
+            assert(uvm.poke(p, a, b, 4096, false) == 4096);
+            kz_filled[KZ_PAGES * p + pg] = true;
+        }
+        a += 4096;
+    }
+}
+
+// The pages a bad pointer's string starts on (KZ_RW's last, KZ_RO, KZ_TOP) filled, so a string there runs to the
+// end of the map in either mode: a test that passes one as a path or a name owns these bytes as its input.
+void kz_strings(I64 p) {
+    kz_own(p, KZ_RO - 4096, 4096);
+    kz_own(p, KZ_RO, 4096);
+    kz_own(p, KZ_TOP, 4096);
+}
+
+// Every page of p as the mode starts it: backed and KZ_FILL, but KZ_LZ and KZ_LZ_RO; or, promised, each a promise
+// again (a page a call backed is unmapped and mapped anew, its frame back to the pool and a frame held for it).
+void kz_fill(I64 p) {
+    U8[4096] b;
+    for k in 0..4096 {
+        b[k] = KZ_FILL;
+    }
+    for pg in 0..KZ_PAGES {
+        U64 va = kz_page(pg);
+        kz_filled[KZ_PAGES * p + pg] = false;
+        if (KZ_LAZY || pg == 6 || pg == 7) {
+            if (kz_backed(p, va)) {
+                uvm.unmap_page(p, va);
+                assert(uvm.map(p, va, pg != 4 && pg != 7, false) == 0);
+            }
+        } else {
+            assert(uvm.poke(p, va, b, 4096, false) == 4096);
+            kz_filled[KZ_PAGES * p + pg] = true;
+        }
+    }
+}
+
+// True when no mapped byte of p outside [lo, hi) changed from what it read before the call (kz_base), none of the
+// read-only pages' did. A promise is kept; one a call backed reads 0 but where the call wrote. PATHS is not looked
+// at.
+Bool kz_kept_outside(I64 p, U64 lo, U64 hi) {
+    U8[4096] b;
+    for pg in 0..KZ_PAGES {
+        U64 va = kz_page(pg);
+        Bool ro = pg == 4 || pg == 7;
+        if (pg != 5 && kz_backed(p, va)) {
+            assert(uvm.peek(p, va, b, 4096) == 4096);
+            U8 base = kz_base(p, pg);
+            for k in 0..4096 {
+                U64 a = va + k as U64;
+                Bool inside = a >= lo && a < hi && !ro;
+                if (!inside && b[k] != base) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// lo + n, or 2^64 - 1 where that would wrap.
+U64 kz_upto(U64 lo, U64 n) {
+    if (lo > 0xFFFFFFFFFFFFFFFF - n) {
+        return 0xFFFFFFFFFFFFFFFF;
+    }
+    return lo + n;
+}
+
+// The count of bytes in [lo, hi) of p that no longer read as before the call (kz_base); unmapped bytes and
+// promises count as kept, and nothing is backed to look.
+I64 kz_changed(I64 p, U64 lo, U64 hi) {
+    I64 n = 0;
+    U8[1] b;
+    U64 a = lo;
+    while (a < hi) {
+        I64 pg = kz_page_of(a);
+        if (pg >= 0 && kz_backed(p, a - (a & 4095))) {
+            assert(uvm.peek(p, a, b, 1) == 1);
+            if (b[0] != kz_base(p, pg)) {
+                n += 1;
+            }
+        }
+        a += 1;
+    }
+    return n;
+}
+
+// xorshift64: the fuzz's one source, seeded by each test so a failure names its own case.
+U64 kz_rand() {
+    U64 x = kz_seed;
+    x = x ^ ((x & 0x0007FFFFFFFFFFFF) << 13);   // the bits a shift keeps: cint checks a shift that loses one
+    x = x ^ (x >> 7);
+    x = x ^ ((x & 0x00007FFFFFFFFFFF) << 17);
+    kz_seed = x;
+    return x;
+}
+
+// A pointer a fuzz case passes: an edge of the map, or a word at random.
+U64 kz_ptr() {
+    U64 r = kz_rand();
+    U64 pick = r % 16;
+    U64 off = (r >> 8) % 4096;
+    if (pick == 0) { return 0; }
+    if (pick == 1) { return KZ_RW + off; }
+    if (pick == 2) { return KZ_RO - 1 - off % 64; }       // near the end of the writable run
+    if (pick == 3) { return KZ_RO + off; }                 // read-only
+    if (pick == 4) { return KZ_GAP + off; }                // never mapped
+    if (pick == 5) { return KZ_GAP - 1 - off % 64; }       // the read-only page's end
+    if (pick == 6) { return KZ_TOP + off; }
+    if (pick == 7) { return 0x800000000000 - 1 - off % 128; }   // the last bytes below USER_HI
+    if (pick == 8) { return 0x800000000000 + off; }     // USER_HI and above
+    if (pick == 9) { return 0xFFFF800000000000 + off; } // kernel half
+    if (pick == 10) { return 0xFFFFFFFFFFFFFFFF - off % 64; }   // the end of the address space
+    if (pick == 11) { return 0x200000 - 1 - off % 64; } // just below USER_LO
+    if (pick == 12) { return KZ_RW; }
+    if (pick == 13) { return KZ_LZ + off; }                // a promise, writable
+    if (pick == 14) { return KZ_LZ_RO + off; }             // a promise, read-only
+    return kz_rand();
+}
+
+// A length a fuzz case passes: 0, near a bound, or any word.
+U64 kz_len(U64 bound) {
+    U64 r = kz_rand();
+    U64 pick = r % 10;
+    if (pick == 0) { return 0; }
+    if (pick == 1) { return bound; }
+    if (pick == 2) { return bound - 1; }
+    if (pick == 3) { return bound + 1; }
+    if (pick == 4) { return 1; }
+    if (pick == 5) { return 0xFFFFFFFFFFFFFFFF; }
+    if (pick == 6) { return 0x8000000000000000; }
+    if (pick == 7) { return (r >> 8) % 8192; }
+    return kz_rand();
+}
+
+// The pool's free frames that are not held for a promise: a call takes none for itself and leaves none taken (a
+// promise it backs was held already, so backing moves nothing here).
+I64 kz_pool() {
+    return frames.free_count() - frames.held_count();
+}
+
+test "kit: a test process calls getpid through the dispatcher and reads its own vpid" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    assert(kz_call(p, 39, 0, 0, 0, 0, 0, 0) == vpid[p]);
+    assert(kz_call(p, 999999, 0, 0, 0, 0, 0, 0) == E_NOSYS);
+    assert(kz_kept_outside(p, 0, 0));
+    assert(machine.kfz_refused() == 0);
+    kz_end(p);
+}
+
+test "kit: the desk becomes the tiler through /dev/fb0 and FBIO_TILER" {
+    I64 d = kz_desk();
+    assert(fs.uid_of(d) == 0);
+    I64 c = kz_child(d, 1000);
+    assert(window[c] > 0 && root[c] == root[d]);
+    kz_end(c);
+    kz_end(d);
+    assert(tile.tiler_pid() < 0);
+}
+// SPDX-License-Identifier: Apache-2.0

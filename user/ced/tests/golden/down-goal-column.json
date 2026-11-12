@@ -1,0 +1,27 @@
+{
+  "id": "down-goal-column",
+  "rules": [
+    "TEXT-4",
+    "KEY-3"
+  ],
+  "text": "abcd\nx\nabcd",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    3,
+    3
+  ],
+  "chunks": [
+    "1b5b42",
+    "1b5b42"
+  ],
+  "expect": {
+    "text": "abcd\nx\nabcd",
+    "sel": [
+      10,
+      10
+    ]
+  }
+}

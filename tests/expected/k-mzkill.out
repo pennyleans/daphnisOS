@@ -1,0 +1,8 @@
+mzkill: kill(SIGKILL) of an ended child not yet waited for (want 0) = 0
+mzkill: kill(SIGTERM) of it again (want 0) = 0
+mzkill: kill(0) of it, a probe (want 0) = 0
+mzkill: its status, waited: its own exit (want 7) = 7
+mzkill: kill(SIGKILL) of it once waited for (want -ESRCH -3) = -3
+mzkill: kill(SIGKILL) of a running child (want 0) = 0
+mzkill: its status, waited: the signal (want 1009, 1000 + SIGKILL) = 1009
+mzkill: done = 0

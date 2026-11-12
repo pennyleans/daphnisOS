@@ -1,0 +1,582 @@
+// user/ci/cish/arith.ci: $((...)) (CS-3), over the expression's bytes after parameter expansion and command
+// substitution. XCU 2.6.4 with C's precedence: , = op= ?: || && | ^ & == != < <= > >= << >> + - * / % ** and the
+// unary + - ! ~, decimal, 0x hex and 0 octal constants, and names read as variables (unset or empty is 0). Every
+// operation is checked I64 (gate 3): overflow, division by zero and a shift out of 0..63 are errors, not wraps, so
+// where ash wraps cish says `arithmetic: overflow`. / and % truncate toward zero as C does. The skipped side of
+// && || ?: is parsed, not evaluated.
+import user.ci.cish.vars;
+import user.ci.cish.msg;
+
+const I64 MAX = 9223372036854775807;
+const I64 MIN = -9223372036854775807 - 1;
+
+U8[4096] e;
+I64 n = 0;
+I64 at = 0;
+Bool bad = false;
+I64 skip = 0;   // > 0 while parsing a side that is not evaluated
+
+void fail2(in U8[_] why, in U8[_] what) {
+    if (!bad) {
+        msg.begin();
+        msg.text(b"arithmetic: ");
+        msg.text(why);
+        msg.text(what);
+        msg.send();
+    }
+    bad = true;
+}
+
+U8[1] nothing;
+
+void fail(in U8[_] why) { fail2(why, nothing[0..0]); }
+
+Bool space(U8 c) { return c == ' ' || c == '\t' || c == '\n'; }
+
+void blanks() {
+    while (at < n && space(e[at])) { at = at + 1; }
+}
+
+// The operator s at the cursor (after blanks), not the start of a longer one in `longer`; taken when it is.
+Bool take(in U8[_] s) {
+    blanks();
+    if (at + len(s) > n) { return false; }
+    for i in 0..len(s) {
+        if (e[at + i] != s[i]) { return false; }
+    }
+    at = at + len(s);
+    return true;
+}
+
+// Peeks the byte after blanks.
+U8 peek() {
+    blanks();
+    if (at < n) { return e[at]; }
+    return 0;
+}
+
+U8 peek2() {
+    if (at + 1 < n) { return e[at + 1]; }
+    return 0;
+}
+
+Bool name_start(U8 c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+Bool name_char(U8 c) { return name_start(c) || (c >= '0' && c <= '9'); }
+
+I64 digit(U8 c) {
+    if (c >= '0' && c <= '9') { return (c - '0') as I64; }
+    if (c >= 'a' && c <= 'f') { return (c - 'a') as I64 + 10; }
+    if (c >= 'A' && c <= 'F') { return (c - 'A') as I64 + 10; }
+    return 99;
+}
+
+I64 plus(I64 a, I64 b) {
+    if ((b > 0 && a > MAX - b) || (b < 0 && a < MIN - b)) {
+        if (skip == 0) { fail(b"overflow"); }
+        return 0;
+    }
+    return a + b;
+}
+
+I64 minus(I64 a, I64 b) {
+    if ((b < 0 && a > MAX + b) || (b > 0 && a < MIN + b)) {
+        if (skip == 0) { fail(b"overflow"); }
+        return 0;
+    }
+    return a - b;
+}
+
+U64 magnitude(I64 a) {
+    if (a == MIN) { return 9223372036854775808; }
+    if (a < 0) { return (0 - a) as U64; }
+    return a as U64;
+}
+
+I64 times(I64 a, I64 b) {
+    if (a == 0 || b == 0) { return 0; }
+    U64 ma = magnitude(a);
+    U64 mb = magnitude(b);
+    Bool neg = (a < 0) != (b < 0);
+    U64 cap = 9223372036854775807;
+    if (neg) { cap = cap + 1; }
+    if (ma > cap / mb) {
+        if (skip == 0) { fail(b"overflow"); }
+        return 0;
+    }
+    U64 m = ma * mb;
+    if (neg) {
+        if (m == cap) { return MIN; }
+        return 0 - (m as I64);
+    }
+    return m as I64;
+}
+
+// Division truncating toward zero; rem: the remainder instead.
+I64 quot(I64 a, I64 b, Bool rem) {
+    if (b == 0) {
+        if (skip == 0) { fail(b"division by zero"); }
+        return 0;
+    }
+    if (a == MIN && b == -1) {
+        if (rem) { return 0; }
+        if (skip == 0) { fail(b"overflow"); }
+        return 0;
+    }
+    I64 q = a / b;
+    if (q * b != a && ((a < 0) != (b < 0))) { q = q + 1; }
+    if (rem) { return a - q * b; }
+    return q;
+}
+
+I64 shl(I64 a, I64 b, Bool left) {
+    if (b < 0 || b > 63) {
+        if (skip == 0) { fail(b"shift out of range"); }
+        return 0;
+    }
+    if (left) {
+        I64 v = a;
+        for i in 0..b { v = times(v, 2); }
+        return v;
+    }
+    if (b == 63) {
+        if (a < 0) { return -1; }
+        return 0;
+    }
+    I64 p = 1;
+    for i in 0..b { p = p * 2; }
+    return a / p;   // floors: an arithmetic shift
+}
+
+// Text s as a constant (decimal, 0x hex, 0 octal, an optional sign), or an error.
+I64 constant(in U8[_] s) {
+    I64 i = 0;
+    while (i < len(s) && space(s[i])) { i = i + 1; }
+    Bool neg = false;
+    if (i < len(s) && (s[i] == '-' || s[i] == '+')) {
+        neg = s[i] == '-';
+        i = i + 1;
+    }
+    I64 base = 10;
+    if (i + 1 < len(s) && s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) {
+        base = 16;
+        i = i + 2;
+    } else if (i < len(s) && s[i] == '0') {
+        base = 8;
+    }
+    I64 first = i;
+    I64 v = 0;
+    while (i < len(s) && digit(s[i]) < base) {
+        I64 d = digit(s[i]);
+        if (neg) {
+            if (v < (MIN + d) / base) {
+                fail(b"overflow");
+                return 0;
+            }
+            v = v * base - d;
+        } else {
+            if (v > (MAX - d) / base) {
+                fail(b"overflow");
+                return 0;
+            }
+            v = v * base + d;
+        }
+        i = i + 1;
+    }
+    while (i < len(s) && space(s[i])) { i = i + 1; }
+    if (i == first || i != len(s)) {
+        fail2(b"bad number: ", s);
+        return 0;
+    }
+    return v;
+}
+
+// A name at the cursor: its bounds in e.
+I64 na = 0;
+I64 nb = 0;
+
+I64 value_of(I64 a, I64 b) {
+    I64 v = vars.lookup(e[a..b]);
+    if (!vars.has_value(v) || vars.value_len(v) == 0) { return 0; }
+    U8[64] t;
+    I64 k = vars.value_len(v);
+    if (k > 64) {
+        fail2(b"bad number in ", e[a..b]);
+        return 0;
+    }
+    for i in 0..k { t[i] = vars.value_at(v, i); }
+    return constant(t[0..k]);
+}
+
+void assign(I64 a, I64 b, I64 v) {
+    if (skip > 0 || bad) { return; }
+    U8[24] d;
+    U8[24] t;
+    I64 k = 0;
+    I64 x = v;
+    Bool neg = x < 0;
+    if (x == 0) {
+        d[0] = '0';
+        k = 1;
+    }
+    while (x != 0) {
+        I64 r = x % 10;
+        I64 q = x / 10;
+        if (r != 0 && x < 0) {   // / and % floor: step toward zero instead
+            r = r - 10;
+            q = q + 1;
+        }
+        if (r < 0) { r = 0 - r; }
+        d[k] = (r as U8) + 48;
+        k = k + 1;
+        x = q;
+    }
+    I64 m = 0;
+    if (neg) {
+        t[0] = '-';
+        m = 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        t[m] = d[k];
+        m = m + 1;
+    }
+    if (!vars.set(e[a..b], t[0..m])) { fail(b"variables full"); }
+}
+
+I64 atom() {
+    U8 c = peek();
+    if (c == '(') {
+        at = at + 1;
+        I64 v = comma();
+        if (!take(b")")) { fail(b"missing )"); }
+        return v;
+    }
+    if (c >= '0' && c <= '9') {
+        I64 a = at;
+        while (at < n && name_char(e[at])) { at = at + 1; }
+        return constant(e[a..at]);
+    }
+    if (name_start(c)) {
+        I64 a = at;
+        while (at < n && name_char(e[at])) { at = at + 1; }
+        na = a;
+        nb = at;
+        if ((peek() == '+' || peek() == '-') && peek2() == e[at]) {
+            fail(b"++ and -- are not supported");
+            return 0;
+        }
+        return value_of(a, nb);
+    }
+    fail(b"syntax error");
+    return 0;
+}
+
+I64 prefix() {
+    U8 c = peek();
+    if ((c == '+' || c == '-') && peek2() == c) {
+        fail(b"++ and -- are not supported");
+        return 0;
+    }
+    if (c == '+') {
+        at = at + 1;
+        return prefix();
+    }
+    if (c == '-') {
+        at = at + 1;
+        return minus(0, prefix());
+    }
+    if (c == '!') {
+        at = at + 1;
+        if (prefix() == 0) { return 1; }
+        return 0;
+    }
+    if (c == '~') {
+        at = at + 1;
+        return -1 - prefix();
+    }
+    return atom();
+}
+
+I64 exponent() {
+    I64 a = prefix();
+    if (peek() == '*' && peek2() == '*') {
+        at = at + 2;
+        I64 b = exponent();
+        if (b < 0) {
+            if (skip == 0) { fail(b"negative exponent"); }
+            return 0;
+        }
+        I64 v = 1;
+        I64 i = 0;
+        while (i < b && !bad) {
+            v = times(v, a);
+            i = i + 1;
+        }
+        return v;
+    }
+    return a;
+}
+
+I64 multiplicative() {
+    I64 a = exponent();
+    Bool going = true;
+    while (going && !bad) {
+        U8 c = peek();
+        if (c == '*' && peek2() != '*' && peek2() != '=') {
+            at = at + 1;
+            a = times(a, exponent());
+        } else if ((c == '/' || c == '%') && peek2() != '=') {
+            at = at + 1;
+            a = quot(a, exponent(), c == '%');
+        } else {
+            going = false;
+        }
+    }
+    return a;
+}
+
+I64 additive() {
+    I64 a = multiplicative();
+    Bool going = true;
+    while (going && !bad) {
+        U8 c = peek();
+        if ((c == '+' || c == '-') && peek2() != '=') {
+            at = at + 1;
+            I64 b = multiplicative();
+            if (c == '+') {
+                a = plus(a, b);
+            } else {
+                a = minus(a, b);
+            }
+        } else {
+            going = false;
+        }
+    }
+    return a;
+}
+
+I64 shifts() {
+    I64 a = additive();
+    Bool going = true;
+    while (going && !bad) {
+        U8 c = peek();
+        if ((c == '<' || c == '>') && peek2() == c && !(at + 2 < n && e[at + 2] == '=')) {
+            at = at + 2;
+            a = shl(a, additive(), c == '<');
+        } else {
+            going = false;
+        }
+    }
+    return a;
+}
+
+I64 relation() {
+    I64 a = shifts();
+    Bool going = true;
+    while (going && !bad) {
+        U8 c = peek();
+        if ((c == '<' || c == '>') && peek2() != c) {
+            Bool eq = peek2() == '=';
+            at = at + 1;
+            if (eq) { at = at + 1; }
+            I64 b = shifts();
+            Bool r = false;
+            if (c == '<' && eq) { r = a <= b; }
+            if (c == '<' && !eq) { r = a < b; }
+            if (c == '>' && eq) { r = a >= b; }
+            if (c == '>' && !eq) { r = a > b; }
+            a = 0;
+            if (r) { a = 1; }
+        } else {
+            going = false;
+        }
+    }
+    return a;
+}
+
+I64 equality() {
+    I64 a = relation();
+    Bool going = true;
+    while (going && !bad) {
+        U8 c = peek();
+        if ((c == '=' || c == '!') && peek2() == '=') {
+            at = at + 2;
+            I64 b = relation();
+            Bool r = a == b;
+            if (c == '!') { r = !r; }
+            a = 0;
+            if (r) { a = 1; }
+        } else {
+            going = false;
+        }
+    }
+    return a;
+}
+
+I64 band() {
+    I64 a = equality();
+    while (!bad && peek() == '&' && peek2() != '&' && peek2() != '=') {
+        at = at + 1;
+        a = a & equality();
+    }
+    return a;
+}
+
+I64 bxor() {
+    I64 a = band();
+    while (!bad && peek() == '^' && peek2() != '=') {
+        at = at + 1;
+        a = a ^ band();
+    }
+    return a;
+}
+
+I64 bor() {
+    I64 a = bxor();
+    while (!bad && peek() == '|' && peek2() != '|' && peek2() != '=') {
+        at = at + 1;
+        a = a | bxor();
+    }
+    return a;
+}
+
+I64 land() {
+    I64 a = bor();
+    while (!bad && peek() == '&' && peek2() == '&') {
+        at = at + 2;
+        if (a == 0) {
+            skip = skip + 1;
+            _ = bor();
+            skip = skip - 1;
+        } else {
+            I64 b = bor();
+            a = 0;
+            if (b != 0) { a = 1; }
+        }
+    }
+    return a;
+}
+
+I64 lor() {
+    I64 a = land();
+    if (a != 0 && peek() == '|' && peek2() == '|') { a = 1; }
+    while (!bad && peek() == '|' && peek2() == '|') {
+        at = at + 2;
+        if (a != 0) {
+            skip = skip + 1;
+            _ = land();
+            skip = skip - 1;
+        } else {
+            I64 b = land();
+            a = 0;
+            if (b != 0) { a = 1; }
+        }
+    }
+    return a;
+}
+
+I64 ternary() {
+    I64 c = lor();
+    if (bad || peek() != '?') { return c; }
+    at = at + 1;
+    I64 v = 0;
+    if (c != 0) {
+        v = comma();
+        if (!take(b":")) { fail(b"missing :"); }
+        skip = skip + 1;
+        _ = ternary();
+        skip = skip - 1;
+    } else {
+        skip = skip + 1;
+        _ = comma();
+        skip = skip - 1;
+        if (!take(b":")) { fail(b"missing :"); }
+        v = ternary();
+    }
+    return v;
+}
+
+// NAME op= ... at the cursor: the assignment's operator (0 for none), the cursor left after it.
+I64 assignment_op() {
+    blanks();
+    I64 save = at;
+    if (at >= n || !name_start(e[at])) { return 0; }
+    while (at < n && name_char(e[at])) { at = at + 1; }
+    na = save;
+    nb = at;
+    blanks();
+    if (at < n && e[at] == '=' && peek2() != '=') {
+        at = at + 1;
+        return '=' as I64;
+    }
+    if (at + 2 < n && (e[at] == '<' || e[at] == '>') && e[at + 1] == e[at] && e[at + 2] == '=') {
+        I64 k = e[at] as I64;
+        at = at + 3;
+        return k + 1000;
+    }
+    if (at + 1 < n && e[at + 1] == '=' && (e[at] == '+' || e[at] == '-' || e[at] == '*' || e[at] == '/'
+            || e[at] == '%' || e[at] == '&' || e[at] == '^' || e[at] == '|')) {
+        I64 k = e[at] as I64;
+        at = at + 2;
+        return k;
+    }
+    at = save;
+    return 0;
+}
+
+I64 assignment() {
+    I64 k = assignment_op();
+    if (k == 0) { return ternary(); }
+    I64 a = na;
+    I64 b = nb;
+    I64 r = assignment();
+    if (bad) { return 0; }
+    I64 v = r;
+    if (k != '=' as I64) {
+        I64 old = value_of(a, b);
+        if (k == '+' as I64) { v = plus(old, r); }
+        if (k == '-' as I64) { v = minus(old, r); }
+        if (k == '*' as I64) { v = times(old, r); }
+        if (k == '/' as I64) { v = quot(old, r, false); }
+        if (k == '%' as I64) { v = quot(old, r, true); }
+        if (k == '&' as I64) { v = old & r; }
+        if (k == '^' as I64) { v = old ^ r; }
+        if (k == '|' as I64) { v = old | r; }
+        if (k == '<' as I64 + 1000) { v = shl(old, r, true); }
+        if (k == '>' as I64 + 1000) { v = shl(old, r, false); }
+    }
+    assign(a, b, v);
+    return v;
+}
+
+I64 comma() {
+    I64 v = assignment();
+    while (!bad && peek() == ',') {
+        at = at + 1;
+        v = assignment();
+    }
+    return v;
+}
+
+// The value of expression s; ok() says whether it had no error (said).
+export I64 eval(in U8[_] s) {
+    bad = false;
+    skip = 0;
+    at = 0;
+    n = len(s);
+    if (n > 4096) {
+        fail(b"expression longer than 4096 bytes");
+        return 0;
+    }
+    for i in 0..n { e[i] = s[i]; }
+    blanks();
+    if (at == n) { return 0; }
+    I64 v = comma();
+    blanks();
+    if (!bad && at != n) { fail2(b"syntax error: ", e[at..n]); }
+    return v;
+}
+
+export Bool ok() { return !bad; }
+// SPDX-License-Identifier: Apache-2.0

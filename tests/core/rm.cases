@@ -1,0 +1,32 @@
+# tests/core/rm.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree. The tree is
+# compared after each case (CT-2).
+text.txt | - | -
+text.txt nonl.txt | - | -
+missing | - | -
+text.txt missing nonl.txt | - | -
+-f missing | - | -
+-f | - | -
+box | - | -
+-r box | - | -
+-R box | - | -
+-rf box missing | - | -
+-r box/in/deep | - | -
+-r box/ | - | -
+-r box/in/deep/c.txt | - | -
+. | - | -
+-r . | - | -
+-r .. | - | -
+-r box/.. | - | -
+-r box/in/. | - | -
+-i text.txt | yes.txt | -
+-i text.txt | empty | -
+-fi text.txt | empty | -
+-if text.txt | empty | -
+-ri box/in/deep | yes.txt | -
+-ri box/in/deep | empty | -
+-ri box | yes.txt | -
+-- text.txt | - | -
+-x text.txt | - | D-1
+-v text.txt | - | D-1
+ | - | D-3

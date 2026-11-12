@@ -1,0 +1,71 @@
+// src/kio.ci: byte buffers and hex output for the K5 kernel. Little endian, as every K5 byte
+// format is (docs/snapshot.md).
+
+import src.serial;
+import src.text;
+
+// Writes v little endian in `width` bytes at buf[off ..] (two's complement if v is negative); returns off + width.
+export I64 put[n](inout U8[n] buf, I64 off, I64 v, I64 width) {
+    I64 x = v;
+    for k in 0..width {
+        buf[off + k] = (x % 256) as U8;
+        x = x / 256;
+    }
+    return off + width;
+}
+
+// Writes the 64 bits of v little endian at buf[off ..]; returns off + 8.
+export I64 put_u64[n](inout U8[n] buf, I64 off, U64 v) {
+    for k in 0..8 {
+        buf[off + k] = (v >> (8 * k)) as% U8;
+    }
+    return off + 8;
+}
+
+// The 64 bits stored by put_u64 at buf[off ..].
+export U64 get_u64[n](in U8[n] buf, I64 off) {
+    U64 x = 0;
+    I64 k = 8;
+    while (k > 0) {
+        k -= 1;
+        x = (x <<% 8) | (buf[off + k] as U64);
+    }
+    return x;
+}
+
+// The v stored by put at buf[off ..] (the bits of a negative v come back as the negative v: a task may send any
+// 64-bit value, and a snapshot must restore it).
+export I64 get[n](in U8[n] buf, I64 off, I64 width) {
+    U64 x = 0;
+    I64 k = width;
+    while (k > 0) {
+        k -= 1;
+        x = (x <<% 8) | (buf[off + k] as U64);
+    }
+    return x as% I64;
+}
+
+// Copies the 32 bytes of src (from src_off) to buf at off; returns off + 32.
+export I64 put_hash[n, m](inout U8[n] buf, I64 off, in U8[m] src, I64 src_off) {
+    for i in 0..32 {
+        buf[off + i] = src[src_off + i];
+    }
+    return off + 32;
+}
+
+// Writes b[0..nbytes) to the serial port as lowercase hex.
+export void hex_out[n](in U8[n] b, I64 nbytes) {
+    for i in 0..nbytes {
+        serial.serial_putc(text.hex_digit(b[i] >> 4));
+        serial.serial_putc(text.hex_digit(b[i]));
+    }
+}
+
+// Writes the 32 bytes of h[32 * slot ..] as hex.
+export void hex_hash[n](in U8[n] h, I64 slot) {
+    for i in 0..32 {
+        serial.serial_putc(text.hex_digit(h[32 * slot + i] >> 4));
+        serial.serial_putc(text.hex_digit(h[32 * slot + i]));
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

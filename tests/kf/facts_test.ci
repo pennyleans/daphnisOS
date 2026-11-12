@@ -1,0 +1,420 @@
+// tests/kf/facts_test.ci: KF-3a (docs/specs/2026-11-11-kf-facts.md section 2), hosted: the records of src/facts.ci
+// and the share of one a short buffer gets.
+
+import src.facts;
+
+test "the processor's record: the brand in 48 bytes, the count and the base speed after it" {
+    U8[48] brand;
+    for i in 0..48 {
+        brand[i] = 0;
+    }
+    brand[0] = 'Q';
+    brand[1] = 'E';
+    brand[2] = 'M';
+    brand[3] = 'U';
+    U8[80] b;
+    for i in 0..80 {
+        b[i] = 0xAA;
+    }
+    facts.cpu(b, brand, 1, 3600, 0x0102030405060708, 259);
+    assert(facts.CPU_BYTES == 80);
+    assert(b[0] == 'Q' && b[3] == 'U');
+    for i in 4..48 {
+        assert(b[i] == 0);
+    }
+    assert(b[48] == 1);
+    for i in 49..56 {
+        assert(b[i] == 0);
+    }
+    assert(b[56] == 0x10 && b[57] == 0x0E);            // 3600 MHz, little-endian
+    for i in 58..64 {
+        assert(b[i] == 0);
+    }
+    for i in 0..8 {
+        assert(b[64 + i] == (8 - i) as U8);            // KF-R1: busy ticks at 64, little-endian
+    }
+    assert(b[72] == 3 && b[73] == 1);                  // idle ticks at 72: 259
+    for i in 74..80 {
+        assert(b[i] == 0);
+    }
+}
+
+test "bytes after the brand's first NUL never reach the record" {
+    U8[48] brand;
+    for i in 0..48 {
+        brand[i] = 'x';
+    }
+    brand[5] = 0;
+    U8[80] b;
+    facts.cpu(b, brand, 1, 0, 0, 0);
+    for i in 0..5 {
+        assert(b[i] == 'x');
+    }
+    for i in 5..48 {
+        assert(b[i] == 0);
+    }
+}
+
+test "a brand of 48 bytes with no NUL is kept whole" {
+    U8[48] brand;
+    for i in 0..48 {
+        brand[i] = 'y';
+    }
+    U8[80] b;
+    facts.cpu(b, brand, 4, 0, 0, 0);
+    assert(b[47] == 'y' && b[48] == 4 && b[56] == 0);
+}
+
+test "a buffer shorter than the record gets its length; any longer one, the record's" {
+    assert(facts.share(56, 0) == 0);
+    assert(facts.share(56, 1) == 1);
+    assert(facts.share(56, 55) == 55);
+    assert(facts.share(56, 56) == 56);
+    assert(facts.share(56, 57) == 56);
+    assert(facts.share(56, 0xFFFFFFFFFFFFFFFF) == 56);
+}
+
+// Word at byte offset at of b.
+U64 word_at(in U8[96] b, I64 at) {
+    U64 v = 0;
+    for i in 0..8 {
+        v = v | ((b[at + i] as U64) << (8 * i) as U64);
+    }
+    return v;
+}
+
+test "who sees a process: its own uid, uid 0, a holder of ring 0 or a Parent's account; a Child nothing else" {
+    assert(facts.sees(1000, false, false, 1000));         // one's own
+    assert(!facts.sees(1000, false, false, 1001));        // a Child does not see another account's
+    assert(!facts.sees(1000, false, false, 0));           // nor uid 0's (the desk's)
+    assert(facts.sees(0, false, false, 1000));            // uid 0 sees every one
+    assert(facts.sees(0, false, false, 0));
+    assert(facts.sees(1000, true, false, 1001));          // ring 0, after the approval prompt
+    assert(facts.sees(1000, true, false, 0));
+    assert(facts.sees(1002, false, true, 1000));          // DN-69 item 5: a Parent sees a Child's
+    assert(facts.sees(1002, false, true, 0));             // and the desk's
+    assert(facts.sees(1002, false, true, 1002));
+    assert(!facts.sees(1, false, false, 0));
+    assert(!facts.sees(65535, false, false, 1));
+}
+
+test "the rule over every pair of a small range: seen exactly when equal, or the caller is 0, ring 0 or a Parent" {
+    for c in 0..40 {
+        for s in 0..40 {
+            assert(facts.sees(c, false, false, s) == (c == s || c == 0));
+            assert(facts.sees(c, true, false, s));
+            assert(facts.sees(c, false, true, s));
+            assert(facts.sees(c, true, true, s));
+        }
+    }
+}
+
+test "kill's answer (edition 14): -ESRCH for a process the caller may not see, -EPERM for one it sees and may not signal" {
+    assert(facts.kill_answer(1000, false, false, 1000) == 0);       // one's own
+    assert(facts.kill_answer(1001, false, false, 1000) == -3);      // a Child and another account's: as no process
+    assert(facts.kill_answer(1001, false, false, 0) == -3);         // nor the desk's
+    assert(facts.kill_answer(1002, false, true, 1000) == -1);       // a Parent sees a Child's: Linux's -EPERM
+    assert(facts.kill_answer(1002, false, true, 0) == -1);
+    assert(facts.kill_answer(1002, false, true, 1002) == 0);
+    assert(facts.kill_answer(0, false, false, 1000) == 0);          // uid 0 signals any
+    assert(facts.kill_answer(1000, true, false, 1001) == 0);        // ring 0 too
+    assert(facts.kill_answer(1000, true, true, 0) == 0);
+}
+
+test "kill's answer over a small range: 0 when equal, uid 0 or ring 0; else -EPERM for a Parent, -ESRCH for a Child" {
+    for c in 0..40 {
+        for s in 0..40 {
+            I64 want = -3;
+            if (c == s || c == 0) {
+                want = 0;
+            }
+            assert(facts.kill_answer(c, false, false, s) == want);
+            assert(facts.kill_answer(c, true, false, s) == 0);
+            assert(facts.kill_answer(c, true, true, s) == 0);
+            I64 parent = -1;
+            if (c == s || c == 0) {
+                parent = 0;
+            }
+            assert(facts.kill_answer(c, false, true, s) == parent);
+            assert((facts.kill_answer(c, false, false, s) == -3) == !facts.sees(c, false, false, s));
+        }
+    }
+}
+
+test "the Parent record: set by the login alone, taken by a fork's child, none for a process the kernel starts" {
+    for k in 0..64 {
+        facts.set_parent(k, false);
+    }
+    assert(!facts.is_parent(3));
+    facts.set_parent(3, true);                            // the desk's login of a Parent's session in slot 3
+    assert(facts.is_parent(3));
+    facts.role_fork(9, 3);                                // the session's shell forks into slot 9
+    assert(facts.is_parent(9));
+    facts.role_fork(10, 4);                               // a Child's fork, into a slot a Parent's process held
+    facts.set_parent(10, true);
+    facts.role_fork(10, 4);
+    assert(!facts.is_parent(10));
+    facts.set_parent(9, false);                           // the slot reused by a process the kernel starts
+    assert(!facts.is_parent(9));
+    assert(facts.is_parent(3));
+    facts.set_parent(-1, true);                           // slots off the table change nothing and read as none
+    facts.set_parent(64, true);
+    facts.role_fork(64, 3);
+    facts.role_fork(5, 64);
+    assert(!facts.is_parent(-1) && !facts.is_parent(64) && !facts.is_parent(5));
+    for k in 0..64 {
+        assert(facts.is_parent(k) == (k == 3));
+    }
+}
+
+test "login's Parent word lies past every grant bit and past ring 0" {
+    assert((facts.LOGIN_PARENT & 0xFFFFFFFF) == 0);
+    assert(facts.LOGIN_PARENT == 0x100000000);
+}
+
+test "a process's record: each word in its place, the comm NUL padded" {
+    U8[16] name;
+    for i in 0..16 {
+        name[i] = 'z';
+    }
+    name[0] = 's';
+    name[1] = 'h';
+    name[2] = 0;
+    U8[96] b;
+    for i in 0..96 {
+        b[i] = 0xAA;
+    }
+    facts.process(b, 7, 3, 1000, facts.S_WAITING, name, 42, 15360, 123456789, 5, 1767225600, 6001);
+    assert(facts.PROCESS_BYTES == 96);
+    assert(word_at(b, 0) == 7 && word_at(b, 8) == 3 && word_at(b, 16) == 1000 && word_at(b, 24) == 2);
+    assert(b[32] == 's' && b[33] == 'h');
+    for i in 34..48 {
+        assert(b[i] == 0);
+    }
+    assert(word_at(b, 48) == 42 && word_at(b, 56) == 15360 && word_at(b, 64) == 123456789);
+    assert(word_at(b, 72) == 5 && word_at(b, 80) == 1767225600);
+    assert(word_at(b, 88) == 6001);                    // KF-R1: CPU time in ticks, after the 88 bytes of KF-3b
+}
+
+test "the empty record is 96 zero bytes, whatever the buffer held" {
+    U8[96] b;
+    for i in 0..96 {
+        b[i] = 0x5A;
+    }
+    facts.empty(b);
+    for i in 0..96 {
+        assert(b[i] == 0);
+    }
+    assert(facts.S_EMPTY == 0);
+}
+
+// True when the 48-byte name at b[at..) is exactly text, NUL padded.
+Bool named(in U8[_] b, I64 at, in U8[_] text) {
+    for i in 0..48 {
+        U8 want = 0;
+        if (i < len(text)) {
+            want = text[i];
+        }
+        if (b[at + i] != want) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test "the display's name: the adapters known by name, a known vendor's Graphics, an unknown vendor's Display, none" {
+    U8[48] nm;
+    facts.display_name(nm, 0x11111234);
+    assert(named(nm, 0, "QEMU Standard VGA"));
+    facts.display_name(nm, 0x1B8110DE);
+    assert(named(nm, 0, "NVIDIA GeForce GTX 1070"));
+    facts.display_name(nm, 0x59178086);
+    assert(named(nm, 0, "Intel Graphics"));
+    facts.display_name(nm, 0x000110DE);
+    assert(named(nm, 0, "NVIDIA Graphics"));
+    facts.display_name(nm, 0x67DF1002);
+    assert(named(nm, 0, "AMD Graphics"));
+    facts.display_name(nm, 0x00011234);
+    assert(named(nm, 0, "QEMU Graphics"));
+    facts.display_name(nm, 0x12345678);
+    assert(named(nm, 0, "Display"));
+    for i in 0..48 {
+        nm[i] = 0x7F;
+    }
+    facts.display_name(nm, 0);
+    assert(named(nm, 0, ""));
+}
+
+test "the display's record: IDs, class word, name, mode and source in their places" {
+    U8[104] b;
+    for i in 0..104 {
+        b[i] = 0xAA;
+    }
+    facts.display(b, 0x11111234, 0x030000, 1920, 1080, 32, facts.SRC_BOCHS);
+    assert(facts.DISPLAY_BYTES == 104);
+    assert(b[0] == 0x34 && b[1] == 0x12 && b[2] == 0);         // vendor 0x1234
+    assert(b[8] == 0x11 && b[9] == 0x11 && b[10] == 0);        // device 0x1111
+    assert(b[16] == 0 && b[17] == 0 && b[18] == 3 && b[19] == 0);   // class word 0x030000
+    assert(named(b, 24, "QEMU Standard VGA"));
+    assert(b[72] == 0x80 && b[73] == 0x07);                    // 1920
+    assert(b[80] == 0x38 && b[81] == 0x04);                    // 1080
+    assert(b[88] == 32 && b[96] == 2);
+    for i in 97..104 {
+        assert(b[i] == 0);
+    }
+}
+
+test "no display function and no surface: every word 0" {
+    U8[104] b;
+    for i in 0..104 {
+        b[i] = 0x33;
+    }
+    facts.display(b, 0, 0, 0, 0, 0, facts.SRC_NONE);
+    for i in 0..104 {
+        assert(b[i] == 0);
+    }
+}
+
+test "the disk's record: the name in 40 bytes, then capacity, bytes read and bytes written" {
+    U8[64] b;
+    for i in 0..64 {
+        b[i] = 0xAA;
+    }
+    facts.disk(b, 4194304, 8192, 4096);
+    assert(facts.DISK_BYTES == 64);
+    assert(b[0] == 'D' && b[6] == 's' && b[7] == ' ' && b[8] == 'D' && b[11] == 'k');
+    for i in 12..40 {
+        assert(b[i] == 0);
+    }
+    assert(b[40] == 0 && b[41] == 0 && b[42] == 0x40 && b[43] == 0);   // 4 MiB
+    assert(b[48] == 0 && b[49] == 0x20);                              // 8192
+    assert(b[56] == 0 && b[57] == 0x10);                              // 4096
+    for i in 58..64 {
+        assert(b[i] == 0);
+    }
+}
+
+test "the disk's counts are whole words" {
+    U8[64] b;
+    facts.disk(b, 0x7FFFFFFFFFFF, 0x123456789AB, 0xFEDCBA98765);
+    U64 cap = 0;
+    for i in 0..8 {
+        cap = cap | ((b[40 + i] as U64) << (8 * i) as U64);
+    }
+    assert(cap == 0x7FFFFFFFFFFF);
+}
+
+// KF-3c: the network's record.
+U64 word64(in U8[64] b, I64 at) {
+    U64 v = 0;
+    for i in 0..8 {
+        v = v | ((b[at + i] as U64) << (8 * i) as U64);
+    }
+    return v;
+}
+
+test "the network's record: link, the MAC padded, four addresses in network order, source, lease and byte counts" {
+    U8[6] mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    U8[64] b;
+    for i in 0..64 {
+        b[i] = 0xAA;
+    }
+    facts.network(b, true, mac, 0x0A00020F, 0xFFFFFF00, 0x0A000202, 0x0A000203, facts.NET_DHCP, 86399,
+                  0x0102030405, 70000);
+    assert(facts.NETWORK == 3 && facts.NET_BYTES == 64);
+    assert(word64(b, 0) == 1);
+    for i in 0..6 {
+        assert(b[8 + i] == mac[i]);
+    }
+    assert(b[14] == 0 && b[15] == 0);
+    assert(b[16] == 10 && b[17] == 0 && b[18] == 2 && b[19] == 15);       // 10.0.2.15, the first octet first
+    assert(b[20] == 255 && b[21] == 255 && b[22] == 255 && b[23] == 0);   // 255.255.255.0
+    assert(b[24] == 10 && b[25] == 0 && b[26] == 2 && b[27] == 2);
+    assert(b[28] == 10 && b[29] == 0 && b[30] == 2 && b[31] == 3);
+    assert(word64(b, 32) == 1 && word64(b, 40) == 86399);
+    assert(word64(b, 48) == 0x0102030405 && word64(b, 56) == 70000);
+}
+
+test "a network with no address: link 0, the address words 0, nothing left of what the buffer held" {
+    U8[6] mac = [2, 0, 0, 0, 0, 1];
+    U8[64] b;
+    for i in 0..64 {
+        b[i] = 0x5A;
+    }
+    facts.network(b, false, mac, 0, 0, 0, 0, facts.NET_BOOT, 0, 0, 0);
+    assert(word64(b, 0) == 0);
+    for i in 14..32 {
+        assert(b[i] == 0);
+    }
+    assert(word64(b, 32) == 2);
+    for i in 40..64 {
+        assert(b[i] == 0);
+    }
+    assert(facts.NET_FIXED == 0 && facts.NET_DHCP == 1 && facts.NET_BOOT == 2);
+}
+
+test "an address word's bits above 31 never reach the record" {
+    U8[6] mac = [0, 0, 0, 0, 0, 0];
+    U8[64] b;
+    facts.network(b, true, mac, 0xFFFFFFFFC0A80001, 0x1FFFFFFF0, 0, 0, facts.NET_FIXED, 0, 0, 0);
+    assert(b[16] == 192 && b[17] == 168 && b[18] == 0 && b[19] == 1);
+    assert(b[20] == 0xFF && b[21] == 0xFF && b[22] == 0xFF && b[23] == 0xF0);
+    assert(b[24] == 0 && b[28] == 0);
+}
+
+// KF-R1: the tick ledger. One test, in order, since the ledger is the module's state and only grows.
+test "the tick ledger: ticks in a turn go to that slot and to busy, ticks in a halt to idle, none twice" {
+    assert(facts.busy_ticks() == 0 && facts.idle_ticks() == 0);
+    for s in 0..64 {
+        assert(facts.ran_ticks(s) == 0);
+    }
+    // ticks before the first window belong to no one
+    facts.tick_mark(500);
+    facts.tick_ran(3, 500);                        // a turn that ended in a system call: no tick came
+    assert(facts.busy_ticks() == 0 && facts.ran_ticks(3) == 0);
+    facts.tick_mark(500);
+    facts.tick_ran(3, 501);                        // a turn the timer ended
+    assert(facts.busy_ticks() == 1 && facts.ran_ticks(3) == 1 && facts.idle_ticks() == 0);
+    // the kernel works with interrupts off; then the scheduler halts for 7 ticks
+    facts.tick_mark(501);
+    facts.tick_idle(508);
+    assert(facts.idle_ticks() == 7 && facts.busy_ticks() == 1);
+    // a close with no mark of its own counts nothing again: the mark moved when the last window closed
+    facts.tick_idle(508);
+    facts.tick_ran(3, 508);
+    assert(facts.idle_ticks() == 7 && facts.busy_ticks() == 1 && facts.ran_ticks(3) == 1);
+    // ticks between windows (none can come with interrupts off) are dropped by the next mark, not charged
+    facts.tick_mark(520);
+    facts.tick_ran(4, 522);
+    assert(facts.busy_ticks() == 3 && facts.ran_ticks(4) == 2 && facts.ran_ticks(3) == 1);
+    // a count that went back counts nothing and does not take time away
+    facts.tick_mark(600);
+    facts.tick_ran(4, 590);
+    facts.tick_mark(600);
+    facts.tick_idle(590);
+    assert(facts.busy_ticks() == 3 && facts.idle_ticks() == 7 && facts.ran_ticks(4) == 2);
+    // every tick is in exactly one sum: busy is the slots' sum while no slot was made fresh
+    I64 total = 0;
+    for s in 0..64 {
+        total += facts.ran_ticks(s);
+    }
+    assert(total == facts.busy_ticks());
+    // a new process in a slot starts at 0; the machine's busy time keeps what the old one used
+    facts.tick_fresh(4);
+    assert(facts.ran_ticks(4) == 0 && facts.ran_ticks(3) == 1 && facts.busy_ticks() == 3);
+    // the first and last slots, and slots outside the table: busy still counts, no slot does, nothing faults
+    facts.tick_mark(700);
+    facts.tick_ran(0, 701);
+    facts.tick_mark(701);
+    facts.tick_ran(63, 703);
+    assert(facts.ran_ticks(0) == 1 && facts.ran_ticks(63) == 2 && facts.busy_ticks() == 6);
+    facts.tick_mark(703);
+    facts.tick_ran(64, 704);
+    facts.tick_mark(704);
+    facts.tick_ran(-1, 705);
+    facts.tick_fresh(64);
+    facts.tick_fresh(-1);
+    assert(facts.busy_ticks() == 8 && facts.ran_ticks(64) == 0 && facts.ran_ticks(-1) == 0);
+    assert(facts.ran_ticks(0) == 1 && facts.ran_ticks(63) == 2 && facts.ran_ticks(3) == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

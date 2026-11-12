@@ -1,0 +1,170 @@
+// tests/am/bartitle_test.ci: RS-TTL (user/ci/kit/bartitle.ci; docs/specs/2026-11-11-rs-ttl-bartitle.md): a terminal
+// program's title as the desk keeps it (control characters dropped, UTF-8 kept whole, a stray byte as U+FFFD, at most
+// 255 bytes cut at a character's end), the cut for a smaller buffer, the window bar's parts, and a title kept out of
+// the desk's own log line's fields. Frame 40's Read and Edit bars and Console's as the worked cases. Run by check.sh.
+import user.ci.kit.bartitle;
+
+U8[300] o;
+U8[300] big;
+
+Bool kept(in U8[_] t, in U8[_] want) {
+    I64 n = bartitle.take(t, len(t), o);
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (o[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+// big[0..n] holds n - len(tail) bytes of 'a', then tail.
+I64 pad(I64 n, in U8[_] tail) {
+    I64 a = n - len(tail);
+    for k in 0..a { big[k] = 'a'; }
+    for k in 0..len(tail) { big[a + k] = tail[k]; }
+    return n;
+}
+
+test "a title is kept as text: ASCII and UTF-8 whole, control characters dropped" {
+    assert(kept(b"notes.txt", b"notes.txt"));
+    assert(kept(b"LICENSE", b"LICENSE"));
+    assert(kept(b"/home/sam/Documents", b"/home/sam/Documents"));
+    assert(kept(b"r\xc3\xa9sum\xc3\xa9.txt", b"r\xc3\xa9sum\xc3\xa9.txt"));                     // U+00E9, 2 bytes
+    assert(kept(b"\xe6\x97\xa5\xe8\xa8\x98.md", b"\xe6\x97\xa5\xe8\xa8\x98.md"));               // 3 bytes
+    assert(kept(b"\xf0\x9f\x93\x84 a", b"\xf0\x9f\x93\x84 a"));                                 // U+1F4C4, 4 bytes
+    assert(kept(b"a\tb\nc\x1bd\x07e\x7ff", b"abcdef"));                                         // C0 and DEL
+    assert(kept(b"a\xc2\x80b\xc2\x9bc\xc2\x9fd", b"abcd"));                                     // C1: U+0080 to U+009F
+    assert(kept(b"\xc2\xa0x", b"\xc2\xa0x"));                                                   // U+00A0 is text
+    assert(kept(b"a\xe2\x80\xa8b\xe2\x80\xa9c", b"abc"));                                       // U+2028, U+2029
+    assert(kept(b"\x0b\x0c\x1c\x1d\x1e\xc2\x85x", b"x"));                                       // splitlines' others
+    assert(kept(b"\xe2\x80\xa7\xe2\x80\xaa", b"\xe2\x80\xa7\xe2\x80\xaa"));                     // U+2027, U+202A
+    assert(kept(b"", b"") && kept(b"\x01\x02", b""));
+}
+
+test "a byte that starts no whole character is kept as U+FFFD, one each" {
+    assert(kept(b"a\x80b", b"a\xef\xbf\xbdb"));                                                 // stray continuation
+    assert(kept(b"\xc0\xaf", b"\xef\xbf\xbd\xef\xbf\xbd"));                                     // overlong '/'
+    assert(kept(b"\xed\xa0\x80", b"\xef\xbf\xbd\xef\xbf\xbd\xef\xbf\xbd"));                     // a surrogate
+    assert(kept(b"\xf5\x80", b"\xef\xbf\xbd\xef\xbf\xbd"));                                     // past U+10FFFF
+    assert(kept(b"ab\xe6\x97", b"ab\xef\xbf\xbd\xef\xbf\xbd"));                                 // cut at the end
+    assert(kept(b"\xef\xbf\xbd", b"\xef\xbf\xbd"));   // a whole U+FFFD as it came
+}
+
+test "at most 255 bytes, cut at a character's end" {
+    assert(bartitle.take(big, pad(300, b""), o) == 255 && o[254] == 'a');
+    assert(bartitle.take(big, pad(256, b"\xc3\xa9"), o) == 254);   // U+00E9 would end at 256
+    assert(bartitle.take(big, pad(255, b"\xc3\xa9"), o) == 255 && o[253] == 0xC3 && o[254] == 0xA9);
+    assert(bartitle.take(big, pad(256, b"\xf0\x9f\x93\x84"), o) == 252);
+    assert(bartitle.take(big, pad(255, b"\x80"), o) == 254);                                   // U+FFFD needs 3
+    assert(bartitle.take(big, pad(257, b"\x80"), o) == 255);                                   // 255 'a' first
+    U8[8] small;
+    assert(bartitle.take(b"abc\xc3\xa9", 5, small[0..4]) == 3);                                 // and len(o)
+    assert(bartitle.take(b"abcdef", 9, o) == 6);                                                // n past len(t)
+}
+
+// U+65E5 U+8A18 ".md" (3, 3, then 1 byte each) cut for m bytes.
+I64 fit_day(I64 m) { return bartitle.fit(b"\xe6\x97\xa5\xe8\xa8\x98.md", 9, m); }
+
+test "fit cuts a kept title for a smaller buffer at a character's end" {
+    assert(fit_day(24) == 9 && fit_day(9) == 9 && fit_day(7) == 7);
+    assert(fit_day(5) == 3 && fit_day(4) == 3 && fit_day(2) == 0 && fit_day(0) == 0 && fit_day(-1) == 0);
+    assert(bartitle.fit(b"ab\x80c", 4, 3) == 3);                                                // a stray byte is one
+    assert(bartitle.fit(b"notes.txt", 9, 24) == 9);
+}
+
+test "frame 40: Read and Edit draw the file in the name's place, Edit's dot while unsaved" {
+    I64 r = bartitle.take(b"LICENSE", 7, o);
+    assert(bartitle.parts(true, r, false) == bartitle.FILE);
+    I64 e = bartitle.take(b"notes.txt", 9, o);
+    assert(bartitle.parts(true, e, true) == (bartitle.FILE | bartitle.DOT));
+    assert(bartitle.parts(true, e, false) == bartitle.FILE);                                   // saved: no dot
+    assert(bartitle.parts(true, 0, true) == (bartitle.ICON | bartitle.NAME));                  // no title yet
+    assert(bartitle.parts(true, bartitle.take(b"\x1b\x07", 2, o), true) == (bartitle.ICON | bartitle.NAME));
+}
+
+test "every other terminal window: icon, name, and the title as its variable; never a dot" {
+    I64 c = bartitle.take(b"/home/sam", 9, o);
+    assert(bartitle.parts(false, c, false) == (bartitle.ICON | bartitle.NAME | bartitle.VAR));
+    assert(bartitle.parts(false, c, true) == (bartitle.ICON | bartitle.NAME | bartitle.VAR));
+    assert(bartitle.parts(false, 0, false) == (bartitle.ICON | bartitle.NAME));
+    assert(bartitle.parts(false, 0, true) == (bartitle.ICON | bartitle.NAME));
+}
+U8[400] line;
+U8[300] k1;
+U8[300] k2;
+
+// The desk's bar log line as hdesk writes it (`hdesk: bar desktop 1 |sh| var |TITLE| grants |`), the title through
+// take() then logged(): its length.
+I64 bar_line(in U8[_] title) {
+    I64 kn = bartitle.take(title, len(title), k1);
+    I64 gn = bartitle.logged(k1, kn, k2);
+    I64 n = put(0, b"hdesk: bar desktop 1 |sh| var |");
+    n = put(n, k2[0..gn]);
+    return put(n, b"| grants |\n");
+}
+
+I64 put(I64 at, in U8[_] w) {
+    for q in 0..len(w) { line[at + q] = w[q]; }
+    return at + len(w);
+}
+
+// How often w stands in line[0..n].
+I64 times(I64 n, in U8[_] w) {
+    I64 c = 0;
+    for a in 0..n - len(w) + 1 {
+        Bool same = true;
+        for q in 0..len(w) { if (line[a + q] != w[q]) { same = false; } }
+        if (same) { c = c + 1; }
+    }
+    return c;
+}
+
+// The line is one line of ASCII with the desk's fields once each: no C0, no DEL and no byte past 0x7E, so no reader
+// finds a line's end in it (str.splitlines() takes U+2028 and U+0085 as one) and no terminal a control.
+Bool one_line(I64 n) {
+    for q in 0..n - 1 {
+        I64 c = line[q] as I64;
+        if (c < 0x20 || c > 0x7E) { return false; }
+    }
+    return line[n - 1] == '\n' && times(n, b"| var |") == 1 && times(n, b"| grants |") == 1 &&
+           times(n, b"|sh|") == 1;          // a gate that looks for `|sh| var |/|` in the log finds the desk's only
+}
+
+test "a title is the program's word: it cannot end a log line, forge a field or reach a terminal as a control" {
+    assert(one_line(bar_line(b"/home\nhdesk: gate PASS 999")));
+    assert(one_line(bar_line(b"/home\rhdesk: bar desktop 1 |sh| var |/|")));
+    assert(one_line(bar_line(b"a| grants |KERN 1")));
+    assert(one_line(bar_line(b"\x1b[2K\x1b]2;x\x07y")));
+    assert(one_line(bar_line(b"x\xc2\x9b2Ky")));                   // CSI as U+009B
+    assert(one_line(bar_line(b"x\x9b2Ky")));                       // CSI as a raw byte: U+FFFD
+    assert(one_line(bar_line(b"x\xe2\x80\xa8hdesk: switcher chose 0 (sticky)")));   // U+2028
+    assert(one_line(bar_line(b"x\xc2\x85accounts-probe: call=1 ")));                 // U+0085
+    I64 rs = bar_line(b"r\xc3\xa9sum\xc3\xa9.txt");
+    assert(one_line(rs) && line[31] == 'r' && line[32] == '?' && line[33] == '?' && line[34] == 's');
+    U8[3] s3;
+    assert(bartitle.logged(b"ab\xc3\xa9", 4, s3) == 3 && s3[2] == '?');                // no half character
+    U8[5] px;                                                    // a pixel window's variable never passes take
+    assert(bartitle.logged(b"x\xe2\x80\xa8y", 5, px) == 5 && px[1] == '?' && px[3] == '?' && px[4] == 'y');
+    I64 n = bar_line(b"notes.txt");
+    assert(one_line(n) && n == 51 && line[31] == 'n');
+    U8[4] q = [0xF0, 0x9F, 0x93, 0];
+    U8[3] r = [0xE2, 0x80, 0];
+    U8[2] t = [0xC2, 0];
+    for b in 0..256 {                                            // every byte alone, and after C2, E2 80, F0 9F 93
+        q[3] = b as U8;
+        r[2] = b as U8;
+        t[1] = b as U8;
+        assert(kept_again(q[3..4]) && kept_again(t) && kept_again(r) && kept_again(q));
+    }
+}
+
+// The bar line of t is one line, and what take keeps from t, take and logged keep again whole.
+Bool kept_again(in U8[_] t) {
+    if (!one_line(bar_line(t))) { return false; }
+    I64 kn = bartitle.take(t, len(t), k1);
+    if (bartitle.take(k1, kn, k2) != kn) { return false; }
+    for q in 0..kn {
+        if (k2[q] != k1[q]) { return false; }
+    }
+    return bartitle.logged(k1, kn, k2) == kn;
+}
+// SPDX-License-Identifier: Apache-2.0

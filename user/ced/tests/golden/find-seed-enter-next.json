@@ -1,0 +1,29 @@
+{
+  "id": "find-seed-enter-next",
+  "rules": [
+    "FIND-2"
+  ],
+  "text": "abc abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "6263",
+    "0d",
+    "06",
+    "0d"
+  ],
+  "expect": {
+    "text": "abc abc",
+    "sel": [
+      5,
+      7
+    ]
+  }
+}

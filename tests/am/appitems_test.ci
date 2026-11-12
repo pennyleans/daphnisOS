@@ -1,0 +1,178 @@
+// tests/am/appitems_test.ci: AM-4 (user/ci/kit/appitems.ci; docs/specs/2026-11-11-am4-appitems.md): the OSC 7770 row
+// a terminal program writes, the desk's table that takes it (order, groups, keys, the dot, dimmed rows, one submenu
+// level, replace in place, drop, clear), and every refusal changing nothing. Frame 41's Edit and View menus as the
+// worked cases. Run by check.sh.
+import user.ci.kit.appitems;
+
+U8[96] o;
+U8[64] got;
+
+Bool is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (o[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+Bool label_is(I64 s, I64 k, in U8[_] want) {
+    I64 n = appitems.row_label(s, k, got);
+    if (n != len(want)) { return false; }
+    for q in 0..n {
+        if (got[q] != want[q]) { return false; }
+    }
+    return true;
+}
+
+Bool keys_is(I64 s, I64 k, in U8[_] want) {
+    I64 n = appitems.row_keys(s, k, got);
+    if (n != len(want)) { return false; }
+    for q in 0..n {
+        if (got[q] != want[q]) { return false; }
+    }
+    return true;
+}
+
+// What the program wrote, as the desk's terminal hands it over: the text between `ESC ] 7770 ;` and BEL.
+I64 send(I64 s, I64 n) {
+    assert(n > 8 && o[0] == 27 && o[1] == ']' && o[6] == ';' && o[n - 1] == 7);
+    return appitems.take(s, o[7..n - 1], n - 8);
+}
+
+I64 row(I64 s, I64 id, I64 parent, in U8[_] label, in U8[_] keys, I64 marks) {
+    I64 n = appitems.osc_item(o, id, parent, label, keys, marks);
+    assert(n > 0);
+    return send(s, n);
+}
+
+I64 text(I64 s, in U8[_] t) {
+    return appitems.take(s, t, len(t));
+}
+
+test "the program's row: the bytes, and a broken field writes nothing" {
+    assert(is(appitems.osc_item(o, 19, 0, b"Save", b"Ctrl+S", 0), b"\x1b]7770;item;19;0;Save;Ctrl+S;\x07"));
+    assert(is(appitems.osc_item(o, 65535, 16, b"a.txt", b"", appitems.GROUP + appitems.ON + appitems.DIM),
+              b"\x1b]7770;item;65535;16;a.txt;;god\x07"));
+    assert(is(appitems.osc_drop(o, 7), b"\x1b]7770;drop;7\x07"));
+    assert(appitems.osc_item(o, 3, 0, b"Caf\xc3\xa9 \xe2\x80\xa6 \xf0\x9f\x98\x80", b"", 0) > 0);   // UTF-8 kept
+    for k in 0..96 { o[k] = 'x'; }
+    assert(appitems.osc_item(o, 0, 0, b"Save", b"", 0) == -1);
+    assert(appitems.osc_item(o, 65536, 0, b"Save", b"", 0) == -1);
+    assert(appitems.osc_item(o, 4, 4, b"Save", b"", 0) == -1);                       // its own parent
+    assert(appitems.osc_item(o, 4, 0, b"", b"", 0) == -1);
+    assert(appitems.osc_item(o, 4, 0, b"abcdefghijklmnopqrstuvwxy", b"", 0) == -1);   // 25 bytes
+    assert(appitems.osc_item(o, 4, 0, b"a;b", b"", 0) == -1);
+    assert(appitems.osc_item(o, 4, 0, b"a\x1bb", b"", 0) == -1);
+    assert(appitems.osc_item(o, 4, 0, b"a\x7f", b"", 0) == -1);
+    assert(appitems.osc_item(o, 4, 0, b"Save", b"Ctrl+Shift+Alt+F1", 0) == -1);       // 17 bytes of keys
+    assert(appitems.osc_item(o, 4, 0, b"\xc0\x80", b"", 0) == -1);                   // overlong
+    assert(appitems.osc_item(o, 4, 0, b"\xe2\x82", b"", 0) == -1);                   // cut
+    assert(appitems.osc_item(o, 4, 0, b"\xed\xa0\x80", b"", 0) == -1);               // a surrogate
+    assert(appitems.osc_item(o, 4, 0, b"Save", b"", 8) == -1);
+    assert(appitems.osc_item(o[0..79], 4, 0, b"Save", b"", 0) == -1);                // short of OSC_MAX
+    assert(appitems.osc_drop(o, 0) == -1);
+    for k in 0..96 { assert(o[k] == 'x'); }
+    assert(appitems.osc_item(o, 65535, 65534, b"abcdefghijklmnopqrstuvwx", b"abcdefghijklmnop",
+                             appitems.GROUP + appitems.ON + appitems.DIM) == 70);     // the longest
+}
+
+test "frame 41's Edit menu: groups, keys, the dot, a submenu, dimmed rows, in declared order" {
+    appitems.clear(2);
+    assert(row(2, 14, 0, b"New Window", b"Ctrl+N", appitems.DIM) == 0);
+    assert(row(2, 15, 0, b"Open", b"Ctrl+O", appitems.DIM) == 0);
+    assert(row(2, 16, 0, b"Open Recent", b"", 0) == 0);
+    assert(row(2, 19, 0, b"Save", b"Ctrl+S", 0) == 0);
+    assert(row(2, 100, 16, b"notes.txt", b"", 0) == 0);              // a child after other rows: still under 16
+    assert(row(2, 101, 16, b"todo.txt", b"", 0) == 0);
+    assert(row(2, 26, 0, b"Undo", b"Ctrl+Z", appitems.GROUP) == 0);
+    assert(row(2, 23, 0, b"Word Wrap", b"", appitems.GROUP + appitems.ON) == 0);
+    assert(appitems.rows(2) == 8);
+    assert(appitems.row_id(2, 0) == 14 && appitems.row_id(2, 4) == 100 && appitems.row_id(2, 7) == 23);
+    assert(label_is(2, 2, b"Open Recent") && keys_is(2, 2, b"") && keys_is(2, 3, b"Ctrl+S"));
+    assert(appitems.row_parent(2, 4) == 16 && appitems.row_parent(2, 3) == 0);
+    assert(appitems.row_marks(2, 0) == appitems.DIM && appitems.row_marks(2, 6) == appitems.GROUP);
+    assert(appitems.row_marks(2, 7) == appitems.GROUP + appitems.ON);
+    assert(appitems.row_opens(2, 2) && !appitems.row_opens(2, 3) && !appitems.row_opens(2, 4));
+    assert(!appitems.row_chosen(2, 0) && !appitems.row_chosen(2, 2) && appitems.row_chosen(2, 3));
+    assert(appitems.row_chosen(2, 4) && appitems.row_chosen(2, 7));
+    assert(row(2, 23, 0, b"Word Wrap", b"", appitems.GROUP) == 0);   // the dot off, in place
+    assert(appitems.rows(2) == 8 && appitems.row_id(2, 7) == 23 && appitems.row_marks(2, 7) == appitems.GROUP);
+    assert(row(2, 16, 0, b"Open Recent", b"", appitems.DIM) == 0);   // a dimmed parent opens nothing
+    assert(!appitems.row_opens(2, 2) && !appitems.row_chosen(2, 4) && !appitems.row_chosen(2, 5));
+}
+
+test "a refused row changes nothing" {
+    appitems.clear(0);
+    for k in 0..16 { assert(row(0, 10 + k, 0, b"Row", b"", 0) == 0); }
+    assert(row(0, 99, 0, b"Seventeenth", b"", 0) == appitems.E_FULL && appitems.rows(0) == 16);
+    assert(row(0, 12, 0, b"Twelve", b"F12", 0) == 0 && label_is(0, 2, b"Twelve"));   // a full slot still replaces
+    appitems.clear(0);
+    assert(row(0, 5, 0, b"Top", b"", 0) == 0 && row(0, 6, 5, b"Child", b"", 0) == 0);
+    assert(row(0, 7, 6, b"Grandchild", b"", 0) == appitems.E_PARENT);
+    assert(row(0, 8, 9, b"Orphan", b"", 0) == appitems.E_PARENT);
+    assert(row(0, 6, 0, b"Moved", b"", 0) == appitems.E_PARENT && appitems.row_parent(0, 1) == 5);
+    assert(row(0, 5, 6, b"Under", b"", 0) == appitems.E_PARENT);
+    assert(text(0, b"item;9;0;Nine;") == appitems.E_FORM);                 // five fields
+    assert(text(0, b"item;9;0;Nine;;;") == appitems.E_FORM);               // seven
+    assert(text(0, b"item;9x;0;Nine;;") == appitems.E_FORM);
+    assert(text(0, b"item;123456;0;Nine;;") == appitems.E_FORM);
+    assert(text(0, b"item;;0;Nine;;") == appitems.E_FORM);
+    assert(text(0, b"item;9;0;;;") == appitems.E_FORM);
+    assert(text(0, b"item;9;0;Nine;;gg") == appitems.E_FORM);
+    assert(text(0, b"item;9;0;Nine;;x") == appitems.E_FORM);
+    assert(text(0, b"item;9;0;Ni\tne;;") == appitems.E_FORM);
+    assert(text(0, b"drop;") == appitems.E_FORM && text(0, b"drop;5;6") == appitems.E_FORM);
+    assert(appitems.rows(0) == 2 && label_is(0, 0, b"Top") && label_is(0, 1, b"Child"));
+    assert(text(0, b"about;Edit;0.1.0;A text editor") == appitems.NOT_MINE);
+    assert(text(0, b"about;Edit;0.1.0;a;b;c;d;e;f") == appitems.NOT_MINE);     // About's text keeps its ';'
+    assert(text(0, b"item;9;0;A;B;;g") == appitems.E_FORM && text(0, b"drop;9;0;0;0;0;0;0") == appitems.E_FORM);
+    assert(text(0, b"settings;1") == appitems.NOT_MINE && text(0, b"dirty;1") == appitems.NOT_MINE);
+    assert(text(0, b"items;1") == appitems.NOT_MINE && text(0, b"") == appitems.NOT_MINE);
+    assert(appitems.take(8, b"item;9;0;Nine;;", 15) == appitems.E_FORM && appitems.rows(8) == 0);
+}
+
+test "drop takes the row and its children; clear forgets a slot; slots stand apart" {
+    appitems.clear(1);
+    appitems.clear(3);
+    assert(row(1, 16, 0, b"Open Recent", b"", 0) == 0);
+    assert(row(1, 19, 0, b"Save", b"Ctrl+S", 0) == 0);
+    assert(row(1, 100, 16, b"a.txt", b"", 0) == 0 && row(1, 101, 16, b"b.txt", b"", 0) == 0);
+    assert(row(3, 3, 0, b"Copy", b"Ctrl+C", appitems.DIM) == 0);
+    I64 n = appitems.osc_drop(o, 100);
+    assert(send(1, n) == 0 && appitems.rows(1) == 3 && appitems.row_id(1, 2) == 101);
+    n = appitems.osc_drop(o, 16);
+    assert(send(1, n) == 0 && appitems.rows(1) == 1 && appitems.row_id(1, 0) == 19 && label_is(1, 0, b"Save"));
+    n = appitems.osc_drop(o, 4242);
+    assert(send(1, n) == 0 && appitems.rows(1) == 1);                        // nothing there: nothing to do
+    assert(appitems.find(1, 19) == 0 && appitems.find(1, 16) == -1);
+    appitems.clear(1);
+    assert(appitems.rows(1) == 0 && appitems.rows(3) == 1 && label_is(3, 0, b"Copy"));
+    assert(appitems.rows(-1) == 0 && appitems.rows(8) == 0);
+}
+
+test "frame 41's View menu: four groups, the first one's divider the section's" {
+    appitems.clear(4);
+    assert(row(4, 15, 0, b"Open", b"Ctrl+O", 0) == 0);
+    assert(row(4, 20, 0, b"Next", b"Right", appitems.GROUP) == 0);
+    assert(row(4, 21, 0, b"Previous", b"Left", 0) == 0);
+    assert(row(4, 22, 0, b"Zoom In", b"+", appitems.GROUP) == 0);
+    assert(row(4, 23, 0, b"Zoom Out", b"-", 0) == 0);
+    assert(row(4, 24, 0, b"Actual Size", b"0", 0) == 0);
+    assert(row(4, 25, 0, b"Set as Background", b"", appitems.GROUP) == 0);
+    assert(row(4, 26, 0, b"Show in Index", b"", 0) == 0);
+    I64 groups = 0;
+    for k in 0..appitems.rows(4) {
+        if ((appitems.row_marks(4, k) & appitems.GROUP) != 0) { groups = groups + 1; }
+        assert(appitems.row_chosen(4, k));
+    }
+    assert(appitems.rows(4) == 8 && groups == 3 && keys_is(4, 3, b"+") && label_is(4, 6, b"Set as Background"));
+}
+
+test "a label and its keys copy what fits and say the full length" {
+    appitems.clear(5);
+    assert(row(5, 9, 0, b"Find Next", b"Ctrl+G", 0) == 0);
+    U8[4] small;
+    assert(appitems.row_label(5, 0, small) == 9 && small[3] == 'd');
+    assert(appitems.row_keys(5, 0, small) == 6 && small[3] == 'l');
+}
+// SPDX-License-Identifier: Apache-2.0

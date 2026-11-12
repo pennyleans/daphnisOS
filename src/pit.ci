@@ -1,0 +1,81 @@
+// src/pit.ci: the 8259 PICs and the 8253 PIT. Remaps the PICs to vectors 32 to 47 and
+// unmasks only IRQ 0, and programs channel 0 as a rate generator.
+
+import src.portio;
+
+// True when channel 0 reads back as programmed by pit_start: mode 2, access lo/hi, binary
+// (read-back command 0xE2 latches its status), and its count is within the divisor. The BIOS
+// leaves the PIT running at 18.2 Hz, so a timer that was never programmed is caught here.
+export Bool pit_is_programmed(I64 divisor) {
+    portio.port_out8(0x43 as U16, 0xE2 as U8);
+    I64 status = portio.port_in8(0x40 as U16) as I64;
+    portio.port_out8(0x43 as U16, 0x00 as U8);
+    I64 lo = portio.port_in8(0x40 as U16) as I64;
+    I64 hi = portio.port_in8(0x40 as U16) as I64;
+    return (status & 0x3F) == 0x34 && lo + hi * 256 <= divisor;
+}
+
+export void pic_remap() {
+    portio.port_out8(0x21 as U16, 0xFF as U8);
+    portio.port_out8(0xA1 as U16, 0xFF as U8);
+    portio.port_out8(0x20 as U16, 0x11 as U8);
+    portio.port_out8(0xA0 as U16, 0x11 as U8);
+    portio.port_out8(0x21 as U16, 0x20 as U8);
+    portio.port_out8(0xA1 as U16, 0x28 as U8);
+    portio.port_out8(0x21 as U16, 4 as U8);
+    portio.port_out8(0xA1 as U16, 2 as U8);
+    portio.port_out8(0x21 as U16, 1 as U8);
+    portio.port_out8(0xA1 as U16, 1 as U8);
+    portio.port_out8(0x21 as U16, 0xFE as U8);
+    portio.port_out8(0xA1 as U16, 0xFF as U8);
+}
+
+// The divisor the ring-3 flavors program (about 100 Hz, 10.0002 ms a tick) and its input clock, 1,193,182 Hz:
+// CLOCK_BOOTTIME (src/proc.ci, G-2) turns the tick count into nanoseconds with them.
+export const I64 USER_DIVISOR = 11932;
+export const I64 INPUT_HZ = 1193182;
+
+// Channel 0's count now, latched (D-ROW, the compose budget's clock): it counts down from the divisor to 1 once a
+// tick, so two reads less than a tick apart differ by the input clock's cycles between them, modulo the divisor.
+export I64 latched() {
+    portio.port_out8(0x43 as U16, 0x00 as U8);
+    I64 lo = portio.port_in8(0x40 as U16) as I64;
+    I64 hi = portio.port_in8(0x40 as U16) as I64;
+    return lo + hi * 256;
+}
+
+// Channel 0, access lo/hi, mode 2 (rate generator), binary; divisor 1193 is about 1 kHz.
+export void pit_start(I64 divisor) {
+    portio.port_out8(0x43 as U16, 0x34 as U8);
+    portio.port_out8(0x40 as U16, (divisor & 0xFF) as U8);
+    portio.port_out8(0x40 as U16, ((divisor >> 8) & 0xFF) as U8);
+}
+
+// NW-1: unmasks or masks a routed PCI IRQ (3..15, excluding PS/2 12) across a halt so a received
+// frame ends cpu_wait_irq without preempting ring 3.
+export void unmask_irq(I64 irq) {
+    if (irq >= 3 && irq < 8) {
+        U8 m = portio.port_in8(0x21 as U16);
+        portio.port_out8(0x21 as U16, m & ~((1 << irq) as U8));
+    } else if (irq >= 8 && irq < 16 && irq != 12) {
+        U8 m1 = portio.port_in8(0x21 as U16);
+        portio.port_out8(0x21 as U16, m1 & (0xFB as U8));
+        U8 m2 = portio.port_in8(0xA1 as U16);
+        portio.port_out8(0xA1 as U16, m2 & ~((1 << (irq - 8)) as U8));
+    }
+}
+
+export void mask_irq(I64 irq) {
+    if (irq >= 3 && irq < 8) {
+        U8 m = portio.port_in8(0x21 as U16);
+        portio.port_out8(0x21 as U16, m | ((1 << irq) as U8));
+    } else if (irq >= 8 && irq < 16 && irq != 12) {
+        U8 m2 = portio.port_in8(0xA1 as U16) | ((1 << (irq - 8)) as U8);
+        portio.port_out8(0xA1 as U16, m2);
+        if (m2 == 0xFF) {
+            U8 m1 = portio.port_in8(0x21 as U16);
+            portio.port_out8(0x21 as U16, m1 | 4);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

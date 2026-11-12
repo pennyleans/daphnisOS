@@ -1,0 +1,153 @@
+// src/main_tasks.ci: K4, tasks. One program, three roles by argument. Argument 0 is the
+// kernel's own entry: it runs the scheduler (src/sched.ci) over three tasks, which are this
+// same main started by rt/task.c with arguments 1 to 3. The `coop` image yields after each of 6
+// rounds, so the order of turns is fixed and printed; the `preempt` image installs the IDT
+// and the PIT, never yields, does 400 rounds per task, and lets a quantum of 3 timer ticks end
+// a turn. Where a preempted turn ends depends on timing, so that transcript has only what does
+// not: each task's own line, whether a task the timer preempted was later resumed and ran to the
+// end, and that no turn ended before the quantum.
+//
+// A Grants value cannot be passed to a function of another module in this cintc (C9102,
+// docs/cint-gaps.md), so the code that calls the console service is in this root module, and
+// tests/task_twin.ci carries a copy of the block between the markers, which check.sh compares.
+
+import console;
+import src.serial;
+import src.text;
+import src.cpu;
+import src.trap;
+import src.pit;
+import src.sched;
+import src.taskapi;
+import src.taskwork;
+
+requires console.input;
+requires console.raw;
+
+// BEGIN service block (identical in tests/task_twin.ci)
+// The byte count of one line read from the console, -1 if the call returned denied, -2 for
+// any other error. Whether a call is covered is decided at run time from the grants of the
+// context; a call no grant covers returns `denied`, a value of the error union, never a fault
+// (SPEC-07 SEC-CAP-13).
+I64 probe_read(Grants g) {
+    U8[16] buf;
+    I64 n = console.read_line(g, buf) catch (e) { return e == console.ConsoleError.denied ? -1 : -2; };
+    return n;
+}
+
+// Raw mode off: 0 when a grant covers it (console.raw), -1 if the call returned denied, -2 for
+// any other error. The program never needs raw mode; the call shows that a grant is checked per
+// capability: a task with console.input and no console.raw is denied here and allowed to read.
+I64 probe_raw(Grants g) {
+    console.raw(g, false) catch (e) { return e == console.ConsoleError.denied ? -1 : -2; };
+    return 0;
+}
+
+// Writes one byte with the service; 0, or -1 denied, -2 another error.
+I64 put(Grants g, U8 c) {
+    U8[1] one;
+    one[0] = c;
+    console.write(g, one) catch (e) { return e == console.ConsoleError.denied ? -1 : -2; };
+    return 0;
+}
+
+void put_text(Grants g, in U8[_] s) {
+    for i in 0..len(s) {
+        _ = put(g, s[i]);
+    }
+}
+
+void put_dec(Grants g, I64 v) {
+    U8[20] digits;
+    I64 k = 0;
+    if (v < 0) {
+        _ = put(g, 45);
+        k = text.dec_digits(0 - v, digits);
+    } else {
+        k = text.dec_digits(v, digits);
+    }
+    for i in 0..k {
+        _ = put(g, digits[i]);
+    }
+}
+
+// "task N total S read R raw W\n": R is the console read's byte count, W the raw call's status;
+// -1 in either means denied.
+void report(Grants g, I64 me, I64 total, I64 got, I64 raw) {
+    put_text(g, "task ");
+    put_dec(g, me);
+    put_text(g, " total ");
+    put_dec(g, total);
+    put_text(g, " read ");
+    put_dec(g, got);
+    put_text(g, " raw ");
+    put_dec(g, raw);
+    put_text(g, "\n");
+}
+// END service block
+
+void run_task(Grants g, I64 me, I64 rounds, Bool yield_each) {
+    U8[64] block;
+    U8[32] d;
+    I64 total = 0;
+    taskwork.init_block(me, block);
+    for r in 0..rounds {
+        total += taskwork.round(block, d);
+        if (yield_each) {
+            taskapi.task_yield();
+        }
+    }
+    I64 got = probe_read(g);
+    I64 raw = probe_raw(g);
+    report(g, me, total, got, raw);
+}
+
+void boot_tasks(Bool preempt) {
+    serial.serial_init();
+    if (preempt) {
+        serial.serial_write("Daphnis K4: preemptive tasks\n");
+        cpu.tss_install();
+        cpu.idt_install_ist();
+        pit.pic_remap();
+        pit.pit_start(1193);
+        taskapi.task_preempt_on(3);
+    } else {
+        serial.serial_write("Daphnis K4: cooperative tasks\n");
+        cpu.tss_install();
+        cpu.idt_install_ist();
+    }
+    I64 resumed = sched.run_all(!preempt);
+    sched.print_outputs();
+    if (preempt) {
+        serial.serial_write("a preempted task was resumed and finished: ");
+        if (resumed > 0) {
+            serial.serial_write("yes\n");
+        } else {
+            serial.serial_write("no\n");
+        }
+        // every ended turn took at least 2 ticks of the quantum of 3 (a tick pending while the
+        // scheduler ran counts for the next turn), so turns * 2 cannot exceed the ticks
+        serial.serial_write("quantum respected: ");
+        if (taskapi.task_preemptions() * 2 <= trap.timer_ticks()) {
+            serial.serial_write("yes\n");
+        } else {
+            serial.serial_write("no\n");
+        }
+        serial.serial_write("preempt: done\n");
+    } else {
+        serial.serial_write("coop: done\n");
+    }
+}
+
+void main(Grants g, in U8[_] args) {
+    I64 role = (args[0] as I64) - 48;
+    Bool preempt = taskapi.task_mode() == 1;
+    if (role == 0) {
+        boot_tasks(preempt);
+    } else if (preempt) {
+        run_task(g, role, 400, false);
+    } else {
+        run_task(g, role, 6, true);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

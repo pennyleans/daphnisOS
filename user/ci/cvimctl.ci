@@ -1,0 +1,13 @@
+// user/ci/cvimctl.ci: cvim's terminal and file rows, user/ci/host.c under CI_ROWS_CVIM (CV-4a,
+// docs/specs/2026-11-07-cv-cvim.md section 13); cvim imports it, and nothing else does.
+//   cv_term_enter(fd): the terminal raw and on the alternate screen, its settings kept by the host; every fatal signal
+//     and every exit gives them back; SIGWINCH sets a flag and interrupts a read (-EINTR); 0, or -errno
+//   cv_term_leave(): the cursor's form reset, the cursor shown, the main screen and the settings back
+//   cv_winch(): 1 once after the window's size changed, else 0
+//   cv_fsync(fd), cv_fchmod(fd, mode): fsync, fchmod; 0, or -errno
+export extern unrestricted I64 cv_term_enter(I64 fd);
+export extern unrestricted I64 cv_term_leave();
+export extern unrestricted I64 cv_winch();
+export extern unrestricted I64 cv_fsync(I64 fd);
+export extern unrestricted I64 cv_fchmod(I64 fd, I64 mode);
+// SPDX-License-Identifier: Apache-2.0

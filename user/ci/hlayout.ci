@@ -1,0 +1,209 @@
+// user/ci/hlayout.ci: stage H's layout cases on Linux (unit H-1, docs/specs/2026-11-05-h-hybrid.md section 7):
+// each case sets windows through user/ci/kit/layout.ci, computes, and prints every window's frame and visible
+// rectangles; tools/check-layout.py computes the same lines in Python, and the gate compares them byte for byte.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;  // FONT-1: the chrome's Inter, after faces
+import user.ci.kit.layout;
+import user.ci.kit.cmark;
+
+// The n x n color mark's fingerprint: each token's pixels, and the sum of (y * n + x + 1) * (token + 2) over them.
+void emblem(I64 n) {
+    I64[6] cnt = [0, 0, 0, 0, 0, 0];
+    I64 tot = 0;
+    for y in 0..n {
+        for x in 0..n {
+            I64 t = cmark.at(n, x, y);
+            if (t >= 0) {
+                cnt[t] = cnt[t] + 1;
+                tot = tot + (y * n + x + 1) * (t + 2);
+            }
+        }
+    }
+    "layout: emblem {n} tokens {cnt[0]} {cnt[1]} {cnt[2]} {cnt[3]} {cnt[4]} {cnt[5]} sum {tot}\n";
+}
+
+U32[800] srow;   // K-4: one row of 800 pixels for the text cases, a word a pixel (D-ROW)
+U8[95] every;    // K-4: codes 32 to 126
+U8[24] pairs = ['I', 'l', '1', '|', ' ', 'O', '0', 'o', ' ', 'r', 'n', ' ', 'm', ' ', 'd', 'a', 'p', 'h', 'n', 'i', 's',
+                ' ', '5', 'S'];
+
+// FONT-1 (docs/specs/2026-11-07-k-kit2.md section 3e): s[0..n] in the chrome's body face (Inter 13 px, ctext BODY)
+// at z, white on black, the pen from 4 on the baseline at the face's ascent, stopped at x1, fingerprinted over the
+// line box: its width, the pen where it stopped, the inked pixels and the sum of (y * 800 + x + 1) times each
+// pixel's blue channel.
+void text_case(in U8[_] s, I64 n, I64 z, I64 x1) {
+    I64 ink = 0;
+    I64 tot = 0;
+    I64 pen = 0;
+    I64 base = ctext.ascent(faces.BODY, z);
+    for y in 0..base + ctext.descent(faces.BODY, z) {
+        for k in 0..800 { srow[k] = 0; }
+        pen = ctext.text(srow, y, 4, base, x1, s, n, 0x00FFFFFF, faces.BODY, z);
+        for x in 0..800 {
+            if (srow[x] != 0) {
+                ink = ink + 1;
+                tot = tot + (y * 800 + x + 1) * ((srow[x] & 255) as I64);
+            }
+        }
+    }
+    I64 w = ctext.width(s, n, faces.BODY, z);
+    "layout: text body {z} n {n} to {x1} width {w} pen {pen} ink {ink} sum {tot}\n";
+}
+
+void show(I64 c, I64 w, I64 h, I64 s, I64 d) {
+    layout.compute(d);
+    "layout: case {c} screen {w}x{h} scale {s} desktop {d}\n";
+    for i in 0..layout.WINS {
+        if (layout.is_live(i)) {
+            I64 m = layout.mode_of(i);
+            I64 n = layout.rects(i);
+            I64 dk = layout.desktop(i);
+            I64 x = layout.frame_x(i);
+            I64 y = layout.frame_y(i);
+            I64 fw = layout.frame_w(i);
+            I64 fh = layout.frame_h(i);
+            "layout: win {i} desktop {dk} mode {m} frame {x},{y} {fw}x{fh} rects {n}";
+            for k in 0..n {
+                I64 rx = layout.rect_x(i, k);
+                I64 ry = layout.rect_y(i, k);
+                I64 rw = layout.rect_w(i, k);
+                I64 rh = layout.rect_h(i, k);
+                " {rx},{ry},{rw}x{rh}";
+            }
+            "\n";
+        }
+    }
+}
+
+void switcher(I64 d) {
+    I64 n = layout.entries(d);
+    "layout: switcher desktop {d}:";
+    for k in 0..n {
+        I64 e = layout.entry(d, k);
+        " {e}";
+    }
+    "\n";
+}
+
+void main() {
+    I64 c = 0;
+    // 1. one to eight tiled windows at 1920 x 1080 (HX-7)
+    for n in 1..9 {
+        layout.screen(1920, 1080, 1);
+        for i in 0..n { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+        show(c, 1920, 1080, 1, 1);
+        c = c + 1;
+    }
+    // 2. three tiled, a float over two of them, a second float over the first (HX-1 B)
+    layout.screen(1920, 1080, 1);
+    for i in 0..3 { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+    layout.put(3, 1, layout.FLOAT, 1, 640, 304, 960, 528);
+    layout.put(4, 1, layout.FLOAT, 2, 1200, 600, 400, 320);
+    show(c, 1920, 1080, 1, 1);
+    c = c + 1;
+    // 3. a monocle window with a float above it; a minimized window; a window on desktop 2
+    layout.screen(1920, 1080, 1);
+    layout.put(0, 1, layout.TILED, 0, 0, 0, 0, 0);
+    layout.put(1, 1, layout.MONOCLE, 0, 0, 0, 0, 0);
+    layout.put(2, 1, layout.FLOAT, 1, 80, 64, 320, 200);
+    layout.put(3, 1, layout.MINIMIZED, 0, 0, 0, 0, 0);
+    layout.put(4, 2, layout.TILED, 0, 0, 0, 0, 0);
+    show(c, 1920, 1080, 1, 1);
+    c = c + 1;
+    show(c, 1920, 1080, 1, 2);
+    c = c + 1;
+    // 4. five tiled at 640 x 480; three tiled at 3840 x 2160, scale 2
+    layout.screen(640, 480, 1);
+    for i in 0..5 { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+    show(c, 640, 480, 1, 1);
+    c = c + 1;
+    layout.screen(3840, 2160, 2);
+    for i in 0..3 { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+    show(c, 3840, 2160, 2, 1);
+    c = c + 1;
+    // 5. fifteen small floats in a staircase over one tiled window: past 32 rectangles, a refusal (-1)
+    layout.screen(1920, 1080, 1);
+    layout.put(0, 1, layout.TILED, 0, 0, 0, 0, 0);
+    for i in 1..16 {
+        layout.put(i, 1, layout.FLOAT, i, 60 + 120 * (i - 1), 60 + 60 * (i - 1), 100, 100);
+    }
+    show(c, 1920, 1080, 1, 1);
+    c = c + 1;
+    // 6. the switcher's order (HX-11): focus 0, 1, 2, then 0; window 3 minimized on desktop 1 is listed; 4 on 2 is not
+    layout.screen(1920, 1080, 1);
+    for i in 0..3 { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+    layout.put(3, 1, layout.MINIMIZED, 0, 0, 0, 0, 0);
+    layout.put(4, 2, layout.TILED, 0, 0, 0, 0, 0);
+    layout.focus(3);
+    layout.focus(4);
+    layout.focus(0);
+    layout.focus(1);
+    layout.focus(2);
+    switcher(1);
+    layout.focus(0);
+    switcher(1);
+    layout.forget(1);
+    layout.remove(1);
+    switcher(1);
+    switcher(2);
+    // 7. four tiled windows take their cells by rank, ties by number (H-3b): 1, 3, 2, 0
+    layout.screen(1920, 1080, 1);
+    layout.put(0, 1, layout.TILED, 3, 0, 0, 0, 0);
+    layout.put(1, 1, layout.TILED, 1, 0, 0, 0, 0);
+    layout.put(2, 1, layout.TILED, 2, 0, 0, 0, 0);
+    layout.put(3, 1, layout.TILED, 1, 0, 0, 0, 0);
+    show(c, 1920, 1080, 1, 1);
+    c = c + 1;
+    // 8. portrait 1080 x 1920 (HX-12 A): 1, 2, 3 and 5 tiled windows along the long side
+    for q in 0..4 {
+        I64 n = q + 1;
+        if (q == 3) { n = 5; }
+        layout.screen(1080, 1920, 1);
+        for i in 0..n { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+        show(c, 1080, 1920, 1, 1);
+        c = c + 1;
+    }
+    // 9. HX-14: three tiled in rows at 1920 x 1080, then in columns at 1080 x 1920
+    layout.screen(1920, 1080, 1);
+    for i in 0..3 { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+    layout.direction(1, 2);
+    show(c, 1920, 1080, 1, 1);
+    c = c + 1;
+    layout.screen(1080, 1920, 1);
+    for i in 0..3 { layout.put(i, 1, layout.TILED, 0, 0, 0, 0, 0); }
+    layout.direction(1, 1);
+    show(c, 1080, 1920, 1, 1);
+    c = c + 1;
+    // HX-1: a monocle window ranked over a float covers it; the float ranked after covers the monocle window
+    I64[2] mr = [3, 1];
+    for q in 0..2 {
+        layout.screen(1920, 1080, 1);
+        layout.put(0, 1, layout.TILED, 0, 0, 0, 0, 0);
+        layout.put(1, 1, layout.MONOCLE, mr[q], 0, 0, 0, 0);
+        layout.put(2, 1, layout.FLOAT, 2, 400, 300, 640, 400);
+        show(c, 1920, 1080, 1, 1);
+        c = c + 1;
+    }
+    // HX-1: the overlay over a float whose rank was pushed past 10^6 and past RANK_CAP
+    layout.screen(1920, 1080, 1);
+    layout.put(3, 1, layout.FLOAT, 2000000, 200, 200, 800, 600);
+    layout.put(4, 1, layout.FLOAT, 1125899906842624, 300, 300, 800, 600);
+    layout.put(layout.OVERLAY, 1, layout.FLOAT, 1000000, 400, 400, 400, 300);
+    show(c, 1920, 1080, 1, 1);
+    c = c + 1;
+    // 10. K-7: the color mark at the bar's 20 px and the emblem's 440 and 480, fingerprinted (check-layout.py's emblem)
+    I64[3] sizes = [20, 440, 480];
+    for q in 0..3 { emblem(sizes[q]); }
+    // 11. FONT-1: the chrome's body face, every glyph and the pairs, at 1x and 2x, then cut short (check-layout.py's
+    // text_case)
+    for k in 0..95 { every[k] = (32 + k) as U8; }
+    for z in 1..3 {
+        text_case(every[0..47], 47, z, 800);
+        text_case(every[47..95], 48, z, 800);
+        text_case(pairs, 24, z, 800);
+        text_case(pairs, 24, z, 4 + 100 * z);
+    }
+    "layout: done\n";
+}
+// SPDX-License-Identifier: Apache-2.0

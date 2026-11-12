@@ -1,0 +1,29 @@
+{
+  "id": "held-csi-modifier",
+  "rules": [
+    "KEY-2",
+    "KEY-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b32",
+    "",
+    "",
+    "43"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      0,
+      1
+    ]
+  }
+}

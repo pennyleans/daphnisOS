@@ -1,0 +1,142 @@
+$ text.txt
+-- tree
+- text.txt
+status 0
+$ text.txt nonl.txt
+-- tree
+- nonl.txt
+- text.txt
+status 0
+$ missing
+-- stderr
+rm: missing: No such file or directory
+status 1
+$ text.txt missing nonl.txt
+-- stderr
+rm: missing: No such file or directory
+-- tree
+- nonl.txt
+- text.txt
+status 1
+$ -f missing
+status 0
+$ -f
+status 0
+$ box
+-- stderr
+rm: box: Is a directory
+status 1
+$ -r box
+-- tree
+- box
+- box/a.txt
+- box/in
+- box/in/b.txt
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ -R box
+-- tree
+- box
+- box/a.txt
+- box/in
+- box/in/b.txt
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ -rf box missing
+-- tree
+- box
+- box/a.txt
+- box/in
+- box/in/b.txt
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ -r box/in/deep
+-- tree
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ -r box/
+-- tree
+- box
+- box/a.txt
+- box/in
+- box/in/b.txt
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ -r box/in/deep/c.txt
+-- tree
+- box/in/deep/c.txt
+status 0
+$ .
+-- stderr
+rm: .: refusing . or ..
+status 1
+$ -r .
+-- stderr
+rm: .: refusing . or ..
+status 1
+$ -r ..
+-- stderr
+rm: ..: refusing . or ..
+status 1
+$ -r box/..
+-- stderr
+rm: box/..: refusing . or ..
+status 1
+$ -r box/in/.
+-- stderr
+rm: box/in/.: refusing . or ..
+status 1
+$ -i text.txt < yes.txt
+-- stderr
+rm: text.txt: remove? -- tree
+- text.txt
+status 0
+$ -i text.txt < empty
+-- stderr
+rm: text.txt: remove? status 0
+$ -fi text.txt < empty
+-- stderr
+rm: text.txt: remove? status 0
+$ -if text.txt < empty
+-- tree
+- text.txt
+status 0
+$ -ri box/in/deep < yes.txt
+-- stderr
+rm: box/in/deep: descend? rm: box/in/deep/c.txt: remove? rm: box/in/deep: remove? -- tree
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ -ri box/in/deep < empty
+-- stderr
+rm: box/in/deep: descend? status 0
+$ -ri box < yes.txt
+-- stderr
+rm: box: descend? rm: box/a.txt: remove? rm: box/in: descend? rm: box/in/b.txt: remove? rm: box/in/deep: descend? rm: box/in/deep/c.txt: remove? rm: box/in/deep: remove? rm: box/in: remove? rm: box: remove? -- tree
+- box/a.txt
+- box/in
+- box/in/b.txt
+- box/in/deep
+- box/in/deep/c.txt
+status 0
+$ -- text.txt
+-- tree
+- text.txt
+status 0
+$ -x text.txt
+-- stderr
+rm: not supported: -x
+status 2
+$ -v text.txt
+-- stderr
+rm: not supported: -v
+status 2
+$ 
+-- stderr
+rm: missing operand
+status 2

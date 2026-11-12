@@ -1,0 +1,98 @@
+// user/ci/kit/shquote.ci: what the desk types into a shell, AC-Q (docs/specs/2026-11-11-ac-q-launch-quoting.md). Pure.
+// Every path or name the desk types after a program word goes through `quote`, so cish reads it as one word and
+// nothing else; every line the desk types goes through `plain` first (hdesk.ci pl_run), so a line that could carry
+// a redirection, an expansion or a second command is never typed. kit/prompttitle.ci records an app only for a
+// plain line (AC-Tw).
+
+export const I64 QUOTE = 39;           // the single quote
+export const I64 BACKSLASH = 92;
+
+// Whether b may stand outside a quote in a plain line: a letter, a digit, a space or one of `_ . / -`.
+Bool bare(I64 b) {
+    if ((b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57)) { return true; }
+    return b == 32 || b == 95 || b == 46 || b == 47 || b == 45;
+}
+
+// Whether cmd is one simple command to cish whatever its bytes: words of letters, digits and `_ . / -`, parted by
+// spaces, and single-quoted runs as `quote` writes them (a quote inside is `'\''`). No expansion, redirection,
+// operator, comment or second command; no control byte or DEL, which the terminal would read before the shell.
+export Bool plain(in U8[_] cmd) {
+    Bool quoted = false;
+    I64 i = 0;
+    while (i < len(cmd)) {
+        I64 b = cmd[i] as I64;
+        if (b < 32 || b == 127) { return false; }
+        if (quoted) {
+            if (b == QUOTE) { quoted = false; }
+        } else if (b == QUOTE) {
+            quoted = true;
+        } else if (b == BACKSLASH) {           // only before a quote
+            if (i + 1 >= len(cmd) || (cmd[i + 1] as I64) != QUOTE) { return false; }
+            i = i + 1;
+        } else if (!bare(b)) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return len(cmd) > 0 && !quoted;
+}
+
+// Whether w is a bare program name: letters, digits and `_ . -`, not empty, not starting with `-` or `.`. What a
+// pin of `/bin/NAME` may type as NAME: no space (no second word), no slash (no way out of /bin).
+export Bool word(in U8[_] w) {
+    if (len(w) == 0 || w[0] == 45 || w[0] == 46) { return false; }
+    for k in 0..len(w) {
+        I64 b = w[k] as I64;
+        if (!bare(b) || b == 32 || b == 47) { return false; }
+    }
+    return true;
+}
+
+// Whether s holds no control byte and no DEL: what the desk may copy into its own log line, where a newline could
+// forge a line that a gate reads (hdesk.ci pl_pinned).
+export Bool printable(in U8[_] s) {
+    for k in 0..len(s) {
+        I64 b = s[k] as I64;
+        if (b < 32 || b == 127) { return false; }
+    }
+    return true;
+}
+
+// p as one single-quoted word appended to dst at `at`: `'`, p with each quote written `'\''`, `'`; a p that starts
+// with `-` gets `./` first, so a program cannot read it as an option. The new length, or -1 with nothing promised
+// of dst[at..] when p is empty, holds a control byte or DEL (the terminal would read it), or the line would pass
+// `limit` bytes or dst's end.
+export I64 quote(in U8[_] p, inout U8[_] dst, I64 at, I64 limit) {
+    I64 room = limit;
+    if (room > len(dst)) { room = len(dst); }
+    if (len(p) == 0 || at < 0 || at + 2 > room) { return -1; }
+    I64 n = at;
+    dst[n] = QUOTE as U8;
+    n = n + 1;
+    if (p[0] == 45) {
+        if (n + 2 > room) { return -1; }
+        dst[n] = 46;
+        dst[n + 1] = 47;
+        n = n + 2;
+    }
+    for k in 0..len(p) {
+        I64 b = p[k] as I64;
+        if (b < 32 || b == 127) { return -1; }
+        if (b == QUOTE) {
+            if (n + 4 > room) { return -1; }
+            dst[n] = QUOTE as U8;
+            dst[n + 1] = BACKSLASH as U8;
+            dst[n + 2] = QUOTE as U8;
+            dst[n + 3] = QUOTE as U8;
+            n = n + 4;
+        } else {
+            if (n + 1 > room) { return -1; }
+            dst[n] = p[k];
+            n = n + 1;
+        }
+    }
+    if (n + 1 > room) { return -1; }
+    dst[n] = QUOTE as U8;
+    return n + 1;
+}
+// SPDX-License-Identifier: Apache-2.0

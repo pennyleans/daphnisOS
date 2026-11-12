@@ -1,0 +1,271 @@
+// tests/dn6/prompt_ac_test.ci: hosted tests of the approval prompt with its passphrase field (AC-1c's L2, L8, L9 drawn
+// with DN-6 frame 8's parts as design note 26, frame 17, lays them out; approved by l 14:14Z). hdesk.ci is a program, so
+// cint test cannot import it: expand_by, keep_at, chan, corners_at, txt_w, ptxt, ptxt_mid, ring_type, shake_at and
+// prompt_ac_at below are hdesk.ci's, copied verbatim, and plate_at is win_row's order for the OV window (corners
+// kept, ground, the 1x drawing through the pen, spread, corners). The sums are tools/check-hdesk.py's
+// dn_prompt_ac_rows (the twin, printed by --prompt-ac-sums) for DN_PROMPT_AC's three states at UI scale 1, 2 and 3 in
+// both themes. Run by check.sh.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.draw;
+import user.ci.kit.shape;
+import user.ci.kit.pen;
+import user.ci.kit.icons3;
+import user.ci.kit.anim;
+
+const I64 TBASE = 13;       // hdesk.ci's
+const I64 KP_W = 420;
+const I64 KP_H2 = 300;
+const I64 SHAKE_MS = 240;
+const I64 RING = 1;          // hdesk.ci's (DN-29)
+const I64 R_PLATE = 12;
+const I64 R_CTRL = 6;
+const I64 R_KEY = 4;
+
+U32[3840] row;
+U32[256] under;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+void expand_by(I64 x0, I64 n, I64 m) {
+    if (m == 1) { return; }
+    for qq in 0..n {
+        I64 q = n - 1 - qq;
+        U32 v = row[x0 + q];
+        for t in 0..m { row[x0 + m * q + t] = v; }
+    }
+}
+
+void keep_at(I64 x0, I64 x1, I64 r) {
+    for k in 0..r {
+        under[k] = row[x0 + k];
+        under[r + k] = row[x1 - r + k];
+    }
+}
+
+I64 chan(in U32[_] b, I64 k, I64 c) { return ((b[k] >> ((8 * c) as U32)) & 255) as I64; }
+
+void corners_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 r, I64 b, U32 e, I64 y) {
+    if (y < y0 || y >= y1 || (y >= y0 + r && y < y1 - r)) { return; }
+    I64 py = y - y0;
+    if (y >= y1 - r) { py = y1 - 1 - y; }
+    U32[1] ec;
+    ec[0] = e;
+    for px in 0..r {
+        I64 nu = 0;
+        I64 no = 0;
+        for s in 0..4 {
+            for t in 0..4 {
+                I64 dx = 8 * r - (8 * px + 2 * s + 1);
+                I64 dy = 8 * r - (8 * py + 2 * t + 1);
+                I64 d2 = dx * dx + dy * dy;
+                if (d2 > 64 * r * r) {
+                    nu = nu + 1;
+                } else if (d2 > 64 * (r - b) * (r - b)) {
+                    no = no + 1;
+                }
+            }
+        }
+        I64 ni = 16 - nu - no;
+        for side in 0..2 {
+            I64 x = x0 + px;
+            I64 k = px;
+            if (side == 1) {
+                x = x1 - 1 - px;
+                k = 2 * r - 1 - px;
+            }
+            I64 c = 0;
+            for ch in 0..3 {
+                I64 v = (nu * chan(under, k, ch) + no * chan(ec, 0, ch) + ni * chan(row, x, ch) + 8) / 16;
+                c = c | (v << (8 * ch));
+            }
+            draw.put(row, x, c as U32);
+        }
+    }
+}
+
+I64 txt_w(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+
+I64 ptxt(I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text(row, x0, y0 + TBASE, x1, s, n, c, f);
+}
+
+I64 ptxt_mid(I64 x0, I64 span, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text_mid(row, x0, span, y0 + TBASE, x1, s, n, c, f);
+}
+
+I64 ring_type(I64 r) {
+    if (r == tokens.OCHRE) { return tokens.ON_OCHRE; }
+    return tokens.ON_FILL;
+}
+
+I64 shake_at(I64 e) {
+    if (e < 0 || e >= SHAKE_MS * anim.MS) { return 0; }
+    I64[7] kf;
+    kf[0] = 0;
+    kf[1] = 6;
+    kf[2] = 0 - 6;
+    kf[3] = 6;
+    kf[4] = 0 - 6;
+    kf[5] = 6;
+    kf[6] = 0;
+    I64 leg = SHAKE_MS * anim.MS / 6;
+    I64 s = e / leg;
+    I64 p = anim.progress(anim.OUT, e - s * leg, leg);
+    return kf[s] + ((kf[s + 1] - kf[s]) * p) / 1000;
+}
+
+void prompt_ac_at(I64 x0, I64 y0, I64 rc, in U8[_] hd, I64 hn, Bool par, in U8[_] sb, I64 sn, in U8[_] kd, I64 kn,
+                  in U8[_] ti, I64 tn, in U8[_] fd, I64 fn, I64 ic, in U8[_] rt, I64 rn, I64 np, Bool bad, I64 dx,
+                  in U8[_] nt, I64 nn, in U8[_] ky, I64 yn, in U8[_] go, I64 gn, I64 y) {
+    I64 x1 = x0 + KP_W;
+    I64 on = ring_type(rc);
+    pen.rect(row, x0, y0, x1, y0 + KP_H2, tok(rc));   // DN-36: one shape in rc, the header its top 36
+    pen.lower_round(row, x0 + RING, y0 + 36, x1 - RING, y0 + KP_H2 - RING, R_PLATE - RING, tok(tokens.PAPER));
+    I64 e = ptxt_mid(x0, KP_W, y0 + 10, x1, hd, hn, tok(on), faces.LABEL);
+    pen.round(row, x0 + 16, y0 + 52, x1 - 16, y0 + 88, R_CTRL, tok(tokens.SURF2));
+    if (par) {
+        pen.round(row, x0 + 28, y0 + 66, x0 + 36, y0 + 74, 4, tok(rc));
+        I64 kx = pen.x(x1 - 28) - pen.width(kd, kn, faces.BODY);
+        e = ctext.text(row, pen.row_y(), pen.x(x0 + 44), pen.y(y0 + 62 + TBASE), kx - 8 * pen.zoom(), sb, sn,
+                       tok(tokens.INK), faces.NAME_BOLD, pen.zoom());
+        e = pen.text_right(row, x1 - 28, y0 + 62 + TBASE, kd, kn, tok(tokens.INK_DIM), faces.BODY);
+    } else {
+        e = ptxt(x0 + 28, y0 + 62, x1 - 28, sb, sn, tok(tokens.INK), faces.MONO_BOLD);   // DN-26: mono 13/600
+    }
+    e = ptxt(x0 + 16, y0 + 100, x1 - 16, b"requested from:", 15, tok(tokens.INK_DIM), faces.BODY);
+    if (y >= y0 + 125 && y < y0 + 141) {
+        icons3.icon_at(row, pen.row_y(), pen.x(x0 + 16), pen.y(y0 + 125), ic, 16, pen.zoom(), tok(tokens.PAPER));
+    }
+    // DN-26: the title, then 8 px on the folder, both mono 12 INK; the folder cut from its left behind `...` when the
+    // row is short; the title never cut; the pid or the asker's name at the right in INK_DIM.
+    I64 z = pen.zoom();
+    I64 px = pen.x(x1 - 16) - pen.width(rt, rn, faces.PATH);
+    I64 bl = pen.y(y0 + 125 + TBASE);
+    I64 tx = pen.x(x0 + 40);
+    e = ctext.text(row, pen.row_y(), tx, bl, px - 8 * z, ti, tn, tok(tokens.INK), faces.PATH, z);
+    I64 fx = tx + pen.width(ti, tn, faces.PATH) + 8 * z;
+    I64 room = px - 8 * z - fx;
+    if (fn > 0 && room > 0) {
+        U8[40] f;
+        I64 k = 0;
+        I64 m = 0;
+        if (pen.width(fd, fn, faces.PATH) > room) {
+            for q in 0..3 { f[q] = '.'; }
+            m = 3;
+            k = 1;
+            while (k < fn && pen.width(b"...", 3, faces.PATH) + pen.width(fd[k..fn], fn - k, faces.PATH) > room) {
+                k = k + 1;
+            }
+        }
+        for q in k..fn { f[m + q - k] = fd[q]; }
+        e = ctext.text(row, pen.row_y(), fx, bl, px - 8 * z, f, m + fn - k, tok(tokens.INK), faces.PATH, z);
+    }
+    e = pen.text_right(row, x1 - 16, y0 + 125 + TBASE, rt, rn, tok(tokens.INK_DIM), faces.PATH);
+    I64 fr = tokens.ULTRAMARINE;
+    if (bad) { fr = tokens.CADMIUM; }
+    pen.round(row, x0 + 16 + dx, y0 + 157, x1 - 16 + dx, y0 + 193, R_CTRL, tok(tokens.SURF2));
+    pen.ring(row, x0 + 16 + dx, y0 + 157, x1 - 16 + dx, y0 + 193, R_CTRL, 2, tok(fr));
+    I64 d = np;
+    if (d > (KP_W - 56) / 14) { d = (KP_W - 56) / 14; }
+    for k in 0..d {
+        pen.round(row, x0 + 28 + dx + 14 * k, y0 + 171, x0 + 36 + dx + 14 * k, y0 + 179, 4, tok(tokens.INK));
+    }
+    pen.rect(row, x0 + 28 + dx + 14 * d, y0 + 166, x0 + 30 + dx + 14 * d, y0 + 184, tok(tokens.INK));
+    e = ptxt(x0 + 16, y0 + 201, x1 - 16, nt, nn, tok(tokens.INK_DIM), faces.SMALL);
+    I64 kw = txt_w(ky, yn, faces.PATH) + 12;
+    I64 rw = 12 + kw + 10 + txt_w(go, gn, faces.NAME) + 12;
+    pen.round(row, x0 + 16, y0 + 248, x0 + 16 + rw, y0 + 284, R_CTRL, tok(rc));
+    pen.ring(row, x0 + 28, y0 + 256, x0 + 28 + kw, y0 + 276, R_KEY, 1, tok(on));
+    e = ptxt_mid(x0 + 28, kw, y0 + 258, x0 + 28 + kw, ky, yn, tok(on), faces.PATH);
+    e = ptxt(x0 + 38 + kw, y0 + 258, x0 + 16 + rw, go, gn, tok(on), faces.NAME);
+    I64 ew = txt_w(b"Esc", 3, faces.PATH) + 12;
+    I64 fw = 12 + ew + 10 + txt_w(b"Refuse", 6, faces.NAME) + 12;
+    pen.round(row, x1 - 16 - fw, y0 + 248, x1 - 16, y0 + 284, R_CTRL, tok(tokens.SURF1));
+    pen.ring(row, x1 - 4 - fw, y0 + 256, x1 - 4 - fw + ew, y0 + 276, R_KEY, 1, tok(tokens.RULE));
+    e = ptxt_mid(x1 - 4 - fw, ew, y0 + 258, x1 - 4 - fw + ew, b"Esc", 3, tok(tokens.INK_DIM), faces.PATH);
+    e = ptxt(x1 + 6 - fw + ew, y0 + 258, x1 - 16, b"Refuse", 6, tok(tokens.INK), faces.NAME);
+}
+
+// win_row and win_body for the OV window holding state k of the prompt, its 1x top left at device (x0, y0), scale s.
+void plate_at(I64 x0, I64 y0, I64 s, I64 k, I64 y) {
+    I64 x1 = x0 + KP_W * s;
+    I64 y1 = y0 + KP_H2 * s;
+    if (y < y0 || y >= y1) { return; }
+    I64 rc = tokens.SIENNA;
+    if (k == 1) { rc = tokens.CADMIUM; }
+    if (k == 2) { rc = tokens.OCHRE; }
+    I64 r = R_PLATE * s;
+    Bool rnd = y < y0 + r || y >= y1 - r;
+    if (rnd) { keep_at(x0, x1, r); }
+    draw.paint(row, x0, x1, tok(tokens.PAPER));
+    I64 z = 1;
+    if (s % 2 == 0) { z = 2; }
+    pen.at(x0, y0, z, y0 + (y - y0) / (s / z));
+    I64 yy = y0 + (y - y0) / s;
+    if (k == 0) {
+        prompt_ac_at(x0, y0, rc, b"PARENT APPROVAL", 15, true, b"fetch", 5, b"Network", 7, b"cish", 4, b"/home/mia", 9,
+                     icons3.TERMINAL, b"mia", 3, 7, false, 0, b"Your password, not mia's.", 25, b"Enter", 5,
+                     b"Approve", 7, yy);
+    } else if (k == 1) {
+        prompt_ac_at(x0, y0, rc, b"KERNEL ELEVATION REQUEST", 24, false, b"ced /etc/hosts", 14, b"", 0,
+                     b"cish", 4, b"/home/ana", 9, icons3.TERMINAL, b"pid 9", 5, 3, false, 0, b"wait 4 s", 8,
+                     b"Super+Enter", 11, b"Run", 3, yy);
+    } else {
+        prompt_ac_at(x0, y0, rc, b"PARENT APPROVAL", 15, true, b"cp", 2, b"Disk", 4, b"a-long-title-16c", 16,
+                     b"/home/mia/photos/2026/summer/raw", 32, icons3.TERMINAL, b"mia", 3, 0, true, 0 - 4, b"That password did not match.", 28, b"Enter", 5,
+                     b"Approve", 7, yy);
+    }
+    expand_by(x0, KP_W * z, s / z);
+    if (rnd) { corners_at(x0, y0, x1, y1, r, 0, tok(rc), y); }   // DN-36: no stroke
+}
+
+// The sum of a 452 x 316 1x frame (MANTLE) with state k of the prompt at (16, 8), at UI scale s.
+I64 prompt_sum(I64 k, I64 s) {
+    I64 h = 0;
+    for y in 0..316 * s {
+        draw.paint(row, 0, 452 * s, tok(tokens.MANTLE));
+        plate_at(16 * s, 8 * s, s, k, y);
+        for x in 0..452 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "the approval prompt at UI scale 1, 2 and 3 equals the twin's (tools/check-hdesk.py dn_prompt_ac_rows), dark" {
+    tokens.set_theme(tokens.DARK);
+    assert(prompt_sum(0, 1) == 48144801);
+    assert(prompt_sum(0, 2) == 209494927);
+    assert(prompt_sum(0, 3) == 677999987);
+    assert(prompt_sum(1, 1) == 299430077);
+    assert(prompt_sum(1, 2) == 915872661);
+    assert(prompt_sum(1, 3) == 380244860);
+    assert(prompt_sum(2, 1) == 95533343);
+    assert(prompt_sum(2, 2) == 534420111);
+    assert(prompt_sum(2, 3) == 576766651);
+}
+
+test "the approval prompt at UI scale 1, 2 and 3 equals the twin's (tools/check-hdesk.py dn_prompt_ac_rows), light" {
+    tokens.set_theme(tokens.LIGHT);
+    assert(prompt_sum(0, 1) == 191014808);
+    assert(prompt_sum(0, 2) == 290157103);
+    assert(prompt_sum(0, 3) == 337756985);
+    assert(prompt_sum(1, 1) == 742543584);
+    assert(prompt_sum(1, 2) == 734007465);
+    assert(prompt_sum(1, 3) == 56835309);
+    assert(prompt_sum(2, 1) == 776426391);
+    assert(prompt_sum(2, 2) == 33852060);
+    assert(prompt_sum(2, 3) == 494978264);
+    tokens.set_theme(tokens.DARK);
+}
+test "FV-1's shake: 3 times by 6 px over 240 ms, at rest before and after" {
+    assert(shake_at(0 - 1) == 0 && shake_at(0) == 0);
+    assert(shake_at(40 * anim.MS) == 6 && shake_at(80 * anim.MS) == 0 - 6 && shake_at(120 * anim.MS) == 6);
+    assert(shake_at(160 * anim.MS) == 0 - 6 && shake_at(200 * anim.MS) == 6);
+    assert(shake_at(240 * anim.MS) == 0 && shake_at(10000 * anim.MS) == 0);
+    for t in 0..240 {
+        I64 v = shake_at(t * anim.MS);
+        assert(v >= 0 - 6 && v <= 6);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

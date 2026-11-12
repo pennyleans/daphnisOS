@@ -1,0 +1,42 @@
+// tests/hosted/trash/shctl.ci: user/ci/shctl.ci's calls that user/ci/trashfs.ci makes, over tests/hosted/trash's
+// memfs, with the real calls' contracts: sh_dirents answers every name or -E2BIG (user/ci/host.c r_sh_dirents).
+import user.ci.memfs;
+
+export I64 sh_stat(in U8[_] path, I64 follow, inout U8[_] buf) {
+    I64 k = memfs.kind(path);
+    if (k == 3 && follow != 0) { k = memfs.through(path); }   // stat follows a link to what it names
+    if (k == 0) { return 0 - 2; }
+    I64 m = 0x81A4;
+    if (k == 1) { m = 0x41C0; }
+    if (k == 3 && follow == 0) { m = 0xA1FF; }
+    buf[0] = (m & 255) as U8;
+    buf[1] = ((m >> 8) & 255) as U8;
+    buf[2] = 0;
+    buf[3] = 0;
+    return 0;
+}
+
+export I64 sh_open(in U8[_] path, I64 flags, I64 mode) {
+    if (mode < 0) { return 0 - 22; }
+    return memfs.open(path, flags);
+}
+
+export I64 fd_read(I64 fd, inout U8[_] buf) { return memfs.read(fd, buf); }
+export I64 fd_write(I64 fd, in U8[_] bytes) { return memfs.write(fd, bytes); }
+export I64 fd_close(I64 fd) { return memfs.close(fd); }
+export I64 sh_dirents(in U8[_] path, inout U8[_] buf) { return memfs.names(path, buf, true); }
+
+export I64 sh_environ(I64 i, inout U8[_] buf) {
+    if (i > 0) { return 0 - 2; }
+    U8[512] h;
+    I64 n = memfs.home(h);
+    if (n == 0) { return 0 - 2; }
+    buf[0] = 'H';
+    buf[1] = 'O';
+    buf[2] = 'M';
+    buf[3] = 'E';
+    buf[4] = '=';
+    for k in 0..n { buf[5 + k] = h[k]; }
+    return 5 + n;
+}
+// SPDX-License-Identifier: Apache-2.0

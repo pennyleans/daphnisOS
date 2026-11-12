@@ -1,0 +1,31 @@
+{
+  "id": "held-emoji-in-three-cuts",
+  "rules": [
+    "KEY-2",
+    "KEY-1"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "f0",
+    "",
+    "9f98",
+    "",
+    "",
+    "80"
+  ],
+  "expect": {
+    "text": "\ud83d\ude00",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

@@ -1,0 +1,152 @@
+// user/ci/cish/msg.ci: one diagnostic line at a time, `cish: ...`, built here and written to descriptor 2 whole.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.cish.lex;
+
+U8[1024] line;
+I64 n = 0;
+
+export void begin() {
+    n = 0;
+    text(b"cish: ");
+}
+
+export void text(in U8[_] s) {
+    for i in 0..len(s) {
+        if (n < 1023) {
+            line[n] = s[i];
+            n = n + 1;
+        }
+    }
+}
+
+export void byte(U8 b) {
+    if (n < 1023) {
+        line[n] = b;
+        n = n + 1;
+    }
+}
+
+export void num(I64 v) {
+    U8[24] d;
+    I64 k = 0;
+    I64 x = v;
+    if (x < 0) {
+        byte('-');
+        x = 0 - x;
+    }
+    if (x == 0) { byte('0'); }
+    while (x > 0) {
+        d[k] = ((x % 10) as U8) + 48;
+        x = x / 10;
+        k = k + 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        byte(d[k]);
+    }
+}
+
+// The source bytes a..b.
+export void span(I64 a, I64 b) {
+    for i in a..b { byte(lex.at(i)); }
+}
+
+// Ends the line and writes it.
+export void send() {
+    byte('\n');
+    _ = shctl.fd_write(2, line[0..n]);
+    n = 0;
+}
+
+// Writes s to descriptor fd whole, in pieces the row takes (4,096 bytes); false on an error.
+export Bool write_all(I64 fd, in U8[_] s) {
+    I64 at = 0;
+    while (at < len(s)) {
+        I64 e = at + 4096;
+        if (e > len(s)) { e = len(s); }
+        I64 r = shctl.fd_write(fd, s[at..e]);
+        if (r < 0) { return false; }
+        at = e;
+    }
+    return true;
+}
+
+// errno e as words, else `error E`.
+export void reason(I64 e) {
+    if (e == 2) {
+        text(b"no such file or directory");
+    } else if (e == 13) {
+        text(b"permission denied");
+    } else if (e == 20) {
+        text(b"not a directory");
+    } else if (e == 21) {
+        text(b"is a directory");
+    } else if (e == 9) {
+        text(b"bad descriptor");
+    } else if (e == 30) {
+        text(b"read-only file system");
+    } else if (e == 28) {
+        text(b"no space left");
+    } else if (e == 12) {
+        text(b"out of memory");
+    } else if (e == 36) {
+        text(b"name too long");
+    } else if (e == 7) {
+        text(b"argument list too long");
+    } else if (e == 8) {
+        text(b"not an executable");
+    } else {
+        text(b"error ");
+        num(e);
+    }
+}
+
+// A syntax error at token t, said (an interactive cish goes on at the next prompt).
+export void say_syntax(I64 t) {
+    begin();
+    text(b"syntax error: unexpected ");
+    if (lex.kind(t) == lex.T_END) {
+        text(b"end of file");
+    } else if (lex.kind(t) == lex.T_NL) {
+        text(b"newline");
+    } else {
+        span(lex.start(t), lex.stop(t));
+    }
+    send();
+}
+
+// Syntax outside the subset at token t, said.
+export void say_unsupported(I64 t) {
+    begin();
+    text(b"not supported: ");
+    span(lex.start(t), lex.stop(t));
+    send();
+}
+
+// A capacity passed, said: `cish: limit: NAME N`.
+export void say_limit(in U8[_] name, I64 v) {
+    begin();
+    text(b"limit: ");
+    text(name);
+    byte(' ');
+    num(v);
+    send();
+}
+
+// Each ends cish, status 2 (XCU 2.8.1; gate 4).
+export void syntax(I64 t) {
+    say_syntax(t);
+    dev.exit_now(2);
+}
+
+export void unsupported(I64 t) {
+    say_unsupported(t);
+    dev.exit_now(2);
+}
+
+export void limit(in U8[_] name, I64 v) {
+    say_limit(name, v);
+    dev.exit_now(2);
+}
+// SPDX-License-Identifier: Apache-2.0

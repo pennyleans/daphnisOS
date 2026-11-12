@@ -1,0 +1,150 @@
+// user/ci/cvim/test_ex.ci: the core's command line (ex.ci, CV-4b) typed as keys: ranges, :s and its flags and
+// replacement specials, :&, :&&, :g, :v, :d, :N, undo of a whole command, and the messages. The text each leaves is
+// the one Vim 9.1 leaves; the goldens of tests/cvim/edit_cases.py's ex group check the same against Vim itself.
+import user.ced.keys;
+import user.ci.cvim.key;
+import user.ci.cvim.buf;
+import user.ci.cvim.state;
+import user.ci.cvim.text;
+import user.ci.cvim.ex;
+import user.ci.cvim.pat;
+
+// One key: the command line's first, then the core's.
+void one(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+         inout I64[_] et, inout I64[_] pt, I64 k) {
+    if (ex.feed(r, x, orig, add, sp, u, et, pt, k) == ex.NOT_MINE) { key.step(r, x, orig, add, sp, u, k); }
+}
+
+// The script s typed: every byte a key, and \r (13) Enter.
+void typed(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+           inout I64[_] et, inout I64[_] pt, in U8[_] s) {
+    for i in 0..len(s) {
+        I64 k = s[i] as I64;
+        if (k == 13) { k = keys.K_ENTER; }
+        if (k == 27) { k = keys.K_ESC; }
+        one(r, x, orig, add, sp, u, et, pt, k);
+    }
+}
+
+Bool text_is(in I64[_] x, in U8[_] orig, in U8[_] add, in U8[_] want) {
+    if (buf.total(x) != len(want)) { return false; }
+    U8[4096] got;
+    if (len(want) > 0) { buf.copy_out(x, orig, add, 0, got[0..len(want)]); }
+    for i in 0..len(want) {
+        if (got[i] != want[i]) { return false; }
+    }
+    return true;
+}
+
+Bool msg_is(in I64[_] et, in U8[_] want) {
+    if (ex.msg_n(et) != len(want)) { return false; }
+    for i in 0..len(want) {
+        if (ex.msg_byte(et, i) != want[i]) { return false; }
+    }
+    return true;
+}
+
+// A session on file text f, script s run; the text must be want.
+Bool after(in U8[_] f, in U8[_] s, in U8[_] want) {
+    U8[4096] orig;
+    U8[65536] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[196608] sp;
+    I64[278528] u;
+    I64[270336] et;
+    I64[368640] pt;
+    for i in 0..len(f) { orig[i] = f[i]; }
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig[0..len(f)], add));
+    ex.init(et);
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, s);
+    return text_is(x, orig[0..len(f)], add, want);
+}
+
+test ":s, its g flag, and the ranges % N,M . +N and ;" {
+    assert(after(b"aa\nxa\n", b":s/a/b/\r", b"ba\nxa\n"));
+    assert(after(b"aa\nxa\n", b":%s/a/b/g\r", b"bb\nxb\n"));
+    assert(after(b"a\na\na\na\n", b":2,3s/a/b/\r", b"a\nb\nb\na\n"));
+    assert(after(b"a\na\na\n", b":.,+1s/^/# /\r", b"# a\n# a\na\n"));
+    assert(after(b"a\na\na\na\n", b"j:.;+1s/a/c/\r", b"a\nc\nc\na\n"));
+    assert(after(b"a\na\na\n", b":s/a/b/ 2\r", b"b\nb\na\n"));          // a count after the flags
+    assert(after(b"a\na\na\n", b":$s/a/z/\r", b"a\na\nz\n"));
+    assert(after(b"a\na\na\n", b":0s/a/z/\r", b"z\na\na\n"));           // 0 is line 1
+}
+
+test "the replacement: groups, &, ~, \\r, case" {
+    assert(after(b"one two\n", b":s/\\(\\w\\+\\) \\(\\w\\+\\)/\\2 \\1/\r", b"two one\n"));
+    assert(after(b"xay\n", b":s/a/[&]/\r", b"x[a]y\n"));
+    assert(after(b"xay\n", b":s/a/\\&/\r", b"x&y\n"));
+    assert(after(b"xay\n", b":s/a/\\r/\r", b"x\ny\n"));
+    assert(after(b"hello world\n", b":s/\\w\\+/\\u&/g\r", b"Hello World\n"));
+    assert(after(b"hello world\n", b":s/.*/\\U&/\r", b"HELLO WORLD\n"));
+    assert(after(b"ab\nab\n", b":s/a/X/\r:2s/b/~Y/\r", b"Xb\naXY\n"));
+}
+
+test ":& and :&& repeat the last :s; & as a flag keeps its flags" {
+    assert(after(b"aa\naa\n", b":s/a/b/g\rj:&\r", b"bb\nba\n"));
+    assert(after(b"aa\naa\n", b":s/a/b/g\rj:&&\r", b"bb\nbb\n"));
+    assert(after(b"aa\naa\n", b":s/a/b/g\r:2s\r", b"bb\nba\n"));
+}
+
+test ":g, :g! and :v with d and s, as one undo step" {
+    assert(after(b"a\nx1\nb\nx2\n", b":g/x/d\r", b"a\nb\n"));
+    assert(after(b"a\nx1\nb\nx2\n", b":v/x/d\r", b"x1\nx2\n"));
+    assert(after(b"a\nx1\nb\nx2\n", b":g!/x/d\r", b"x1\nx2\n"));
+    assert(after(b"x\nx\nx\n", b":g/x/s/x/y/\r", b"y\ny\ny\n"));
+    assert(after(b"x\nx\nx\n", b":g/x/s/x/y/\ru", b"x\nx\nx\n"));
+    assert(after(b"x\na\nx\na\n", b":g/x/.,+1d\r", b""));
+    assert(after(b"x\nx\n", b":g/x/s/x/a\\rb/\r", b"a\nb\na\nb\n"));
+}
+
+test ":d with a register and a count; :N and a range alone move the cursor" {
+    assert(after(b"1\n2\n3\n4\n", b":2,3d\r", b"1\n4\n"));
+    assert(after(b"1\n2\n3\n4\n", b":2d 2\r", b"1\n4\n"));
+    assert(after(b"1\n2\n3\n", b":2d a\r\"ap", b"1\n3\n2\n"));
+    assert(after(b"1\n2\n3\n", b":3\rdd", b"1\n2\n"));
+    assert(after(b"1\n2\n3\n", b":99\rdd", b"1\n2\n"));
+    assert(after(b"1\n2\n3\n", b":%d\r", b""));
+    assert(after(b"1\n2\n3\n", b":%s/./x/\ru", b"1\n2\n3\n"));
+}
+
+test "Visual : runs on '<,'>; ignorecase and smartcase" {
+    assert(after(b"a\na\na\n", b"Vj:s/a/b/\r", b"b\nb\na\n"));
+    assert(after(b"A\n", b":s/a/b/\r", b"b\n"));
+    assert(after(b"a\n", b":s/A/b/\r", b"a\n"));
+    assert(after(b"A\n", b":s/a/b/I\r", b"A\n"));
+}
+
+test "messages and refusals" {
+    U8[64] orig;
+    U8[65536] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[196608] sp;
+    I64[278528] u;
+    I64[270336] et;
+    I64[368640] pt;
+    U8[10] f = b"a\na\na\nb\nc\n";
+    for i in 0..len(f) { orig[i] = f[i]; }
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig[0..len(f)], add));
+    ex.init(et);
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":s/zz/y/\r");
+    assert(ex.msg_err(et) && msg_is(et, b"E486: Pattern not found: zz"));
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":%s/a/q/\r");
+    assert(msg_is(et, b"3 substitutions on 3 lines"));
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":9d\r");
+    assert(msg_is(et, b"E16: Invalid range"));
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":1,3d\r");
+    assert(msg_is(et, b"3 fewer lines"));
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":g/zz/d\r");
+    assert(!ex.msg_err(et) && msg_is(et, b"Pattern not found: zz"));
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":s/a\\nb/c/\r");
+    assert(msg_is(et, b"not in cvim: \\n"));
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":'q,.d\r");
+    assert(msg_is(et, b"E20: Mark not set"));
+    typed(r, x, orig[0..len(f)], add, sp, u, et, pt, b":foo\r");
+    assert(ex.cmd_n(et) == 3);                                // a session command: the program's
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,20 @@
+{
+  "id": "new-file-empty-stays-empty",
+  "rules": [
+    "TEXT-1"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "new": true,
+  "chunks": [],
+  "expect": {
+    "text": ""
+  }
+}

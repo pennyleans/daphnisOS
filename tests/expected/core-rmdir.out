@@ -1,0 +1,37 @@
+$ box
+-- stderr
+rmdir: box: Directory not empty
+status 1
+$ box/in/deep
+-- stderr
+rmdir: box/in/deep: Directory not empty
+status 1
+$ missing
+-- stderr
+rmdir: missing: No such file or directory
+status 1
+$ text.txt
+-- stderr
+rmdir: text.txt: Not a directory
+status 1
+$ missing box
+-- stderr
+rmdir: missing: No such file or directory
+rmdir: box: Directory not empty
+status 1
+$ -p box/in/deep
+-- stderr
+rmdir: box/in/deep: Directory not empty
+status 1
+$ -- box
+-- stderr
+rmdir: box: Directory not empty
+status 1
+$ -v box
+-- stderr
+rmdir: not supported: -v
+status 2
+$ 
+-- stderr
+rmdir: missing operand
+status 2

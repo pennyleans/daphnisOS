@@ -1,0 +1,28 @@
+{
+  "id": "esc-tail-delete-on-a-selection-stays-text",
+  "rules": [
+    "KEY-2",
+    "KEY-4"
+  ],
+  "text": "alpha beta gamma",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    6,
+    10
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "5b337e"
+  ],
+  "expect": {
+    "text": "alpha beta[3~ gamma",
+    "sel": [
+      13,
+      13
+    ]
+  }
+}

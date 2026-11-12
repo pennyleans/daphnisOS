@@ -1,0 +1,113 @@
+// tests/ac/blake2b_test.ci: hosted tests of BLAKE2b (AC-1b, user/ci/blake2b.ci). "abc" is RFC 7693 appendix A; the
+// rest are CPython hashlib's (tools/ac-vectors.py blake2b), across the block edges 127, 128 and 129 and keyed.
+// Run by check.sh: cint test --root . tests/ac/blake2b_test.ci
+
+import user.ci.blake2b;
+
+I64 nib(U8 c) {
+    if (c >= 48 && c <= 57) { return (c - 48) as I64; }
+    return (c - 87) as I64;
+}
+
+Bool same(in U8[_] got, I64 n, in U8[_] hex) {
+    if (len(hex) != 2 * n) { return false; }
+    for i in 0..n {
+        I64 want = nib(hex[2 * i]) * 16 + nib(hex[2 * i + 1]);
+        if ((got[i] as I64) != want) { return false; }
+    }
+    return true;
+}
+
+void fill_msg(inout U8[_] m, I64 n) {
+    for i in 0..n {
+        m[i] = ((i * 7 + (i >> 8)) & 255) as U8;
+    }
+}
+
+void fill_key(inout U8[_] k) {
+    for i in 0..64 {
+        k[i] = i as U8;
+    }
+}
+
+test "rfc 7693 appendix a: blake2b-512 of abc" {
+    U8[64] d;
+    U8[0] nokey;
+    blake2b.b2_digest("abc", 3, nokey, 0, d, 64);
+    assert(same(d, 64, "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"));
+}
+
+test "the empty message, unkeyed and keyed" {
+    U8[64] d;
+    U8[0] nokey;
+    U8[0] empty;
+    U8[64] key;
+    fill_key(key);
+    blake2b.b2_digest(empty, 0, nokey, 0, d, 64);
+    assert(same(d, 64, "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce"));
+    blake2b.b2_digest(empty, 0, key, 64, d, 64);
+    assert(same(d, 64, "10ebb67700b1868efb4417987acf4690ae9d972fb7a590c2f02871799aaa4786b5e996e8f0f4eb981fc214b005f42d2ff4233499391653df7aefcbc13fc51568"));
+}
+
+test "block edges, 32-byte digests" {
+    U8[1000] m;
+    U8[32] d;
+    U8[0] nokey;
+    fill_msg(m, 1000);
+    blake2b.b2_digest(m, 127, nokey, 0, d, 32);
+    assert(same(d, 32, "4ff62e7c4c43fe101a078479c48836be4907d9d498dcc577ca89d694b2c11f9b"));
+    blake2b.b2_digest(m, 128, nokey, 0, d, 32);
+    assert(same(d, 32, "14696d2a98d9f8a280da8b132b1045b345e1033759c6b02fcc4ee885c8ae7c37"));
+    blake2b.b2_digest(m, 129, nokey, 0, d, 32);
+    assert(same(d, 32, "3934215260b1039be9d9d2b073b059bcd50120c327a22af93eb4d98cf821c14c"));
+    blake2b.b2_digest(m, 256, nokey, 0, d, 32);
+    assert(same(d, 32, "3d0cb2693dfbac42af5a6cc960953fea8714aa39c4bcd054ef61d6b5e98ade4a"));
+    blake2b.b2_digest(m, 1000, nokey, 0, d, 32);
+    assert(same(d, 32, "38981cec8fd0971914a759c4fac0538dbb29495eec4aea07f277e1f5f8562d27"));
+}
+
+test "block edges, keyed, 64-byte digests" {
+    U8[1000] m;
+    U8[64] d;
+    U8[64] key;
+    fill_msg(m, 1000);
+    fill_key(key);
+    blake2b.b2_digest(m, 127, key, 64, d, 64);
+    assert(same(d, 64, "651710ada86dc4258d86caa79e2ae31dff3eb6d9e00b49c6ebf3e057bc80157a123c3c5fb7798e0ff15300d11e955d084ca45d0def5255e7572d4189589e4679"));
+    blake2b.b2_digest(m, 128, key, 64, d, 64);
+    assert(same(d, 64, "714c903d6ec9123fbd076a081ff190de7e3637e8ae8706d29b101a7b30aded3c3271dbb140a39196dd6ce9e0b070ae2f24378752ffa7df4efe844fdb119839b3"));
+    blake2b.b2_digest(m, 129, key, 64, d, 64);
+    assert(same(d, 64, "68ac867ed59d2430310c066b2520d6fcbaae41ccdd88d38b70d357f0452acacba4a57818e47a753becf146c19c76f47c29682897e748802692f93489bf03bee0"));
+    blake2b.b2_digest(m, 256, key, 64, d, 64);
+    assert(same(d, 64, "5ca6daf1e91b90770337672c34548eda3579c4ce3301ebb0455f27cd105422197a02c9d299fc307107a891a7677334df9677f32ee1d65636ce155f7b4e1bcd9a"));
+    blake2b.b2_digest(m, 1000, key, 64, d, 64);
+    assert(same(d, 64, "72d9eb2f1b18623b872355acb48f84bbd96ffaa9fca900b8a13ff90c39fbf71e554390b153e7c1bf82dfc5d0946b9af7627fa8a5ef81525f443e64dcbfaf89f2"));
+}
+
+test "a short key and a 16-byte digest" {
+    U8[16] d;
+    blake2b.b2_digest("abc", 3, "daphn", 5, d, 16);
+    assert(same(d, 16, "e5b18bd3719a98b2a5a74d911d650b1b"));
+}
+
+test "streaming in uneven pieces equals one call" {
+    U8[1000] m;
+    U8[64] one;
+    U8[64] parts;
+    U8[64] key;
+    fill_msg(m, 1000);
+    fill_key(key);
+    blake2b.b2_digest(m, 1000, key, 64, one, 64);
+    blake2b.Blake2b[1] s;
+    blake2b.b2_init(s, 64, key, 64);
+    blake2b.b2_update(s, m, 0, 1);
+    blake2b.b2_update(s, m, 1, 127);
+    blake2b.b2_update(s, m, 128, 0);
+    blake2b.b2_update(s, m, 128, 300);
+    blake2b.b2_update(s, m, 428, 572);
+    blake2b.b2_final(s, parts);
+    for i in 0..64 {
+        assert(one[i] == parts[i]);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,22 @@
+// hl_sample: one of each of CV-6's roles, drawn by tests/cvim/hl_proof.py as cvim draws a .ci file.
+import user.ci.cvim.text;
+
+/* a block comment
+   /* nested */ over lines */
+export struct Point {
+    I64 x;
+    Q8.8 scale;
+}
+
+const I64 LIMIT = 0x40;
+
+export I64 widest(in U8[_] row, I64 n) {
+    U8[5] tag = b"rows\n";
+    I64 best = 0;
+    for i in 0..min(n, len(row)) {
+        if (row[i] == 'x' && best < LIMIT) { best += 1; }
+    }
+    I64 w = best as? I32 catch 0;   // a checked narrowing
+    "widest {best} of {n}\n";
+    return w ¤ 2;
+}

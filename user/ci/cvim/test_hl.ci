@@ -1,0 +1,192 @@
+// user/ci/cvim/test_hl.ci: CV-6's highlighting: hl.ci's spans and roles for cint and the shell, the state a line
+// leaves for the next, view.syntax's cells, and the relex bound (an edit lexes at most 256 lines above the window and
+// the window's). The token gate against scan.ci on cint's corpus is tests/cvim/hl_gate.py.
+import user.ci.cvim.hl;
+import user.ci.cvim.view;
+import user.ci.cvim.key;
+import user.ci.cvim.buf;
+import user.ci.cvim.state;
+import user.ci.cvim.text;
+import user.ci.cvim.theme;
+
+// Span k is [a, a + n) with role want.
+Bool is(in I64[_] sp, I64 k, I64 a, I64 n, I64 want) {
+    return k < hl.n_spans(sp) && hl.span_start(sp, k) == a && hl.span_len(sp, k) == n && hl.span_role(sp, k) == want;
+}
+
+test "cint: types, names, operators, numbers, punctuation, a line comment" {
+    I64[1025] sp;
+    U8[22] s = b"I64 x = 0x1F; // seven";
+    assert(hl.line(s, hl.LANG_CINT, 0, sp) == 0);
+    assert(hl.n_spans(sp) == 6);
+    assert(is(sp, 0, 0, 3, hl.TYPE) && is(sp, 1, 4, 1, hl.NORMAL) && is(sp, 2, 6, 1, hl.OPERATOR));
+    assert(is(sp, 3, 8, 4, hl.NUMBER) && is(sp, 4, 12, 1, hl.PUNCT) && is(sp, 5, 14, 8, hl.COMMENT));
+    assert(hl.span_kind(sp, 3) == hl.K_INT && hl.span_kind(sp, 5) == hl.K_COMMENT);
+}
+
+test "cint: keywords, import as a directive, a struct's name, as?, Q8.8, a builtin call" {
+    I64[1025] sp;
+    U8[31] s = b"import a; struct Pt \x7b Q8.8 v; \x7d";
+    I64 st = hl.line(s, hl.LANG_CINT, 0, sp);
+    assert(st == 0 && is(sp, 0, 0, 6, hl.PREPROC) && is(sp, 3, 10, 6, hl.KEYWORD) && is(sp, 4, 17, 2, hl.DECL));
+    assert(is(sp, 6, 22, 4, hl.TYPE) && hl.span_kind(sp, 6) == hl.K_FIXED);
+    U8[21] t = b"y = v as? I8; len(a);";
+    st = hl.line(t, hl.LANG_CINT, 0, sp);
+    assert(is(sp, 3, 6, 3, hl.KEYWORD) && hl.span_kind(sp, 3) == hl.K_OP && is(sp, 4, 10, 2, hl.TYPE));
+    assert(is(sp, 6, 14, 3, hl.BUILTIN));
+}
+
+test "cint: strings, bytes and characters; one left open colors to the end" {
+    I64[1025] sp;
+    U8[22] s = b"f(b\"x\x7b\", \"s\\\"t\", 'q');";
+    _ = hl.line(s, hl.LANG_CINT, 0, sp);
+    assert(is(sp, 2, 2, 5, hl.STRING) && hl.span_kind(sp, 2) == hl.K_BYTES);
+    assert(is(sp, 4, 9, 6, hl.STRING) && is(sp, 6, 17, 3, hl.STRING) && hl.span_kind(sp, 6) == hl.K_CHAR);
+    U8[9] u = b"x = \"open";
+    assert(hl.line(u, hl.LANG_CINT, 0, sp) == 0 && is(sp, 2, 4, 5, hl.STRING));
+}
+
+test "cint: a block comment carries its depth to the next lines" {
+    I64[1025] sp;
+    U8[6] a = b"a /* b";
+    I64 st = hl.line(a, hl.LANG_CINT, 0, sp);
+    assert(st == 2 && is(sp, 1, 2, 4, hl.COMMENT));
+    U8[7] b = b"/* c */";
+    st = hl.line(b, hl.LANG_CINT, st, sp);                // nested: still one open
+    assert(st == 2 && is(sp, 0, 0, 7, hl.COMMENT));
+    U8[6] c = b"x */ y";
+    st = hl.line(c, hl.LANG_CINT, st, sp);
+    assert(st == 0 && is(sp, 0, 0, 4, hl.COMMENT) && is(sp, 1, 5, 1, hl.NORMAL));
+}
+
+test "the shell: reserved words, $ forms, quotes across lines, comments" {
+    I64[1025] sp;
+    U8[29] s = b"if [ \"$x\" = 1 ]; then # check";
+    I64 st = hl.line(s, hl.LANG_SH, 0, sp);
+    assert(st == 0 && is(sp, 0, 0, 2, hl.KEYWORD));
+    assert(is(sp, 1, 5, 1, hl.STRING) && is(sp, 2, 6, 2, hl.BUILTIN) && is(sp, 3, 8, 1, hl.STRING));
+    assert(is(sp, 4, 12, 1, hl.NUMBER) && is(sp, 5, 15, 1, hl.OPERATOR) && is(sp, 6, 17, 4, hl.KEYWORD));
+    assert(is(sp, 7, 22, 7, hl.COMMENT));
+    U8[8] o = b"echo 'ab";
+    st = hl.line(o, hl.LANG_SH, 0, sp);
+    assert(st == 1 && is(sp, 0, 5, 3, hl.STRING));
+    U8[6] p = b"cd' ok";
+    st = hl.line(p, hl.LANG_SH, st, sp);
+    assert(st == 0 && is(sp, 0, 0, 3, hl.STRING));
+    U8[6] w = b"a#b #c";                                         // # inside a word is not a comment
+    st = hl.line(w, hl.LANG_SH, 0, sp);
+    assert(hl.n_spans(sp) == 1 && is(sp, 0, 4, 2, hl.COMMENT));
+}
+
+test "plain text and the language from the name" {
+    I64[1025] sp;
+    U8[9] s = b"if x = 1;";
+    assert(hl.line(s, hl.LANG_TEXT, 0, sp) == 0 && hl.n_spans(sp) == 0);
+    assert(hl.lang_of(b"a.ci") == hl.LANG_CINT && hl.lang_of(b"run.sh") == hl.LANG_SH);
+    assert(hl.lang_of(b"notes.txt") == hl.LANG_TEXT && hl.lang_of(b"ci") == hl.LANG_TEXT);
+}
+
+// A buffer of n lines `I64 vK = K; // c` in a 24-row window; view.syntax's lexed count after a jump and an edit.
+test "view.syntax colors the text's cells and an edit relexes at most 256 lines above the window" {
+    U8[65536] orig;
+    U8[65536] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[4112] hc;
+    I64[1920] g;
+    I64 n = 0;
+    for k in 0..2000 {
+        U8[16] l = b"I64 v = 7; // c\n";
+        for i in 0..16 { orig[n + i] = l[i]; }
+        n += 16;
+    }
+    key.init(r, x, 64, 4096);
+    assert(key.load(r, x, orig[0..n], add));
+    key.window(r, 21);
+    for k in 0..len(hc) { hc[k] = 0; }
+    view.compose(r, x, orig[0..n], add, 24, 80, b"t.ci", g);
+    view.syntax(r, x, orig[0..n], add, 24, 80, b"t.ci", g, hc);
+    I64 gw = 2 + 4 + 1;                                          // the gutter of a 2,000-line file
+    assert(g[1 * 80 + 7] / view.ROLE == view.R_SYN0 + hl.TYPE);   // `I64` on the first text row
+    assert(view.lexed(hc) <= 24);
+    r[state.R_TOP] = 1500;                                       // a jump: the lines from the top, once
+    view.compose(r, x, orig[0..n], add, 24, 80, b"t.ci", g);
+    view.syntax(r, x, orig[0..n], add, 24, 80, b"t.ci", g, hc);
+    assert(view.lexed(hc) >= 1500);
+    U8[1] c = b"/";                                              // an edit at line 1510, on the window
+    I64 at = text.lstart(x, orig[0..n], add, 1510);
+    assert(buf.insert(x, r, orig[0..n], add, at, c));
+    view.compose(r, x, orig[0..n], add, 24, 80, b"t.ci", g);
+    view.syntax(r, x, orig[0..n], add, 24, 80, b"t.ci", g, hc);
+    assert(view.lexed(hc) <= 256 + 24);
+    view.compose(r, x, orig[0..n], add, 24, 80, b"t.ci", g);     // no edit: the window alone
+    view.syntax(r, x, orig[0..n], add, 24, 80, b"t.ci", g, hc);
+    assert(view.lexed(hc) <= 256 + 24 && gw > 0);
+}
+
+// The parameters of an SGR text (";1;34") as a set: whether p is among them.
+Bool has(in U8[_] t, I64 n, I64 p) {
+    I64 i = 0;
+    while (i < n) {
+        if (t[i] == ';') { i += 1; }
+        I64 v = 0;
+        while (i < n && t[i] >= '0' && t[i] <= '9') {
+            v = v * 10 + (t[i] - '0') as I64;
+            i += 1;
+        }
+        if (v == p) { return true; }
+    }
+    return false;
+}
+
+test "DN-45 reads without color: what stands out is bold or reverse, and the plain roles are neither" {
+    U8[16] t;
+    I64 n = theme.sgr(hl.KEYWORD, t);
+    assert(has(t, n, 1) && has(t, n, 34));
+    n = theme.sgr(hl.DECL, t);
+    assert(has(t, n, 1));
+    n = theme.sgr(hl.ERROR, t);
+    assert(has(t, n, 1) && has(t, n, 31));
+    n = theme.mark(theme.MARK_MATCH, t);
+    assert(has(t, n, 7) && !has(t, n, 1));
+    n = theme.mark(theme.MARK_MATCH_CURRENT, t);
+    assert(has(t, n, 7) && has(t, n, 1));                   // the current match: reverse and bold
+    n = theme.mark(theme.MARK_BRACKET, t);
+    assert(has(t, n, 1) && !has(t, n, 7));
+    n = theme.mark(theme.MARK_DIAG_E, t);
+    assert(has(t, n, 1));
+    n = theme.mark(theme.MARK_DIAG_W, t);
+    assert(has(t, n, 1));
+    for r in 0..hl.ROLES {                                   // no code role reverses, and none is cadmium's
+        n = theme.sgr(r, t);
+        assert(!has(t, n, 7));
+    }
+    n = theme.sgr(hl.NORMAL, t);
+    assert(!has(t, n, 1) && has(t, n, 39));
+    n = theme.sgr(hl.COMMENT, t);
+    assert(!has(t, n, 1) && !has(t, n, 7) && has(t, n, 90)); // comments: color only, bright black (DN-45 B)
+}
+
+test "DN-45's no-color forms: the selection is reverse, never bold; marks and emphasis keep bold or reverse" {
+    U8[16] t;
+    I64 n = theme.mark(theme.MARK_SELECTION, t);
+    assert(has(t, n, 37) && has(t, n, 44) && !has(t, n, 7) && !has(t, n, 1));   // with color: DN-45 exactly
+    n = theme.mono_mark(theme.MARK_SELECTION, t);
+    assert(has(t, n, 7) && !has(t, n, 1));
+    n = theme.mono_mark(theme.MARK_MATCH, t);
+    assert(has(t, n, 7));
+    n = theme.mono_mark(theme.MARK_MATCH_CURRENT, t);
+    assert(has(t, n, 7) && has(t, n, 1));
+    n = theme.mono_mark(theme.MARK_BRACKET, t);
+    assert(has(t, n, 1));
+    n = theme.mono(hl.KEYWORD, t);
+    assert(has(t, n, 1));
+    n = theme.mono(hl.DECL, t);
+    assert(has(t, n, 1));
+    for r in 0..hl.ROLES {                                   // without color no code role is reverse: only a mark is
+        n = theme.mono(r, t);
+        assert(!has(t, n, 7));
+        for c in 30..48 { assert(!has(t, n, c)); }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

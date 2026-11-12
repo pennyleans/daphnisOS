@@ -1,0 +1,208 @@
+// src/virtio.ci: a legacy virtio PCI device (virtio 0.9.5, the transitional interface QEMU gives
+// every virtio-pci device) over its I/O BAR, polled, no interrupt (N-1; stage P's virtio-blk uses
+// the same module). docs/specs/2026-11-05-n-net.md section 2.
+//
+// A queue is the split ring of the legacy layout in contiguous pool frames: the descriptor table
+// (16 bytes a descriptor), the available ring after it, the used ring on the next page boundary.
+// Its size is the device's (the legacy interface cannot change it). The kernel writes descriptors
+// and the available ring, the device writes the used ring; both through the view shim, so every
+// address is a pool address rt/phys.c checks. A queue is a handle 0..QUEUES-1.
+
+import src.portio;
+import src.portwide;
+import src.pci;
+import src.phys;
+import src.frames;
+
+export const I64 F_NEXT = 1;          // descriptor flags
+export const I64 F_WRITE = 2;
+export const I64 S_ACK = 1;           // device status bits
+export const I64 S_DRIVER = 2;
+export const I64 S_DRIVER_OK = 4;
+export const I64 S_FAILED = 128;
+export const I64 QUEUES = 4;
+const I64 MAX_SIZE = 1024;
+const I64 PAGE = 4096;
+const I64 R_DEVICE_FEATURES = 0;      // the legacy registers, offsets from BAR 0
+const I64 R_GUEST_FEATURES = 4;
+const I64 R_QUEUE_PFN = 8;
+const I64 R_QUEUE_SIZE = 12;
+const I64 R_QUEUE_SELECT = 14;
+const I64 R_QUEUE_NOTIFY = 16;
+const I64 R_STATUS = 18;
+const I64 R_ISR = 19;                 // NW-1: reading clears the legacy INTx line
+const I64 R_CONFIG = 20;              // the device's own configuration (no MSI-X)
+
+I64 queues = 0;
+I64 dev_irq = -1;
+I64[4] q_io;
+I64[4] q_index;
+I64[4] q_size;
+U64[4] q_desc;
+U64[4] q_avail;
+U64[4] q_used;
+I64[4] q_next;       // the available index the kernel writes next (16 bits, wraps)
+I64[4] q_seen;       // the used index the kernel has read up to (16 bits, wraps)
+I64[4] q_len;        // the length the device wrote for the element take() returned last
+
+U16 port(I64 io, I64 reg) {
+    return (io + reg) as U16;
+}
+
+void write16(U64 pa, I64 v) {
+    U8[2] b;
+    b[0] = (v & 0xFF) as U8;
+    b[1] = ((v >> 8) & 0xFF) as U8;
+    phys.phys_write8(pa, b);
+}
+
+I64 read16(U64 pa) {
+    U8[2] b;
+    phys.phys_read8(pa, b);
+    return (b[0] as I64) | ((b[1] as I64) << 8);
+}
+
+I64 read32(U64 pa) {
+    U8[4] b;
+    phys.phys_read8(pa, b);
+    return (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+}
+
+I64 align_page(I64 x) {
+    return (x + PAGE - 1) / PAGE * PAGE;
+}
+
+// Finds the device whose PCI ID word is id on bus 0, turns on its I/O space and bus mastering,
+// resets it and says the driver is here (ACK, DRIVER). Returns its I/O base, or -1.
+export I64 open(U32 id) {
+    I64 dev = pci.find(id);
+    if (dev == pci.NONE) {
+        return -1;
+    }
+    I64 io = pci.io_bar(dev);
+    if (io == pci.NONE) {
+        return -1;
+    }
+    pci.enable_io_dma(dev);
+    dev_irq = pci.irq_line(dev);
+    set_status(io, 0);
+    set_status(io, S_ACK);
+    set_status(io, S_ACK | S_DRIVER);
+    return io;
+}
+
+export I64 last_irq() {
+    return dev_irq;
+}
+
+export void ack_irq(I64 io) {
+    _ = portio.port_in8(port(io, R_ISR));
+}
+
+export void set_status(I64 io, I64 s) {
+    portio.port_out8(port(io, R_STATUS), s as U8);
+}
+
+export U32 features(I64 io) {
+    return portwide.port_in32(port(io, R_DEVICE_FEATURES));
+}
+
+export void accept(I64 io, U32 f) {
+    portwide.port_out32(port(io, R_GUEST_FEATURES), f);
+}
+
+// Byte off of the device's configuration.
+export U8 config8(I64 io, I64 off) {
+    return portio.port_in8(port(io, R_CONFIG + off));
+}
+
+// Sets up queue `index` of the device at io in fresh, zeroed pool frames and gives its page to
+// the device. Returns the handle, or -1 (no handle left, no such queue, a size past MAX_SIZE,
+// or the pool exhausted).
+export I64 queue(I64 io, I64 index) {
+    if (queues == QUEUES) {
+        return -1;
+    }
+    portwide.port_out16(port(io, R_QUEUE_SELECT), index as U16);
+    I64 n = portwide.port_in16(port(io, R_QUEUE_SIZE)) as I64;
+    if (n == 0 || n > MAX_SIZE) {
+        return -1;
+    }
+    I64 used_at = align_page(16 * n + 6 + 2 * n);
+    I64 bytes = used_at + align_page(6 + 8 * n);
+    I64 first = frames.alloc(bytes / PAGE);
+    if (first < 0) {
+        return -1;
+    }
+    U64 base = (frames.POOL_BASE + first * frames.FRAME_BYTES) as U64;
+    U64[512] zero;
+    for k in 0..(bytes / PAGE) {
+        phys.phys_write64(base + (k * PAGE) as U64, zero);
+    }
+    I64 q = queues;
+    queues += 1;
+    q_io[q] = io;
+    q_index[q] = index;
+    q_size[q] = n;
+    q_desc[q] = base;
+    q_avail[q] = base + (16 * n) as U64;
+    q_used[q] = base + used_at as U64;
+    q_next[q] = 0;
+    q_seen[q] = 0;
+    q_len[q] = 0;
+    portwide.port_out32(port(io, R_QUEUE_PFN), (base >> 12) as U32);
+    return q;
+}
+
+export I64 queue_size(I64 q) {
+    return q_size[q];
+}
+
+// Writes descriptor d of queue q: a buffer of nbytes bytes at the pool address addr, the flags
+// (F_NEXT, F_WRITE: the device writes it) and the next descriptor of a chain.
+export void post(I64 q, I64 d, U64 addr, I64 nbytes, I64 flags, I64 next) {
+    U64[2] w;
+    w[0] = addr;
+    w[1] = (nbytes as U64) | ((flags as U64) << 32) | ((next as U64) << 48);
+    phys.phys_write64(q_desc[q] + (16 * d) as U64, w);
+}
+
+// Puts the chain that starts at descriptor head in the available ring and publishes the index.
+export void offer(I64 q, I64 head) {
+    I64 slot = q_next[q] % q_size[q];
+    write16(q_avail[q] + (4 + 2 * slot) as U64, head);
+    q_next[q] = (q_next[q] + 1) % 65536;
+    write16(q_avail[q] + 2, q_next[q]);
+}
+
+// Tells the device queue q has new buffers.
+export void notify(I64 q) {
+    portwide.port_out16(port(q_io[q], R_QUEUE_NOTIFY), q_index[q] as U16);
+}
+
+// NW-1: sets VRING_AVAIL_F_NO_INTERRUPT on q so its completions do not raise INTx.
+export void no_interrupt(I64 q) {
+    write16(q_avail[q], 1);
+}
+
+// NW-1: true when the device has placed at least one element in q's used ring.
+export Bool ready(I64 q) {
+    return read16(q_used[q] + 2) != q_seen[q];
+}
+
+// The head descriptor of the next chain the device has used, or -1 when there is none; its
+// length is then took_len(q).
+export I64 take(I64 q) {
+    if (read16(q_used[q] + 2) == q_seen[q]) {
+        return -1;
+    }
+    U64 at = q_used[q] + (4 + 8 * (q_seen[q] % q_size[q])) as U64;
+    q_seen[q] = (q_seen[q] + 1) % 65536;
+    q_len[q] = read32(at + 4);
+    return read32(at);
+}
+
+export I64 took_len(I64 q) {
+    return q_len[q];
+}
+// SPDX-License-Identifier: Apache-2.0

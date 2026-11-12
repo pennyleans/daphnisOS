@@ -1,0 +1,214 @@
+// tests/rs/sthost_test.ci: hosted tests of the desk's host of Settings (user/ci/kit/sthost.ci), the code hdesk.ci
+// runs for every key, press and row of the Settings window: Shift+Tab from the sidebar into Accounts' last stop with
+// that row revealed; a page with no stop sends the keyboard back; the desk's own pages answered by DESK_ codes; Esc
+// that nothing takes closes; a sidebar press shows a page; Grants and About answered as kit pages. Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.stpage;
+import user.ci.kit.stside;
+import user.ci.kit.stbox;
+import user.ci.kit.stacct;
+import user.ci.kit.ststore;
+import user.ci.kit.stnet;
+import user.ci.kit.stkeys;
+import user.ci.kit.stgrant;
+import user.ci.kit.stabout;
+import user.ci.kit.sthost;
+import user.ci.kit.homeuse;
+import user.ci.kit.runrec;
+import user.ci.kit.sttime;
+import user.ci.core.tz;
+
+// Settings opened in a box at (10, 40) w x h on the Desk page.
+void box(I64 w, I64 h) { sthost.open(10, 40, 10 + w, 40 + h, stside.DESK); }
+
+test "Shift+Tab from the sidebar into Accounts (433 tall, 478 x 300): its last stop, Remove, revealed in the box" {
+    box(478, 300);
+    stacct.accounts_clear();
+    Bool b = stacct.account(b"ci", 2, 1000, stacct.PARENT, stacct.ALL, false);
+    b = stacct.account(b"sam", 3, 1001, stacct.CHILD, stacct.DISK, true);   // sam signed in, a Child: every stop
+    sthost.open(10, 40, 10 + 478, 40 + 300, stside.ACCOUNTS);   // narrow: the keyboard starts in the page
+    assert(stbox.page() == stside.ACCOUNTS && stbox.lifted() == 0 && stacct.tall() == 433 && !stbox.in_side());
+    stbox.back();                                    // the keyboard on the sidebar, laid over the page
+    assert(stbox.in_side() && stbox.is_laid());
+    assert(sthost.key(stpage.K_TAB, true) == sthost.DRAW);   // Shift folds into Tab: ENTER_LAST
+    assert(!stbox.in_side() && stacct.focused() == stacct.F_REMOVE);
+    I64 bot = 40 - stbox.lifted() + stacct.focus_bottom() + stbox.CLEAR;
+    assert(stbox.lifted() > 0 && bot <= 340 && 40 - stbox.lifted() + stacct.focus_top() >= 40 + stbox.BAND);
+}
+
+test "a kit page with no stop sends the keyboard back; Esc that nothing takes closes" {
+    box(718, 447);
+    ststore.no_volume();                             // Storage: no Empty Trash, no stop
+    sthost.show(stside.STORAGE);
+    stbox.back();
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DRAW && stbox.in_side());
+    assert(sthost.key(stpage.K_ESC, false) == sthost.CLOSE);
+}
+
+test "the desk's own pages: DESK_ENTER, DESK_ENTER_LAST, DESK_KEY; entered() and answered() finish them" {
+    box(718, 447);
+    sthost.show(stside.DISPLAY);
+    stbox.back();
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DESK_ENTER && !stbox.in_side());
+    sthost.entered(false, -1, -1);                   // no stop: back to the sidebar
+    assert(stbox.in_side());
+    assert(sthost.key(stpage.K_TAB, true) == sthost.DESK_ENTER_LAST);
+    sthost.entered(true, stpage.BODY, stpage.BODY + stpage.ROW);
+    assert(sthost.key(stpage.K_LEFT, false) == sthost.DESK_KEY);
+    assert(sthost.answered(stpage.BACK, stpage.K_TAB, 400, -1, -1) == sthost.DRAW && stbox.in_side());
+    assert(sthost.answered(stpage.NONE, stpage.K_ESC, 400, -1, -1) == sthost.CLOSE);
+    assert(sthost.answered(stpage.ACT + 2, 28, 400, -1, -1) == stpage.ACT + 2);
+}
+
+test "the sidebar: Down shows the next page, a press on a pill shows that page" {
+    box(718, 447);
+    sthost.show(stside.DISPLAY);
+    stbox.back();
+    assert(sthost.key(stpage.K_DOWN, false) == sthost.PAGE && stbox.page() == stside.DESK);
+    I64 py = stside.row_y(40, stside.STORAGE) + 8;
+    assert(sthost.click(10 + 40, py) == sthost.PAGE && stbox.page() == stside.STORAGE);
+    assert(sthost.click(10 + 40, py) == sthost.DRAW);   // the page shown: nothing changes
+}
+
+test "ST-K1 through the host: wide, the keyboard opens on the sidebar and Left stays there; narrow, in the page" {
+    sthost.open(10, 40, 10 + 718, 40 + 447, stside.DISPLAY);
+    assert(stbox.in_side() && !stbox.keyed() && !stbox.is_laid());
+    assert(sthost.key(stpage.K_LEFT, false) == sthost.DRAW && stbox.in_side() && stbox.keyed());
+    sthost.open(10, 40, 10 + 478, 40 + 300, stside.DISPLAY);
+    assert(!stbox.in_side() && !stbox.keyed() && !stbox.is_laid());
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DESK_KEY);   // the page's own Tab
+}
+
+test "Storage's feed: statfs present gives the volume in KiB; a kernel without the call gives none; a count line" {
+    I64[8] rec;
+    for k in 0..8 { rec[k] = 0; }
+    rec[1] = 4096;                                   // SF_BSIZE
+    rec[2] = 16777216;                               // SF_BLOCKS: 64 GiB
+    rec[4] = 15000000;                               // SF_BAVAIL
+    homeuse.start(b"/home/ci", 8);                   // a walk with 4 KiB in the Trash, which holds 2 entries
+    Bool l = homeuse.line(b"4\t/home/ci/.trash", 17);
+    l = homeuse.line(b"900\t/home/ci", 12);
+    homeuse.done();
+    ststore.walk_started();
+    ststore.walk_done();
+    ststore.set_trash_entries(2);
+    sthost.volume(0, rec);
+    ststore.open();
+    assert(ststore.enter());                         // a volume: Empty Trash is a stop
+    U8[48] t;
+    I64 n = ststore.used_text(t);
+    assert(n > 0 && t[0] >= '0' && t[0] <= '9');     // "N used of M"
+    sthost.volume(0 - 38, rec);                      // -ENOSYS: a kernel without the call
+    ststore.open();
+    assert(!ststore.enter());                        // no volume: no stop
+    rec[1] = 512;                                    // a block under 1 KiB: 4096 blocks are 2048 KiB
+    rec[2] = 4096;
+    rec[4] = 2048;
+    sthost.volume(0, rec);
+    ststore.open();
+    assert(ststore.enter());
+    assert(sthost.count_of(b"12", 2) == 12 && sthost.count_of(b"0", 1) == 0);
+    assert(sthost.count_of(b"-2", 2) == -1 && sthost.count_of(b"", 0) == -1 && sthost.count_of(b"3 ", 2) == -1);
+}
+
+test "P1: the runs' record is keyed on the session's generation: a later session at the same index is never the last" {
+    runrec.cleared();
+    assert(runrec.need(1));                          // session 1 (the account at index 0, uid 1001): no record yet
+    runrec.given(1, 1001);
+    assert(!runrec.need(1) && runrec.held_uid() == 1001);
+    runrec.cleared();                                // logout: cleared before anything else
+    assert(runrec.need(1) && runrec.held_uid() == -1 && runrec.held_gen() == -1);
+    assert(runrec.need(2));                          // session 2: the store read again, index 0 is uid 1002 now
+    runrec.given(2, 1002);
+    assert(!runrec.need(2) && runrec.need(1) && runrec.held_uid() == 1002);
+    assert(runrec.need(-1));                         // no session: always given anew, or refused
+}
+
+test "Network's record: facts kind 3 present gives a record; a kernel without the kind gives none" {
+    U8[64] b;
+    for k in 0..64 { b[k] = 0; }
+    b[0] = 1;                                        // link up
+    b[16] = 10;                                      // 10.0.2.15
+    b[19] = 15;
+    b[32] = 1;                                       // DHCP
+    sthost.network(64, b);
+    assert(stnet.record());
+    sthost.network(0 - 22, b);                       // -EINVAL: no kind 3 on this kernel
+    assert(!stnet.record());
+    sthost.network(32, b);                           // a short record
+    assert(!stnet.record());
+}
+
+test "Keyboard's repeat: EVIOCGREP present makes the rows live with its values; absent fades them" {
+    I64[2] v = [400, 25];                            // 400 ms, a key every 25 ms: 40 a second
+    sthost.key_repeat(0, v);
+    stkeys.open();
+    assert(stkeys.enter() && stkeys.focused() == stkeys.F_LAYOUT);
+    I64 r = stkeys.key(stpage.K_TAB);
+    assert(stkeys.focused() == stkeys.F_DELAY);      // live: Layout, then Repeat Delay
+    sthost.key_repeat(0 - 25, v);                    // -ENOTTY: no request on this kernel
+    stkeys.open();
+    assert(stkeys.enter() && stkeys.focused() == stkeys.F_LAYOUT);
+    r = stkeys.key(stpage.K_TAB);
+    assert(stkeys.focused() == stkeys.F_SHOW);       // faded: the repeat rows take no focus
+}
+
+// Whether city c's shown name begins with p, any case.
+Bool city_begins(I64 c, in U8[_] p) {
+    U8[64] got;
+    I64 n = tz.city(c, got);
+    if (n < len(p)) { return false; }
+    for k in 0..len(p) {
+        U8 a = got[k];
+        U8 b = p[k];
+        if (a >= 'A' && a <= 'Z') { a = a + 32; }
+        if (b >= 'A' && b <= 'Z') { b = b + 32; }
+        if (a != b) { return false; }
+    }
+    return true;
+}
+
+test "the zone plate's find field takes letters through the host (frame 47): the list narrows, Enter takes the city" {
+    box(718, 447);
+    sthost.show(stside.DATETIME);
+    I64 ny = tz.find(b"America/New_York");
+    sttime.set_zone(ny);
+    assert(sthost.typed('l') == sthost.NONE);       // the plate closed: a letter is the host's key, not the page's
+    stbox.back();
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DRAW && !stbox.in_side());   // the keyboard into the page
+    sttime.pick();
+    assert(sthost.typed('l') == sthost.DRAW && sthost.typed('o') == sthost.DRAW && sthost.typed('n') == sthost.DRAW);
+    assert(sttime.rows() >= 1 && sttime.rows() < tz.cities() && city_begins(sttime.city_of(0), b"lon"));
+    assert(sthost.typed(7) == sthost.NONE);          // not a letter: the key goes on
+    I64 c0 = sttime.city_of(0);
+    I64 a = sthost.key(stpage.K_ENTER, false);       // the marked city taken: the zone action, the plate closed
+    assert(a == sttime.ZONE && sttime.arg() == c0 && !sttime.picking());
+    sthost.show(stside.DESK);
+    assert(sthost.typed('l') == sthost.NONE);        // another page takes no letters here
+}
+
+test "Grants and About are kit pages: Tab from the sidebar to a stop, Enter answers the page's action through the host" {
+    box(718, 447);
+    assert(!sthost.desk_page(stside.GRANTS) && !sthost.desk_page(stside.ABOUT));
+    stgrant.lines_clear();
+    Bool b = stgrant.line(5, b"Console", 7, stgrant.NET, b"09:12", 5, b"", 0);
+    b = stgrant.line(5, b"Console", 7, stgrant.DISK, b"09:12", 5, b"/home/ci", 8);
+    stgrant.refreshed();
+    sthost.show(stside.GRANTS);
+    stbox.back();
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DRAW && !stbox.in_side() && stgrant.focused() == 1);
+    assert(sthost.key(stpage.K_ENTER, false) == stgrant.REVOKE && stgrant.arg() == 5);   // one Revoke for window 5
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DRAW && stgrant.focused() == 2);
+    assert(sthost.key(stpage.K_ENTER, false) == stgrant.REVOKE_ALL);
+    stabout.clear();
+    stabout.set_copy_live(false);                    // no desk clipboard: Copy Details takes no stop
+    stabout.set_licenses_live(true);
+    sthost.show(stside.ABOUT);
+    stbox.back();
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DRAW && stabout.focused() == stabout.F_LICENSES);
+    assert(sthost.key(stpage.K_ENTER, false) == stabout.LICENSES);
+    stabout.set_licenses_live(false);                // no notices file: no stop, the keyboard goes back
+    sthost.show(stside.ABOUT);
+    stbox.back();
+    assert(sthost.key(stpage.K_TAB, false) == sthost.DRAW && stbox.in_side());
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,56 @@
+// src/main_k5.ci: K5. One program, roles by argument. Argument 0 is the kernel (src/kern.ci). Arguments
+// 1 to 3 are the tasks: the same main is one step of the task (rt/task.c, rt_task_step), and the
+// second digit is the network.
+
+import src.kern;
+import src.ts_work;
+import src.ownstate;
+
+void main(in U8[_] args) {
+    I64 role = (args[0] as I64) - 48;
+    if (role == 0) {
+        kern.boot();
+        return;
+    }
+    I64 net = (args[1] as I64) - 48;
+    if (net == 0) {
+        if (role == 1) {
+            ts_work.producer(1, 0);
+        } else if (role == 2) {
+            ts_work.editor(args);
+        } else {
+            ts_work.sink(args);
+        }
+    } else if (net == 7) {
+        // a task touches module state outside the task modules: its state would not be canonical
+        if (role == 1) {
+            _ = ownstate.bump();
+            ts_work.idle();
+        } else {
+            ts_work.idle();
+        }
+    } else if (net == 8) {
+        if (role == 1) {
+            ts_work.xsend();
+        } else if (role == 3) {
+            ts_work.xrecv(args);
+        } else {
+            ts_work.idle();
+        }
+    } else if (net == 4) {
+        if (role == 1) {
+            ts_work.giver();
+        } else if (role == 2) {
+            ts_work.taker();
+        } else {
+            ts_work.idle();
+        }
+    } else if (role == 1) {
+        ts_work.owner();
+    } else if (role == 2 && net == 1) {
+        ts_work.intruder();
+    } else {
+        ts_work.idle();
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

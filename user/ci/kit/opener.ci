@@ -1,0 +1,113 @@
+// user/ci/kit/opener.ci: the open table of the Super plane (FF-3, docs/specs/2026-11-07-ff-super-plane.md section 6).
+// The table is text, one rule a line: an extension with its dot, a space, the program that opens it; it is what the
+// desk's state file holds (edition 1 shows it on a Settings page and does not edit it); load_default() loads the
+// first boot's. `editor` is $EDITOR (ced today, cvim when it lands). kind_of(path, is_dir, head) gives what opens a file: DIR (the plane's list set to it), a program index into
+// the table (prog_of names it), TEXT for a file with no extension whose first 512 bytes are text (the editor), or
+// NOTHING (the plane says `no program opens .EXT`; Shift+Enter opens it in the editor anyway). Program rows and
+// window rows open without the table (a new terminal running the program; the switcher's focus).
+
+export const I64 DIR = -1;
+export const I64 TEXT = -2;
+export const I64 NOTHING = -3;
+export const I64 RULES = 32;
+const I64 BYTES = 1024;
+
+
+U8[1024] tab;
+I64 tn = 0;
+I64[32] ext_at;
+I64[32] ext_len;
+I64[32] prog_at;
+I64[32] prog_len;
+I64 rn = 0;
+
+// Loads a table: the rules read, or -1 when a line is not `.EXT PROGRAM` or there are more than RULES or BYTES.
+export I64 load(in U8[_] text) {
+    rn = 0;
+    if (len(text) > BYTES) { return -1; }
+    for i in 0..len(text) { tab[i] = text[i]; }
+    tn = len(text);
+    I64 at = 0;
+    while (at < tn) {
+        I64 e = at;
+        while (e < tn && tab[e] != '\n') { e = e + 1; }
+        I64 sp = at;
+        while (sp < e && tab[sp] != ' ') { sp = sp + 1; }
+        if (rn == RULES || tab[at] != '.' || sp - at < 2 || sp + 1 >= e) {
+            rn = 0;
+            return -1;
+        }
+        ext_at[rn] = at;
+        ext_len[rn] = sp - at;
+        prog_at[rn] = sp + 1;
+        prog_len[rn] = e - sp - 1;
+        rn = rn + 1;
+        at = e + 1;
+    }
+    return rn;
+}
+
+// The first boot's table, section 6's rows.
+export I64 load_default() {
+    return load(".ci editor\n.md editor\n.txt editor\n.sh editor\n.wad doom\n.png cview\n.qoi cview\n.ppm cview\n");
+}
+
+export I64 rules() {
+    return rn;
+}
+
+// The program of rule r into buf: its length.
+export I64 prog_of(I64 r, inout U8[_] buf) {
+    for k in 0..prog_len[r] { buf[k] = tab[prog_at[r] + k]; }
+    return prog_len[r];
+}
+
+U8 fold(U8 c) {
+    if (c >= 65 && c <= 90) { return c + 32; }
+    return c;
+}
+
+// The extension of path's last component, its dot included: its start, or -1 for none (a leading dot is a hidden
+// name's, not an extension).
+export I64 ext_start(in U8[_] path) {
+    I64 n = len(path);
+    I64 b = n;
+    while (b > 0 && path[b - 1] != '/') { b = b - 1; }
+    I64 d = n - 1;
+    while (d > b && path[d] != '.') { d = d - 1; }
+    if (d <= b) { return -1; }
+    return d;
+}
+
+// head holds the file's first bytes (at most 512 read): true when they are text (no NUL, no control byte but tab,
+// newline, carriage return and form feed; bytes past 0x7F as UTF-8 may hold).
+export Bool is_text(in U8[_] head) {
+    for i in 0..len(head) {
+        U8 c = head[i];
+        if (c < 32 && c != 9 && c != 10 && c != 13 && c != 12) { return false; }
+        if (c == 127) { return false; }
+    }
+    return true;
+}
+
+// What opens path: DIR, a rule, TEXT or NOTHING (see the head of this file).
+export I64 kind_of(in U8[_] path, Bool is_dir, in U8[_] head) {
+    if (is_dir) { return DIR; }
+    I64 d = ext_start(path);
+    if (d < 0) {
+        if (is_text(head)) { return TEXT; }
+        return NOTHING;
+    }
+    I64 el = len(path) - d;
+    for r in 0..rn {
+        if (ext_len[r] == el) {
+            Bool same = true;
+            for k in 0..el {
+                if (fold(path[d + k]) != fold(tab[ext_at[r] + k])) { same = false; }
+            }
+            if (same) { return r; }
+        }
+    }
+    return NOTHING;
+}
+// SPDX-License-Identifier: Apache-2.0

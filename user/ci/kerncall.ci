@@ -1,0 +1,8 @@
+// user/ci/kerncall.ci: the extern of user/ci/kern.ci (R0-2), a row of user/ci/host.c built only into a program that
+// imports this module (user/ci/build.sh defines CI_ROWS_KERN).
+//   kern_ask(args, at): Daphnis's call 1001 with args' bytes from at, ring 0 asked of the desk; 0 on the desk's yes
+//   or a hold in the window, else -errno (-EPERM on Esc or with no desk, -ENOSYS on Linux)
+//   kern_held(): 1 when the process holds ring 0, 0 when not; asks nothing
+export extern unrestricted I64 kern_ask(in U8[_] args, I64 at);
+export extern unrestricted I64 kern_held();
+// SPDX-License-Identifier: Apache-2.0

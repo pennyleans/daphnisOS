@@ -1,0 +1,117 @@
+// src/probes.ci: one deliberate fault per probe number, to exercise every fault writer. No
+// externs, so the hosted runtime runs the same code: tests/ builds src/main_faults.ci for the
+// hosted twin and the kernel boots the same program, so the two records can be compared byte
+// for byte. The run number arrives as the decimal text of the program argument. `zero` is 0
+// computed at run time from the argument, so no probe is a constant expression.
+
+I64 index_of(in U8[_] args) {
+    I64 v = 0;
+    I64 k = 0;
+    while (k < len(args) && args[k] != 0) {
+        v = v * 10 + (args[k] as I64) - 48;
+        k += 1;
+    }
+    return v;
+}
+
+I64 probe_add(I64 zero) {
+    I64 big = 9223372036854775807;
+    I64 x = big + (zero + 1);
+    return x;
+}
+
+U8 probe_sub(I64 zero) {
+    U8 a = 0;
+    U8 b = (zero + 1) as U8;
+    U8 c = a - b;
+    return c;
+}
+
+I32 probe_mul(I64 zero) {
+    I32 a = 65536;
+    I32 b = a + (zero as I32);
+    I32 c = a * b;
+    return c;
+}
+
+I8 probe_neg(I64 zero) {
+    I8 m = (zero - 128) as I8;
+    I8 q = -m;
+    return q;
+}
+
+I64 probe_div(I64 zero) {
+    return 100 / zero;
+}
+
+I64 probe_rem(I64 zero) {
+    return 100 % zero;
+}
+
+U32 probe_shift(I64 zero) {
+    U32 one = 1;
+    U32 s = one << (32 + zero);
+    return s;
+}
+
+U8 probe_narrow(I64 zero) {
+    I64 big = 300 + zero;
+    U8 b = big as U8;
+    return b;
+}
+
+U8 probe_index(I64 zero) {
+    U8[4] a;
+    I64 i = 4 + zero;
+    a[i] = 1;
+    return a[0];
+}
+
+I64 probe_depth(I64 d) {
+    return probe_depth(d + 1) + 1;
+}
+
+void probe_fuel() {
+    while (true) {
+    }
+}
+
+// Runs probe `which` (0 to 10); any other number returns normally, which ends the kernel's loop.
+export void run(in U8[_] args) {
+    I64 zero = (args[0] as I64) - (args[0] as I64);
+    I64 which = index_of(args);
+    if (which == 0) {
+        _ = probe_add(zero);
+    }
+    if (which == 1) {
+        _ = probe_sub(zero);
+    }
+    if (which == 2) {
+        _ = probe_mul(zero);
+    }
+    if (which == 3) {
+        _ = probe_neg(zero);
+    }
+    if (which == 4) {
+        _ = probe_div(zero);
+    }
+    if (which == 5) {
+        _ = probe_rem(zero);
+    }
+    if (which == 6) {
+        _ = probe_shift(zero);
+    }
+    if (which == 7) {
+        _ = probe_narrow(zero);
+    }
+    if (which == 8) {
+        _ = probe_index(zero);
+    }
+    if (which == 9) {
+        _ = probe_depth(zero);
+    }
+    if (which == 10) {
+        probe_fuel();
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

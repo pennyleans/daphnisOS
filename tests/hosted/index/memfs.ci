@@ -1,0 +1,161 @@
+// tests/hosted/index/memfs.ci: an in-memory volume for the hosted test of the desk's index, under the stand-ins of
+// shctl, corectl and dev, so the real user/ci/kit/index.ci and user/ci/core/path.ci walk it. Up to N entries, each a
+// directory or a file with an inode, a size and a modification time, under paths of up to L bytes. As FS-4 stamps
+// the volume, a name added, removed or moved stamps its directory (both directories for a move) with the clock.
+
+const I64 N = 64;
+const I64 L = 256;
+const I64 DIR = 0x41ED;               // a directory, 0755
+const I64 REG = 0x81A4;               // a file, 0644
+U8[16384] pth;
+I64[64] pl;
+I64[64] ino;
+I64[64] md;
+I64[64] sz;
+I64[64] mt;
+Bool[64] on;
+I64 clock = 1;
+I64 next_ino = 2;
+
+Bool eq(I64 i, in U8[_] p) {
+    if (pl[i] != len(p)) { return false; }
+    for k in 0..len(p) {
+        if (pth[L * i + k] != p[k]) { return false; }
+    }
+    return true;
+}
+
+I64 find(in U8[_] p) {
+    for i in 0..N {
+        if (on[i] && eq(i, p)) { return i; }
+    }
+    return 0 - 1;
+}
+
+I64 parent_len(in U8[_] p) {
+    I64 k = len(p);
+    while (k > 0 && p[k - 1] != '/') { k = k - 1; }
+    if (k <= 1) { return 1; }
+    return k - 1;
+}
+
+void set_path(I64 i, in U8[_] p) {
+    for k in 0..len(p) { pth[L * i + k] = p[k]; }
+    pl[i] = len(p);
+}
+
+// The directory holding p, its modification time set to the clock (FS-4).
+void stamp(in U8[_] p) {
+    I64 d = find(p[0..parent_len(p)]);
+    if (d >= 0) { mt[d] = clock; }
+}
+
+export void reset() {
+    for i in 0..N { on[i] = false; }
+    clock = 1;
+    next_ino = 2;
+}
+
+export void set_clock(I64 s) { clock = s; }
+
+// The inode at p, or -1.
+export I64 ino_at(in U8[_] p) {
+    I64 i = find(p);
+    if (i < 0) { return 0 - 1; }
+    return ino[i];
+}
+
+// A directory (dir) or a file of b bytes made at p: its inode, or -1 when p is taken or the volume is full.
+export I64 make(in U8[_] p, Bool dir, I64 b) {
+    if (find(p) >= 0 || len(p) > L) { return 0 - 1; }
+    for i in 0..N {
+        if (!on[i]) {
+            on[i] = true;
+            set_path(i, p);
+            ino[i] = next_ino;
+            next_ino = next_ino + 1;
+            md[i] = REG;
+            sz[i] = b;
+            if (dir) {
+                md[i] = DIR;
+                sz[i] = 0;
+            }
+            mt[i] = clock;
+            stamp(p);
+            return ino[i];
+        }
+    }
+    return 0 - 1;
+}
+
+// The name at p removed (a directory only when empty): its inode, or -1.
+export I64 remove(in U8[_] p) {
+    I64 i = find(p);
+    if (i < 0) { return 0 - 1; }
+    for j in 0..N {
+        if (on[j] && j != i && parent_len(pth[L * j..L * j + pl[j]]) == pl[i] && pl[j] > pl[i]) {
+            if (eq(i, pth[L * j..L * j + pl[i]])) { return 0 - 1; }
+        }
+    }
+    on[i] = false;
+    stamp(p);
+    return ino[i];
+}
+
+// The name at a moved to b, with all under it: its inode, or -1 when a is missing or b is taken.
+export I64 rename(in U8[_] a, in U8[_] b) {
+    I64 i = find(a);
+    if (i < 0 || find(b) >= 0) { return 0 - 1; }
+    I64 an = len(a);
+    U8[256] q;
+    for j in 0..N {
+        if (on[j] && pl[j] > an && pth[L * j + an] == '/' && eq(i, pth[L * j..L * j + an])) {
+            I64 tail = pl[j] - an;
+            for k in 0..len(b) { q[k] = b[k]; }
+            for k in 0..tail { q[len(b) + k] = pth[L * j + an + k]; }
+            set_path(j, q[0..len(b) + tail]);
+        }
+    }
+    set_path(i, b);
+    stamp(a);
+    stamp(b);
+    return ino[i];
+}
+
+// co_stat's record of p into rec (device 1): 0, or -2 (ENOENT).
+export I64 stat(in U8[_] p, inout I64[_] rec) {
+    I64 i = find(p);
+    if (i < 0) { return 0 - 2; }
+    for w in 0..16 { rec[w] = 0; }
+    rec[0] = 1;
+    rec[1] = ino[i];
+    rec[2] = md[i];
+    rec[3] = 1;
+    rec[7] = sz[i];
+    rec[12] = mt[i];
+    return 0;
+}
+
+// p's names as readdir gives them, . and .. first, each ended by a 0 byte: the bytes, -2 (ENOENT) or -7 (E2BIG).
+export I64 names(in U8[_] p, inout U8[_] buf) {
+    if (find(p) < 0) { return 0 - 2; }
+    if (len(buf) < 5) { return 0 - 7; }
+    buf[0] = '.';
+    buf[1] = 0;
+    buf[2] = '.';
+    buf[3] = '.';
+    buf[4] = 0;
+    I64 at = 5;
+    I64 n = len(p);
+    for j in 0..N {
+        if (on[j] && parent_len(pth[L * j..L * j + pl[j]]) == n && pl[j] > n && eq(find(p), pth[L * j..L * j + n])) {
+            I64 k = pl[j] - n - 1;
+            if (at + k + 1 > len(buf)) { return 0 - 7; }
+            for q in 0..k { buf[at + q] = pth[L * j + n + 1 + q]; }
+            buf[at + k] = 0;
+            at = at + k + 1;
+        }
+    }
+    return at;
+}
+// SPDX-License-Identifier: Apache-2.0

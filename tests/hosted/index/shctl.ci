@@ -1,0 +1,7 @@
+// tests/hosted/index/shctl.ci: user/ci/shctl.ci's calls that user/ci/core/path.ci and its messages make, over the
+// memfs, with the real calls' contracts: sh_dirents answers every name or -E2BIG (user/ci/host.c r_sh_dirents).
+import user.ci.memfs;
+
+export I64 sh_dirents(in U8[_] path, inout U8[_] buf) { return memfs.names(path, buf); }
+export I64 fd_write(I64 fd, in U8[_] bytes) { return len(bytes); }
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,36 @@
+// src/statfs.ci: KF-1 (docs/specs/2026-11-11-kf-facts.md section 2), Linux's `struct statfs` on x86-64: 15 words of
+// 8 bytes, 120 bytes, little-endian. Pure: src/fs.ci fills one for the volume or the image tree and copies it out;
+// the hosted tests read the bytes back (tests/fs/statfs_test.ci).
+//
+//   word 0 f_type      1 f_bsize    2 f_blocks   3 f_bfree    4 f_bavail   5 f_files   6 f_ffree
+//   word 7 f_fsid (two ints, 0)     8 f_namelen  9 f_frsize  10 f_flags (0)           11 to 14 f_spare (0)
+
+export const I64 BYTES = 120;
+export const U64 EXT2 = 0xEF53;                // EXT2_SUPER_MAGIC
+export const U64 RAMFS = 0x858458F6;           // RAMFS_MAGIC: the image tree
+
+void word(inout U8[120] b, I64 k, U64 v) {
+    for i in 0..8 {
+        b[8 * k + i] = ((v >> (8 * i) as U64) & 0xFF) as U8;
+    }
+}
+
+// The record of a file system of magic `magic`: blocks of bsize bytes (the fragment size too), `blocks` of them,
+// bfree free and bavail of those for a caller without privilege, `files` inodes with ffree free, names of at most
+// namelen bytes. f_fsid, f_flags and the spare words are 0.
+export void record(inout U8[120] b, U64 magic, U64 bsize, U64 blocks, U64 bfree, U64 bavail, U64 files, U64 ffree,
+                   U64 namelen) {
+    for i in 0..120 {
+        b[i] = 0;
+    }
+    word(b, 0, magic);
+    word(b, 1, bsize);
+    word(b, 2, blocks);
+    word(b, 3, bfree);
+    word(b, 4, bavail);
+    word(b, 5, files);
+    word(b, 6, ffree);
+    word(b, 8, namelen);
+    word(b, 9, bsize);
+}
+// SPDX-License-Identifier: Apache-2.0

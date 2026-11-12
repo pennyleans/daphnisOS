@@ -1,0 +1,83 @@
+$ text.txt hard
+-- tree
++ hard f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+~ text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+status 0
+$ -s text.txt soft
+-- tree
++ soft l text.txt
+status 0
+$ -s missing dang
+-- tree
++ dang l missing
+status 0
+$ -s look/a.txt look/b.txt box
+-- stderr
+ln: box/a.txt: File exists
+-- tree
++ box/b.txt l look/b.txt
+status 1
+$ text.txt nonl.txt look
+-- tree
++ look/nonl.txt f 0644 21 e421985de8560d2d t 1000001800 1000001800 n 2
++ look/text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+~ nonl.txt f 0644 21 e421985de8560d2d t 1000001800 1000001800 n 2
+~ text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+status 0
+$ text.txt nonl.txt
+-- stderr
+ln: nonl.txt: File exists
+status 1
+$ -f text.txt nonl.txt
+-- tree
+~ nonl.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+~ text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+status 0
+$ -sf look/a.txt nonl.txt
+-- tree
+~ nonl.txt l look/a.txt
+status 0
+$ look/a.txt
+-- tree
++ a.txt f 0644 6 b6a98d9ce9a2d914 t 1000001320 1000001320 n 2
+~ look/a.txt f 0644 6 b6a98d9ce9a2d914 t 1000001320 1000001320 n 2
+status 0
+$ -s look/sub
+-- tree
++ sub l look/sub
+status 0
+$ text.txt nonl.txt empty
+-- stderr
+ln: empty: Not a directory
+status 1
+$ look hard
+-- stderr
+ln: hard: Operation not permitted
+status 1
+$ missing x
+-- stderr
+ln: x/missing: No such file or directory
+status 1
+$ -L text.txt hard
+-- tree
++ hard f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+~ text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+status 0
+$ -P text.txt hard
+-- tree
++ hard f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+~ text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+status 0
+$ text.txt box/
+-- tree
++ box/text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+~ text.txt f 0644 47 4eb69a7d087144a6 t 1000001860 1000001860 n 2
+status 0
+$ -x text.txt hard
+-- stderr
+ln: not supported: -x
+status 2
+$ 
+-- stderr
+ln: missing operand
+status 2

@@ -1,0 +1,1748 @@
+// user/ci/cvim.ci: `cvim [--clean] [FILE...]`, the program around cvim's core (docs/specs/2026-11-07-cv-cvim.md,
+// CV-4a and CV-4b). Each FILE is a buffer; the first is shown, or an empty one when none is given. The terminal goes
+// raw on the alternate screen (cvimctl, user/ci/host.c CI_ROWS_CVIM), and every way out gives it back: :q and the
+// rest, the end of input, a fatal signal, a fault. Each key read is decoded (user/ced/keys.ci), mapped (the init
+// file's maps), and runs through the core's command line (ex.ci) or its keys (key.ci); the screen is composed
+// (view.ci), highlighted for a .ci or .sh file (CV-6: hl.ci, theme.ci) and written as the cells that changed
+// (term.ci), the cursor's form per mode (DECSCUSR). SIGWINCH reads the size again and redraws whole.
+//
+// The core runs :N, ranges, :s, :&, :g, :v and :d (ex.ci). The session's commands run here: :w, :w NAME, :w!, :q
+// (E37 while modified), :q!, :wq, :x, :e FILE, :e!, :set; the buffer list: :e FILE adds or finds a buffer, :bn, :bp,
+// :b N, :ls, :bd [N]. Vim's 'nohidden': leaving a modified buffer is E37 unless with !, which drops its changes; a
+// buffer left is unloaded and loads again from its file, its line kept. Registers, the last change and macros stay
+// across buffers. Errors use Vim's numbers and words. A write goes to a new file in the same directory, is fsync'd
+// and renamed over the old one, which keeps its mode; a symlink or a file with other links is written in place, so
+// the link stays. The bytes are the buffer's, with the final line feed Vim's 'fixeol' adds.
+//
+// The init file (section 6a): $HOME/.config/cvim/init, read once at start unless --clean: set lines and map, nmap,
+// imap, xmap with their noremap forms; a map never recurses; "-comments and empty lines pass; any other line is
+// refused by number on the message line, and the rest still taken. :set with no argument lists what it changed.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.viewctl;
+import user.ci.cvimctl;
+import user.ced.keys;
+import user.ci.cvim.cap;
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.key;
+import user.ci.cvim.view;
+import user.ci.cvim.term;
+import user.ci.cvim.ex;
+import user.ci.cvim.pat;
+import user.ci.cvim.reg;
+import user.ci.cvim.hl;
+import user.ci.cvim.comp;   // CV-7: completion
+import user.ci.cvim.tool;   // CV-8: the build's diagnostics
+import user.ci.cvim.scroll;
+import user.ci.runctl;      // CV-8: cint build's exec
+
+const I64 EINTR = 4;
+const I64 ENOENT = 2;
+const I64 O_WRONLY_CREAT_EXCL = 193;   // O_WRONLY | O_CREAT | O_EXCL
+const I64 O_WRONLY_TRUNC = 513;        // O_WRONLY | O_TRUNC
+const I64 S_IFMT = 61440;
+const I64 S_IFLNK = 40960;
+const I64 S_IFREG = 32768;
+const I64 GRID = 262144;               // cells of the largest screen drawn (rows times columns)
+const I64 OUT = 4194304;               // bytes of one frame
+const I64 NAME_MAX = 1024;
+const I64 CMD_MAX = 1024;
+const I64 MSG_MAX = 4096;
+const I64 BUFS = 64;                   // buffers in the list
+const I64 MAPS = 64;                   // maps from the init file
+const I64 MAP_KEYS = 64;
+
+// The session's own state beside the core's tables: the file's name, the screen, the command line, the message.
+U8[1024] name;
+I64 name_n = 0;
+I64 rows = 24;
+I64 cols = 80;
+U8[1024] cmd;
+I64 cmd_n = 0;
+Bool z_pending = false;
+U8[4096] msg;
+I64 msg_n = 0;
+Bool msg_err = false;
+Bool quit = false;
+Bool full = true;
+Bool term_on = false;
+Bool more = false;                     // a message of several lines waits for a key (Vim's hit-enter prompt)
+// The buffer list: a name, Vim's number, listed, and the line the cursor was on when it was left.
+U8[65536] bname;
+I64[64] bname_n;
+I64[64] bnum;
+Bool[64] blisted;
+I64[64] bline;
+I64 nbufs = 0;
+I64 curb = -1;
+I64 altb = -1;
+I64 next_num = 1;
+I64 comp_for = -1;                     // CV-7: the buffer whose names the menu has
+I64 orig_top = 0;                      // orig's bytes in use: a buffer loads after the last, so registers stay valid
+// The init file's maps: modes (1 Normal, 2 Insert, 4 Visual, 8 operator-pending), the keys typed and the keys run.
+I64[64] map_mode;
+I64[64] map_ln;
+I64[4096] map_lhs;
+I64[64] map_rn;
+I64[4096] map_rhs;
+I64 nmaps = 0;
+I64[64] pend;                          // keys typed that begin a map's
+I64 pend_n = 0;
+// The options the init file set, for :set with no argument.
+U8[512] changed;
+I64 changed_n = 0;
+
+// --- output and refusals before the terminal is raw ---
+
+void say2(in U8[_] s) { _ = shctl.fd_write(2, s); }
+
+// AM section 7 (DN-47): the desk asks before Restart or Shut Down while a window reports unsaved work. cvim reports
+// its modified flag with `ESC ] 7770 ; dirty ; 1|0 BEL` when it changes, only in a Daphnis desk terminal.
+Bool desk = false;                 // TERM_PROGRAM=daphnis and the terminal named Daphnis (section 7.2)
+Bool dirty_sent = false;
+// AM section 7.2: the desk probe. With TERM_PROGRAM=daphnis cvim sends XTVERSION (CSI > q) then DA1 (CSI c); an
+// XTVERSION reply naming Daphnis before the DA1 reply makes it a desk terminal. Every terminal answers DA1, so cvim
+// never waits; the replies are read off the input and never reach the keys.
+Bool probing = false;
+Bool named_daphnis = false;
+U8[128] pr;                        // a reply cut by a read's end, kept for the next read
+I64 pr_n = 0;
+
+// The reply starting at s[p] (ESC P ... ESC \ or ESC [ ? ... c) while probing: its length, 0 when s[p] starts none,
+// -1 when it runs past the end of s (kept whole for the next read).
+I64 probe_reply(in U8[_] s, I64 p, I64 n) {
+    if (!probing || s[p] != 27) { return 0; }
+    if (p + 1 >= n) { return -1; }
+    if (s[p + 1] == 'P') {
+        I64 k = p + 2;
+        while (k + 1 < n && !(s[k] == 27 && s[k + 1] == '\\')) { k += 1; }
+        if (k + 1 >= n) { return -1; }
+        U8[9] want = b">|Daphnis";
+        Bool same = k - (p + 2) >= 9;
+        for i in 0..9 {
+            if (same && s[p + 2 + i] != want[i]) { same = false; }
+        }
+        if (same) { named_daphnis = true; }
+        return k + 2 - p;
+    }
+    if (s[p + 1] == '[') {
+        if (p + 2 >= n) { return -1; }
+        if (s[p + 2] != '?') { return 0; }
+        I64 k = p + 3;
+        while (k < n && ((s[k] >= '0' && s[k] <= '9') || s[k] == ';')) { k += 1; }
+        if (k >= n) { return -1; }
+        if (s[k] != 'c') { return 0; }
+        probing = false;                         // DA1: the probe ends here
+        if (named_daphnis) {
+            desk = true;
+            say2(b"\x1b]7770;about;CVim;0.1.0;A modal text editor with Vim's keys.\x07");
+        }
+        return k + 1 - p;
+    }
+    return 0;
+}
+
+void dirty_tell(Bool on) {
+    if (!desk || on == dirty_sent) { return; }
+    dirty_sent = on;
+    if (on) {
+        say2(b"\x1b]7770;dirty;1\x07");
+    } else {
+        say2(b"\x1b]7770;dirty;0\x07");
+    }
+}
+
+// AM-3: whether the environment holds exactly TERM_PROGRAM=daphnis, which the desk gives each terminal's shell. On a
+// host Linux terminal it is absent, and cvim sends no OSC 7770 there.
+Bool on_desk() {
+    U8[20] want = [84, 69, 82, 77, 95, 80, 82, 79, 71, 82, 65, 77, 61, 100, 97, 112, 104, 110, 105, 115];
+    U8[256] e;
+    I64 i = 0;
+    while (true) {
+        I64 n = shctl.sh_environ(i, e);
+        if (n < 0 && n != -7) { return false; }     // -7, E2BIG: an entry too long to be the mark
+        if (n == 20) {
+            Bool same = true;
+            for k in 0..20 {
+                if (e[k] != want[k]) { same = false; }
+            }
+            if (same) { return true; }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+void refuse(in U8[_] why, in U8[_] what) {
+    if (term_on) { _ = cvimctl.cv_term_leave(); }
+    say2(b"cvim: ");
+    say2(why);
+    if (len(what) > 0) {
+        say2(b" ");
+        say2(what);
+    }
+    say2(b"\n");
+    dev.exit_now(1);
+}
+
+// --- the message line ---
+
+void msg_clear() {
+    msg_n = 0;
+    msg_err = false;
+}
+
+void msg_put(in U8[_] s) {
+    for i in 0..len(s) {
+        if (msg_n < MSG_MAX) {
+            msg[msg_n] = s[i];
+            msg_n += 1;
+        }
+    }
+}
+
+void msg_num(I64 v) {
+    U8[24] d;
+    I64 n = 0;
+    I64 w = v;
+    if (w == 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (w > 0) {
+        d[n] = ('0' as I64 + w % 10) as U8;
+        w = w / 10;
+        n += 1;
+    }
+    for i in 0..n {
+        if (msg_n < MSG_MAX) {
+            msg[msg_n] = d[n - 1 - i];
+            msg_n += 1;
+        }
+    }
+}
+
+void err(in U8[_] s) {
+    msg_clear();
+    msg_put(s);
+    msg_err = true;
+}
+
+void err2(in U8[_] s, in U8[_] t) {
+    err(s);
+    msg_put(t);
+}
+
+// `"NAME"` as Vim quotes it in its file messages.
+void msg_name() {
+    msg_put(b"\"");
+    msg_put(name[0..name_n]);
+    msg_put(b"\" ");
+}
+
+// --- the file ---
+
+// s after t[0..at]; the new length.
+I64 cat(inout U8[_] t, I64 at, in U8[_] s) {
+    for i in 0..len(s) { t[at + i] = s[i]; }
+    return at + len(s);
+}
+
+Bool modified(in I64[_] r) { return r[state.R_U_AT] != r[state.R_SAVED_AT]; }
+
+Bool has_name() { return name_n > 0; }
+
+void set_name(in U8[_] s) {
+    name_n = min(len(s), NAME_MAX);
+    for i in 0..name_n { name[i] = s[i]; }
+}
+
+// path, NUL-free, as the rows take it: name or another.
+I64 stat_of(in U8[_] p, I64 follow, inout I64[_] rec) { return corectl.co_stat(p, follow, rec); }
+
+// FILE into orig from off; -ENOENT when there is no such file (an empty buffer); the bytes read, -2 when it does
+// not fit after off, or a refusal.
+I64 read_file(in U8[_] p, inout U8[_] orig, I64 off) {
+    I64 fd = shctl.sh_open(p, 0, 0);
+    if (fd == 0 - ENOENT) { return fd; }
+    if (fd < 0) {
+        refuse(b"cannot read", p);
+    }
+    U8[1] one;
+    I64 n = 0;
+    Bool going = true;
+    while (going) {
+        if (off + n == cap.ORIG) {
+            I64 r = shctl.fd_read(fd, one);
+            if (r != 0) {
+                _ = shctl.fd_close(fd);
+                if (off > 0) { return -2; }
+                refuse(b"over 64 MiB (CV-R3):", p);
+            }
+            going = false;
+        } else {
+            I64 r = shctl.fd_read(fd, orig[off + n..min(off + n + cap.CHUNK, cap.ORIG)]);
+            if (r < 0) {
+                _ = shctl.fd_close(fd);
+                refuse(b"cannot read", p);
+            }
+            n += r;
+            going = r > 0;
+        }
+    }
+    _ = shctl.fd_close(fd);
+    return n;
+}
+
+// The core's state a buffer does not own: registers, the last change, macros, f and t, the window, the options.
+// Kept across a new buffer's tables (key.init clears everything).
+Bool session_slot(I64 i) {
+    if (i == state.R_ST_ADD || i == state.R_FIND_CMD || i == state.R_FIND_CH || i == state.R_REG_FROM ||
+        i == state.R_REG_TO || i == state.R_REG_LINE || i == state.R_SPTOP || i == state.R_PREV ||
+        i == state.R_HEIGHT || i == state.R_SCROLL || i == state.R_DOT_N || i == state.R_LAST_AT ||
+        i == state.R_DOT_ARROW || i == state.R_DOT_COUNT || i == state.R_DOT_PCOUNT || i == state.R_NONUM ||
+        i == state.R_NOIC || i == state.R_NOSCS || i == state.R_REC || i == state.R_REC_N) {
+        return true;
+    }
+    if (i >= state.R_RV_MODE && i <= state.R_RV_COUNT) { return true; }
+    if (i >= state.R_REG0 && i < state.R_MARK0) { return true; }
+    if (i >= state.R_DOT0 && i < state.R_DOT0 + state.DOT_MAX) { return true; }
+    if (i >= state.R_REC0 && i < state.R_REC0 + state.REC_MAX) { return true; }
+    return false;
+}
+
+// The buffer named by `name` loaded (or an empty one): its tables new, the session's state kept, the text read after
+// the last buffer's in orig (from 0 again when orig is full: then the registers go too), unmodified; Vim's message.
+void open(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] keep) {
+    I64 n = 0;
+    Bool missing = true;
+    I64 off = orig_top;
+    Bool fresh = r[state.R_CHUNK] == 0;      // the first buffer: nothing to keep
+    if (has_name()) {
+        n = read_file(name[0..name_n], orig, off);
+        if (n == -2) {
+            off = 0;
+            fresh = true;
+            n = read_file(name[0..name_n], orig, 0);
+        }
+        missing = n < 0;
+        if (n < 0) { n = 0; }
+    }
+    if (!fresh) {
+        for i in 0..len(r) { keep[i] = r[i]; }
+    }
+    key.init(r, x, cap.BLOCKS, cap.CHUNK);
+    if (!fresh) {
+        for i in 0..len(r) {
+            if (session_slot(i)) { r[i] = keep[i]; }
+        }
+    }
+    key.window(r, view.text_rows(rows));
+    r[state.R_ST_ORIG] = off + n;
+    if (!buf.load(x, orig, add, off, n)) { refuse(b"the table is full:", name[0..name_n]); }
+    if (n > 0 && orig[off + n - 1] != '\n') {
+        U8[1] lf;
+        lf[0] = '\n';
+        if (!buf.insert(x, r, orig, add, n, lf)) { refuse(b"the table is full:", name[0..name_n]); }
+    }
+    r[state.R_PBOUND] = buf.pieces(x);
+    orig_top = off + n;
+    r[state.R_SAVED_AT] = r[state.R_U_AT];
+    msg_clear();
+    if (!has_name()) { return; }
+    msg_name();
+    if (missing) {
+        msg_put(b"[New]");
+        return;
+    }
+    if (n > 0 && orig[off + n - 1] != '\n') { msg_put(b"[noeol] "); }
+    msg_num(text.nlines(x));
+    msg_put(b"L, ");
+    msg_num(n);
+    msg_put(b"B");
+}
+
+// The buffer's bytes to fd from the start, a chunk at a time; false on a short write.
+Bool put_all(I64 fd, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    U8[65536] blk;
+    I64 pos = 0;
+    I64 total = buf.total(x);
+    while (pos < total) {
+        I64 c = min(cap.CHUNK, total - pos);
+        buf.copy_out(x, orig, add, pos, blk[0..c]);
+        if (shctl.fd_write(fd, blk[0..c]) < 0) { return false; }
+        pos += c;
+    }
+    return true;
+}
+
+// The buffer written to p: a new file beside it, fsync'd, renamed over it (its mode kept); a symlink or a file with
+// other links in place. Vim's message, or E212; true when written.
+Bool write_to(in U8[_] p, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    I64[32] rec;
+    I64 st = stat_of(p, 0, rec);
+    Bool exists = st == 0;
+    Bool direct = exists && ((rec[corectl.ST_MODE] & S_IFMT) == S_IFLNK || rec[corectl.ST_NLINK] > 1);
+    if (direct) {
+        I64 fd = shctl.sh_open(p, O_WRONLY_TRUNC, 0);
+        if (fd < 0) {
+            err(b"E212: Can't open file for writing");
+            return false;
+        }
+        Bool ok = put_all(fd, x, orig, add) && cvimctl.cv_fsync(fd) == 0;
+        _ = shctl.fd_close(fd);
+        if (!ok) {
+            err(b"E514: Write error (file system full?)");
+            return false;
+        }
+    } else {
+        U8[1100] tmp;
+        I64 slash = -1;
+        for i in 0..len(p) {
+            if (p[i] == '/') { slash = i; }
+        }
+        I64 t = 0;
+        for i in 0..slash + 1 {
+            tmp[t] = p[i];
+            t += 1;
+        }
+        t = cat(tmp, t, b".cvim-");
+        for i in slash + 1..len(p) {
+            tmp[t] = p[i];
+            t += 1;
+        }
+        t = cat(tmp, t, b".tmp");
+        _ = corectl.co_unlink(tmp[0..t]);
+        I64 mode = 438;                              // 0666 under the umask, as a new file
+        if (exists) { mode = 384; }                  // 0600 until the old file's mode is copied
+        I64 fd = shctl.sh_open(tmp[0..t], O_WRONLY_CREAT_EXCL, mode);
+        if (fd < 0) {
+            err(b"E212: Can't open file for writing");
+            return false;
+        }
+        Bool ok = put_all(fd, x, orig, add);
+        if (ok && exists) { ok = cvimctl.cv_fchmod(fd, rec[corectl.ST_MODE] & 4095) == 0; }
+        if (ok) { ok = cvimctl.cv_fsync(fd) == 0; }
+        _ = shctl.fd_close(fd);
+        if (ok) { ok = corectl.co_rename(tmp[0..t], p) == 0; }
+        if (!ok) {
+            _ = corectl.co_unlink(tmp[0..t]);
+            err(b"E514: Write error (file system full?)");
+            return false;
+        }
+    }
+    msg_clear();
+    msg_put(b"\"");
+    msg_put(p);
+    msg_put(b"\" ");
+    if (!exists) { msg_put(b"[New] "); }
+    msg_num(text.nlines(x));
+    msg_put(b"L, ");
+    msg_num(buf.total(x));
+    msg_put(b"B written");
+    return true;
+}
+
+// :w [NAME] (bang: over an existing other file); true when the buffer's own file was written.
+Bool cmd_write(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, in U8[_] arg, Bool bang) {
+    if (len(arg) == 0) {
+        if (!has_name()) {
+            err(b"E32: No file name");
+            return false;
+        }
+        if (!write_to(name[0..name_n], x, orig, add)) { return false; }
+        r[state.R_SAVED_AT] = r[state.R_U_AT];
+        return true;
+    }
+    Bool same = has_name() && len(arg) == name_n;
+    if (same) {
+        for i in 0..name_n {
+            if (arg[i] != name[i]) { same = false; }
+        }
+    }
+    if (!same && !bang) {
+        I64[32] rec;
+        if (stat_of(arg, 1, rec) == 0) {
+            err(b"E13: File exists (add ! to override)");
+            return false;
+        }
+    }
+    if (!write_to(arg, x, orig, add)) { return false; }
+    if (!has_name()) { set_name(arg); }
+    if (same || name_n == len(arg)) {
+        Bool mine = true;
+        for i in 0..name_n {
+            if (arg[i] != name[i]) { mine = false; }
+        }
+        if (mine) {
+            r[state.R_SAVED_AT] = r[state.R_U_AT];
+            return true;
+        }
+    }
+    return false;
+}
+
+// --- CV-8: build and diagnostics (section 9) ---
+// Space c b saves the current buffer when it is a modified .ci file (Vim's 'nohidden' keeps the others unmodified)
+// and runs `cint build --json FILE` from the working directory with cint from PATH (runctl's exec); each CINT-DIAG-1
+// line of its output becomes an entry (tool.ci), marked E or W in the diagnostic column with the counts on the status
+// line. Space c d opens the list in the text area's last rows: j k and the arrows move, Enter jumps, Esc and q close.
+// ] d and [ d go to the next and previous diagnostic of this file, round its entries. Without a cint on PATH: `no cint
+// in this image` (the spec's words).
+
+I64[18755] dt;
+I64 lead = 0;                          // the leader's keys so far: Space 1, Space c 2
+I64 bracket = 0;                       // ] or [ waiting for d
+Bool list_open = false;
+I64 list_top = 0;
+const I64 LIST_ROWS = 10;
+
+Bool ends_ci() { return name_n >= 3 && name[name_n - 3] == '.' && name[name_n - 2] == 'c' && name[name_n - 1] == 'i'; }
+
+// The value of environment entry KEY= into dst; its length, or -1.
+I64 env_value(in U8[_] kname, inout U8[_] dst) {
+    U8[4096] e;
+    I64 i = 0;
+    while (true) {
+        I64 n = shctl.sh_environ(i, e);
+        if (n < 0 && n != -7) { return -1; }
+        if (n > len(kname) && e[len(kname)] == '=') {
+            Bool same = true;
+            for k in 0..len(kname) {
+                if (e[k] != kname[k]) { same = false; }
+            }
+            if (same) {
+                I64 m = min(n - len(kname) - 1, len(dst));
+                for k in 0..m { dst[k] = e[len(kname) + 1 + k]; }
+                return m;
+            }
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+// cint's path from PATH into dst (a regular file with an execute bit); its length, or -1.
+I64 find_cint(inout U8[_] dst) {
+    U8[4096] pv;
+    I64 pn = env_value(b"PATH", pv);
+    if (pn <= 0) { return -1; }
+    I64 a = 0;
+    while (a <= pn) {
+        I64 e = a;
+        while (e < pn && pv[e] != ':') { e += 1; }
+        if (e > a && e - a < 1000) {
+            I64 n = 0;
+            for k in a..e { dst[n + k - a] = pv[k]; }
+            n = e - a;
+            U8[5] c = b"/cint";
+            for k in 0..5 { dst[n + k] = c[k]; }
+            n += 5;
+            I64[32] rec;
+            if (stat_of(dst[0..n], 1, rec) == 0 && (rec[corectl.ST_MODE] & S_IFMT) == 0x8000 &&
+                (rec[corectl.ST_MODE] & 73) != 0) { return n; }
+        }
+        a = e + 1;
+    }
+    return -1;
+}
+
+void build(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    if (!has_name()) {
+        err(b"E32: No file name");
+        return;
+    }
+    if (modified(r) && ends_ci()) {
+        U8[1] none;
+        if (!cmd_write(r, x, orig, add, none[0..0], false)) { return; }
+    }
+    U8[1024] cp;
+    I64 cn = find_cint(cp);
+    if (cn < 0) {
+        err(b"no cint in this image");
+        return;
+    }
+    U8[1100] argv;
+    I64 an = cat(argv, 0, b"cint\x00build\x00--json\x00");
+    for k in 0..name_n { argv[an + k] = name[k]; }
+    an += name_n;
+    argv[an] = 0;
+    an += 1;
+    U8[65536] envp;
+    I64 en = 0;
+    I64 i = 0;
+    Bool going = true;
+    while (going) {
+        U8[4096] e;
+        I64 n = shctl.sh_environ(i, e);
+        if (n < 0 && n != -7) {
+            going = false;
+        } else if (n > 0 && en + n + 1 <= len(envp)) {
+            for k in 0..n { envp[en + k] = e[k]; }
+            en += n;
+            envp[en] = 0;
+            en += 1;
+        }
+        i += 1;
+    }
+    I64 pp = shctl.sh_pipe();
+    if (pp < 0) {
+        err(b"E482: Can't create pipe");
+        return;
+    }
+    I64 rd = pp >> 32;
+    I64 wr = pp & 0xFFFFFFFF;
+    I64 pid = shctl.sh_fork();
+    if (pid == 0) {
+        _ = shctl.sh_dup2(wr, 1);
+        _ = shctl.sh_dup2(wr, 2);
+        _ = shctl.fd_close(rd);
+        _ = shctl.fd_close(wr);
+        _ = runctl.co_exec(cp[0..cn], argv[0..an], envp[0..en]);
+        dev.exit_now(127);
+    }
+    _ = shctl.fd_close(wr);
+    U8[262144] bout;
+    I64 got = 0;
+    if (pid > 0) {
+        Bool reading = true;
+        while (reading && got < len(bout)) {
+            I64 n = shctl.fd_read(rd, bout[got..len(bout)]);
+            if (n == 0 - EINTR) { continue; }
+            if (n <= 0) { reading = false; } else { got += n; }
+        }
+    }
+    _ = shctl.fd_close(rd);
+    I64 st = 0;
+    if (pid > 0) { st = shctl.sh_wait(pid, 0); }
+    tool.clear(dt);
+    list_open = false;
+    list_top = 0;
+    I64 a = 0;
+    I64 first_e = -1;
+    while (a < got) {
+        I64 e = a;
+        while (e < got && bout[e] != '\n') { e += 1; }
+        if (!tool.add_line(dt, bout[a..e]) && first_e < 0 && e > a) { first_e = a; }
+        a = e + 1;
+    }
+    msg_clear();
+    if (tool.total(dt) == 0 && (pid < 0 || st != 0) && first_e >= 0) {   // cint said something else: its first line
+        I64 e = first_e;
+        while (e < got && bout[e] != '\n') { e += 1; }
+        err(bout[first_e..min(e, first_e + 200)]);
+    }
+    full = true;
+}
+
+// Entry k's place: its file made current (as :e) when it is not, the cursor on its line and column.
+void jump(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] keep, I64 k) {
+    if (k < 0 || k >= tool.entries(dt)) { return; }
+    if (!tool.in_file(dt, k, name[0..name_n])) {
+        U8[128] f;
+        I64 fn = tool.file(dt, k, f);
+        if (fn == 0 || !may_leave(r, false)) { return; }
+        I64 b = buf_find(f[0..fn]);
+        if (b < 0) { b = buf_add(f[0..fn]); }
+        if (b < 0) { return; }
+        enter(r, x, orig, add, keep, b);
+    }
+    I64 nl = text.nlines(x);
+    I64 l = min(max(tool.line(dt, k) - 1, 0), max(nl - 1, 0));
+    I64 ls = text.lstart(x, orig, add, l);
+    I64 le = text.lend(x, orig, add, l);
+    U8[4096] t;
+    I64 tn = min(le - ls, 4096);
+    if (tn > 0) { buf.copy_out(x, orig, add, ls, t[0..tn]); }
+    I64 off = tool.byte_of_column(t[0..tn], tool.column(dt, k));
+    r[state.R_CUR] = text.normal_pos(x, orig, add, ls + off);
+    r[state.R_WANT] = -1;
+    scroll.follow(r, x, orig, add);
+    full = true;
+}
+
+// ] d (dir 1) or [ d (-1).
+void diag_step(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] keep, I64 dir) {
+    I64 cl = text.lineof(x, orig, add, r[state.R_CUR]);
+    I64 ls = text.lstart(x, orig, add, cl);
+    I64 cc = 1;
+    I64 p = ls;
+    while (p < r[state.R_CUR]) {
+        p = text.nextc(x, orig, add, p);
+        cc += 1;
+    }
+    I64 k = tool.step(dt, name[0..name_n], cl + 1, cc, dir);
+    if (k < 0) {
+        r[state.R_BELL] = 1;
+        return;
+    }
+    jump(r, x, orig, add, keep, k);
+}
+
+// A key while the list is open.
+void list_key(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] keep, I64 k) {
+    if (k == 'j' || k == keys.K_DOWN) {
+        tool.move(dt, 1);
+    } else if (k == 'k' || k == keys.K_UP) {
+        tool.move(dt, -1);
+    } else if (k == keys.K_ENTER || k == keys.M_CTRL + 'm') {
+        list_open = false;
+        jump(r, x, orig, add, keep, tool.selected(dt));
+    } else if (k == keys.K_ESC || k == 'q') {
+        list_open = false;
+    }
+    full = true;
+}
+
+// The leader's keys (Space c b, Space c d) and ] d, [ d; true when k was theirs.
+Bool tool_key(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+              inout I64[_] et, inout I64[_] keep, I64 k) {
+    if (list_open && !ex.is_open(et)) {
+        list_key(r, x, orig, add, keep, k);
+        return true;
+    }
+    if (lead == 1) {
+        lead = 0;
+        if (k == 'c') { lead = 2; }
+        return true;
+    }
+    if (lead == 2) {
+        lead = 0;
+        if (k == 'b') { build(r, x, orig, add); }
+        if (k == 'd') {
+            if (tool.entries(dt) > 0) {
+                list_open = true;
+                full = true;
+            } else {
+                r[state.R_BELL] = 1;
+            }
+        }
+        return true;
+    }
+    if (bracket != 0) {
+        I64 b = bracket;
+        bracket = 0;
+        if (k == 'd') {
+            I64 dir = 1;
+            if (b == '[') { dir = -1; }
+            diag_step(r, x, orig, add, keep, dir);
+            return true;
+        }
+        key.step(r, x, orig, add, sp, u, b);   // not d: ] or [ goes to the core as typed
+        return false;
+    }
+    if (idle(r) && r[state.R_REGNAME] == 0 && !ex.is_open(et)) {
+        if (k == ' ') {
+            lead = 1;
+            return true;
+        }
+        if (k == ']' || k == '[') {
+            bracket = k;
+            return true;
+        }
+    }
+    return false;
+}
+
+// The list's cells over the text area's last rows: the margin's letter, then file:line:column, the code and the
+// message; the selection in the menu's chosen role.
+void list_draw(inout I64[_] grid) {
+    I64 n = tool.entries(dt);
+    I64 h = min(min(n, LIST_ROWS), max(rows - 4, 1));
+    I64 sel = tool.selected(dt);
+    if (sel < list_top) { list_top = sel; }
+    if (sel >= list_top + h) { list_top = sel - h + 1; }
+    for i in 0..h {
+        I64 k = list_top + i;
+        I64 row = rows - 2 - h + i;
+        if (row < 1 || k >= n) { continue; }
+        I64 role = view.R_MENU;
+        if (k == sel) { role = view.R_MENU_SEL; }
+        for c in 0..cols { grid[row * cols + c] = ' ' + role * view.ROLE; }
+        I64 mr = view.R_DIAG_W;
+        I64 mc = 'W';
+        if (tool.severity(dt, k) == tool.SEV_E) {
+            mr = view.R_DIAG_E;
+            mc = 'E';
+        }
+        grid[row * cols] = mc + mr * view.ROLE;
+        U8[400] t;
+        I64 tn = tool.file(dt, k, t);
+        t[tn] = ':';
+        tn = num_to(t, tn + 1, tool.line(dt, k));
+        t[tn] = ':';
+        tn = num_to(t, tn + 1, tool.column(dt, k));
+        t[tn] = ' ';
+        t[tn + 1] = ' ';
+        tn += 2;
+        tn += tool.message(dt, k, t[tn..400]);
+        _ = put_cells(grid, row, 2, t[0..tn], role);
+    }
+}
+
+I64 num_to(inout U8[_] t, I64 at0, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 q = v;
+    if (q <= 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n += 1;
+    }
+    for i in 0..n { t[at0 + i] = d[n - 1 - i]; }
+    return at0 + n;
+}
+
+// The diagnostic column's E and W on the text rows.
+void marks_draw(in I64[_] r, in I64[_] x, inout I64[_] grid) {
+    I64 nl = text.nlines(x);
+    for row in 0..rows {
+        I64 sr = 1 + row;
+        if (sr >= rows - 2) { break; }
+        I64 l = r[state.R_TOP] + row;
+        if (l >= nl) { break; }
+        I64 m = tool.mark_of(dt, name[0..name_n], l + 1);
+        if (m == tool.SEV_E) { grid[sr * cols] = 'E' + view.R_DIAG_E * view.ROLE; }
+        if (m == tool.SEV_W) { grid[sr * cols] = 'W' + view.R_DIAG_W * view.ROLE; }
+    }
+}
+
+// --- the command line ---
+
+Bool word_is(in U8[_] s, in U8[_] w) {
+    if (len(s) != len(w)) { return false; }
+    for i in 0..len(s) {
+        if (s[i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+// Whether s is w or a prefix of it at least m long (Vim's abbreviations: :bn for :bnext).
+Bool abbrev(in U8[_] s, in U8[_] w, I64 m) {
+    if (len(s) < m || len(s) > len(w)) { return false; }
+    for i in 0..len(s) {
+        if (s[i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+// --- buffers ---
+
+I64 buf_find(in U8[_] p) {
+    for i in 0..nbufs {
+        if (bname_n[i] == len(p)) {
+            Bool same = true;
+            for k in 0..len(p) {
+                if (bname[1024 * i + k] != p[k]) { same = false; }
+            }
+            if (same) { return i; }
+        }
+    }
+    return -1;
+}
+
+// A new buffer for p (empty: no name), or -1 when the list is full.
+I64 buf_add(in U8[_] p) {
+    if (nbufs >= BUFS) { return -1; }
+    I64 i = nbufs;
+    nbufs += 1;
+    bname_n[i] = min(len(p), 1024);
+    for k in 0..bname_n[i] { bname[1024 * i + k] = p[k]; }
+    bnum[i] = next_num;
+    next_num += 1;
+    blisted[i] = true;
+    bline[i] = 0;
+    return i;
+}
+
+// Buffer i made current: the one left keeps its line; i loads from its file, the cursor on its last line's first
+// non-blank (Vim's 'startofline' for buffer commands).
+void enter(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] keep, I64 i) {
+    if (curb >= 0) {
+        bline[curb] = text.lineof(x, orig, add, r[state.R_CUR]);   // :e! keeps the line too
+        if (curb != i) { altb = curb; }
+    }
+    curb = i;
+    name_n = bname_n[i];
+    for k in 0..name_n { name[k] = bname[1024 * i + k]; }
+    open(r, x, orig, add, keep);
+    I64 l = min(bline[i], text.nlines(x) - 1);
+    r[state.R_CUR] = text.first_nonblank(x, orig, add, max(l, 0), true);
+    r[state.R_WANT] = -1;
+    full = true;
+}
+
+// Whether the current buffer may be left: Vim's 'nohidden' (E37 when modified, unless with !).
+Bool may_leave(in I64[_] r, Bool bang) {
+    if (modified(r) && !bang) {
+        err(b"E37: No write since last change (add ! to override)");
+        return false;
+    }
+    return true;
+}
+
+// The next (step 1) or previous (-1) listed buffer from the current, round the list.
+I64 buf_step(I64 step) {
+    I64 i = curb;
+    for k in 0..nbufs {
+        i = (i + step + nbufs) % nbufs;
+        if (blisted[i]) { return i; }
+    }
+    return curb;
+}
+
+I64 buf_by_num(I64 n) {
+    for i in 0..nbufs {
+        if (bnum[i] == n && blisted[i]) { return i; }
+    }
+    return -1;
+}
+
+I64 parse_num(in U8[_] a) {
+    if (len(a) == 0) { return -1; }
+    I64 v = 0;
+    for i in 0..len(a) {
+        if (a[i] < '0' || a[i] > '9') { return -2; }
+        v = min(v * 10 + (a[i] - '0') as I64, 999999999);
+    }
+    return v;
+}
+
+// :ls as Vim lists: number, u for unlisted (none listed here), % the current or # the alternate, a for the loaded
+// (only the current: the rest are unloaded), + modified, the name in quotes, `line N` at the 40th column.
+void list_buffers(in I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add) {
+    msg_clear();
+    for i in 0..nbufs {
+        if (blisted[i]) {
+            msg_put(b"\n");
+            U8[8] d;
+            I64 dn = 0;
+            I64 w = bnum[i];
+            while (w > 0) {
+                d[dn] = ('0' as I64 + w % 10) as U8;
+                w = w / 10;
+                dn += 1;
+            }
+            I64 col = 0;
+            for k in 0..3 - min(dn, 3) {
+                msg_put(b" ");
+                col += 1;
+            }
+            for k in 0..dn {
+                U8[1] c;
+                c[0] = d[dn - 1 - k];
+                msg_put(c);
+                col += 1;
+            }
+            msg_put(b" ");
+            if (i == curb) { msg_put(b"%a"); } else if (i == altb) { msg_put(b"# "); } else { msg_put(b"  "); }
+            msg_put(b" ");
+            if (i == curb && modified(r)) { msg_put(b"+"); } else { msg_put(b" "); }
+            msg_put(b" \"");
+            col += 7;
+            if (bname_n[i] == 0) {
+                msg_put(b"[No Name]");
+                col += 9;
+            } else {
+                msg_put(bname[1024 * i..1024 * i + bname_n[i]]);
+                col += bname_n[i];
+            }
+            msg_put(b"\"");
+            col += 1;
+            msg_put(b" ");
+            col += 1;
+            while (col < 40) {
+                msg_put(b" ");
+                col += 1;
+            }
+            msg_put(b"line ");
+            I64 ln = bline[i] + 1;
+            if (i == curb) { ln = text.lineof(x, orig, add, r[state.R_CUR]) + 1; }
+            msg_num(ln);
+        }
+    }
+    more = true;
+}
+
+// :set's options: number, ignorecase, smartcase, and those cvim keeps fixed at section 6's values (taken when the
+// value asked is that one, refused otherwise). True when a: was taken; changed lists it for :set alone.
+Bool set_option(inout I64[_] r, in U8[_] a, Bool from_init) {
+    I64 slot = -1;
+    I64 v = -1;
+    if (word_is(a, b"number") || word_is(a, b"nu")) { slot = state.R_NONUM; v = 0; }
+    else if (word_is(a, b"nonumber") || word_is(a, b"nonu")) { slot = state.R_NONUM; v = 1; }
+    else if (word_is(a, b"ignorecase") || word_is(a, b"ic")) { slot = state.R_NOIC; v = 0; }
+    else if (word_is(a, b"noignorecase") || word_is(a, b"noic")) { slot = state.R_NOIC; v = 1; }
+    else if (word_is(a, b"smartcase") || word_is(a, b"scs")) { slot = state.R_NOSCS; v = 0; }
+    else if (word_is(a, b"nosmartcase") || word_is(a, b"noscs")) { slot = state.R_NOSCS; v = 1; }
+    if (slot >= 0) {
+        r[slot] = v;
+        if (from_init) {
+            if (changed_n + len(a) + 2 < 512) {
+                changed[changed_n] = ' ';
+                changed[changed_n + 1] = ' ';
+                for k in 0..len(a) { changed[changed_n + 2 + k] = a[k]; }
+                changed_n += len(a) + 2;
+            }
+        }
+        return true;
+    }
+    // section 6's values, which cvim does not change
+    if (word_is(a, b"expandtab") || word_is(a, b"et") || word_is(a, b"autoindent") || word_is(a, b"ai") ||
+        word_is(a, b"smartindent") || word_is(a, b"si") || word_is(a, b"nowrap") || word_is(a, b"incsearch") ||
+        word_is(a, b"is") || word_is(a, b"hlsearch") || word_is(a, b"hls") || word_is(a, b"norelativenumber") ||
+        word_is(a, b"nornu") || word_is(a, b"shiftwidth=4") || word_is(a, b"sw=4") || word_is(a, b"tabstop=4") ||
+        word_is(a, b"ts=4") || word_is(a, b"scrolloff=4") || word_is(a, b"so=4") || word_is(a, b"timeoutlen=300") ||
+        word_is(a, b"tm=300")) {
+        return true;
+    }
+    return false;
+}
+
+// The session's commands (ex.ci's PROGRAM): the command line's text, its verb (letters), a bang, an argument.
+void run_cmd(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] keep) {
+    I64 a = 0;
+    while (a < cmd_n && (cmd[a] == ' ' || cmd[a] == ':')) { a += 1; }
+    I64 b = cmd_n;
+    while (b > a && cmd[b - 1] == ' ') { b -= 1; }
+    if (a == b) { return; }
+    I64 v0 = a;
+    I64 v1 = a;
+    while (v1 < b && ((cmd[v1] >= 'a' && cmd[v1] <= 'z') || (cmd[v1] >= 'A' && cmd[v1] <= 'Z'))) { v1 += 1; }
+    I64 vend = v1;
+    // :b2 and :bd2 : a number right after the verb is its argument
+    Bool bang = v1 < b && cmd[v1] == '!';
+    I64 g0 = v1;
+    if (bang) { g0 += 1; }
+    Bool tight_num = !bang && v1 < b && cmd[v1] >= '0' && cmd[v1] <= '9';
+    while (g0 < b && cmd[g0] == ' ') { g0 += 1; }
+    if (!bang && !tight_num && v1 < b && cmd[v1] != ' ') {
+        err2(b"E492: Not an editor command: ", cmd[a..b]);
+        return;
+    }
+    U8[1024] arg;
+    I64 an = b - g0;
+    for i in 0..an { arg[i] = cmd[g0 + i]; }
+    U8[16] v;
+    I64 vn = min(vend - v0, 16);
+    for i in 0..vn { v[i] = cmd[v0 + i]; }
+    if (tight_num && !(abbrev(v[0..vn], b"buffer", 1) || abbrev(v[0..vn], b"bdelete", 2))) {
+        err2(b"E492: Not an editor command: ", cmd[a..b]);
+        return;
+    }
+    if (word_is(v[0..vn], b"w") || word_is(v[0..vn], b"write")) {
+        if (cmd_write(r, x, orig, add, arg[0..an], bang) && curb >= 0) {
+            bname_n[curb] = name_n;
+            for k in 0..name_n { bname[1024 * curb + k] = name[k]; }
+        }
+        return;
+    }
+    if (word_is(v[0..vn], b"q") || word_is(v[0..vn], b"quit")) {
+        if (an > 0) {
+            err(b"E488: Trailing characters");
+            return;
+        }
+        if (modified(r) && !bang) {
+            err(b"E37: No write since last change (add ! to override)");
+            return;
+        }
+        quit = true;
+        return;
+    }
+    if (word_is(v[0..vn], b"wq") || word_is(v[0..vn], b"x") || word_is(v[0..vn], b"xit") ||
+        word_is(v[0..vn], b"exit")) {
+        Bool need = word_is(v[0..vn], b"wq") || modified(r) || an > 0;
+        if (need && !cmd_write(r, x, orig, add, arg[0..an], bang) && (an == 0 || modified(r))) { return; }
+        quit = true;
+        return;
+    }
+    if (word_is(v[0..vn], b"e") || word_is(v[0..vn], b"edit")) {
+        if (an == 0) {
+            if (!has_name()) {
+                err(b"E32: No file name");
+                return;
+            }
+            if (!may_leave(r, bang)) { return; }
+            I64 here = curb;
+            enter(r, x, orig, add, keep, here);      // :e and :e! read the file again
+            return;
+        }
+        I64 t = buf_find(arg[0..an]);
+        if (t == curb && t >= 0) {
+            if (!may_leave(r, bang)) { return; }
+            enter(r, x, orig, add, keep, t);
+            return;
+        }
+        if (!may_leave(r, bang)) { return; }
+        if (t < 0) {
+            t = buf_add(arg[0..an]);
+            if (t < 0) {
+                err(b"not in cvim: more than 64 buffers");
+                return;
+            }
+        }
+        blisted[t] = true;
+        enter(r, x, orig, add, keep, t);
+        return;
+    }
+    if (abbrev(v[0..vn], b"bnext", 2) || abbrev(v[0..vn], b"bprevious", 2) || abbrev(v[0..vn], b"bNext", 2)) {
+        I64 step = 1;
+        if (v[1] == 'p' || v[1] == 'N') { step = -1; }
+        I64 t = buf_step(step);
+        if (t == curb) { return; }
+        if (!may_leave(r, bang)) { return; }
+        enter(r, x, orig, add, keep, t);
+        return;
+    }
+    if (abbrev(v[0..vn], b"bdelete", 2)) {
+        I64 t = curb;
+        if (an > 0) {
+            I64 n = parse_num(arg[0..an]);
+            if (n < 0) {
+                err2(b"E94: No matching buffer for ", arg[0..an]);
+                return;
+            }
+            t = buf_by_num(n);
+            if (t < 0) {
+                err(b"E516: No buffers were deleted: bd");
+                return;
+            }
+        }
+        if (t == curb && modified(r) && !bang) {
+            err(b"E89: No write since last change for buffer ");
+            msg_num(bnum[curb]);
+            msg_put(b" (add ! to override)");
+            return;
+        }
+        blisted[t] = false;
+        if (t != curb) {
+            if (altb == t) { altb = -1; }
+            return;
+        }
+        I64 nx = -1;
+        if (altb >= 0 && blisted[altb]) { nx = altb; } else {
+            I64 s2 = buf_step(1);
+            if (s2 != curb && blisted[s2]) { nx = s2; }
+        }
+        if (nx < 0) {
+            nx = buf_add(b"");                         // the last buffer gone: an empty one, [No Name]
+            if (nx < 0) { return; }
+        }
+        bline[curb] = text.lineof(x, orig, add, r[state.R_CUR]);
+        curb = -1;
+        altb = -1;
+        enter(r, x, orig, add, keep, nx);
+        msg_clear();
+        return;
+    }
+    if (abbrev(v[0..vn], b"buffer", 1)) {
+        if (an == 0) { return; }
+        I64 n = parse_num(arg[0..an]);
+        I64 t = -1;
+        if (n >= 0) { t = buf_by_num(n); }
+        else {
+            t = buf_find(arg[0..an]);
+            if (t >= 0 && !blisted[t]) { t = -1; }
+        }
+        if (t < 0) {
+            if (n >= 0) {
+                err(b"E86: Buffer ");
+                msg_num(n);
+                msg_put(b" does not exist");
+            } else {
+                err2(b"E94: No matching buffer for ", arg[0..an]);
+            }
+            return;
+        }
+        if (t == curb) { return; }
+        if (!may_leave(r, bang)) { return; }
+        enter(r, x, orig, add, keep, t);
+        return;
+    }
+    if (word_is(v[0..vn], b"ls") || word_is(v[0..vn], b"buffers") || word_is(v[0..vn], b"files")) {
+        list_buffers(r, x, orig, add);
+        return;
+    }
+    if (word_is(v[0..vn], b"set") || word_is(v[0..vn], b"se")) {
+        if (an == 0) {
+            msg_clear();
+            msg_put(b"--- Options ---");
+            if (changed_n > 0) {
+                msg_put(b"\n");
+                msg_put(changed[0..changed_n]);
+            }
+            more = true;
+            return;
+        }
+        I64 p = 0;
+        while (p < an) {
+            I64 q = p;
+            while (q < an && arg[q] != ' ') { q += 1; }
+            if (q > p && !set_option(r, arg[p..q], false)) {
+                err2(b"E518: Unknown option: ", arg[p..q]);
+                return;
+            }
+            p = q + 1;
+        }
+        full = true;
+        return;
+    }
+    err2(b"E492: Not an editor command: ", cmd[a..b]);
+}
+
+// --- maps ---
+
+I64 key_name(in U8[_] t, I64 at0, inout I64[1] k) {
+    // <name> at t[at0] (at0 on the <): its length, the key in k; 0 when it names none
+    I64 e = at0 + 1;
+    while (e < len(t) && t[e] != '>') { e += 1; }
+    if (e >= len(t)) { return 0; }
+    U8[16] w;
+    I64 n = min(e - at0 - 1, 16);
+    for i in 0..n {
+        U8 c = t[at0 + 1 + i];
+        if (c >= 'A' && c <= 'Z') { c = c + 32; }
+        w[i] = c;
+    }
+    if (word_is(w[0..n], b"leader") || word_is(w[0..n], b"space")) { k[0] = ' '; }
+    else if (word_is(w[0..n], b"cr") || word_is(w[0..n], b"enter") || word_is(w[0..n], b"return")) { k[0] = keys.K_ENTER; }
+    else if (word_is(w[0..n], b"esc")) { k[0] = keys.K_ESC; }
+    else if (word_is(w[0..n], b"tab")) { k[0] = keys.K_TAB; }
+    else if (word_is(w[0..n], b"bs")) { k[0] = keys.K_BACKSPACE; }
+    else if (word_is(w[0..n], b"lt")) { k[0] = '<'; }
+    else if (n == 3 && w[0] == 'c' && w[1] == '-' && w[2] >= 'a' && w[2] <= 'z') { k[0] = keys.M_CTRL + w[2] as I64; }
+    else { return 0; }
+    return e - at0 + 1;
+}
+
+// t (a map's side) as keys into dst at at; the count, or -1 when it names an unknown <key>.
+I64 map_keys(in U8[_] t, inout I64[_] dst, I64 at0, I64 cap_n) {
+    I64 n = 0;
+    I64 i = 0;
+    I64[1] res;
+    while (i < len(t)) {
+        if (n >= cap_n) { return -1; }
+        if (t[i] == '<') {
+            I64 used = key_name(t, i, res);
+            if (used > 0) {
+                dst[at0 + n] = res[0];
+                n += 1;
+                i += used;
+                continue;
+            }
+        }
+        I64 u = keys.decode(t, i, res);
+        if (u <= 0) { u = 1; }
+        dst[at0 + n] = res[0];
+        n += 1;
+        i += u;
+    }
+    return n;
+}
+
+// One init line: true when cvim took it.
+Bool init_line(inout I64[_] r, in U8[_] ln) {
+    I64 a = 0;
+    while (a < len(ln) && (ln[a] == ' ' || ln[a] == 9)) { a += 1; }
+    if (a == len(ln) || ln[a] == '"') { return true; }
+    I64 v1 = a;
+    while (v1 < len(ln) && ln[v1] != ' ' && ln[v1] != 9) { v1 += 1; }
+    U8[16] v;
+    I64 vn = min(v1 - a, 16);
+    for i in 0..vn { v[i] = ln[a + i]; }
+    I64 p = v1;
+    while (p < len(ln) && (ln[p] == ' ' || ln[p] == 9)) { p += 1; }
+    if (word_is(v[0..vn], b"set") || word_is(v[0..vn], b"se")) {
+        while (p < len(ln)) {
+            I64 q = p;
+            while (q < len(ln) && ln[q] != ' ') { q += 1; }
+            if (q > p && !set_option(r, ln[p..q], true)) { return false; }
+            p = q + 1;
+        }
+        return true;
+    }
+    I64 modes = 0;
+    if (word_is(v[0..vn], b"map") || word_is(v[0..vn], b"noremap")) { modes = 1 + 4 + 8; }
+    else if (word_is(v[0..vn], b"nmap") || word_is(v[0..vn], b"nnoremap")) { modes = 1; }
+    else if (word_is(v[0..vn], b"imap") || word_is(v[0..vn], b"inoremap")) { modes = 2; }
+    else if (word_is(v[0..vn], b"xmap") || word_is(v[0..vn], b"xnoremap")) { modes = 4; }
+    if (modes == 0 || nmaps >= MAPS) { return false; }
+    I64 l1 = p;
+    while (l1 < len(ln) && ln[l1] != ' ') { l1 += 1; }
+    I64 r0 = l1;
+    while (r0 < len(ln) && ln[r0] == ' ') { r0 += 1; }
+    I64 r1 = len(ln);
+    while (r1 > r0 && (ln[r1 - 1] == ' ' || ln[r1 - 1] == 13)) { r1 -= 1; }
+    if (l1 == p || r1 == r0) { return false; }
+    I64 ln_n = map_keys(ln[p..l1], map_lhs, MAP_KEYS * nmaps, MAP_KEYS);
+    I64 rn = map_keys(ln[r0..r1], map_rhs, MAP_KEYS * nmaps, MAP_KEYS);
+    if (ln_n <= 0 || rn <= 0) { return false; }
+    map_mode[nmaps] = modes;
+    map_ln[nmaps] = ln_n;
+    map_rn[nmaps] = rn;
+    nmaps += 1;
+    return true;
+}
+
+// The init file read (section 6a): each line taken or refused by number on the message line.
+void read_init(inout I64[_] r) {
+    U8[4096] home;
+    I64 hn = 0;
+    U8[512] e;
+    I64 i = 0;
+    Bool going = true;
+    while (going) {
+        I64 n = shctl.sh_environ(i, e);
+        if (n < 0 && n != -7) { going = false; }
+        if (n > 5 && e[0] == 'H' && e[1] == 'O' && e[2] == 'M' && e[3] == 'E' && e[4] == '=') {
+            hn = min(n - 5, 4000);
+            for k in 0..hn { home[k] = e[5 + k]; }
+            going = false;
+        }
+        i += 1;
+    }
+    if (hn == 0) { return; }
+    hn = cat(home, hn, b"/.config/cvim/init");
+    I64 fd = shctl.sh_open(home[0..hn], 0, 0);
+    if (fd < 0) { return; }
+    U8[65536] f;
+    I64 fn = 0;
+    Bool reading = true;
+    while (reading && fn < len(f)) {
+        I64 got = shctl.fd_read(fd, f[fn..len(f)]);
+        if (got <= 0) { reading = false; } else { fn += got; }
+    }
+    _ = shctl.fd_close(fd);
+    I64 s0 = 0;
+    I64 lno = 1;
+    while (s0 < fn) {
+        I64 s1 = s0;
+        while (s1 < fn && f[s1] != '\n') { s1 += 1; }
+        if (!init_line(r, f[s0..s1])) {
+            if (msg_n > 0) { msg_put(b"\n"); }
+            msg_put(b"init ");
+            msg_num(lno);
+            msg_put(b": not in cvim: ");
+            I64 w0 = s0;
+            while (w0 < s1 && (f[w0] == ' ' || f[w0] == 9)) { w0 += 1; }
+            I64 w1 = w0;
+            while (w1 < s1 && f[w1] != ' ' && f[w1] != 9) { w1 += 1; }
+            msg_put(f[w0..w1]);
+            msg_err = true;
+        }
+        lno += 1;
+        s0 = s1 + 1;
+    }
+    for k in 0..msg_n {
+        if (msg[k] == '\n') { more = true; }
+    }
+}
+
+// Normal mode with nothing pending: no count, operator, prefix or register.
+Bool idle(in I64[_] r) {
+    return r[state.R_MODE] == state.MODE_NORMAL && r[state.R_OP] == 0 && r[state.R_PREFIX] == 0 &&
+           r[state.R_COUNT] == 0;
+}
+
+// A key past the maps: the command line's, Z's, or the core's.
+void one_key(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+             inout I64[_] et, inout I64[_] pt, inout I64[_] keep, inout I64[_] ct, I64 k) {
+    if (more) {
+        more = false;
+        msg_clear();
+        full = true;
+        if (k == keys.K_ENTER || k == ' ' || k == keys.K_ESC || k == keys.M_CTRL + 'm' || k == keys.M_CTRL + 'j') {
+            return;
+        }
+    }
+    if (z_pending && !ex.is_open(et)) {
+        z_pending = false;
+        if (k == 'Z') {                          // ZZ: :x
+            cmd_n = cat(cmd, 0, b"x");
+            run_cmd(r, x, orig, add, keep);
+            return;
+        }
+        if (k == 'Q') {                          // ZQ: :q!
+            quit = true;
+            return;
+        }
+        r[state.R_BELL] = 1;
+        return;
+    }
+    if (tool_key(r, x, orig, add, sp, u, et, keep, k)) { return; }               // CV-8: the build's keys
+    if (comp.feed(r, x, orig, add, sp, u, ct, k) == comp.TAKEN) { return; }   // CV-7: the menu's keys in Insert
+    I64 res = ex.feed(r, x, orig, add, sp, u, et, pt, k);
+    if (res == ex.TAKEN) {
+        if (ex.is_open(et)) { msg_clear(); }
+        return;
+    }
+    if (res == ex.RAN) {
+        msg_clear();
+        full = true;
+        return;
+    }
+    if (res == ex.PROGRAM) {
+        msg_clear();
+        ex.msg_clear(et);
+        cmd_n = min(ex.cmd_n(et), CMD_MAX);
+        for i in 0..cmd_n { cmd[i] = ex.cmd_byte(et, i); }
+        run_cmd(r, x, orig, add, keep);
+        full = true;
+        return;
+    }
+    if (idle(r) && r[state.R_REGNAME] == 0 && k == 'Z') {
+        z_pending = true;
+        return;
+    }
+    msg_clear();
+    ex.msg_clear(et);
+    key.step(r, x, orig, add, sp, u, k);
+    comp.after(r, x, orig, add, ct, k);
+}
+
+// The maps' mode now: Insert 2, Visual 4, Normal 1 (8 with an operator pending), 0 on the command line.
+I64 map_mode_now(in I64[_] r, in I64[_] et) {
+    if (ex.is_open(et) || more) { return 0; }
+    if (r[state.R_MODE] == state.MODE_INSERT || r[state.R_MODE] == state.MODE_REPLACE) { return 2; }
+    if (r[state.R_MODE] == state.MODE_VISUAL) { return 4; }
+    if (r[state.R_OP] != 0) { return 8; }
+    return 1;
+}
+
+// A typed key through the maps: held while it begins a map's keys, the map's keys run (never mapped again) when
+// they are complete, the held keys run as typed when no map goes on with them. With no timeout (Vim's 'timeoutlen'),
+// a map that is another's prefix waits for the next key.
+void typed(inout I64[_] r, inout I64[_] x, inout U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+           inout I64[_] et, inout I64[_] pt, inout I64[_] keep, inout I64[_] ct, I64 k) {
+    I64 m = map_mode_now(r, et);
+    if (nmaps == 0 || (m == 0 && pend_n == 0)) {
+        one_key(r, x, orig, add, sp, u, et, pt, keep, ct, k);
+        return;
+    }
+    if (pend_n < 64) {
+        pend[pend_n] = k;
+        pend_n += 1;
+    }
+    I64 exact = -1;
+    Bool longer = false;
+    for i in 0..nmaps {
+        if ((map_mode[i] & m) != 0 && map_ln[i] >= pend_n) {
+            Bool same = true;
+            for q in 0..pend_n {
+                if (map_lhs[MAP_KEYS * i + q] != pend[q]) { same = false; }
+            }
+            if (same) {
+                if (map_ln[i] == pend_n) { exact = i; } else { longer = true; }
+            }
+        }
+    }
+    if (longer) { return; }
+    I64 n = pend_n;
+    pend_n = 0;
+    if (exact >= 0) {
+        for q in 0..map_rn[exact] {
+            if (!quit) { one_key(r, x, orig, add, sp, u, et, pt, keep, ct, map_rhs[MAP_KEYS * exact + q]); }
+        }
+        return;
+    }
+    for q in 0..n {
+        if (!quit) { one_key(r, x, orig, add, sp, u, et, pt, keep, ct, pend[q]); }
+    }
+}
+
+// --- the screen ---
+
+I64 put_cells(inout I64[_] g, I64 row, I64 col, in U8[_] s, I64 role) {
+    I64 c = col;
+    I64 i = 0;
+    I64[1] res;
+    while (i < len(s) && c < cols) {
+        I64 used = keys.decode(s, i, res);
+        I64 cp = res[0];
+        if (used <= 0) { used = 1; }
+        if (cp < 32 || cp >= keys.K_UP) { cp = '?'; }
+        g[row * cols + c] = cp + role * view.ROLE;
+        c += 1;
+        i += used;
+    }
+    return c;
+}
+
+// CV-7: path's bytes (at most len(dst)) into dst; how many, or -1 when it cannot be read.
+I64 slurp(in U8[_] path, inout U8[_] dst) {
+    I64 fd = shctl.sh_open(path, 0, 0);
+    if (fd < 0) { return -1; }
+    I64 n = 0;
+    Bool going = true;
+    while (going && n < len(dst)) {
+        I64 got = shctl.fd_read(fd, dst[n..len(dst)]);
+        if (got <= 0) { going = false; } else { n += got; }
+    }
+    _ = shctl.fd_close(fd);
+    return n;
+}
+
+// CV-7: the menu's names for the current buffer: each module it imports (found from the working directory, then
+// from the file's own folder and those above it), its exports under the module's name; the words of the other
+// buffers in the list, from their files.
+void load_names(in I64[_] x, in U8[_] orig, in U8[_] add, inout I64[_] ct) {
+    comp_for = curb;
+    I64 lang = hl.lang_of(name[0..name_n]);
+    comp.init(ct, lang);
+    U8[1048576] f;
+    if (lang == hl.LANG_CINT) {
+        I64 tn = min(buf.total(x), 262144);
+        U8[262144] t;
+        if (tn > 0) { buf.copy_out(x, orig, add, 0, t[0..tn]); }
+        U8[16384] paths;
+        I64[1] used;
+        I64 np = comp.imports(t[0..tn], paths, used);
+        I64 a = 0;
+        for k in 0..np {
+            I64 e = a;
+            while (e < used[0] && paths[e] != 0) { e += 1; }
+            I64 got = slurp(paths[a..e], f);
+            I64 dir = name_n;                  // then the file's folder and those above it
+            while (got < 0 && dir > 0) {
+                dir -= 1;
+                while (dir > 0 && name[dir - 1] != '/') { dir -= 1; }
+                if (dir > 0) {
+                    U8[2048] q;
+                    I64 qn = 0;
+                    for i in 0..dir { q[qn + i] = name[i]; }
+                    qn += dir;
+                    for i in a..e { q[qn + i - a] = paths[i]; }
+                    qn += e - a;
+                    got = slurp(q[0..qn], f);
+                }
+            }
+            if (got >= 0) {
+                I64 lb = e - 3;                // the label: the last part, ".ci" off
+                I64 l0 = lb;
+                while (l0 > a && paths[l0 - 1] != '/') { l0 -= 1; }
+                I64 src = comp.add_label(ct, paths[l0..lb]);
+                comp.export_names(ct, f[0..got], src);
+            }
+            a = e + 1;
+        }
+    }
+    for i in 0..nbufs {
+        if (i != curb && blisted[i] && bname_n[i] > 0) {
+            I64 got = slurp(bname[1024 * i..1024 * i + bname_n[i]], f);
+            I64 q = 0;
+            while (q < got) {
+                U8 c = f[q];
+                Bool start = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+                if (start) {
+                    I64 e = q;
+                    while (e < got && ((f[e] >= 'a' && f[e] <= 'z') || (f[e] >= 'A' && f[e] <= 'Z') ||
+                           (f[e] >= '0' && f[e] <= '9') || f[e] == '_')) { e += 1; }
+                    if (e - q >= 3 && e - q <= 64) { comp.add_name(ct, f[q..e], comp.KIND_WORD, comp.SRC_BUFFER); }
+                    q = e;
+                } else {
+                    q += 1;
+                }
+            }
+        }
+    }
+}
+
+// The frame: the core's screen, then the command line or the message on its last rows (a message of several lines
+// takes as many, with Vim's hit-enter line under them).
+void draw(inout I64[_] r, inout I64[_] x, in U8[_] orig, in U8[_] add, inout I64[_] grid, inout I64[_] last,
+          inout I64[_] tst, inout U8[_] o, in I64[_] et, inout I64[_] hc, inout I64[_] ct) {
+    r[state.R_DIAG_EN] = tool.count_of(dt, name[0..name_n], tool.SEV_E);   // CV-8: the status line's counts
+    r[state.R_DIAG_WN] = tool.count_of(dt, name[0..name_n], tool.SEV_W);
+    view.compose(r, x, orig, add, rows, cols, name[0..name_n], grid);
+    view.syntax(r, x, orig, add, rows, cols, name[0..name_n], grid, hc);   // CV-6: the text's highlighting
+    marks_draw(r, x, grid);                                                // CV-8: the margin's E and W
+    if (list_open) { list_draw(grid); }
+    I64 at = view.cursor_at(r, x, orig, add, rows, cols);
+    if (curb != comp_for) { load_names(x, orig, add, ct); }
+    comp.draw(ct, grid, rows, cols, at);                 // CV-7: the menu's cells under the word
+    I64 ml = rows - 1;
+    if (msg_n == 0 && ex.msg_n(et) > 0 && !ex.is_open(et)) {
+        msg_clear();
+        for i in 0..ex.msg_n(et) {
+            U8[1] c;
+            c[0] = ex.msg_byte(et, i);
+            msg_put(c);
+        }
+        msg_err = ex.msg_err(et);
+    }
+    if (ml >= 1 && (ex.is_open(et) || msg_n > 0)) {
+        for c in 0..cols { grid[ml * cols + c] = ' ' + view.R_MESSAGE * view.ROLE; }
+        if (ex.is_open(et)) {
+            I64 e = put_cells(grid, ml, 0, b":", view.R_MESSAGE);
+            U8[1024] t;
+            I64 tn = ex.cmd_n(et);
+            for i in 0..tn { t[i] = ex.cmd_byte(et, i); }
+            e = put_cells(grid, ml, e, t[0..tn], view.R_MESSAGE);
+            at = ml * 65536 + min(e, cols - 1);
+        } else {
+            I64 role = view.R_MESSAGE;
+            if (msg_err) { role = view.R_REFUSAL; }
+            I64 nl = 0;
+            for i in 0..msg_n {
+                if (msg[i] == '\n') { nl += 1; }
+            }
+            if (nl == 0) {
+                _ = put_cells(grid, ml, 0, msg[0..msg_n], role);
+            } else {
+                // the lines from the top of the message's rows, then the prompt on the last row
+                I64 top = max(ml - nl - 1, 0);
+                I64 rw = top;
+                I64 s0 = 0;
+                if (msg[0] == '\n') { s0 = 1; }
+                while (s0 <= msg_n && rw < ml) {
+                    I64 s1 = s0;
+                    while (s1 < msg_n && msg[s1] != '\n') { s1 += 1; }
+                    for c in 0..cols { grid[rw * cols + c] = ' ' + view.R_MESSAGE * view.ROLE; }
+                    _ = put_cells(grid, rw, 0, msg[s0..s1], role);
+                    rw += 1;
+                    s0 = s1 + 1;
+                }
+                if (more) {
+                    I64 e = put_cells(grid, ml, 0, b"Press ENTER or type command to continue", view.R_MESSAGE);
+                    at = ml * 65536 + min(e, cols - 1);
+                }
+                full = true;
+            }
+        }
+    }
+    I64 w = term.frame(last, grid, rows, cols, full, at, view.shape(r), tst, o);
+    full = false;
+    _ = shctl.fd_write(1, o[0..w]);
+}
+
+void resize(inout I64[_] r) {
+    I64 ws = viewctl.view_winsize(1);
+    if (ws > 0) {
+        rows = max((ws >> 16) & 65535, 4);
+        cols = max(ws & 65535, 20);
+    }
+    while (rows * cols > GRID) { rows -= 1; }
+    key.window(r, view.text_rows(rows));
+    full = true;
+}
+
+void main(in U8[_] a) {
+    I64 i = 0;
+    Bool clean = false;
+    while (i < len(a)) {
+        I64 e = i;
+        while (e < len(a) && a[e] != 0) { e += 1; }
+        if (e > i) {
+            if (word_is(a[i..e], b"--clean")) {
+                clean = true;
+            } else if (a[i] == '-' && e - i > 1 && !word_is(a[i..e], b"--")) {
+                refuse(b"usage: cvim [--clean] [FILE...]", b"");
+            } else if (!word_is(a[i..e], b"--")) {
+                if (buf_find(a[i..e]) < 0 && buf_add(a[i..e]) < 0) { refuse(b"more than 64 files", b""); }
+            }
+        }
+        i = e + 1;
+    }
+    if (nbufs == 0) { _ = buf_add(b""); }
+    U8[cap.ORIG] orig;
+    U8[cap.ADD] add;
+    I64[cap.TABLE] x;
+    I64[16384] r;
+    I64[16384] keep;
+    I64[786432] sp;
+    I64[278528] u;
+    I64[262144] grid;
+    I64[262144] last;
+    I64[1] tst;
+    U8[4194304] o;
+    U8[4096] inb;
+    I64[1] res;
+    I64[ex.TABLE] et;
+    I64[pat.TABLE] pt;
+    I64[view.HC] hc;                   // CV-6: the highlighting's states (view.syntax)
+    I64[comp.TABLE] ct;                // CV-7: the completion menu and its names
+    comp.init(ct, 0);
+    for k in 0..view.HC { hc[k] = 0; }
+    ex.init(et);
+    for k in 0..len(r) { r[k] = 0; }
+    enter(r, x, orig, add, keep, 0);
+    if (!clean) {
+        U8[1200] opening;
+        I64 on = msg_n;
+        for k in 0..on { opening[k] = msg[k]; }
+        msg_clear();
+        read_init(r);
+        if (msg_n == 0) {                      // nothing refused: the file's message stays
+            for k in 0..on { msg[k] = opening[k]; }
+            msg_n = on;
+        }
+    }
+    if (cvimctl.cv_term_enter(0) != 0) { refuse(b"standard input is not a terminal", b""); }
+    term_on = true;
+    if (on_desk()) {                   // AM-3, AM section 7.2: probe the terminal; About once it names Daphnis
+        probing = true;
+        say2(b"\x1b[>q\x1b[c");
+    }
+    resize(r);
+    for k in 0..GRID { last[k] = -1; }
+    tst[0] = 0;
+    draw(r, x, orig, add, grid, last, tst, o, et, hc, ct);
+    while (!quit) {
+        I64 kept = pr_n;
+        for k in 0..kept { inb[k] = pr[k]; }
+        pr_n = 0;
+        I64 n = shctl.fd_read(0, inb[kept..]);
+        if (cvimctl.cv_winch() != 0) {
+            resize(r);
+            for k in 0..GRID { last[k] = -1; }
+        }
+        if (n == 0 - EINTR) {
+            pr_n = kept;                         // the kept reply waits for the next read
+            draw(r, x, orig, add, grid, last, tst, o, et, hc, ct);
+            continue;
+        }
+        if (n <= 0) { break; }                   // the terminal went away: leave as :q! would
+        if (kept > 0) { n = n + kept; }          // section 7.2: a reply cut by the last read went first
+        I64 p = 0;
+        while (p < n && !quit) {
+            I64 rl = probe_reply(inb, p, n);
+            if (rl < 0 && n - p <= len(pr)) {       // cut by the read's end: kept for the next
+                for k in p..n { pr[k - p] = inb[k]; }
+                pr_n = n - p;
+                p = n;
+                continue;
+            }
+            if (rl > 0) {
+                p += rl;
+                continue;
+            }
+            I64 k = keys.K_ESC;
+            I64 used = 1;
+            if (inb[p] == 0) {                     // CV-7: Ctrl+Space sends NUL, which keys.ci reads as no key
+                k = comp.K_CTRL_SPACE;
+            } else if (!(inb[p] == 27 && p == n - 1)) {   // a lone ESC at the end of a read is the key
+                used = keys.decode(inb[0..n], p, res);
+                k = res[0];
+                if (used <= 0) {
+                    used = 1;
+                    k = keys.K_NONE;
+                }
+            }
+            p += used;
+            if (k != keys.K_NONE) { typed(r, x, orig, add, sp, u, et, pt, keep, ct, k); }
+        }
+        dirty_tell(modified(r) && !quit);
+        if (!quit) { draw(r, x, orig, add, grid, last, tst, o, et, hc, ct); }
+    }
+    dirty_tell(false);                           // AM section 7: every way out clears it, :q! too
+    _ = cvimctl.cv_term_leave();
+    term_on = false;
+}
+// SPDX-License-Identifier: Apache-2.0

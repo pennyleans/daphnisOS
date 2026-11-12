@@ -1,0 +1,93 @@
+// src/elf.ci: the ELF64 file header and program headers of a static x86-64 executable (System V
+// gABI 4.1 and the x86-64 psABI), pure so the hosted tests run them. Every check is done in U64
+// before any sum, so no address in a file can overflow the kernel's arithmetic.
+
+export const I64 EHDR_BYTES = 64;
+export const I64 PHDR_BYTES = 56;
+export const I64 MAX_PHDRS = 16;
+export const U64 PT_LOAD = 1;
+export const U64 PF_X = 1;
+export const U64 PF_W = 2;
+
+// The little-endian integer of `width` bytes at b[at].
+export U64 le[n](in U8[n] b, I64 at, I64 width) {
+    U64 v = 0;
+    for k in 0..width {
+        v = v | ((b[at + k] as U64) <<% ((8 * k) as U64));
+    }
+    return v;
+}
+
+// True when h (the first 64 bytes of a file of `size` bytes) is an ELF64 little-endian x86-64
+// executable (ET_EXEC: static, not position independent) whose program headers lie inside the file.
+export Bool exec_ok[n](in U8[n] h, U64 fsize) {
+    if (n < EHDR_BYTES) {
+        return false;
+    }
+    if (h[0] != 0x7F || h[1] != 0x45 || h[2] != 0x4C || h[3] != 0x46) {
+        return false;
+    }
+    if (h[4] != 2 || h[5] != 1 || h[6] != 1) {
+        return false;
+    }
+    if (le(h, 16, 2) != 2 || le(h, 18, 2) != 62 || le(h, 20, 4) != 1) {
+        return false;
+    }
+    U64 ph_at = le(h, 32, 8);
+    U64 ph_count = le(h, 56, 2);
+    if (le(h, 54, 2) != 56 || ph_count < 1 || ph_count > 16) {
+        return false;
+    }
+    return ph_at <= fsize && ph_count * 56 <= fsize - ph_at;
+}
+
+export U64 entry[n](in U8[n] h) {
+    return le(h, 24, 8);
+}
+
+export U64 phoff[n](in U8[n] h) {
+    return le(h, 32, 8);
+}
+
+export I64 phnum[n](in U8[n] h) {
+    return le(h, 56, 2) as I64;
+}
+
+// Fields of a program header p (56 bytes).
+export U64 p_type[n](in U8[n] p) {
+    return le(p, 0, 4);
+}
+
+export U64 p_flags[n](in U8[n] p) {
+    return le(p, 4, 4);
+}
+
+export U64 p_offset[n](in U8[n] p) {
+    return le(p, 8, 8);
+}
+
+export U64 p_vaddr[n](in U8[n] p) {
+    return le(p, 16, 8);
+}
+
+export U64 p_filesz[n](in U8[n] p) {
+    return le(p, 32, 8);
+}
+
+export U64 p_memsz[n](in U8[n] p) {
+    return le(p, 40, 8);
+}
+
+// True when the PT_LOAD header p of a file of `fsize` bytes is loadable into [lo, hi): its file
+// bytes lie in the file, it is no larger in the file than in memory, and its memory lies in the range.
+export Bool load_ok[n](in U8[n] p, U64 fsize, U64 lo, U64 hi) {
+    U64 off = p_offset(p);
+    U64 fsz = p_filesz(p);
+    U64 msz = p_memsz(p);
+    U64 va = p_vaddr(p);
+    if (off > fsize || fsz > fsize - off || fsz > msz) {
+        return false;
+    }
+    return va >= lo && va < hi && msz <= hi - va;
+}
+// SPDX-License-Identifier: Apache-2.0

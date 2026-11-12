@@ -1,0 +1,343 @@
+import console;
+import fs;
+import state;
+import core;
+import cap;
+import desk;
+
+requires console.input;
+requires console.raw;
+requires fs.read("/arg1");
+requires fs.write("/arg1");
+
+I64[64] r;
+U8[256] name;
+U8[256] arg;
+U8[768] f;
+const I64 CHUNK = 4096;
+const I64 ESC_HOLD = 50;
+const I64 READ_WAIT = 50;
+
+U8[4097] chunk;
+U8[262] path;
+
+Bool[3] probe = [false, false, false];
+U8[5] VERSION_TEXT = [48, 46, 50, 46, 49];
+Bool on_desk = false;
+Bool dirty_sent = false;
+Bool wrap_sent = false;
+Bool drawn = false;
+Bool relayout = false;
+U8[600] menu;
+
+// needs --frame-arena 67108864
+const I64 GRID = 40000;
+const I64 OUT = 200000;
+
+error Refused { usage, terminal, name, unreadable, too_large, not_text }
+
+I64 edit_path() {
+    path[0..6] = b"/arg1/";
+    I64 n = r[state.R_NAME_LEN];
+    for i in 0..n {
+        path[6 + i] = name[i];
+    }
+    return 6 + n;
+}
+
+void write_frame(Grants g, in U8[_] o) {
+    _ = console.write(g, o[0..r[state.R_OUT_LEN]]);
+    drawn = true;
+}
+
+I64 file_size(Grants g, in U8[_] p) {
+    I64 n = fs.stat(g, p) catch (e) {
+        if (e == fs.FsError.not_found) {
+            return -1;
+        }
+        if (e == fs.FsError.path || e == fs.FsError.denied) {
+            return -3;
+        }
+        return -2;
+    };
+    return n;
+}
+
+// an untitled text's first save, never over a file
+void save_as(Grants g, in U8[_] t, inout U8[_] file) {
+    I64 an = r[state.R_ASK_LEN];
+    path[0..6] = b"/arg1/";
+    for i in 0..an {
+        path[6 + i] = f[state.ASK_AT + i];
+    }
+    I64 sz = file_size(g, path[0..6 + an]);
+    if (sz == -3) {
+        core.ask_again(r, state.MSG_BAD_NAME);
+        return;
+    }
+    if (sz >= 0) {
+        core.ask_again(r, state.MSG_EXISTS);
+        return;
+    }
+    Bool ok = sz == -1;
+    if (ok) {
+        I64 n = core.text_out(r, t, file);
+        fs.put(g, path[0..6 + an], file[0..n]) catch (e) {
+            ok = false;
+        };
+    }
+    if (ok) {
+        for i in 0..an {
+            name[i] = f[state.ASK_AT + i];
+        }
+        r[state.R_NAME_LEN] = an;
+        core.named(r);
+        if (on_desk) {
+            declare(g);
+        }
+    }
+    core.saved(r, ok);
+}
+
+void save(Grants g, in U8[_] t, inout U8[_] file) {
+    if (r[state.R_UNTITLED] == 1) {
+        save_as(g, t, file);
+        return;
+    }
+    I64 n = core.text_out(r, t, file);
+    I64 p = edit_path();
+    Bool ok = true;
+    fs.put(g, path[0..p], file[0..n]) catch (e) {
+        ok = false;
+    };
+    core.saved(r, ok);
+}
+
+// the desk report
+void report(Grants g) {
+    if (!on_desk || core.modified(r) == dirty_sent) {
+        return;
+    }
+    dirty_sent = core.modified(r);
+    if (dirty_sent) {
+        _ = console.write(g, "\x1b]7770;dirty;1\x07");
+    } else {
+        _ = console.write(g, "\x1b]7770;dirty;0\x07");
+    }
+}
+
+// title, about, settings, rows; a title clears all
+void declare(Grants g) {
+    _ = console.write(g, "\x1b]2;");
+    _ = console.write(g, name[0..r[state.R_NAME_LEN]]);
+    _ = console.write(g, "\x07\x1b]7770;about;Edit;");
+    _ = console.write(g, VERSION_TEXT);
+    _ = console.write(g, ";A text editor for plain files: undo, find and replace.\x07\x1b]7770;settings;1;d\x07");
+    wrap_sent = r[state.R_WRAP] != 0;
+    I64 m = desk.rows_osc(menu, wrap_sent);
+    _ = console.write(g, menu[0..m]);
+    dirty_sent = false;
+    report(g);
+}
+
+I64 take_replies(Grants g, I64 held, I64 total) {
+    I64 e = desk.strip(chunk, held, total, probe);
+    if (probe[desk.CUT] && e < CHUNK) {
+        I64 m = console.read(g, chunk[e..CHUNK], ESC_HOLD) catch 0;
+        e = desk.strip(chunk, held, e + m, probe);
+    }
+    if (!probe[desk.PROBING] && probe[desk.DAPHNIS] && !on_desk) {
+        on_desk = true;
+        declare(g);
+        core.desk(r, true);
+        relayout = true;
+    }
+    return e;
+}
+
+void report_wrap(Grants g) {
+    if (!on_desk || (r[state.R_WRAP] != 0) == wrap_sent) {
+        return;
+    }
+    wrap_sent = r[state.R_WRAP] != 0;
+    I64 m = desk.wrap_osc(menu, wrap_sent);
+    _ = console.write(g, menu[0..m]);
+}
+
+void fail(Grants g) {
+    _ = console.raw(g, false);
+}
+
+export Refused!void main(Grants g, in U8[_] args) {
+    U8[cap.TEXT] t;
+    I64[cap.UNDO] u;
+    U8[cap.UNDO_BYTES] ub;
+    U8[cap.CLIP] clip;
+    I64[GRID] grid;
+    U8[OUT] o;
+    U8[cap.FILE] file;
+
+    // no file: an untitled text
+    Bool untitled = len(args) == 0;
+    I64 nl = len(args) - 1;
+    if (!untitled && (nl <= 0 || args[nl] != 0)) {
+        "usage: ced [FILE]\n";
+        return Refused.usage;
+    }
+    I64 start = 0;
+    for i in 0..max(nl, 0) {
+        if (args[i] == 0) {
+            "usage: ced [FILE]\n";
+            return Refused.usage;
+        }
+        if (args[i] == '/' || args[i] == '\\') {
+            start = i + 1;
+        }
+    }
+    if (untitled) {
+        nl = 8;
+        arg[0..8] = b"Untitled";
+    } else {
+        nl -= start;
+        if (nl <= 0 || nl > len(arg)) {
+            "ced: give a file, not a directory, with a name of at most 256 bytes\n";
+            return Refused.name;
+        }
+        for i in 0..nl {
+            arg[i] = args[start + i];
+        }
+    }
+
+    console.raw(g, true) catch (e) {
+        "ced: this terminal has no raw mode\n";
+        return Refused.terminal;
+    };
+    I64 w = console.window(g) catch 6442450944 + 80;
+    core.init(r, t, w / 4294967296, w % 4294967296);
+    for i in 0..nl {
+        name[i] = arg[i];
+    }
+    r[state.R_NAME_LEN] = nl;
+    I64 p = edit_path();
+
+    I64 fsize = -1;
+    if (!untitled) {
+        fsize = file_size(g, path[0..p]);
+    }
+    Bool new_file = fsize == -1;
+    if (new_file) {
+        fsize = 0;
+    }
+    if (fsize == -3) {
+        fail(g);
+        "ced: this name is not allowed: letters, digits, _ - . only, no spaces\n";
+        return Refused.name;
+    }
+    if (fsize < 0) {
+        fail(g);
+        "ced: cannot read the file\n";
+        return Refused.unreadable;
+    }
+    if (fsize > cap.TEXT / 2) {
+        fail(g);
+        "ced: {core.size_mib(fsize)} MiB; ced opens up to {cap.LIMIT_MIB} MiB\n";
+        return Refused.too_large;
+    }
+    I64 got = 0;
+    if (fsize > 0) {
+        got = fs.read(g, path[0..p], 0, file[0..fsize]) catch -1;
+    }
+    if (got != fsize) {
+        fail(g);
+        "ced: cannot read the file\n";
+        return Refused.unreadable;
+    }
+    I64 st = core.load(r, t, name, file[0..fsize], arg[0..nl], new_file);
+    if (st != state.OK) {
+        fail(g);
+        if (st == state.E_NUL) {
+            "ced: the file holds a NUL byte\n";
+        } else {
+            "ced: the file is not UTF-8 text\n";
+        }
+        return Refused.not_text;
+    }
+    if (untitled) {
+        core.untitled(r);
+    }
+    _ = console.write(g, "\x1b[?2004h");
+    _ = console.write(g, "\x1b[>q\x1b[c");
+    probe[desk.PROBING] = true;
+    U8[0] none;
+    _ = core.step(r, t, u, ub, clip, name, f, grid, o, none);
+
+    I64 held = 0;
+    I64 rows = r[state.R_ROWS];
+    I64 cols = r[state.R_COLS];
+    while (true) {
+        I64 waited = 0;
+        I64 n = console.read(g, chunk[held..CHUNK], READ_WAIT) catch -1;
+        if (n < 0) {
+            break;
+        }
+        if (n == 0) {
+            waited = READ_WAIT;
+        }
+        if (n > 0 && (probe[desk.PROBING] || on_desk)) {
+            n = take_replies(g, held, held + n) - held;
+        }
+        if ((!drawn && (!probe[desk.PROBING] || waited > 0)) || (drawn && relayout)) {
+            core.draw(r, t, name, f, grid, o);
+            write_frame(g, o);
+            relayout = false;
+        }
+        if (n > 0 && core.esc_pending(r, chunk[0..held + n])) {
+            I64 m = console.read(g, chunk[held + n..], ESC_HOLD) catch -1;
+            if (m < 0) {
+                break;
+            }
+            if (m == 0) {
+                waited = ESC_HOLD;
+            }
+            n += m;
+        }
+        if (n > 0) {
+            I64 total = held + n;
+            I64 used = core.step(r, t, u, ub, clip, name, f, grid, o, chunk[0..total]);
+            for i in used..total {
+                chunk[i - used] = chunk[i];
+            }
+            held = total - used;
+            if ((r[state.R_REQ] & state.REQ_SAVE) != 0) {
+                save(g, t, file);
+                core.draw(r, t, name, f, grid, o);
+            }
+            write_frame(g, o);
+            report(g);
+            report_wrap(g);
+            if ((r[state.R_REQ] & state.REQ_BELL) != 0) {
+                _ = console.write(g, "\x07");
+            }
+            if ((r[state.R_REQ] & state.REQ_QUIT) != 0) {
+                break;
+            }
+            r[state.R_REQ] = 0;
+        }
+        core.idle(r, waited);
+        if (core.held_expired(r)) {
+            held = 0;
+        }
+        I64 w2 = console.window(g) catch w;
+        if (w2 / 4294967296 != rows || w2 % 4294967296 != cols) {
+            rows = w2 / 4294967296;
+            cols = w2 % 4294967296;
+            core.resize(r, t, name, f, grid, o, rows, cols);
+            write_frame(g, o);
+        }
+    }
+    if (on_desk && dirty_sent) {
+        _ = console.write(g, "\x1b]7770;dirty;0\x07");
+    }
+    _ = console.write(g, "\x1b[?2004l\x1b[0m\x1b[2J\x1b[H");
+    _ = console.raw(g, false);
+}

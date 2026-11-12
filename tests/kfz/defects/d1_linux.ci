@@ -1,0 +1,45 @@
+// tests/kfz/defects/d1_linux.ci: where Daphnis answers otherwise than Linux at this base, each case named
+// by its finding. They fail until the kernel is fixed; `tests/kfz/run.sh --defects` runs them after the suite. A
+// fixed case moves into tests/kfz/k*.ci. The Linux answers are this host's (2026-11-11), by the probe each names.
+
+// KFZ-1 (FSP-1 A: the sticky bit as on Linux): another's entry in a sticky directory is -EPERM on Linux (may_delete,
+// check_sticky), for rename and unlink alike; src/fs.ci answers -EACCES (sys_rename, sys_unlink).
+test "KFZ-1: a rename or unlink of another's entry in a sticky directory is -EPERM, as on Linux" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    I64 u = kz_proc(1000, fs.GRANT_ALL, 0);
+    _ = kz_tpath(u, 0, t, "s/mine");
+    I64 fd = kz_call(u, NR_OPEN, kz_at(0), 0x41, 0x1A4, 0, 0, 0);
+    assert(fd >= 3);
+    assert(kz_rename(u, t, "s/root", "s/x") == E_PERM);
+    assert(kz_rename(u, t, "s/mine", "s/root") == E_PERM);
+    _ = kz_tpath(u, 0, t, "s/root");
+    assert(kz_call(u, NR_UNLINK, kz_at(0), 0, 0, 0, 0, 0) == E_PERM);
+    kz_end(u);
+    kz_end(r);
+}
+
+// KFZ-2: PR_SET_NAME reads at most 15 bytes, and a fault before a NUL among them is -EFAULT on Linux
+// (strncpy_from_user), the name kept; sys_prctl takes the bytes it could read as the name and answers 0.
+test "KFZ-2: PR_SET_NAME with fewer than 15 readable bytes and no NUL among them is -EFAULT, the name kept" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    U8[16] was;
+    for k in 0..16 {
+        was[k] = comm[p * 16 + k];
+    }
+    assert(kz_call(p, NR_PRCTL, 15, KZ_GAP - 1, 0, 0, 0, 0) == E_FAULT);
+    assert(kz_call(p, NR_PRCTL, 15, KZ_GAP - 14, 0, 0, 0, 0) == E_FAULT);
+    for k in 0..16 {
+        assert(comm[p * 16 + k] == was[k]);
+    }
+    kz_end(p);
+}
+
+// KFZ-3: an option prctl does not take is -EINVAL on Linux whatever arg is; sys_prctl looks at arg first (-EFAULT).
+test "KFZ-3: prctl with an option it does not take is -EINVAL, whatever the pointer" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    assert(kz_call(p, NR_PRCTL, 9999, 0xFFFF800000000000, 0, 0, 0, 0) == E_INVAL);
+    assert(kz_call(p, NR_PRCTL, 9999, KZ_HI, 0, 0, 0, 0) == E_INVAL);
+    kz_end(p);
+}
+// SPDX-License-Identifier: Apache-2.0

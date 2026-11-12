@@ -1,0 +1,57 @@
+// user/ci/corectl.ci: the rows of the core set (user/ci/host.c, CI_ROWS_CORE; docs/specs/2026-11-06-c-core.md
+// section 4) that user/ci/shctl.ci does not carry, one per call; each returns the call's value or -errno.
+//   co_stat(path, follow, rec): newfstatat (lstat without follow) into rec, at least ST_WORDS words, in the order of
+//     the ST_ names below; times are seconds and nanoseconds; 0, or -errno
+//   co_lseek(fd, off, whence): lseek, whence 0 SET, 1 CUR, 2 END; the offset, or -errno (-ESPIPE on a pipe)
+//   co_mkdir(path, mode), co_rmdir(path), co_unlink(path), co_rename(from, to): the calls of their names
+//   co_clock(which): clock_gettime of CLOCK_REALTIME (0) or CLOCK_MONOTONIC (1), in nanoseconds
+//   co_sleep(ns): nanosleep for ns nanoseconds; 0, or -errno
+//   CT-2: co_readlink(path, buf): readlink into buf; the target's length, or -errno (-ENAMETOOLONG past len(buf));
+//   co_symlink(target, path): symlink; co_ignore_int(): SIGINT ignored from here on (tee -i)
+//   CT-5: co_ftruncate(fd, len): ftruncate, 0 or -errno (truncate); co_sync(): sync, always 0
+//   RS-CLK: co_settime(s): clock_settime of CLOCK_REALTIME to s seconds since 1970, 0 nanoseconds; 0, or -errno (the
+//     kernel takes it from uid 0 or a holder of GRANT_KERN: the desk, once a parent approved it)
+export extern unrestricted I64 co_stat(in U8[_] path, I64 follow, out I64[_] rec);
+export extern unrestricted I64 co_lseek(I64 fd, I64 off, I64 whence);
+export extern unrestricted I64 co_mkdir(in U8[_] path, I64 mode);
+export extern unrestricted I64 co_rmdir(in U8[_] path);
+export extern unrestricted I64 co_unlink(in U8[_] path);
+export extern unrestricted I64 co_rename(in U8[_] from, in U8[_] to);
+export extern unrestricted I64 co_clock(I64 which);
+export extern unrestricted I64 co_sleep(I64 ns);
+export extern unrestricted I64 co_readlink(in U8[_] path, out U8[_] buf);
+export extern unrestricted I64 co_symlink(in U8[_] target, in U8[_] path);
+export extern unrestricted I64 co_ignore_int();
+export extern unrestricted I64 co_ftruncate(I64 fd, I64 len);
+export extern unrestricted I64 co_sync();
+export extern unrestricted I64 co_settime(I64 s);
+
+// The words of co_stat's record.
+export const I64 ST_DEV = 0;
+export const I64 ST_INO = 1;
+export const I64 ST_MODE = 2;
+export const I64 ST_NLINK = 3;
+export const I64 ST_UID = 4;
+export const I64 ST_GID = 5;
+export const I64 ST_RDEV = 6;
+export const I64 ST_SIZE = 7;
+export const I64 ST_BLKSIZE = 8;
+export const I64 ST_BLOCKS = 9;
+export const I64 ST_ATIME = 10;
+export const I64 ST_ATIME_NS = 11;
+export const I64 ST_MTIME = 12;
+export const I64 ST_MTIME_NS = 13;
+export const I64 ST_CTIME = 14;
+export const I64 ST_CTIME_NS = 15;
+export const I64 ST_WORDS = 16;
+
+// The file type bits of ST_MODE.
+export const I64 S_IFMT = 0xF000;
+export const I64 S_IFDIR = 0x4000;
+export const I64 S_IFREG = 0x8000;
+export const I64 S_IFLNK = 0xA000;
+export const I64 S_IFCHR = 0x2000;
+export const I64 S_IFBLK = 0x6000;
+export const I64 S_IFIFO = 0x1000;
+export const I64 S_IFSOCK = 0xC000;
+// SPDX-License-Identifier: Apache-2.0

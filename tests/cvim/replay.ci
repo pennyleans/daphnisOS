@@ -1,0 +1,93 @@
+// CV-2a replay: packed cases in, text/cursor/registers out. No terminal or editor I/O in the core.
+import console;
+import fs;
+import user.ci.cvim.key;
+import user.ci.cvim.buf;
+import user.ci.cvim.state;
+import user.ci.cvim.text;
+import user.ci.cvim.undo;
+import user.ci.cvim.reg;
+import user.ci.cvim.ex;      // CV-4b: `:` and its commands run through the core's command line
+import user.ci.cvim.pat;
+requires fs.read("/case");
+I64 num(in U8[_] a, I64 p) {
+    I64 v = 0;
+    for i in 0..8 { v = v * 256 + (a[p + 7 - i] as I64); }
+    return v;
+}
+export void main(Grants g) {
+    U8[1048576] all;
+    U8[65536] orig;
+    U8[131072] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[196608] sp;
+    I64[278528] u;
+    U8[131072] dst;
+    I64[270336] et;
+    I64[368640] pt;
+    I64 n = fs.stat(g, "/case/all") catch -1;
+    assert(n >= 8 && n <= len(all));
+    I64 read_n = fs.read(g, "/case/all", 0, all[0..n]) catch -1;
+    assert(read_n == n);
+    I64 p = 8;
+    for c in 0..num(all, 0) {
+        I64 nt = num(all, p);
+        I64 nk = num(all, p + 8);
+        p += 16;
+        for i in 0..nt { orig[i] = all[p + i]; }
+        p += nt;
+        key.init(r, x, 64, 256);
+        assert(key.load(r, x, orig[0..nt], add));
+        ex.init(et);
+        for i in 0..nk {
+            I64 k = num(all, p);
+            if (ex.feed(r, x, orig[0..nt], add, sp, u, et, pt, k) == ex.NOT_MINE) {
+                key.step(r, x, orig[0..nt], add, sp, u, k);
+            }
+            p += 8;
+        }
+        assert(r[state.R_MODE] == state.MODE_NORMAL);
+        assert(r[state.R_OP] == 0 && r[state.R_PREFIX] == 0);
+        assert(r[state.R_COUNT] == 0 && r[state.R_OPCOUNT] == 0);
+        I64 total = buf.total(x);
+        I64 cur = r[state.R_CUR];
+        I64 line = text.lineof(x, orig, add, cur) + 1;
+        I64 col = text.col(x, orig, add, cur) + 1;
+        I64 rn = 0;
+        for j in r[state.R_REG_FROM]..r[state.R_REG_TO] { rn += sp[j * buf.SPAN + 2]; }
+        "case {c} {total} {line} {col} {r[state.R_MODE]} {r[state.R_REG_LINE]} {rn} {r[state.R_BELL]} {r[state.R_MSG]} {r[state.R_TOP] + 1}\n";
+        buf.copy_out(x, orig, add, 0, dst[0..total]);
+        _ = console.write(g, dst[0..total]);
+        "\n";
+        for j in r[state.R_REG_FROM]..r[state.R_REG_TO] {
+            I64 src = sp[j * buf.SPAN];
+            I64 off = sp[j * buf.SPAN + 1];
+            I64 sz = sp[j * buf.SPAN + 2];
+            if (src == buf.SRC_ORIG) { _ = console.write(g, orig[off..off + sz]); }
+            else { _ = console.write(g, add[off..off + sz]); }
+        }
+        "\n";
+        // CV-2b: the registers of vim_leg.REGS, each its kind, width, size and bytes.
+        for q in 0..15 {
+            I64 ri = r[state.R_PREV];
+            if (q >= 1 && q <= 10) { ri = q - 1; }
+            if (q == 11) { ri = state.REG_MINUS; }
+            if (q == 12) { ri = 10; }
+            if (q == 13) { ri = 11; }
+            if (q == 14) { ri = 26; }
+            I64 bn = 0;
+            for j in reg.from_of(r, ri)..reg.to_of(r, ri) { bn += sp[j * buf.SPAN + 2]; }
+            "{reg.kind_of(r, ri)} {reg.width_of(r, ri)} {bn}\n";
+            for j in reg.from_of(r, ri)..reg.to_of(r, ri) {
+                I64 src = sp[j * buf.SPAN];
+                I64 off = sp[j * buf.SPAN + 1];
+                I64 sz = sp[j * buf.SPAN + 2];
+                if (src == buf.SRC_ORIG) { _ = console.write(g, orig[off..off + sz]); }
+                else { _ = console.write(g, add[off..off + sz]); }
+            }
+            "\n";
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

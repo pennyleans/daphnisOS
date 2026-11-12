@@ -1,0 +1,75 @@
+// user/ci/core/put.ci: the writer of descriptor 1 for a core tool (docs/specs/2026-11-06-c-core.md section 4). Bytes
+// gather in 4 KiB and go out whole; a run of 4 KiB or more goes out at once. After a failed write nothing more is
+// written and failed() is true (a closed pipe ends the tool with status 1, as busybox).
+import user.ci.shctl;
+
+U8[4096] buf;
+I64 n = 0;
+Bool bad = false;
+I64 ofd = 1;     // CT-3: the descriptor written (uniq and sort -o name another)
+
+// Writes go to fd from here on (what was gathered for the last one is flushed first).
+export void to(I64 fd) {
+    flush();
+    ofd = fd;
+}
+
+export Bool failed() {
+    return bad;
+}
+
+export void flush() {
+    if (n > 0 && !bad) {
+        if (shctl.fd_write(ofd, buf[0..n]) < 0) { bad = true; }
+    }
+    n = 0;
+}
+
+export void byte(U8 b) {
+    if (n == 4096) { flush(); }
+    buf[n] = b;
+    n = n + 1;
+}
+
+export void bytes(in U8[_] s) {
+    if (len(s) >= 4096) {
+        flush();
+        if (!bad) {
+            if (shctl.fd_write(ofd, s) < 0) { bad = true; }
+        }
+        return;
+    }
+    for i in 0..len(s) { byte(s[i]); }
+}
+
+// v in decimal, right-aligned in width columns (0 for none).
+export void num(I64 v, I64 width) {
+    U8[24] d;
+    I64 k = 0;
+    I64 x = v;
+    Bool neg = x < 0;
+    if (neg) { x = 0 - x; }
+    if (x == 0) {
+        d[0] = '0';
+        k = 1;
+    }
+    while (x > 0) {
+        d[k] = ((x % 10) as U8) + 48;
+        x = x / 10;
+        k = k + 1;
+    }
+    if (neg) {
+        d[k] = '-';
+        k = k + 1;
+    }
+    I64 pad = width - k;
+    while (pad > 0) {
+        byte(' ');
+        pad = pad - 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        byte(d[k]);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,114 @@
+// tests/hw/i219_test.ci: hosted tests of src/e1000.ci's PCH layer, the MSI board's I219-V (8086:15bc), against the
+// model in tests/hw/hosted/src/mmio.ci (written from Linux v6.12's e1000e and the probe record, not from the driver).
+// Run by tests/hw/run-hosted.sh, from a copy of src/ with the hosted shims over it; tests/hw/i219_mutants.py checks that
+// each rule below is caught when the driver breaks it.
+
+import src.e1000;
+import src.mmio;
+import src.pci;
+import src.pit;
+import src.serial;
+
+const U64 RX = 0x40000000;             // written into descriptors only: the model never reads a buffer
+const U64 TX = 0x40100000;
+const I64 STRIDE = 2048;
+
+// The PHY in ULP and SMBus mode, the MAC forced to SMBus: what Linux's shutdown leaves (the probe's warm reboot read
+// FORCE_SMBUS and PHYRA), with ULP_CONFIG1's eight ULP bits armed, RESET_TO_SMBUS among them.
+void shutdown_state() {
+    mmio.model(true, true, true, 0x1D74);
+    pci.set_desc_status(0);
+    serial.clear_said();
+}
+
+Bool open_it() {
+    assert(e1000.find());
+    return e1000.open(RX, TX, STRIDE);
+}
+
+void clean_access() {
+    assert(mmio.quiet_touches_count() == 0);       // P1-1: nothing in the 20 ms after CTRL.RST
+    assert(mmio.unlocked_count() == 0);            // no MDIC without SWFLAG
+    assert(mmio.wrong_addr_count() == 0);          // P2-5: page select at PHY address 1, page 0 at 2
+    assert(mmio.outside_count() == 0);             // P2-8: 32 multicast words, RAR0 only
+}
+
+test "after Linux's shutdown: ULP off and committed, SMBus off, one reset, the MAC from RAR0, link up" {
+    shutdown_state();
+    assert(open_it());
+    clean_access();
+    assert(mmio.ulp_disarmed());                   // P1-3: 0x1D74 cleared, then START
+    assert(!mmio.mac_smbus());
+    assert(!mmio.phy_smbus_now());
+    assert(mmio.resets_count() == 1);
+    assert(e1000.mac_byte(0) == 0x02 && e1000.mac_byte(1) == 0x00 && e1000.mac_byte(2) == 0x5E);
+    assert(e1000.mac_byte(3) == 0x10 && e1000.mac_byte(4) == 0x00 && e1000.mac_byte(5) == 0x01);
+    assert((mmio.rar0_high() & 0x80000000) != 0);
+    assert(e1000.link());
+    assert(serial.said("opened; link up"));
+}
+
+test "no cable: open is true, the link is down and said so" {
+    shutdown_state();
+    mmio.no_cable();
+    assert(open_it());                              // P1-2: open does not hang on, or refuse, a missing link
+    clean_access();
+    assert(!e1000.link());
+    assert(serial.said("no link yet"));
+}
+
+test "the PHY in PCIe mode with the MAC forced to SMBus: found by unforcing the MAC" {
+    mmio.model(false, true, false, 0);
+    pci.set_desc_status(0);
+    serial.clear_said();
+    assert(open_it());                              // P2-4: the recovery chain of ich8lan.c:295-430
+    clean_access();
+    assert(!mmio.mac_smbus());
+    assert(serial.said("ULP did not turn off cleanly"));
+    assert(e1000.link());
+}
+
+test "valid ME firmware: ULP is the ME's to undo, through H2ME, and the enforce bit is let go" {
+    mmio.model(false, false, false, 0);
+    mmio.with_me();
+    pci.set_desc_status(0);
+    serial.clear_said();
+    assert(open_it());
+    clean_access();
+    assert(!mmio.enforce_left());
+}
+
+test "a PHY that never answers: not opened, no MAC reset, the reason said" {
+    shutdown_state();
+    mmio.dead_phy();
+    assert(!open_it());
+    assert(mmio.unlocked_count() == 0);
+    assert(mmio.resets_count() == 0);
+    assert(serial.said("the PHY does not answer"));
+}
+
+test "descriptor rings that ask for a flush: not opened, no MAC reset" {
+    shutdown_state();
+    mmio.set_tdlen0(0x1000);
+    pci.set_desc_status(0x100);
+    assert(!open_it());                             // P2-7: no reset of a MAC that would hang
+    assert(mmio.resets_count() == 0);
+    assert(serial.said("ask for a flush"));
+    pci.set_desc_status(0);
+}
+
+test "no PIT: no wait can be timed, so nothing is touched" {
+    shutdown_state();
+    pit.reset_clock(false);
+    assert(!open_it());
+    assert(mmio.resets_count() == 0);
+    assert(serial.said("the PIT is not running"));
+}
+test "a PIT programmed but not counting (a gated 8254): not opened, nothing touched" {
+    shutdown_state();
+    pit.freeze();
+    assert(!open_it());
+    assert(mmio.resets_count() == 0);
+    assert(serial.said("the PIT's count does not move"));
+}
+// SPDX-License-Identifier: Apache-2.0

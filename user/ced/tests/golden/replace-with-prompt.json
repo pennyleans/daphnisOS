@@ -1,0 +1,36 @@
+{
+  "id": "replace-with-prompt",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a b",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "61",
+    "0d",
+    "7a"
+  ],
+  "expect": {
+    "text": "a b",
+    "sel": [
+      0,
+      1
+    ],
+    "screen": [
+      "a b",
+      "",
+      "",
+      "",
+      " x  1 char selected                 1:2",
+      "with: z"
+    ]
+  }
+}

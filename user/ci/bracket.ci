@@ -1,0 +1,25 @@
+// user/ci/bracket.ci: [ EXPRESSION ], installed as /bin/[: user/ci/test.ci with the closing `]` that XCU test asks of
+// this form, by cish's own `[` (user/ci/cish/cond.ci) (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.cish.limits;
+import user.ci.cish.lex;
+import user.ci.cish.msg;
+import user.ci.cish.fields;
+import user.ci.cish.cond;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+U8[8192] ab;      // field 0 the name, then each argument, each NUL-ended (cish/fields.ci)
+I64[1024] fo;
+I64[1024] fe;
+
+void main(in U8[_] a) {
+    I64 nf = fields.gather(a, b"[", ab, fo, fe);
+    if (nf < 0) {
+        msg.begin();
+        msg.text(b"[: limit: ARGS_MAX");
+        msg.send();
+        dev.exit_now(2);
+    }
+    dev.exit_now(cond.run(ab, fo, fe, nf, true));
+}
+// SPDX-License-Identifier: Apache-2.0

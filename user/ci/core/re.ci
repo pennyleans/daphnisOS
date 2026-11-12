@@ -1,0 +1,600 @@
+// user/ci/core/re.ci: POSIX regular expressions for the core set (docs/specs/2026-11-06-c-core.md, CT-3, ruling
+// CORE-3). Basic (BRE) and extended (ERE) syntax are parsed into one tree, compiled to a Thompson program and run
+// by keeping the set of live states, so a line costs at most the program's size per byte: no pattern backtracks.
+//   BRE: . [ ] * ^ $ \( \) \{m,n\}, and \+ \? \| as musl takes them; * first in an expression is a literal.
+//   ERE: . [ ] * + ? { } | ( ) ^ $; a repetition with nothing before it is an error.
+//   Brackets: ranges by byte, [:class:] for XCU's twelve classes, [.c.] and [=c=] for one byte.
+//   Back-references (\1 to \9) are refused by name: `TOOL: not supported: back-reference`, status 2.
+// Patterns are added one at a time (add) and match as one (any of them). Errors end the tool with status 2.
+import user.ci.core.msg;
+
+const I64 NODES = 4096;
+const I64 PROG = 8192;
+const I64 CLASSES = 512;
+const I64 DUP_MAX = 255;     // RE_DUP_MAX
+
+// the tree
+const I64 N_LIT = 1;
+const I64 N_ANY = 2;
+const I64 N_CLS = 3;
+const I64 N_BOL = 4;
+const I64 N_EOL = 5;
+const I64 N_CAT = 6;
+const I64 N_ALT = 7;
+const I64 N_REP = 8;
+const I64 N_EMPTY = 9;
+I64[4096] nk;
+I64[4096] na;
+I64[4096] nb;
+I64[4096] nmin;
+I64[4096] nmax;     // -1: no bound
+I64 nn = 0;
+
+// the program
+const I64 I_CHAR = 1;
+const I64 I_ANY = 2;
+const I64 I_CLS = 3;
+const I64 I_BOL = 4;
+const I64 I_EOL = 5;
+const I64 I_SPLIT = 6;
+const I64 I_JMP = 7;
+const I64 I_MATCH = 8;
+I64[8192] op;
+I64[8192] px;
+I64[8192] py;
+I64 pn = 0;
+
+U64[2048] cls;      // 256 bits a class, 4 words each
+I64 ncls = 0;
+
+Bool ext = false;   // ERE
+Bool fold = false;  // -i
+I64 top = -1;       // the tree of every pattern added, as one alternation
+
+// the pattern being parsed
+U8[65536] pat;
+I64 plen = 0;
+I64 at = 0;
+I64 depth = 0;
+
+export void start(Bool extended, Bool icase) {
+    ext = extended;
+    fold = icase;
+    nn = 0;
+    ncls = 0;
+    top = -1;
+}
+
+void bad(in U8[_] why) {
+    msg.begin();
+    msg.text(b"bad regex '");
+    msg.text(pat[0..plen]);
+    msg.text(b"': ");
+    msg.text(why);
+    msg.send();
+    msg.usage(b"usage error");
+}
+
+I64 node(I64 k, I64 a, I64 b) {
+    if (nn == NODES) { msg.limit(b"RE_SIZE"); }
+    nk[nn] = k;
+    na[nn] = a;
+    nb[nn] = b;
+    nmin[nn] = 0;
+    nmax[nn] = 0;
+    nn = nn + 1;
+    return nn - 1;
+}
+
+I64 new_class() {
+    if (ncls == CLASSES) { msg.limit(b"RE_CLASSES"); }
+    for w in 0..4 { cls[ncls * 4 + w] = 0; }
+    ncls = ncls + 1;
+    return ncls - 1;
+}
+
+void cls_set(I64 k, I64 c) {
+    cls[k * 4 + (c >> 6)] = cls[k * 4 + (c >> 6)] | ((1 as U64) << ((c & 63) as U64));
+}
+
+Bool cls_has(I64 k, I64 c) {
+    return (cls[k * 4 + (c >> 6)] & ((1 as U64) << ((c & 63) as U64))) != 0;
+}
+
+Bool is_upper(I64 c) { return c >= 65 && c <= 90; }
+Bool is_lower(I64 c) { return c >= 97 && c <= 122; }
+
+void cls_fold(I64 k) {
+    for c in 65..91 {
+        if (cls_has(k, c)) { cls_set(k, c + 32); }
+        if (cls_has(k, c + 32)) { cls_set(k, c); }
+    }
+}
+
+// A literal byte, a class of its two cases under -i.
+I64 lit(I64 c) {
+    if (fold && (is_upper(c) || is_lower(c))) {
+        I64 k = new_class();
+        cls_set(k, c);
+        cls_fold(k);
+        return node(N_CLS, k, 0);
+    }
+    return node(N_LIT, c, 0);
+}
+
+Bool more() { return at < plen; }
+I64 peek() { return pat[at] as I64; }
+Bool peek2(I64 a, I64 b) { return at + 1 < plen && (pat[at] as I64) == a && (pat[at + 1] as I64) == b; }
+
+// [:name:]'s bytes into class k; false for an unknown name.
+Bool named_class(I64 k, I64 s, I64 e) {
+    I64 n = e - s;
+    U8[8] w;
+    if (n < 1 || n > 6) { return false; }
+    for i in 0..n { w[i] = pat[s + i]; }
+    for c in 0..256 {
+        Bool up = c >= 65 && c <= 90;
+        Bool lo = c >= 97 && c <= 122;
+        Bool dg = c >= 48 && c <= 57;
+        Bool pr = c >= 32 && c <= 126;
+        Bool sp = c == 32 || (c >= 9 && c <= 13);
+        Bool yes = false;
+        if (n == 5 && w[0] == 'a' && w[1] == 'l' && w[2] == 'p' && w[3] == 'h' && w[4] == 'a') { yes = up || lo; }
+        else if (n == 5 && w[0] == 'd' && w[1] == 'i' && w[2] == 'g' && w[3] == 'i' && w[4] == 't') { yes = dg; }
+        else if (n == 5 && w[0] == 'a' && w[1] == 'l' && w[2] == 'n' && w[3] == 'u' && w[4] == 'm') { yes = up || lo || dg; }
+        else if (n == 5 && w[0] == 'u' && w[1] == 'p' && w[2] == 'p' && w[3] == 'e' && w[4] == 'r') { yes = up; }
+        else if (n == 5 && w[0] == 'l' && w[1] == 'o' && w[2] == 'w' && w[3] == 'e' && w[4] == 'r') { yes = lo; }
+        else if (n == 5 && w[0] == 's' && w[1] == 'p' && w[2] == 'a' && w[3] == 'c' && w[4] == 'e') { yes = sp; }
+        else if (n == 5 && w[0] == 'b' && w[1] == 'l' && w[2] == 'a' && w[3] == 'n' && w[4] == 'k') { yes = c == 32 || c == 9; }
+        else if (n == 5 && w[0] == 'p' && w[1] == 'u' && w[2] == 'n' && w[3] == 'c' && w[4] == 't') { yes = pr && c != 32 && !up && !lo && !dg; }
+        else if (n == 5 && w[0] == 'p' && w[1] == 'r' && w[2] == 'i' && w[3] == 'n' && w[4] == 't') { yes = pr; }
+        else if (n == 5 && w[0] == 'g' && w[1] == 'r' && w[2] == 'a' && w[3] == 'p' && w[4] == 'h') { yes = pr && c != 32; }
+        else if (n == 5 && w[0] == 'c' && w[1] == 'n' && w[2] == 't' && w[3] == 'r' && w[4] == 'l') { yes = c < 32 || c == 127; }
+        else if (n == 6 && w[0] == 'x' && w[1] == 'd' && w[2] == 'i' && w[3] == 'g' && w[4] == 'i' && w[5] == 't') {
+            yes = dg || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+        } else { return false; }
+        if (yes) { cls_set(k, c); }
+    }
+    return true;
+}
+
+// After '[': the bracket expression up to its ']'.
+I64 bracket() {
+    I64 k = new_class();
+    Bool neg = false;
+    if (more() && peek() == '^') {
+        neg = true;
+        at = at + 1;
+    }
+    Bool first = true;
+    Bool going = true;
+    while (going) {
+        if (!more()) { bad(b"Missing ']'"); }
+        I64 c = peek();
+        if (c == ']' && !first) {
+            at = at + 1;
+            going = false;
+        } else {
+            I64 lo = -1;
+            if (c == '[' && at + 1 < plen && (pat[at + 1] == ':' || pat[at + 1] == '.' || pat[at + 1] == '=')) {
+                U8 kind = pat[at + 1];
+                I64 s = at + 2;
+                I64 e = s;
+                while (e + 1 < plen && !(pat[e] == kind && pat[e + 1] == ']')) { e = e + 1; }
+                if (e + 1 >= plen) { bad(b"Missing ']'"); }
+                at = e + 2;
+                if (kind == ':') {
+                    if (!named_class(k, s, e)) { bad(b"Invalid character class name"); }
+                } else {
+                    if (e - s != 1) { bad(b"Invalid collation character"); }
+                    lo = pat[s] as I64;
+                }
+            } else {
+                lo = c;
+                at = at + 1;
+            }
+            if (lo >= 0) {
+                if (at + 1 < plen && pat[at] == '-' && pat[at + 1] != ']') {
+                    I64 hi = pat[at + 1] as I64;
+                    at = at + 2;
+                    if (hi < lo) { bad(b"Invalid range end"); }
+                    for x in lo..(hi + 1) { cls_set(k, x); }
+                } else {
+                    cls_set(k, lo);
+                }
+            }
+        }
+        first = false;
+    }
+    if (fold) { cls_fold(k); }
+    if (neg) {
+        for w in 0..4 { cls[k * 4 + w] = ~cls[k * 4 + w]; }
+    }
+    return node(N_CLS, k, 0);
+}
+
+// \{m,n\} or {m,n}, after its opening: sets node r's bounds.
+void bounds(I64 r) {
+    I64 m = 0;
+    I64 digits = 0;
+    while (more() && peek() >= '0' && peek() <= '9') {
+        m = m * 10 + (peek() - 48);
+        if (m > DUP_MAX) { bad(b"Invalid interval"); }
+        digits = digits + 1;
+        at = at + 1;
+    }
+    if (digits == 0) { bad(b"Invalid interval"); }
+    I64 x = m;
+    if (more() && peek() == ',') {
+        at = at + 1;
+        x = -1;
+        if (more() && peek() >= '0' && peek() <= '9') {
+            x = 0;
+            while (more() && peek() >= '0' && peek() <= '9') {
+                x = x * 10 + (peek() - 48);
+                if (x > DUP_MAX) { bad(b"Invalid interval"); }
+                at = at + 1;
+            }
+            if (x < m) { bad(b"Invalid interval"); }
+        }
+    }
+    if (ext) {
+        if (!more() || peek() != '}') { bad(b"Invalid interval"); }
+        at = at + 1;
+    } else {
+        if (!peek2('\\', '}')) { bad(b"Invalid interval"); }
+        at = at + 2;
+    }
+    nmin[r] = m;
+    nmax[r] = x;
+}
+
+// One atom; -1 when the expression ends here (a closing parenthesis, an alternation, the end).
+I64 atom(Bool first) {
+    I64 c = peek();
+    if (ext) {
+        if (c == '|' || c == ')') { return -1; }
+        if (c == '(') {
+            at = at + 1;
+            depth = depth + 1;
+            if (depth > 64) { msg.limit(b"RE_DEPTH"); }
+            I64 g = alt();
+            if (!more() || peek() != ')') { bad(b"Missing ')'"); }
+            at = at + 1;
+            depth = depth - 1;
+            return g;
+        }
+        if (c == '*' || c == '+' || c == '?' || c == '{') { bad(b"Repetition not preceded by valid expression"); }
+        if (c == '^') { at = at + 1; return node(N_BOL, 0, 0); }
+        if (c == '$') { at = at + 1; return node(N_EOL, 0, 0); }
+    } else {
+        if (peek2('\\', '|') || peek2('\\', ')')) { return -1; }
+        if (peek2('\\', '(')) {
+            at = at + 2;
+            depth = depth + 1;
+            if (depth > 64) { msg.limit(b"RE_DEPTH"); }
+            I64 g = alt();
+            if (!peek2('\\', ')')) { bad(b"Missing ')'"); }
+            at = at + 2;
+            depth = depth - 1;
+            return g;
+        }
+        if (c == '*' && first) { at = at + 1; return lit(c); }
+        if (c == '^' && first) { at = at + 1; return node(N_BOL, 0, 0); }
+        Bool endish = at + 1 == plen || (at + 2 < plen && pat[at + 1] == '\\' && (pat[at + 2] == ')' || pat[at + 2] == '|'));
+        if (c == '$' && endish) {
+            at = at + 1;
+            return node(N_EOL, 0, 0);
+        }
+    }
+    if (c == '.') { at = at + 1; return node(N_ANY, 0, 0); }
+    if (c == '[') { at = at + 1; return bracket(); }
+    if (c == '\\') {
+        if (at + 1 == plen) { bad(b"Trailing backslash"); }
+        I64 d = pat[at + 1] as I64;
+        if (d >= '1' && d <= '9') {
+            msg.begin();
+            msg.text(b"not supported: back-reference");
+            msg.send();
+            msg.usage(b"usage error");
+        }
+        at = at + 2;
+        return lit(d);
+    }
+    at = at + 1;
+    return lit(c);
+}
+
+// An atom and its repetitions.
+I64 rep(Bool first) {
+    I64 a = atom(first);
+    if (a < 0) { return -1; }
+    Bool going = true;
+    while (going && more()) {
+        I64 c = peek();
+        I64 r = -1;
+        if (c == '*') {
+            at = at + 1;
+            r = node(N_REP, a, 0);
+            nmax[r] = -1;
+        } else if ((ext && c == '+') || (!ext && peek2('\\', '+'))) {
+            at = at + 1;
+            if (!ext) { at = at + 1; }
+            r = node(N_REP, a, 0);
+            nmin[r] = 1;
+            nmax[r] = -1;
+        } else if ((ext && c == '?') || (!ext && peek2('\\', '?'))) {
+            at = at + 1;
+            if (!ext) { at = at + 1; }
+            r = node(N_REP, a, 0);
+            nmax[r] = 1;
+        } else if (ext && c == '{') {
+            at = at + 1;
+            r = node(N_REP, a, 0);
+            bounds(r);
+        } else if (!ext && peek2('\\', '{')) {
+            at = at + 2;
+            r = node(N_REP, a, 0);
+            bounds(r);
+        }
+        if (r < 0) {
+            going = false;
+        } else {
+            a = r;
+        }
+    }
+    return a;
+}
+
+I64 cat() {
+    I64 t = -1;
+    Bool first = true;
+    Bool going = true;
+    while (going && more()) {
+        I64 r = rep(first);
+        if (r < 0) {
+            going = false;
+        } else if (t < 0) {
+            t = r;
+        } else {
+            t = node(N_CAT, t, r);
+        }
+        first = false;
+    }
+    if (t < 0) { t = node(N_EMPTY, 0, 0); }
+    return t;
+}
+
+I64 alt() {
+    I64 t = cat();
+    Bool going = true;
+    while (going && more()) {
+        if (ext && peek() == '|') {
+            at = at + 1;
+            t = node(N_ALT, t, cat());
+        } else if (!ext && peek2('\\', '|')) {
+            at = at + 2;
+            t = node(N_ALT, t, cat());
+        } else {
+            going = false;
+        }
+    }
+    return t;
+}
+
+// Adds pattern p (its bytes, no newline); fixed takes them as literal bytes (-F).
+export void add(in U8[_] p, Bool fixed) {
+    plen = len(p);
+    for i in 0..plen { pat[i] = p[i]; }
+    at = 0;
+    depth = 0;
+    I64 t = -1;
+    if (fixed) {
+        for i in 0..plen {
+            I64 l = lit(p[i] as I64);
+            if (t < 0) { t = l; } else { t = node(N_CAT, t, l); }
+        }
+        if (t < 0) { t = node(N_EMPTY, 0, 0); }
+    } else {
+        t = alt();
+        if (more()) {
+            if (ext) { bad(b"Unmatched ( or )"); } else { bad(b"Unmatched \\( or \\)"); }
+        }
+    }
+    if (top < 0) { top = t; } else { top = node(N_ALT, top, t); }
+}
+
+I64 emit_op(I64 o, I64 x, I64 y) {
+    if (pn == PROG) { msg.limit(b"RE_SIZE"); }
+    op[pn] = o;
+    px[pn] = x;
+    py[pn] = y;
+    pn = pn + 1;
+    return pn - 1;
+}
+
+I64[4096] cs;       // the right-hand sides of a chain of concatenations, emitted without recursing down it
+I64 csn = 0;
+
+void emit(I64 t) {
+    I64 k = nk[t];
+    if (k == N_LIT) { _ = emit_op(I_CHAR, na[t], 0); }
+    else if (k == N_ANY) { _ = emit_op(I_ANY, 0, 0); }
+    else if (k == N_CLS) { _ = emit_op(I_CLS, na[t], 0); }
+    else if (k == N_BOL) { _ = emit_op(I_BOL, 0, 0); }
+    else if (k == N_EOL) { _ = emit_op(I_EOL, 0, 0); }
+    else if (k == N_CAT) {
+        I64 base = csn;
+        I64 u = t;
+        while (nk[u] == N_CAT) {
+            cs[csn] = nb[u];
+            csn = csn + 1;
+            u = na[u];
+        }
+        emit(u);
+        I64 i = csn;
+        while (i > base) {
+            i = i - 1;
+            I64 v = cs[i];
+            emit(v);
+        }
+        csn = base;
+    } else if (k == N_ALT) {
+        I64 s = emit_op(I_SPLIT, 0, 0);
+        px[s] = pn;
+        I64 l = na[t];
+        I64 r = nb[t];
+        emit(l);
+        I64 j = emit_op(I_JMP, 0, 0);
+        py[s] = pn;
+        emit(r);
+        px[j] = pn;
+    } else if (k == N_REP) {
+        I64 sub = na[t];
+        for i in 0..nmin[t] { emit(sub); }
+        if (nmax[t] < 0) {
+            I64 s = emit_op(I_SPLIT, 0, 0);
+            px[s] = pn;
+            emit(sub);
+            _ = emit_op(I_JMP, s, 0);
+            py[s] = pn;
+        } else {
+            I64 opt = nmax[t] - nmin[t];
+            I64[256] holes;
+            for i in 0..opt {
+                I64 s = emit_op(I_SPLIT, 0, 0);
+                px[s] = pn;
+                holes[i] = s;
+                emit(sub);
+            }
+            for i in 0..opt { py[holes[i]] = pn; }
+        }
+    }
+}
+
+// Compiles every pattern added; call once, after the last add.
+export void compile() {
+    pn = 0;
+    emit(top);
+    _ = emit_op(I_MATCH, 0, 0);
+}
+
+// matching: the line is held here
+U8[65536] ln;
+I64 lnn = 0;
+I64[8192] cur;
+I64[8192] nxt;
+I64 ncur = 0;
+I64 nnxt = 0;
+I64[8192] mark;
+I64 gen = 0;
+I64[8192] stk;
+Bool hit = false;   // a MATCH state was added at this position
+
+// The line's bytes, for the calls below.
+export void line(in U8[_] s) {
+    lnn = len(s);
+    for i in 0..lnn { ln[i] = s[i]; }
+}
+
+void addto(Bool tonext, I64 pc0, I64 pos) {
+    I64 sp = 0;
+    stk[0] = pc0;
+    sp = 1;
+    while (sp > 0) {
+        sp = sp - 1;
+        I64 pc = stk[sp];
+        if (mark[pc] != gen) {
+            mark[pc] = gen;
+            I64 o = op[pc];
+            if (o == I_JMP) {
+                stk[sp] = px[pc];
+                sp = sp + 1;
+            } else if (o == I_SPLIT) {
+                stk[sp] = py[pc];
+                stk[sp + 1] = px[pc];
+                sp = sp + 2;
+            } else if (o == I_BOL) {
+                if (pos == 0) {
+                    stk[sp] = pc + 1;
+                    sp = sp + 1;
+                }
+            } else if (o == I_EOL) {
+                if (pos == lnn) {
+                    stk[sp] = pc + 1;
+                    sp = sp + 1;
+                }
+            } else if (o == I_MATCH) {
+                hit = true;
+            } else if (tonext) {
+                nxt[nnxt] = pc;
+                nnxt = nnxt + 1;
+            } else {
+                cur[ncur] = pc;
+                ncur = ncur + 1;
+            }
+        }
+    }
+}
+
+Bool word(I64 i) {
+    if (i < 0 || i >= lnn) { return false; }
+    I64 c = ln[i] as I64;
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95;
+}
+
+// mode 0: a match anywhere; 1 (-x): one from s to the line's end; 2 (-w): one from s to an end that is not inside
+// a word (an empty one too, as busybox).
+Bool run(I64 s, I64 mode) {
+    gen = gen + 1;
+    ncur = 0;
+    hit = false;
+    addto(false, 0, s);
+    I64 pos = s;
+    Bool found = false;
+    Bool going = true;
+    while (going) {
+        if (hit) {
+            if (mode == 0) { found = true; }
+            if (mode == 1 && pos == lnn) { found = true; }
+            if (mode == 2 && !word(pos)) { found = true; }
+        }
+        if (found || pos == lnn || (ncur == 0 && mode != 0)) {
+            going = false;
+        } else {
+            I64 c = ln[pos] as I64;
+            gen = gen + 1;
+            nnxt = 0;
+            hit = false;
+            for i in 0..ncur {
+                I64 pc = cur[i];
+                I64 o = op[pc];
+                Bool take = false;
+                if (o == I_CHAR) { take = px[pc] == c; }
+                else if (o == I_ANY) { take = true; }
+                else if (o == I_CLS) { take = cls_has(px[pc], c); }
+                if (take) { addto(true, pc + 1, pos + 1); }
+            }
+            pos = pos + 1;
+            if (mode == 0) { addto(true, 0, pos); }
+            for i in 0..nnxt { cur[i] = nxt[i]; }
+            ncur = nnxt;
+        }
+    }
+    return found;
+}
+
+// Does the line match: anywhere, whole (-x), or as a whole word (-w)?
+export Bool matches(Bool whole, Bool words) {
+    if (whole) { return run(0, 1); }
+    if (words) {
+        I64 last = lnn;
+        if (lnn == 0) { last = 1; }   // as busybox: an empty line is tried once, a longer one not at its end
+        for s in 0..last {
+            if (!word(s - 1) && run(s, 2)) { return true; }
+        }
+        return false;
+    }
+    return run(0, 0);
+}
+// SPDX-License-Identifier: Apache-2.0

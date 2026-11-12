@@ -1,0 +1,270 @@
+// user/ci/kit/ststore.ci: Settings' Storage page (RS-SET6 of stage RS; frame 38, approved by DN-58, l 2026-11-11
+// 17:15Z), a page module on kit/stpage.ci. The volume: the disk symbol, its name, "N used of M" in mono 12, and an
+// 8 px bar of the used share; then HOME, 32 px rows 33 apart, each a 1 px rule below: Documents, Downloads, Pictures,
+// Other and Trash, each its size in mono 12, Trash with a small Empty Trash button.
+//
+// The host tells the volume from statfs (KF-1; capacity and free in KiB) and the home's parts from one walk of the home
+// run as the account (kit/homeuse.ci). While the walk runs the rows show their names alone; after it, a folder the home
+// lacks is a row left out (RS-HOME), but the Trash always shows: a new home has no .trash, an empty Trash. Empty Trash
+// returns EMPTY for the host to confirm (frame 23) and do as the account; with nothing in the Trash it is at 40 percent
+// and takes no press (DN-58 item 12). Whether the Trash holds anything is the host's count of its entries
+// (set_trash_entries, from a listing of $HOME/.trash as the account), never its size: du counts a directory's own
+// blocks, so an empty Trash still reads a few KiB.
+//
+// Sizes are binary: KiB, MiB, GiB, TiB; one decimal under 10 of a unit ("2.1 GiB"), whole from 10 ("412 MiB"), a
+// trailing ".0" dropped.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.symbols;
+import user.ci.kit.stpage;
+import user.ci.kit.homeuse;
+
+export const I64 EMPTY = 16;           // stpage.ACT + 0
+
+export const I64 R_PITCH = 33;         // a home row and its rule (frame 38)
+export const I64 BAR_H = 8;
+export const I64 SMALL_H = 24;         // Empty Trash's button
+
+export const I64 R_DOCUMENTS = 0;      // the rows, in the frame's order
+export const I64 R_DOWNLOADS = 1;
+export const I64 R_PICTURES = 2;
+export const I64 R_OTHER = 3;
+export const I64 R_TRASH = 4;
+export const I64 ROWS = 5;
+
+Bool has_vol = false;
+U8[40] vname;
+I64 vlen = 0;
+I64 cap = 0;                           // KiB
+I64 avail = 0;
+I64[5] part;                           // KiB, -1 when the home has no such folder
+Bool walking = true;
+I64 trash_n = 0;                       // the Trash's entries, as the host listed them
+
+I64 fs = 0;                            // 1: Empty Trash under the keyboard
+Bool kbd = false;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- what the host tells ---
+
+// The volume: its name, capacity and free space in KiB (statfs, KF-1).
+export void set_volume(in U8[_] name, I64 n, I64 cap_kib, I64 free_kib) {
+    vlen = min(n, 40);
+    for k in 0..vlen { vname[k] = name[k]; }
+    cap = max(0, cap_kib);
+    avail = max(0, min(free_kib, cap));
+    has_vol = true;
+}
+
+export void no_volume() { has_vol = false; }
+
+// The entries in $HOME/.trash, from the host's listing of it as the account.
+export void set_trash_entries(I64 n) { trash_n = max(0, n); }
+
+// A walk of the home has started: the rows show their names alone.
+export void walk_started() {
+    walking = true;
+    for k in 0..ROWS { part[k] = -1; }
+}
+
+// The walk is over: the parts from kit/homeuse.ci.
+export void walk_done() {
+    part[R_DOCUMENTS] = homeuse.part_kib(homeuse.DOCUMENTS);
+    part[R_DOWNLOADS] = homeuse.part_kib(homeuse.DOWNLOADS);
+    part[R_PICTURES] = homeuse.part_kib(homeuse.PICTURES);
+    part[R_TRASH] = homeuse.part_kib(homeuse.TRASH);
+    part[R_OTHER] = homeuse.other();
+    walking = false;
+}
+
+export void open() {
+    fs = 0;
+    kbd = false;
+}
+
+// The keyboard moves in from the sidebar: Empty Trash, the page's one stop, when the Trash holds anything; whether it
+// took the keyboard. Shift+Tab finds the same stop.
+export Bool enter() {
+    kbd = true;
+    fs = 0;
+    return tab(1);
+}
+
+export Bool enter_last() {
+    kbd = true;
+    fs = 0;
+    return tab(-1);
+}
+
+Bool tab(I64 d) {
+    I64 can = 0;
+    if (has_vol && can_empty()) { can = 1; }
+    fs = stpage.tab_to(fs - 1, d, 1, can) + 1;
+    return fs > 0;
+}
+
+export I64 focused() { return fs; }
+
+// Whether row r shows: always while the walk runs; after it, when the home holds that folder.
+export Bool shows(I64 r) { return walking || part[r] >= 0; }
+
+// Whether Empty Trash can work: the walk is over, the Trash is there and it holds an entry.
+export Bool can_empty() { return !walking && part[R_TRASH] >= 0 && trash_n > 0; }
+
+// --- sizes ---
+
+// v KiB as text into t from at; the end.
+export I64 size_text(inout U8[_] t, I64 at, I64 v) {
+    I64 x = max(0, v);
+    I64 u = 0;                                                 // 0 KiB, 1 MiB, 2 GiB, 3 TiB
+    I64 unit = 1;
+    while (u < 3 && (x + unit / 2) / unit >= 1024) {
+        unit = unit * 1024;
+        u = u + 1;
+    }
+    I64 tenths = (x * 10 + unit / 2) / unit;
+    I64 e = at;
+    if (tenths < 100 && tenths % 10 != 0) {
+        e = stpage.digits(t, e, tenths / 10);
+        e = stpage.put(t, e, b".");
+        e = stpage.digits(t, e, tenths % 10);
+    } else {
+        e = stpage.digits(t, e, (x + unit / 2) / unit);
+    }
+    if (u == 0) { return stpage.put(t, e, b" KiB"); }
+    if (u == 1) { return stpage.put(t, e, b" MiB"); }
+    if (u == 2) { return stpage.put(t, e, b" GiB"); }
+    return stpage.put(t, e, b" TiB");
+}
+
+// The volume's line, "N used of M", into t; its length.
+export I64 used_text(inout U8[_] t) {
+    I64 at = size_text(t, 0, cap - avail);
+    at = stpage.put(t, at, b" used of ");
+    return size_text(t, at, cap);
+}
+
+// The bar's used width on a track w wide: none for nothing used, else at least its 8 px height.
+export I64 used_w(I64 w) {
+    if (cap <= 0 || cap - avail <= 0) { return 0; }
+    return max(BAR_H, min(w, w * (cap - avail) / cap));
+}
+
+// --- drawing ---
+
+I64 empty_w() { return stpage.tw(b"Empty Trash", 11, faces.SMALL_NAME) + 20; }
+I64 rows_y(I64 y0) { return y0 + stpage.BODY + 56 + stpage.GAP + stpage.LAB; }
+
+// Frame 48: the page's height from y0 with every row; a box less tall scrolls it (kit/stbox.ci).
+export I64 tall() { return rows_y(0) + (ROWS - 1) * R_PITCH + stpage.ROW_S + stpage.FOOT; }
+
+// Frame 48: the keyboard's row, from the page's top (y0 = 0): its top and bottom, -1 while the keyboard is not in the
+// page. The host gives them to kit/stbox.ci reveal after each key, so the row stays whole under the head.
+// The page's one stop is Empty Trash.
+export I64 focus_top() {
+    if (!kbd || fs != 1) { return -1; }
+    return trash_y(0) + 4;
+}
+
+export I64 focus_bottom() {
+    if (!kbd || fs != 1) { return -1; }
+    return trash_y(0) + 4 + SMALL_H;
+}
+
+I64 row_name(I64 r, inout U8[_] t) {
+    if (r == R_DOCUMENTS) { return stpage.put(t, 0, b"Documents"); }
+    if (r == R_DOWNLOADS) { return stpage.put(t, 0, b"Downloads"); }
+    if (r == R_PICTURES) { return stpage.put(t, 0, b"Pictures"); }
+    if (r == R_OTHER) { return stpage.put(t, 0, b"Other"); }
+    return stpage.put(t, 0, b"Trash");
+}
+
+// The 1x row y of the page from (cx, y0) to (cr, yb), through the pen.
+export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
+    stpage.title(row, cx, y0, cr, b"Storage", 7, y);
+    if (!has_vol) { return; }
+    I64 vy = y0 + stpage.BODY;
+    if (stpage.on(y, vy + 10, 16)) {
+        stpage.sym(row, cx, vy + 10, symbols.DISK, tok(tokens.INK));
+        U8[40] t;
+        I64 n = used_text(t);
+        I64 vx = cr - stpage.tw(t, n, faces.PATH);
+        I64 e = pen.text(row, cx + 26, vy + 23, vx - 10, vname, vlen, tok(tokens.INK), faces.NAME);
+        e = pen.text_right(row, cr, vy + 23, t, n, tok(tokens.INK), faces.PATH);
+    }
+    if (stpage.on(y, vy + 36, BAR_H)) {
+        pen.round(row, cx, vy + 36, cr, vy + 36 + BAR_H, 4, tok(tokens.MANTLE));
+        I64 uw = used_w(cr - cx);
+        if (uw > 0) { pen.round(row, cx, vy + 36, cx + uw, vy + 36 + BAR_H, 4, tok(tokens.ULTRAMARINE)); }
+    }
+    stpage.section(row, cx, vy + 56 + stpage.GAP, cr, b"HOME", 4, y);
+    I64 ry = rows_y(y0);
+    U8[24] t;
+    for r in 0..ROWS {
+        if (!shows(r)) { continue; }
+        if (stpage.on(y, ry - 4, stpage.ROW_S + 8)) {
+            if (stpage.on(y, ry, stpage.ROW_S)) {
+                I64 n = row_name(r, t);
+                stpage.label(row, cx, ry, stpage.ROW_S, cr - 200, t, n);
+            }
+            I64 vr = cr;
+            if (r == R_TRASH) {
+                vr = cr - empty_w() - 12;
+                I64 bx = cr - empty_w();
+                if (stpage.on(y, ry + 4, SMALL_H)) {
+                    stpage.button(row, bx, ry + 4, empty_w(), SMALL_H, b"Empty Trash", 11, tok(tokens.INK), faces.SMALL_NAME);
+                    if (!can_empty()) { stpage.fade(row, bx, cr); }
+                }
+                if (kbd && fs == 1 && can_empty()) { stpage.focus(row, bx, ry + 4, cr, ry + 4 + SMALL_H, stpage.R_CTRL); }
+            }
+            if (!walking && stpage.on(y, ry, stpage.ROW_S)) {
+                I64 n = size_text(t, 0, part[r]);
+                stpage.value(row, vr, ry, stpage.ROW_S, t, n, tok(tokens.INK), faces.PATH);
+            }
+        }
+        if (r < ROWS - 1 && stpage.on(y, ry + stpage.ROW_S, 1)) { stpage.rule(row, cx, ry + stpage.ROW_S, cr); }
+        ry = ry + R_PITCH;
+    }
+}
+
+// --- the pointer and the keyboard ---
+
+// The Trash row's top: the shown rows above it, 33 apart.
+I64 trash_y(I64 y0) {
+    I64 ry = rows_y(y0);
+    for r in 0..R_TRASH {
+        if (shows(r)) { ry = ry + R_PITCH; }
+    }
+    return ry;
+}
+
+export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    kbd = false;
+    if (!has_vol || !can_empty()) { return stpage.NONE; }
+    I64 ry = trash_y(y0);
+    if (py >= ry + 4 && py < ry + 4 + SMALL_H && px >= cr - empty_w() && px < cr) {
+        fs = 1;
+        return EMPTY;
+    }
+    return stpage.NONE;
+}
+
+// A key: Tab and Shift+Tab go to Empty Trash and on to the sidebar (BACK); Enter or Space presses it. An arrow with no
+// stop shows the ring on it.
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
+    if (stpage.is_tab(code)) {
+        if (tab(stpage.tab_d(code))) { return stpage.DRAW; }
+        return stpage.BACK;
+    }
+    if (fs == 0) {
+        if (stpage.is_arrow(code) && tab(1)) { return stpage.DRAW; }
+        return stpage.NONE;
+    }
+    if (stpage.is_arrow(code)) { return stpage.DRAW; }
+    if (can_empty() && stpage.is_press(code)) { return EMPTY; }
+    return stpage.NONE;
+}
+// SPDX-License-Identifier: Apache-2.0

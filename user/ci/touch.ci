@@ -1,0 +1,184 @@
+// user/ci/touch.ci: touch [-acm] [-d DATE | -t STAMP | -r REF] FILE... (docs/specs/2026-11-07-bu2-meta.md section 6,
+// BU-2b; XCU touch): sets each FILE's access and modification times (-a the access time alone, -m the
+// modification time alone) to now, or to DATE, STAMP or REF's; a FILE that is not there is made (mode 0666 less
+// the umask) unless -c. DATE is XCU's YYYY-MM-DDThh:mm:SS[.frac][Z] (T or a space; the
+// fraction dropped) or @SECONDS; STAMP is [[CC]YY]MMDDhhmm[.SS] (YY 69 to
+// 99 is 19YY, else 20YY; a STAMP without a year takes this year). A DATE without Z and every STAMP are local times
+// in the machine's zone (RS-TZc, user/ci/core/zonefile.ci; UTC without one, as under the runner's TZ=UTC0 on Linux):
+// a time the zone repeats is the earlier, a time it skips is an invalid date (tz.utc_of). So is a time before 1970 or
+// past tz.LAST (9999-12-31 23:59:59 UTC), which no tool could show. The later of -d, -t and -r wins.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.metactl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.zonefile;
+import user.ci.core.tz;
+import user.ci.core.cal;
+
+const I64 O_WRONLY = 0x1;
+const I64 O_CREAT = 0x40;
+const I64 O_NONBLOCK = 0x800;
+const I64 ENOENT = 2;
+
+I64[16] st;
+I64 zone = -1;   // RS-TZc: the machine's zone, -1 UTC
+
+// Days from 1970-01-01 to y-m-d (proleptic Gregorian).
+I64 days(I64 y, I64 m, I64 d) {
+    I64 yy = y;
+    if (m <= 2) { yy = yy - 1; }
+    I64 era = yy / 400;
+    if (yy < 0 && yy % 400 != 0) { era = era - 1; }
+    I64 yoe = yy - era * 400;
+    I64 mp = (m + 9) % 12;
+    I64 doy = (153 * mp + 2) / 5 + d - 1;
+    I64 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+// n decimal digits of a at i; -1 for a non-digit.
+I64 digits(in U8[_] a, I64 i, I64 n) {
+    I64 v = 0;
+    for k in 0..n {
+        if (a[i + k] < '0' || a[i + k] > '9') { return -1; }
+        v = v * 10 + (a[i + k] - '0') as I64;
+    }
+    return v;
+}
+
+I64 civil(I64 y, I64 mo, I64 d, I64 h, I64 mi, I64 s) {
+    if (y < 1970 || y > 9999 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) {
+        msg.usage(b"invalid date");
+    }
+    return days(y, mo, d) * 86400 + h * 3600 + mi * 60 + s;
+}
+
+I64 bad_date() {
+    msg.usage(b"invalid date");
+    return 0;
+}
+
+// A time t a file can keep: from 1970 to tz.LAST, the last second stat and ls can show (RS-TZc); else an invalid
+// date.
+I64 kept(I64 t) {
+    if (t < 0 || t > tz.LAST) { return bad_date(); }
+    return t;
+}
+
+// Local time l in the zone as UTC; a time the zone skips is an invalid date.
+I64 utc(I64 l) {
+    I64 t = tz.utc_of(zone, l);
+    if (t == tz.GAP) { return bad_date(); }
+    return kept(t);
+}
+
+// -d's value a[s..e].
+I64 date_of(in U8[_] a, I64 s, I64 e) {
+    I64 k = e - s;
+    if (k >= 2 && a[s] == '@') { return kept(args.count_of(a, s + 1, e, b"invalid date")); }
+    if (k < 16 || a[s + 4] != '-' || a[s + 7] != '-' || (a[s + 10] != 'T' && a[s + 10] != ' ') || a[s + 13] != ':') {
+        return bad_date();
+    }
+    if (k < 19 || a[s + 16] != ':') { return bad_date(); }
+    I64 sec = digits(a, s + 17, 2);
+    I64 at = s + 19;
+    if (at < e && (a[at] == '.' || a[at] == ',')) {
+        at = at + 1;
+        I64 f = at;
+        while (at < e && a[at] >= '0' && a[at] <= '9') { at = at + 1; }
+        if (at == f) { return bad_date(); }   // the fraction is dropped: times keep seconds (spec 4.6)
+    }
+    Bool z = at < e && a[at] == 'Z';
+    if (z) { at = at + 1; }
+    if (at != e) { return bad_date(); }
+    I64 y = digits(a, s, 4);
+    I64 mo = digits(a, s + 5, 2);
+    I64 d = digits(a, s + 8, 2);
+    I64 h = digits(a, s + 11, 2);
+    I64 mi = digits(a, s + 14, 2);
+    if (y < 0 || mo < 0 || d < 0 || h < 0 || mi < 0 || sec < 0) { return bad_date(); }
+    if (z) { return kept(civil(y, mo, d, h, mi, sec)); }
+    return utc(civil(y, mo, d, h, mi, sec));
+}
+
+// -t's value a[s..e].
+I64 stamp_of(in U8[_] a, I64 s, I64 e) {
+    I64 body = e;
+    I64 sec = 0;
+    if (e - s >= 3 && a[e - 3] == '.') {
+        sec = digits(a, e - 2, 2);
+        body = e - 3;
+    }
+    I64 k = body - s;
+    if ((k != 8 && k != 10 && k != 12) || sec < 0) { return bad_date(); }
+    I64 y = 0;
+    I64 at = s;
+    if (k == 12) {
+        y = digits(a, s, 4);
+        at = s + 4;
+    } else if (k == 10) {
+        y = digits(a, s, 2);
+        if (y < 0) { return bad_date(); }
+        if (y >= 69) { y = 1900 + y; } else { y = 2000 + y; }
+        at = s + 2;
+    } else {
+        I64 o = tz.local(zone, corectl.co_clock(0) / 1000000000);
+        y = cal.year();
+    }
+    I64 mo = digits(a, at, 2);
+    I64 d = digits(a, at + 2, 2);
+    I64 h = digits(a, at + 4, 2);
+    I64 mi = digits(a, at + 6, 2);
+    if (y < 0 || mo < 0 || d < 0 || h < 0 || mi < 0) { return bad_date(); }
+    return utc(civil(y, mo, d, h, mi, sec));
+}
+
+void main(in U8[_] a) {
+    msg.name(b"touch");
+    args.parse(a, b"acm", b"dtr");
+    zone = zonefile.city();
+    I64 at = metactl.T_NOW;
+    I64 mt = metactl.T_NOW;
+    U8 src = args.last(b"dtr");
+    if (src == 'd') {
+        at = date_of(a, args.val_start('d'), args.val_stop('d'));
+        mt = at;
+    } else if (src == 't') {
+        at = stamp_of(a, args.val_start('t'), args.val_stop('t'));
+        mt = at;
+    } else if (src == 'r') {
+        I64 rs = args.val_start('r');
+        I64 re = args.val_stop('r');
+        I64 r = corectl.co_stat(a[rs..re], 1, st);
+        if (r < 0) {
+            msg.file(a[rs..re], 0 - r);
+            msg.finish_with(1);
+        }
+        at = st[corectl.ST_ATIME];
+        mt = st[corectl.ST_MTIME];
+    }
+    if (args.has('a') && !args.has('m')) { mt = metactl.T_OMIT; }
+    if (args.has('m') && !args.has('a')) { at = metactl.T_OMIT; }
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    for i in 0..n {
+        I64 s = args.op_start(i);
+        I64 e = args.op_stop(a, i);
+        I64 r = metactl.co_utimens(a[s..e], at, mt, 1);
+        if (r == 0 - ENOENT && !args.has('c')) {
+            I64 fd = shctl.sh_open(a[s..e], O_WRONLY | O_CREAT | O_NONBLOCK, 0x1B6);
+            if (fd < 0) {
+                r = fd;
+            } else {
+                _ = shctl.fd_close(fd);
+                r = metactl.co_utimens(a[s..e], at, mt, 1);
+            }
+        }
+        if (r < 0 && !(r == 0 - ENOENT && args.has('c'))) { msg.file(a[s..e], 0 - r); }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

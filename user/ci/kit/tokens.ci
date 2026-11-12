@@ -1,0 +1,73 @@
+// user/ci/kit/tokens.ci: the kit's color tokens, two themes (K-3, docs/specs/2026-11-07-k-kit2.md; values agy's D-3
+// and D-5, the desk sheets' section 6, accepted by l
+// 2026-11-07): one table of XRGB8888 words, TOKENS a theme, dark first. The theme is an index the desk switches
+// live; Gruvbox Dark is the default (D-0). Indices 0 to 5 keep W-2 A's roles. The open-cut mark keeps the lockup's
+// own five words in both themes (lockup). tools/check-tiler.py and check-layout.py read these tables, so the twins
+// draw what cint draws.
+export const Bool SIENNA_RULED = true;  // D-2: D65D0E dark, 9E4724 light
+
+export const I64 PAPER = 0;         // a window's canvas, the terminal's ground
+export const I64 INK = 1;           // type, the terminal's glyphs
+export const I64 ULTRAMARINE = 2;   // the focus frame and focus rings
+export const I64 SIENNA = 3;        // a disk grant
+export const I64 OCHRE = 4;         // a network grant
+export const I64 CADMIUM = 5;       // a hard fault only (KD-4 A)
+export const I64 MANTLE = 6;        // the plane under the windows
+export const I64 SURF1 = 7;         // a raised strip: a float's bar
+export const I64 SURF2 = 8;         // a raised panel
+export const I64 RULE = 9;          // a resting border, a divider
+export const I64 INK_DIM = 10;      // second text: the bar's variable, section names
+export const I64 FILL = 11;         // a chosen row, page or cell
+export const I64 ON_FILL = 12;      // type on FILL and on SIENNA
+export const I64 ON_OCHRE = 13;     // type on OCHRE
+export const I64 BAR = 14;          // the system bar's ground (D-5)
+export const I64 BAR_SLOT = 15;     // the bar's active slot: this desktop, the open clock
+export const I64 BAR_RULE = 16;     // the bar's hairlines
+export const I64 ANSI = 17;         // ANSI colors 0 to 7 at ANSI + k (KD-5 B; the terminal maps them in K-8)
+export const I64 TOKENS = 25;
+
+export const I64 DARK = 0;          // Gruvbox Dark
+export const I64 LIGHT = 1;         // Warm Paper
+
+U32[50] words = [
+    0x001d2021, 0x00f3efe6, 0x004a88c7, 0x00d65d0e, 0x00fabd2f, 0x00fb4934, 0x00141413, 0x00282a2c, 0x00222426,
+    0x003a3937, 0x00a8a295, 0x001a4b8c, 0x00f3efe6, 0x00141413, 0x00141413, 0x0024272b, 0x0032363c,
+    0x003a3937, 0x00e06c75, 0x008ec07c, 0x00fabd2f, 0x004a88c7, 0x00d3869b, 0x007daea3, 0x00f3efe6,
+    0x00f5f4f0, 0x00141413, 0x001a4b8c, 0x009e4724, 0x00e5a900, 0x00d62828, 0x00e8eaee, 0x00e4e7ec, 0x00eceef2,
+    0x00b8c0cc, 0x00525e6e, 0x001a4b8c, 0x00f5f4f0, 0x00141413, 0x00f2f4f8, 0x00e3e8f0, 0x00cbd2dc,
+    0x00141413, 0x00a63a2b, 0x002d6a3e, 0x009e4724, 0x001a4b8c, 0x007a3e65, 0x001f6368, 0x00525e6e];
+
+// The lockup's words (W-2 A, the opencut SVG's fills), by tokens 0 to 5: the mark draws these in both themes.
+U32[6] lockup_words = [0x00f3efe6, 0x00141413, 0x001a4b8c, 0x00a0522d, 0x00e5a900, 0x00d62828];
+
+// The terminal's ground and ink (l 2026-11-08: a terminal is dark like a typical
+// terminal, Carbon Ground, in both themes). Its ANSI colors are the dark theme's tokens.ANSI + k.
+U32[2] term_words = [0x00141413, 0x00eae6df];
+// DN-45 B (l 2026-11-10 18:03Z): the terminal's bright black, SGR 90 and 100 (and 38 or 48 ; 5 ; 8), INK_DIM's
+// #a8a295; the eight ANSI words stay as they are.
+U32[1] term_bright = [0x00a8a295];
+
+I64 th = 0;
+
+export U32 word(I64 token) {
+    return words[TOKENS * th + token];
+}
+
+export U32 lockup(I64 token) {
+    return lockup_words[token];
+}
+
+// The terminal's ground, its ink, and ANSI color k (0 to 7): the same words in both themes.
+export U32 term_paper() { return term_words[0]; }
+export U32 term_ink() { return term_words[1]; }
+export U32 term_ansi(I64 k) { return words[ANSI + k]; }
+export U32 term_bright_black() { return term_bright[0]; }
+
+export void set_theme(I64 t) {
+    th = t;
+}
+
+export I64 theme() {
+    return th;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,29 @@
+// src/sysinfo.ci: KF-2 (docs/specs/2026-11-11-kf-facts.md section 2), Linux's `struct sysinfo` on x86-64 as 14
+// little-endian words of 8 bytes, 112 bytes. Pure: src/proc.ci fills one and copies it out; the hosted test reads
+// the words back (tests/kf/sysinfo_test.ci).
+//
+//   word 0 uptime (seconds)     1 to 3 loads (0)        4 totalram     5 freeram     6 sharedram (0)
+//   word 7 bufferram (0)        8 totalswap (0)         9 freeswap (0)
+//   word 10 procs in its low 16 bits (the rest is the struct's padding, 0)
+//   word 11 totalhigh (0)       12 freehigh (0)        13 mem_unit in its low 32 bits (padding above, 0)
+
+export const I64 WORDS = 14;
+export const I64 BYTES = 112;
+export const U64 MEM_UNIT = 4096;      // totalram and freeram count frames
+
+// The record: uptime seconds, total and free frames, procs processes (a count past 65,535 reads as 65,535, the
+// field's width).
+export void words(inout U64[14] w, U64 uptime, U64 total, U64 free, U64 procs) {
+    for i in 0..14 {
+        w[i] = 0;
+    }
+    w[0] = uptime;
+    w[4] = total;
+    w[5] = free;
+    w[10] = procs;
+    if (procs > 0xFFFF) {
+        w[10] = 0xFFFF;
+    }
+    w[13] = MEM_UNIT;
+}
+// SPDX-License-Identifier: Apache-2.0

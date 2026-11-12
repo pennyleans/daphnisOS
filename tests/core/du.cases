@@ -1,0 +1,21 @@
+# tests/core/du.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Blocks depend on the host's
+# file system (H). The oracle lists a directory in its own order, the native du by name, so the cases name trees
+# with one entry a directory, or -s.
+look | - | H
+ | - | D-4 H
+-a look/sub/inner | - | H
+-s look | - | H
+-k look | - | H
+-sk look . | - | H
+-s look/a.txt look/sub/c.txt look | - | H
+-a look/a.txt | - | H
+-x look | - | H
+-H look | - | H
+-L look | - | H
+missing look | - | H
+deep | - | D-12
+-as look | - | D-3
+-h look | - | D-1
+-d 1 look | - | D-1
+-a look | - | D-4 H
+-a | - | D-4 H

@@ -1,0 +1,108 @@
+// user/ci/uniq.ci: uniq [-c|-d|-u] [-i] [-f FIELDS] [-s CHARS] [INPUT [OUTPUT]] (docs/specs/2026-11-06-c-core.md, CT-3;
+// POSIX XCU uniq). Adjacent equal lines are written once; -d writes only repeated lines, -u only unrepeated ones; -c
+// prefixes each with its count (`%7d `, as busybox). Lines compare after FIELDS blank-separated fields and then CHARS
+// bytes are skipped; -i folds ASCII case (busybox and GNU, not POSIX). INPUT `-` or none is descriptor 0; OUTPUT is created or truncated.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+import user.ci.core.line;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+U8[65536] prev;
+U8[65536] cur;
+I64 pn = -1;
+I64 reps = 0;
+I64 skipf = 0;
+I64 skipc = 0;
+Bool o_c = false;
+Bool o_d = false;
+Bool o_u = false;
+Bool o_i = false;
+
+U8 low(U8 c) {
+    if (o_i && c >= 'A' && c <= 'Z') { return c + 32; }
+    return c;
+}
+
+// Where the compared part of prev (which = 0) or cur (1) starts.
+I64 key(Bool which, I64 n) {
+    I64 i = 0;
+    for f in 0..skipf {
+        if (which) {
+            while (i < n && (cur[i] == ' ' || cur[i] == '\t')) { i = i + 1; }
+            while (i < n && cur[i] != ' ' && cur[i] != '\t') { i = i + 1; }
+        } else {
+            while (i < n && (prev[i] == ' ' || prev[i] == '\t')) { i = i + 1; }
+            while (i < n && prev[i] != ' ' && prev[i] != '\t') { i = i + 1; }
+        }
+    }
+    i = i + skipc;
+    if (i > n) { i = n; }
+    return i;
+}
+
+Bool same(I64 cn) {
+    I64 a = key(false, pn);
+    I64 b = key(true, cn);
+    if (pn - a != cn - b) { return false; }
+    for k in 0..(pn - a) {
+        if (low(prev[a + k]) != low(cur[b + k])) { return false; }
+    }
+    return true;
+}
+
+void out_prev() {
+    if (pn < 0) { return; }
+    if ((o_d && reps < 2) || (o_u && reps > 1)) { return; }
+    if (o_c) {
+        put.num(reps, 7);
+        put.byte(' ');
+    }
+    put.bytes(prev[0..pn]);
+    put.byte('\n');
+}
+
+void main(in U8[_] a) {
+    msg.name(b"uniq");
+    args.parse(a, b"cdiu", b"fs");
+    o_c = args.has('c');
+    o_d = args.has('d');
+    o_u = args.has('u');
+    o_i = args.has('i');
+    if (args.has('f')) { skipf = args.count_of(a, args.val_start('f'), args.val_stop('f'), b"invalid number"); }
+    if (args.has('s')) { skipc = args.count_of(a, args.val_start('s'), args.val_stop('s'), b"invalid number"); }
+    I64 n = args.operands();
+    if (n > 2) { msg.usage(b"too many operands"); }
+    I64 fd = 0;
+    if (n >= 1) {
+        fd = get.open(a[args.op_start(0)..args.op_stop(a, 0)]);
+        if (fd < 0) { msg.finish_with(1); }
+    }
+    if (n == 2) {
+        I64 w = shctl.sh_open(a[args.op_start(1)..args.op_stop(a, 1)], 0x241, 438);
+        if (w < 0) {
+            msg.file(a[args.op_start(1)..args.op_stop(a, 1)], 0 - w);
+            msg.finish_with(1);
+        }
+        put.to(w);
+    }
+    line.begin(fd);
+    I64 cn = line.next(cur);
+    while (cn >= 0) {
+        if (pn >= 0 && same(cn)) {
+            reps = reps + 1;
+        } else {
+            out_prev();
+            for k in 0..cn { prev[k] = cur[k]; }
+            pn = cn;
+            reps = 1;
+        }
+        cn = line.next(cur);
+    }
+    out_prev();
+    if (line.failed() != 0) { msg.file(a[args.op_start(0)..args.op_stop(a, 0)], line.failed()); }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,198 @@
+// tests/ff/indexui_test.ci: Index's chrome (DN-55, user/ci/kit/indexui.ci), hosted: where each control of frames 3
+// and 4 is and what a point is on, the sidebar's groups, the crumbs that fit, and the window bar's folder name.
+// tests/ff/index_proof.ci draws the same state. Run by check.sh.
+import user.ci.kit.indexui;
+import user.ci.kit.indextrash;
+import user.ci.kit.tokens;
+
+U8[64] t;
+
+Bool name_is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (t[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+void frame4() {
+    indexui.set_size(958, 667);
+    indexui.set_nav(true, false, true);
+    indexui.crumbs(indexui.HOME, b"Home");
+    indexui.set_edit(false, false, b"");
+    indexui.set_view(false, b"Name");
+    indexui.set_query(b"");
+    indexui.places_clear();
+    indexui.place(indexui.HOME, b"Home");
+    indexui.place(indexui.DOCUMENTS, b"Documents");
+    indexui.place(indexui.DOWNLOADS, b"Downloads");
+    indexui.place(indexui.PICTURES, b"Pictures");
+    indexui.place(indexui.DISK, b"Daphnis");
+    indexui.place(indexui.TRASH, b"Trash");
+    indexui.set_place(0);
+    indexui.set_status(9, 1);
+}
+
+test "the toolbar: Back, Forward, Up 32 px from x 12, 4 apart, between y 8 and 40" {
+    frame4();
+    assert(indexui.hit(12, 8) == indexui.BACK && indexui.hit(43, 39) == indexui.BACK);
+    assert(indexui.hit(44, 20) == indexui.NOTHING);        // the 4 px between
+    assert(indexui.hit(48, 20) == indexui.FORWARD && indexui.hit(84, 20) == indexui.UP);
+    assert(indexui.hit(20, 7) == indexui.NOTHING && indexui.hit(20, 40) == indexui.NOTHING);
+}
+
+test "the right of the toolbar: Search 180 wide 12 from the edge, Sort and the switch before it, 4 apart" {
+    frame4();
+    assert(indexui.hit(958 - 12 - 180, 20) == indexui.SEARCH && indexui.hit(958 - 13, 20) == indexui.SEARCH);
+    assert(indexui.hit(958 - 12 - 180 - 2, 20) == indexui.NOTHING);
+    assert(indexui.hit(958 - 12 - 180 - 5, 20) == indexui.SORT);
+    indexui.set_view(true, b"Name");                        // List: no Sort, the switch next to Search
+    assert(indexui.hit(958 - 12 - 180 - 4 - 2 - 1, 20) == indexui.LIST);   // the switch's 2 px pad before Search's gap
+    assert(indexui.hit(958 - 12 - 180 - 4 - 2 - 36 - 1, 20) == indexui.GRID);
+    assert(indexui.hit(958 - 12 - 180 - 4 - 1, 20) == indexui.NOTHING);
+}
+
+test "frame 32: in the Trash, Empty Trash takes Sort's slot in the Grid and the List; elsewhere Sort is back" {
+    frame4();
+    I64 w = indextrash.button_w();
+    indexui.set_trash(true, true);
+    I64 s1 = 958 - 12 - 180 - 4;                            // the slot ends 4 before Search
+    assert(indexui.hit(s1 - 1, 20) == indexui.EMPTY_TRASH && indexui.hit(s1 - w, 20) == indexui.EMPTY_TRASH);
+    assert(indexui.hit(s1 - w - 1, 20) != indexui.EMPTY_TRASH && indexui.hit(s1 - w - 4 - 2 - 1, 20) == indexui.LIST);
+    indexui.set_view(true, b"Name");                        // the List keeps the button where Sort would be
+    assert(indexui.hit(s1 - 1, 20) == indexui.EMPTY_TRASH && indexui.hit(s1 - w - 4 - 2 - 1, 20) == indexui.LIST);
+    U32[958] r;
+    indexui.toolbar_row(r, 20);                             // drawn: the button's SURF1 in the slot
+    assert(r[s1 - 2] == tokens.word(tokens.SURF1));
+    indexui.set_trash(false, false);
+    assert(indexui.hit(s1 - 1, 20) == indexui.NOTHING);   // the List without the Trash: no Sort, the switch's pad
+    indexui.set_view(false, b"Name");
+    assert(indexui.hit(s1 - 1, 20) == indexui.SORT);
+}
+
+test "the crumbs: the root's symbol and word go home, each crumb is its own, the pill's space edits" {
+    frame4();
+    indexui.crumbs(indexui.HOME, b"Home");
+    indexui.crumb(b"kit");
+    assert(indexui.hit(132, 20) == indexui.CRUMB);          // the pill's 12 px in, before the symbol
+    assert(indexui.hit(150, 20) == indexui.CRUMB);          // the root's symbol (pill from 128, 12 in)
+    assert(indexui.hit(170, 20) == indexui.CRUMB);          // "Home" from 164
+    assert(indexui.hit(232, 20) == indexui.CRUMB + 1);      // "kit" after the chevron
+    assert(indexui.hit(400, 20) == indexui.PILL);
+    indexui.set_edit(true, true, b"/home/ci/kit");
+    assert(indexui.hit(170, 20) == indexui.PILL);           // with the keyboard the pill is the path
+}
+
+test "many crumbs: the last ones that fit are drawn and the first are left out" {
+    frame4();
+    indexui.crumbs(indexui.DISK, b"Daphnis");
+    for k in 0..30 { indexui.crumb(b"folder-name"); }
+    I64 seen = 0;
+    I64 last = -1;
+    for x in 128..700 {
+        I64 h = indexui.hit(x, 20);
+        if (h > indexui.CRUMB && h < indexui.PLACE) {
+            seen = seen + 1;
+            last = h;
+        }
+    }
+    assert(seen > 0 && last == indexui.CRUMB + 30);
+    assert(indexui.hit(180, 20) != indexui.CRUMB + 1);      // the first names are not drawn
+}
+
+test "a deep path keeps its last names as crumbs, so the folder shown is always the last; dropped() counts the rest" {
+    frame4();
+    indexui.crumbs(indexui.DISK, b"Daphnis");
+    U8[3] nm;
+    for k in 0..40 {
+        nm[0] = 'd';
+        nm[1] = ('0' as I64 + k / 10) as U8;
+        nm[2] = ('0' as I64 + k % 10) as U8;
+        indexui.crumb(nm);
+    }
+    assert(indexui.dropped() == 9);                         // the root and 31 names kept of 40
+    I64 last = -1;
+    for x in 128..800 {
+        I64 h = indexui.hit(x, 20);
+        if (h > indexui.CRUMB && h < indexui.PLACE) { last = h; }
+    }
+    assert(last == indexui.CRUMB + 31);                     // crumb 31 is d39, the folder shown
+    U8[2000] big;
+    for k in 0..2000 { big[k] = 'x'; }
+    indexui.crumbs(indexui.DISK, b"Daphnis");
+    indexui.crumb(big[0..1020]);
+    indexui.crumb(big[0..1020]);
+    indexui.crumb(b"end");                                  // past the store's bytes: the first name goes
+    assert(indexui.dropped() == 1);
+}
+
+test "the sidebar: 32 px rows 2 apart from y 60, its groups 12 apart, the body right of it" {
+    frame4();
+    assert(indexui.hit(20, 60) == indexui.PLACE && indexui.hit(20, 91) == indexui.PLACE);
+    assert(indexui.hit(20, 92) == indexui.SIDE && indexui.hit(20, 94) == indexui.PLACE + 1);   // 2 apart
+    assert(indexui.hit(20, 193) == indexui.PLACE + 3);
+    assert(indexui.hit(20, 196) == indexui.SIDE && indexui.hit(20, 207) == indexui.SIDE);   // 2 and 12 to the disk
+    assert(indexui.hit(20, 208) == indexui.PLACE + 4 && indexui.hit(20, 239) == indexui.PLACE + 4);
+    assert(indexui.hit(20, 285) == indexui.PLACE + 5);      // Trash, 12 after the disk
+    assert(indexui.hit(4, 70) == indexui.SIDE);             // 8 in from the edges
+    assert(indexui.hit(184, 300) == indexui.BODY && indexui.hit(183, 300) == indexui.SIDE);
+    assert(indexui.hit(300, 639) == indexui.STATUS && indexui.hit(300, 638) == indexui.BODY);
+}
+
+test "the window bar's folder name: Daphnis, Home, Trash, else the last name" {
+    assert(name_is(indexui.folder_name(b"/", b"/home/ci", t), b"Daphnis"));
+    assert(name_is(indexui.folder_name(b"/home/ci", b"/home/ci", t), b"Home"));
+    assert(name_is(indexui.folder_name(b"/home/ci/", b"/home/ci", t), b"Home"));
+    assert(name_is(indexui.folder_name(b"/home/ci/.trash/items", b"/home/ci", t), b"Trash"));
+    assert(name_is(indexui.folder_name(b"/home/ci/.trash/items/a", b"/home/ci", t), b"a"));
+    assert(name_is(indexui.folder_name(b"/home/ci/kit", b"/home/ci", t), b"kit"));
+    assert(name_is(indexui.folder_name(b"/home/cindy", b"/home/ci", t), b"cindy"));
+    assert(name_is(indexui.folder_name(b"/etc", b"/", t), b"etc"));
+    assert(name_is(indexui.folder_name(b"/home", b"/", t), b"home"));
+}
+test "narrow (under 640, frame 48): the sidebar button at 12, Back after it, the body from x 0; 640 is wide" {
+    frame4();
+    indexui.set_size(500, 400);
+    assert(indexui.narrow() && indexui.body_x() == 0);
+    assert(indexui.hit(12, 10) == indexui.SIDEBAR && indexui.hit(39, 37) == indexui.SIDEBAR);
+    assert(indexui.hit(12, 9) == indexui.NOTHING && indexui.hit(40, 20) == indexui.NOTHING);   // 28 x 28, 4 apart
+    assert(indexui.hit(44, 20) == indexui.BACK && indexui.hit(80, 20) == indexui.FORWARD);
+    assert(indexui.hit(116, 20) == indexui.UP);
+    assert(indexui.hit(20, 100) == indexui.BODY);         // folded: the sidebar's places are the body's
+    indexui.set_size(640, 400);
+    assert(!indexui.narrow() && indexui.body_x() == 184 && indexui.hit(20, 60) == indexui.PLACE);
+}
+
+test "narrow: Sort and Empty Trash hide, Search is a 32 px button, a typed query takes the crumbs' place" {
+    frame4();
+    indexui.set_size(500, 400);
+    assert(indexui.hit(500 - 12 - 32, 20) == indexui.SEARCH && indexui.hit(500 - 13, 20) == indexui.SEARCH);
+    assert(indexui.hit(500 - 12 - 32 - 4 - 2 - 1, 20) == indexui.LIST);   // the switch next to Search: no Sort
+    indexui.set_trash(true, true);
+    assert(indexui.hit(500 - 12 - 32 - 4 - 2 - 1, 20) == indexui.LIST);   // nor Empty Trash
+    indexui.set_trash(false, false);
+    assert(indexui.hit(300, 20) == indexui.PILL);           // the pill from 160 to 364, past its crumbs
+    indexui.set_query(b"no");
+    assert(indexui.hit(300, 20) == indexui.SEARCH && indexui.hit(170, 20) == indexui.SEARCH);
+    U32[500] r;
+    indexui.toolbar_row(r, 20);
+    assert(r[500 - 12 - 31] == tokens.word(tokens.FILL));   // the button FILL while a query shows
+}
+
+test "narrow: the button lays the sidebar over the body, its places live; a wide box folds it away" {
+    frame4();
+    indexui.set_size(500, 400);
+    indexui.set_laid(true);
+    assert(indexui.is_laid() && indexui.hit(20, 60) == indexui.PLACE && indexui.hit(184, 300) == indexui.BODY);
+    U32[500] r;
+    for x in 0..500 { r[x] = 0xffffff; }
+    indexui.laid_row(r, 100);
+    assert(r[100] == tokens.word(tokens.SURF2) && r[300] == 0xffffff);   // the sidebar; the body past its shadow
+    assert(r[186] != 0xffffff);                                          // the shadow on the body at its edge
+    indexui.set_size(958, 667);
+    assert(!indexui.is_laid());
+    indexui.set_laid(true);
+    assert(!indexui.is_laid());                                   // wide: nothing to lay
+}
+
+// SPDX-License-Identifier: Apache-2.0

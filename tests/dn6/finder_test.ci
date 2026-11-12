@@ -1,0 +1,137 @@
+// tests/dn6/finder_test.ci: hosted tests of DN-7's Finder toolbar and DN-9's row icons (design notes 7 and 9, l
+// 2026-11-10; docs/specs/2026-11-07-ff-super-plane.md section 3f, as built). finder.ci is a program, so cint test
+// cannot import it: row_icon, text_in, text and toolbar_at below are finder.ci's, copied verbatim. Finder draws at
+// 1x (its content is pixel-doubled at 2x, FD-2X A), so one frame a theme: three toolbars (at rest with a
+// placeholder, the path pill focused with its text selected, focused with a caret and a filter) and five rows, a
+// file icon each (dir, text, ci, image, wad). The sums are tools/check-hdesk.py's dn_finder_frame. Run by check.sh.
+
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.draw;
+import user.ci.kit.shape;
+import user.ci.kit.fileicons;
+
+const I64 BASE = 13;        // finder.ci's
+
+U32[1920] row;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+void row_icon(I64 y, I64 x0, I64 y0, I64 k) {
+    fileicons.icon_at(row, y, x0, y0, k, 16, 1);
+}
+
+I64 text_in(I64 y, I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, I64 t, I64 f) {
+    return ctext.text(row, y, x0, y0 + BASE, x1, s, n, tok(t), f, 1);
+}
+
+void text(I64 y, I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, I64 t, I64 f) {
+    I64 e = text_in(y, x0, y0, x1, s, n, t, f);
+}
+
+void toolbar_at(I64 y, I64 w, I64 live, in U8[_] p, I64 pn, Bool focus, Bool all, in U8[_] q, I64 qn) {
+    if (y < 6 || y >= 34) { return; }
+    for b in 0..3 {
+        I64 bx = 8 + 32 * b;
+        I64 t = tokens.INK_DIM;
+        if ((live & (1 << (b as U32))) != 0) { t = tokens.INK; }
+        U8[1] g;
+        g[0] = '<';
+        if (b == 1) { g[0] = '>'; }
+        if (b == 2) { g[0] = '^'; }
+        I64 gw = ctext.width(g, 1, faces.BODY, 1);
+        text(y, bx + (28 - gw) / 2, 12, bx + 28, g, 1, t, faces.BODY);   // centered in its 28 px button
+    }
+    I64 fx = w - 176;
+    I64 x0 = 108;
+    I64 x1 = fx - 8;
+    shape.rounded(row, y, x0, 6, x1, 34, 14, tok(tokens.SURF1));
+    I64 kw = ctext.width(b"Ctrl+L", 6, faces.LABEL, 1) + 10;
+    I64 te = x1 - 12;
+    if (!focus) {
+        te = x1 - 18 - kw;
+        shape.rounded(row, y, x1 - 6 - kw, 11, x1 - 6, 29, 4, tok(tokens.PAPER));
+        text(y, x1 - 1 - kw, 12, x1 - 6, b"Ctrl+L", 6, tokens.INK_DIM, faces.LABEL);
+    }
+    if (focus && all && pn > 0) {
+        I64 pw = ctext.width(p, pn, faces.PATH, 1);
+        if (x0 + 12 + pw > te) { pw = te - x0 - 12; }
+        shape.rounded(row, y, x0 + 10, 10, x0 + 14 + pw, 30, 4, tok(tokens.FILL));
+        text(y, x0 + 12, 12, te, p, pn, tokens.ON_FILL, faces.PATH);
+    } else {
+        I64 e = text_in(y, x0 + 12, 12, te, p, pn, tokens.INK, faces.PATH);
+        if (focus) { draw.rect(row, y, e + 1, 11, e + 2, 29, tok(tokens.INK)); }
+    }
+    if (focus) { shape.ring(row, y, x0, 6, x1, 34, 14, 2, tok(tokens.ULTRAMARINE)); }
+    shape.rounded(row, y, fx, 6, w - 8, 34, 14, tok(tokens.SURF1));
+    if (qn > 0) {
+        text(y, fx + 12, 12, w - 20, q, qn, tokens.INK, faces.BODY);
+    } else {
+        text(y, fx + 12, 12, w - 20, q, 0 - qn, tokens.INK_DIM, faces.BODY);
+    }
+}
+
+I64 frame_sum() {
+    I64 h = 0;
+    for y in 0..250 {
+        draw.paint(row, 0, 880, tok(tokens.PAPER));
+        if (y < 40) {
+            toolbar_at(y, 880, 5, b"/home/ci", 8, false, false, b"Filter ci...", -12);
+        } else if (y < 80) {
+            toolbar_at(y - 40, 880, 7, b"/home/ci/kit", 12, true, true, b"Filter kit...", -13);
+        } else if (y < 120) {
+            toolbar_at(y - 80, 880, 2, b"/bin/", 5, true, false, b"ce", 2);
+        } else {
+            I64 k = (y - 120) / 26;
+            I64 ry = (y - 120) % 26;
+            if (k == 0) {
+                row_icon(ry, 8, 4, fileicons.kind(b"kit", 3, true));
+                text(ry, 34, 5, 872, b"kit", 3, tokens.INK, faces.NAME);
+            } else if (k == 1) {
+                row_icon(ry, 8, 4, fileicons.kind(b"notes.txt", 9, false));
+                text(ry, 34, 5, 872, b"notes.txt", 9, tokens.INK, faces.NAME);
+            } else if (k == 2) {
+                row_icon(ry, 8, 4, fileicons.kind(b"hdesk.ci", 8, false));
+                text(ry, 34, 5, 872, b"hdesk.ci", 8, tokens.INK, faces.NAME);
+            } else if (k == 3) {
+                row_icon(ry, 8, 4, fileicons.kind(b"shot.PNG", 8, false));
+                text(ry, 34, 5, 872, b"shot.PNG", 8, tokens.INK, faces.NAME);
+            } else {
+                row_icon(ry, 8, 4, fileicons.kind(b"doom1.wad", 9, false));
+                text(ry, 34, 5, 872, b"doom1.wad", 9, tokens.INK, faces.NAME);
+            }
+        }
+        for x in 0..880 { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "the rows' icons by kind: a folder, then text, ci, image and wad, case ignored" {
+    assert(fileicons.kind(b"kit", 3, true) == fileicons.DIR);
+    assert(fileicons.kind(b"notes.txt", 9, false) == fileicons.TEXT);
+    assert(fileicons.kind(b"hdesk.ci", 8, false) == fileicons.CI);
+    assert(fileicons.kind(b"shot.PNG", 8, false) == fileicons.IMAGE);
+    assert(fileicons.kind(b"doom1.wad", 9, false) == fileicons.WAD);
+}
+
+test "the toolbar and the rows equal the twin's (tools/check-hdesk.py dn_finder_frame), both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(frame_sum() == 579841202);
+    tokens.set_theme(tokens.LIGHT);
+    assert(frame_sum() == 230265345);
+    tokens.set_theme(tokens.DARK);
+}
+test "DN-42: a text field keeps its own ring: Index's focused path pill, 2 px ULTRAMARINE inside it, no gap" {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for x in 0..880 { row[x] = tok(tokens.PAPER); }
+        toolbar_at(20, 880, 7, b"/home/ci/kit", 12, true, false, b"Filter kit...", -13);
+        // the pill runs from 108 (radius 14): on its middle row its left edge is the ring, then SURF1 inside
+        assert(row[107] == tok(tokens.PAPER));                         // no gap ring outside
+        assert(row[108] == tok(tokens.ULTRAMARINE) && row[109] == tok(tokens.ULTRAMARINE));
+        assert(row[110] == tok(tokens.SURF1));
+    }
+    tokens.set_theme(tokens.DARK);
+}
+// SPDX-License-Identifier: Apache-2.0

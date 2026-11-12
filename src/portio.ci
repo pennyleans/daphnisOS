@@ -1,0 +1,6 @@
+// kernel/portio.ci: the port I/O stubs of arch/x86_64/portio.S, as cint externs.
+// The emitted C reaches them through cint_rt_host_call; rt/host.c binds each name once.
+
+export extern unrestricted void port_out8(U16 port, U8 val);
+export extern observe U8 port_in8(U16 port);
+// SPDX-License-Identifier: Apache-2.0

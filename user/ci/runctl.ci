@@ -1,0 +1,7 @@
+// user/ci/runctl.ci: the exec row of the core set (user/ci/host.c, CI_ROWS_RUN; docs/specs/2026-11-06-c-core.md
+// sections 4 and 5), for env, xargs and find -exec. It returns only on failure: -errno.
+//   co_exec(path, argv, envp): execve of path (not NUL-ended); argv and envp each a block of NUL-ended strings, at
+//     most ARGS_MAX (4,096) arguments in ARGS_BYTES (65,536) bytes and 1,024 strings in 65,536 bytes of
+//     environment (-E2BIG past them)
+export extern unrestricted I64 co_exec(in U8[_] path, in U8[_] argv, in U8[_] envp);
+// SPDX-License-Identifier: Apache-2.0

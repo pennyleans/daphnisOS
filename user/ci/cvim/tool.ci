@@ -1,0 +1,252 @@
+// user/ci/cvim/tool.ci: CV-8 (docs/specs/2026-11-07-cv-cvim.md section 9, "Build and diagnostics"), the
+// diagnostics list over `cint build --json`. Pure: cvim.ci runs the build and hands each line of its output to
+// add_line; a CINT-DIAG-1 object (SPEC-06P.4 section 7.2: schema, severity, code, message, file, line, column, and
+// notes) becomes an entry. The list is in the build's order; the margin marks a line E (an error) or W (anything
+// else cint calls a diagnostic), DN-45. Columns count code points, a tab one (cint's DIAG-01).
+//
+// The table dt: dt[0] the entries, dt[1] the list's selection; entry k at 2 + k * WORDS: severity (SEV_E, SEV_W),
+// line, column, the file's length and the message's length, then FILE_MAX bytes of file and MSG_MAX of message (code,
+// two spaces, message), a byte a word.
+
+export const I64 MAX = 64;             // entries kept; the rest of a build's output is counted, not kept
+export const I64 FILE_MAX = 128;
+export const I64 MSG_MAX = 160;
+export const I64 WORDS = 5 + FILE_MAX + MSG_MAX;
+export const I64 SIZE = 2 + MAX * WORDS + 1;   // the last word: the diagnostics the build gave, kept or not
+export const I64 SEV_E = 1;
+export const I64 SEV_W = 2;
+
+export void clear(inout I64[_] dt) {
+    dt[0] = 0;
+    dt[1] = 0;
+    dt[SIZE - 1] = 0;
+}
+
+export I64 entries(in I64[_] dt) { return dt[0]; }
+export I64 total(in I64[_] dt) { return dt[SIZE - 1]; }
+export I64 selected(in I64[_] dt) { return dt[1]; }
+
+I64 slot_of(I64 k) { return 2 + k * WORDS; }
+
+export I64 severity(in I64[_] dt, I64 k) { return dt[slot_of(k)]; }
+export I64 line(in I64[_] dt, I64 k) { return dt[slot_of(k) + 1]; }
+export I64 column(in I64[_] dt, I64 k) { return dt[slot_of(k) + 2]; }
+
+export I64 file(in I64[_] dt, I64 k, inout U8[_] dst) {
+    I64 n = min(dt[slot_of(k) + 3], len(dst));
+    for i in 0..n { dst[i] = dt[slot_of(k) + 5 + i] as U8; }
+    return n;
+}
+
+export I64 message(in I64[_] dt, I64 k, inout U8[_] dst) {
+    I64 n = min(dt[slot_of(k) + 4], len(dst));
+    for i in 0..n { dst[i] = dt[slot_of(k) + 5 + FILE_MAX + i] as U8; }
+    return n;
+}
+
+// The first top-level `"key":` of object s (keys before `notes` are the object's own: cint writes them sorted, and a
+// note's keys come after the object's `file`, `line` and `column`); the index after the colon, or -1.
+I64 key_at(in U8[_] s, in U8[_] k) {
+    I64 n = len(s);
+    I64 kl = len(k);
+    I64 i = 0;
+    while (i + kl + 3 <= n) {
+        if (s[i] == '"' && s[i + kl + 1] == '"' && s[i + kl + 2] == ':') {
+            Bool same = true;
+            for q in 0..kl {
+                if (s[i + 1 + q] != k[q]) { same = false; }
+            }
+            if (same) { return i + kl + 3; }
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+// The JSON string at s[p] (a quote) into dst from d: escapes undone (\uXXXX below 128 as itself, else '?');
+// the bytes put, or -1 when s[p] is not a string.
+I64 string_at(in U8[_] s, I64 p0, inout I64[_] dst, I64 d, I64 cap_n) {
+    I64 p = p0;
+    while (p < len(s) && s[p] == ' ') { p += 1; }
+    if (p >= len(s) || s[p] != '"') { return -1; }
+    p += 1;
+    I64 n = 0;
+    while (p < len(s) && s[p] != '"') {
+        I64 c = s[p] as I64;
+        if (c == '\\' && p + 1 < len(s)) {
+            p += 1;
+            c = s[p] as I64;
+            if (c == 'n' || c == 't' || c == 'r') { c = ' '; }
+            if (c == 'u') {
+                I64 v = 0;
+                for q in 1..5 {
+                    if (p + q < len(s)) {
+                        I64 h = s[p + q] as I64;
+                        I64 dv = 0;
+                        if (h >= '0' && h <= '9') { dv = h - '0'; }
+                        if (h >= 'a' && h <= 'f') { dv = h - 'a' + 10; }
+                        if (h >= 'A' && h <= 'F') { dv = h - 'A' + 10; }
+                        v = v * 16 + dv;
+                    }
+                }
+                p += 4;
+                c = '?';
+                if (v >= 32 && v < 127) { c = v; }
+            }
+        }
+        if (n < cap_n) { dst[d + n] = c; }
+        n += 1;
+        p += 1;
+    }
+    return min(n, cap_n);
+}
+
+I64 int_at(in U8[_] s, I64 p0) {
+    I64 p = p0;
+    while (p < len(s) && s[p] == ' ') { p += 1; }
+    I64 v = 0;
+    while (p < len(s) && s[p] >= '0' && s[p] <= '9') {
+        v = v * 10 + (s[p] - '0') as I64;
+        p += 1;
+    }
+    return v;
+}
+
+// One line of the build's output: a CINT-DIAG-1 object becomes an entry; any other line is not one. Whether it was.
+export Bool add_line(inout I64[_] dt, in U8[_] s) {
+    I64 sc = key_at(s, b"schema");
+    if (sc < 0) { return false; }
+    I64[16] sb;
+    I64 sn = string_at(s, sc, sb, 0, 16);
+    U8[11] want = b"CINT-DIAG-1";
+    if (sn != 11) { return false; }
+    for q in 0..11 {
+        if (sb[q] != want[q] as I64) { return false; }
+    }
+    dt[SIZE - 1] = dt[SIZE - 1] + 1;
+    if (dt[0] >= MAX) { return true; }
+    I64 b = slot_of(dt[0]);
+    I64[16] sv;
+    I64 vn = string_at(s, key_at(s, b"severity"), sv, 0, 16);
+    dt[b] = SEV_W;
+    U8[5] e = b"error";
+    if (vn == 5) {
+        Bool err = true;
+        for q in 0..5 {
+            if (sv[q] != e[q] as I64) { err = false; }
+        }
+        if (err) { dt[b] = SEV_E; }
+    }
+    dt[b + 1] = int_at(s, key_at(s, b"line"));
+    dt[b + 2] = int_at(s, key_at(s, b"column"));
+    I64 fn = string_at(s, key_at(s, b"file"), dt, b + 5, FILE_MAX);
+    dt[b + 3] = max(fn, 0);
+    I64 cn = string_at(s, key_at(s, b"code"), dt, b + 5 + FILE_MAX, MSG_MAX);
+    if (cn < 0) { cn = 0; }
+    I64 m = cn;
+    if (m + 2 < MSG_MAX) {
+        dt[b + 5 + FILE_MAX + m] = ' ';
+        dt[b + 5 + FILE_MAX + m + 1] = ' ';
+        m += 2;
+    }
+    I64 mn = string_at(s, key_at(s, b"message"), dt, b + 5 + FILE_MAX + m, MSG_MAX - m);
+    if (mn > 0) { m += mn; }
+    dt[b + 4] = m;
+    dt[0] = dt[0] + 1;
+    return true;
+}
+
+// Whether entry k is in file f (as the build named it, or as cvim opened it: the same path, or one ending in "/" and
+// the other).
+export Bool in_file(in I64[_] dt, I64 k, in U8[_] f) {
+    I64 b = slot_of(k);
+    I64 n = dt[b + 3];
+    I64 fl = len(f);
+    if (n == 0 || fl == 0) { return false; }
+    I64 m = min(n, fl);
+    for q in 0..m {
+        if (dt[b + 5 + n - 1 - q] != f[fl - 1 - q] as I64) { return false; }
+    }
+    if (n == fl) { return true; }
+    if (n > fl) { return dt[b + 5 + n - fl - 1] == '/'; }
+    return f[fl - n - 1] == '/';
+}
+
+// The severity of line l (1-based) of file f in the margin: SEV_E when any entry there is an error, SEV_W for any
+// other, 0 for none.
+export I64 mark_of(in I64[_] dt, in U8[_] f, I64 l) {
+    I64 s = 0;
+    for k in 0..dt[0] {
+        if (dt[slot_of(k) + 1] == l && in_file(dt, k, f)) {
+            if (dt[slot_of(k)] == SEV_E) { return SEV_E; }
+            s = SEV_W;
+        }
+    }
+    return s;
+}
+
+// Errors (SEV_E) or the rest (SEV_W) in file f.
+export I64 count_of(in I64[_] dt, in U8[_] f, I64 sev) {
+    I64 n = 0;
+    for k in 0..dt[0] {
+        if (dt[slot_of(k)] == sev && in_file(dt, k, f)) { n += 1; }
+    }
+    return n;
+}
+
+// `] d` (dir 1) or `[ d` (-1) from line l, column c (1-based) of file f: the next entry of f after the place (the
+// previous before it), wrapping round the file's entries; -1 when f has none.
+export I64 step(in I64[_] dt, in U8[_] f, I64 l, I64 c, I64 dir) {
+    I64 best = -1;
+    I64 wrap = -1;
+    for k in 0..dt[0] {
+        if (in_file(dt, k, f)) {
+            I64 kl = dt[slot_of(k) + 1];
+            I64 kc = dt[slot_of(k) + 2];
+            Bool after = kl > l || (kl == l && kc > c);
+            Bool before = kl < l || (kl == l && kc < c);
+            if (dir > 0) {
+                if (after && (best < 0 || kl < dt[slot_of(best) + 1] || (kl == dt[slot_of(best) + 1] && kc < dt[slot_of(best) + 2]))) {
+                    best = k;
+                }
+                if (wrap < 0 || kl < dt[slot_of(wrap) + 1] || (kl == dt[slot_of(wrap) + 1] && kc < dt[slot_of(wrap) + 2])) {
+                    wrap = k;
+                }
+            } else {
+                if (before && (best < 0 || kl > dt[slot_of(best) + 1] || (kl == dt[slot_of(best) + 1] && kc > dt[slot_of(best) + 2]))) {
+                    best = k;
+                }
+                if (wrap < 0 || kl > dt[slot_of(wrap) + 1] || (kl == dt[slot_of(wrap) + 1] && kc > dt[slot_of(wrap) + 2])) {
+                    wrap = k;
+                }
+            }
+        }
+    }
+    if (best >= 0) { return best; }
+    return wrap;
+}
+
+// The list's selection moved by d, kept in the list.
+export void move(inout I64[_] dt, I64 d) {
+    if (dt[0] == 0) { return; }
+    dt[1] = min(max(dt[1] + d, 0), dt[0] - 1);
+}
+
+export void select(inout I64[_] dt, I64 k) {
+    if (k >= 0 && k < dt[0]) { dt[1] = k; }
+}
+
+// The byte offset in line bytes s of column c (1-based, code points, a tab one), the line's end past its last.
+export I64 byte_of_column(in U8[_] s, I64 c) {
+    I64 cp = 1;
+    I64 i = 0;
+    while (i < len(s) && cp < c) {
+        I64 b = s[i] as I64;
+        I64 w = 1;
+        if (b >= 0xF0) { w = 4; } else if (b >= 0xE0) { w = 3; } else if (b >= 0xC0) { w = 2; }
+        i = min(i + w, len(s));
+        cp += 1;
+    }
+    return i;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,15 @@
+# tests/core/md5sum.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6, CT-5). Run in
+# tests/core/search, as sha256sum.
+text.txt | - | -
+text.txt nonl.txt empty long.txt utf8.txt | - | -
+ | long.txt | -
+- | text.txt | -
+missing text.txt | - | -
+-c sums.md5 | - | -
+-c bad.md5 | - | D-37
+-c -s bad.md5 | - | -
+-c -w bad.md5 | - | D-37
+-c | sums.md5 | -
+-c missing | - | -
+-s text.txt | - | D-3
+-b text.txt | - | D-1

@@ -1,0 +1,226 @@
+// user/ci/cish/vars.ci: the variables, their export flags, the positional parameters and $0 (docs/specs/
+// 2026-11-06-cish-shell.md sections 4 and 5). Names and values live in one arena; a set appends the new value and
+// the arena is compacted when it fills. The environment block of an execve is every exported variable that has
+// a value, `NAME=VALUE` and a NUL each, in the order the variables were first set.
+import user.ci.cish.limits;
+
+U8[65536] arena;
+I64 used = 0;
+I64[256] noff;
+I64[256] nlen;
+I64[256] voff;
+I64[256] vlen;
+Bool[256] live;
+Bool[256] valued;
+Bool[256] exported;
+I64 nvar = 0;
+
+// The positional parameters are a stack of frames: a function call pushes one, its return pops it.
+U8[32768] pbytes;
+I64[256] poff;
+I64[256] plen;
+I64 pbase = 0;     // the first parameter of the frame in use, after shifts
+I64 npos = 0;
+I64 fstart = 0;    // where the frame in use began: its first entry and its first byte
+I64 fbyte = 0;
+I64 ptop = 0;      // entries and bytes in use
+I64 pused = 0;
+I64[64] sv_fstart;
+I64[64] sv_fbyte;
+I64[64] sv_pbase;
+I64[64] sv_npos;
+I64[64] sv_ptop;
+I64[64] sv_pused;
+I64 nframes = 0;
+U8[256] zero;
+I64 zlen = 0;
+
+Bool same(I64 v, in U8[_] name) {
+    if (nlen[v] != len(name)) { return false; }
+    for i in 0..len(name) {
+        if (arena[noff[v] + i] != name[i]) { return false; }
+    }
+    return true;
+}
+
+// The variable named `name`, or -1.
+export I64 lookup(in U8[_] name) {
+    for v in 0..nvar {
+        if (live[v] && same(v, name)) { return v; }
+    }
+    return -1;
+}
+
+export Bool has_value(I64 v) { return v >= 0 && valued[v]; }
+export I64 value_len(I64 v) { return vlen[v]; }
+export U8 value_at(I64 v, I64 k) { return arena[voff[v] + k]; }
+export I64 name_len(I64 v) { return nlen[v]; }
+export U8 name_at(I64 v, I64 k) { return arena[noff[v] + k]; }
+export I64 slots() { return nvar; }
+export Bool is_live(I64 v) { return live[v]; }
+export Bool is_exported(I64 v) { return live[v] && exported[v]; }
+
+// Copies the live names and values to the arena's start.
+void compact() {
+    U8[65536] keep;
+    I64 k = 0;
+    for v in 0..nvar {
+        if (live[v]) {
+            for i in 0..nlen[v] { keep[k + i] = arena[noff[v] + i]; }
+            noff[v] = k;
+            k = k + nlen[v];
+            for i in 0..vlen[v] { keep[k + i] = arena[voff[v] + i]; }
+            voff[v] = k;
+            k = k + vlen[v];
+        }
+    }
+    for i in 0..k { arena[i] = keep[i]; }
+    used = k;
+}
+
+// Room for n more bytes in the arena.
+Bool room(I64 n) {
+    if (used + n <= limits.VARBYTES) { return true; }
+    compact();
+    return used + n <= limits.VARBYTES;
+}
+
+// The variable named `name`, made if absent (no value, not exported); -1 when the table or the arena is full.
+I64 slot(in U8[_] name) {
+    I64 v = lookup(name);
+    if (v >= 0) { return v; }
+    v = 0;
+    while (v < nvar && live[v]) { v = v + 1; }
+    if (v == limits.VARS) { return -1; }
+    if (!room(len(name))) { return -1; }
+    for i in 0..len(name) { arena[used + i] = name[i]; }
+    noff[v] = used;
+    nlen[v] = len(name);
+    used = used + len(name);
+    voff[v] = used;
+    vlen[v] = 0;
+    live[v] = true;
+    valued[v] = false;
+    exported[v] = false;
+    if (v == nvar) { nvar = nvar + 1; }
+    return v;
+}
+
+// name=value; false when full.
+export Bool set(in U8[_] name, in U8[_] value) {
+    I64 v = slot(name);
+    if (v < 0) { return false; }
+    if (!room(len(value))) { return false; }
+    for i in 0..len(value) { arena[used + i] = value[i]; }
+    voff[v] = used;
+    vlen[v] = len(value);
+    used = used + len(value);
+    valued[v] = true;
+    return true;
+}
+
+// export name; false when full.
+export Bool mark_export(in U8[_] name) {
+    I64 v = slot(name);
+    if (v < 0) { return false; }
+    exported[v] = true;
+    return true;
+}
+
+export void unset(in U8[_] name) {
+    I64 v = lookup(name);
+    if (v >= 0) {
+        live[v] = false;
+        valued[v] = false;
+        exported[v] = false;
+    }
+}
+
+// The environment block into dst: its length, or -1 past len(dst).
+export I64 env_block(inout U8[_] dst) {
+    I64 k = 0;
+    for v in 0..nvar {
+        if (live[v] && exported[v] && valued[v]) {
+            if (k + nlen[v] + vlen[v] + 2 > len(dst)) { return -1; }
+            for i in 0..nlen[v] { dst[k + i] = arena[noff[v] + i]; }
+            k = k + nlen[v];
+            dst[k] = '=';
+            k = k + 1;
+            for i in 0..vlen[v] { dst[k + i] = arena[voff[v] + i]; }
+            k = k + vlen[v];
+            dst[k] = 0;
+            k = k + 1;
+        }
+    }
+    return k;
+}
+
+// The positional parameters of the frame in use: cleared, then appended one by one; false when full.
+export void clear_positional() {
+    ptop = fstart;
+    pused = fbyte;
+    pbase = fstart;
+    npos = 0;
+}
+
+export Bool add_positional(in U8[_] value) {
+    if (ptop == 256 || npos == limits.POSITIONAL || pused + len(value) > 32768) { return false; }
+    for i in 0..len(value) { pbytes[pused + i] = value[i]; }
+    poff[ptop] = pused;
+    plen[ptop] = len(value);
+    pused = pused + len(value);
+    ptop = ptop + 1;
+    npos = npos + 1;
+    return true;
+}
+
+// shift n: false when n is past the count.
+export Bool shift(I64 n) {
+    if (n < 0 || n > npos) { return false; }
+    pbase = pbase + n;
+    npos = npos - n;
+    return true;
+}
+
+// A function call's frame; false past DEPTH.
+export Bool push_frame() {
+    if (nframes == limits.DEPTH) { return false; }
+    sv_fstart[nframes] = fstart;
+    sv_fbyte[nframes] = fbyte;
+    sv_pbase[nframes] = pbase;
+    sv_npos[nframes] = npos;
+    sv_ptop[nframes] = ptop;
+    sv_pused[nframes] = pused;
+    nframes = nframes + 1;
+    fstart = ptop;
+    fbyte = pused;
+    pbase = ptop;
+    npos = 0;
+    return true;
+}
+
+export void pop_frame() {
+    nframes = nframes - 1;
+    fstart = sv_fstart[nframes];
+    fbyte = sv_fbyte[nframes];
+    pbase = sv_pbase[nframes];
+    npos = sv_npos[nframes];
+    ptop = sv_ptop[nframes];
+    pused = sv_pused[nframes];
+}
+
+export I64 positional() { return npos; }
+export I64 pos_len(I64 n) { return plen[pbase + n]; }
+export U8 pos_at(I64 n, I64 k) { return pbytes[poff[pbase + n] + k]; }
+
+export void set_zero(in U8[_] name) {
+    zlen = 0;
+    I64 n = len(name);
+    if (n > 256) { n = 256; }
+    for i in 0..n { zero[i] = name[i]; }
+    zlen = n;
+}
+
+export I64 zero_len() { return zlen; }
+export U8 zero_at(I64 k) { return zero[k]; }
+// SPDX-License-Identifier: Apache-2.0

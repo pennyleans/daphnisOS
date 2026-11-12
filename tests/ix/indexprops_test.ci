@@ -1,0 +1,128 @@
+// tests/ix/indexprops_test.ci: Properties (frame 32; user/ci/kit/indexprops.ci), hosted: the window's size, the name
+// field's place and its editor, the rows' labels for a file and a folder, values cut at the right end, and the pixels
+// of the field and a rule. Run by check.sh with every tests/ix/*_test.ci.
+import user.ci.kit.indexprops;
+import user.ci.kit.indexrename;
+import user.ci.kit.fileicons;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+
+U32[400] row;
+U8[256] got;
+
+void notes() {
+    indexprops.set_width(indexprops.W);
+    indexprops.set_entry(b"notes.txt", false, fileicons.TEXT);
+    indexprops.set_row(indexprops.TYPE, b"Text");
+    indexprops.set_row(indexprops.SIZE, b"2 KiB");
+    indexprops.set_row(indexprops.LOCATION, b"/home/ci");
+    indexprops.set_row(indexprops.MODIFIED, b"Nov 9, 01:40");
+    indexprops.set_row(indexprops.OPENS_WITH, b"Edit");
+}
+
+// Whether row y holds a pixel of color c in [x0, x1).
+Bool has(I64 x0, I64 x1, U32 c) {
+    for x in x0..x1 {
+        if (row[x] == c) { return true; }
+    }
+    return false;
+}
+
+// Whether row y holds a pixel off PAPER in [x0, x1).
+Bool inked(I64 x0, I64 x1) {
+    for x in x0..x1 {
+        if (row[x] != tokens.word(tokens.PAPER)) { return true; }
+    }
+    return false;
+}
+
+// Whether any row of the 32 px row from t0 inks [x0, x1).
+Bool inked_rows(I64 t0, I64 x0, I64 x1) {
+    for y in t0..t0 + 32 {
+        indexprops.row_at(row, y);
+        if (inked(x0, x1)) { return true; }
+    }
+    return false;
+}
+
+test "frame 32's window: 310 wide inside its sides, 260 high, the field 82 to 290 from 28" {
+    notes();
+    assert(indexprops.height() == 20 + 48 + 16 + 5 * 32 + 4 + 12);
+    assert(indexprops.field_x0() == 82 && indexprops.field_x1() == 290 && indexprops.field_y0() == 28);
+    assert(indexprops.hit(82, 28) == indexprops.FIELD && indexprops.hit(289, 59) == indexprops.FIELD);
+    assert(indexprops.hit(81, 40) == indexprops.NOTHING && indexprops.hit(100, 60) == indexprops.NOTHING);
+    assert(indexprops.title(got) == 9 && got[0] == 'n');
+    indexprops.set_width(400);                                // design note 65: the field takes the slack
+    assert(indexprops.field_x1() == 380);
+}
+
+test "the name field edits through the rename kit: a click moves the caret, outside commits or cancels" {
+    notes();
+    indexrename.end();
+    assert(indexprops.click(100, 40, false) == indexrename.PASS);
+    indexprops.edit();
+    assert(indexrename.active() && indexrename.sel_hi() == 5);
+    assert(indexprops.click(indexprops.text_x0() + 1, 40, false) == indexrename.STAY && indexrename.caret() == 0);
+    assert(indexprops.click(150, 200, false) == indexrename.COMMIT);
+    assert(indexrename.key(30, false, true) == indexrename.STAY);
+    assert(indexrename.key(14, false, false) == indexrename.STAY);
+    assert(indexprops.click(150, 200, false) == indexrename.CANCEL);
+    indexrename.end();
+}
+
+test "a file's rows: Type, Size, Location, Modified, Opens With; a folder's second row is Contains" {
+    tokens.set_theme(tokens.DARK);
+    notes();
+    I64 y = 84 + 33 + 16;                                     // the Size row's middle
+    draw.paint(row, 0, 400, 0);
+    indexprops.row_at(row, y);
+    I64 sw = ctext.width(b"Size", 4, faces.BODY, 1);
+    I64 cw = ctext.width(b"Contains", 8, faces.BODY, 1);
+    assert(inked(20, 20 + sw) && !inked(20 + sw + 2, 20 + cw));
+    indexprops.set_entry(b"kit", true, fileicons.DIR);
+    indexprops.set_row(indexprops.SIZE, b"8 items");
+    draw.paint(row, 0, 400, 0);
+    indexprops.row_at(row, y);
+    assert(inked(20 + cw - 4, 20 + cw));
+    I64 vw = ctext.width(b"8 items", 7, faces.BODY, 1);
+    assert(inked(290 - vw, 290) && !inked(290, 310));         // the value at the right, 20 in
+}
+
+test "a rule of SURF1 between rows, none above the first; the field MANTLE, ringed only with the keyboard" {
+    tokens.set_theme(tokens.DARK);
+    notes();
+    indexrename.end();
+    indexprops.row_at(row, 84 + 32);
+    assert(row[20] == tokens.word(tokens.SURF1) && row[289] == tokens.word(tokens.SURF1));
+    assert(row[19] == tokens.word(tokens.PAPER) && row[290] == tokens.word(tokens.PAPER));
+    indexprops.row_at(row, 83);
+    assert(!inked(0, 310));
+    indexprops.row_at(row, 30);
+    assert(row[84] == tokens.word(tokens.MANTLE) && row[81] == tokens.word(tokens.PAPER));
+    indexprops.edit();
+    indexprops.row_at(row, 30);
+    assert(row[81] == tokens.word(tokens.ULTRAMARINE) && row[290] == tokens.word(tokens.ULTRAMARINE));
+    indexprops.row_at(row, 27);
+    assert(row[100] == tokens.word(tokens.ULTRAMARINE));
+    indexrename.end();
+}
+
+test "a long Location keeps its end, a long Opens With its start, both within the row" {
+    tokens.set_theme(tokens.LIGHT);
+    notes();
+    indexprops.set_row(indexprops.LOCATION, b"/home/ci/Documents/projects/daphnis/kit/symbols/sources");
+    I64 y = 84 + 2 * 33 + 16;
+    indexprops.row_at(row, y);
+    I64 lw = ctext.width(b"Location", 8, faces.BODY, 1);
+    assert(inked(20 + lw + 12, 20 + lw + 30) && !inked(20 + lw + 2, 20 + lw + 12));
+    assert(inked(280, 290) && !inked(290, 310));
+    indexprops.set_row(indexprops.OPENS_WITH, b"A program whose name is far longer than the row can hold");
+    y = 84 + 4 * 33 + 16;
+    I64 ow = ctext.width(b"Opens With", 10, faces.BODY, 1);
+    assert(inked_rows(84 + 4 * 33, 20 + ow + 12, 20 + ow + 30));
+    assert(inked_rows(84 + 4 * 33, 284, 290));               // the ellipsis, on the baseline
+    assert(!inked_rows(84 + 4 * 33, 291, 310));             // (the dot's coverage may touch 290)
+}
+// SPDX-License-Identifier: Apache-2.0

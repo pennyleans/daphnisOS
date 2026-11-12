@@ -1,0 +1,26 @@
+{
+  "id": "bracketed-paste-cr",
+  "rules": [
+    "KEY-1",
+    "KEY-4"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b3230307e780d791b5b3230317e"
+  ],
+  "expect": {
+    "text": "x\ny",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

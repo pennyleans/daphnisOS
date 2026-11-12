@@ -1,0 +1,282 @@
+// user/ci/core/files.ci: copying and removing files and trees, the part cp, mv and rm share (docs/specs/
+// 2026-11-06-c-core.md section 4, CT-2). Options are set once with set(); every failure is said in the kit's one form
+// and counted (bad()). A tree goes by path.ci's walk: clone() makes each directory at W_PRE, remove() takes each one
+// away at W_POST.
+//   clone(from, to): from (a file, a link or with recursive a tree) to the path to; a regular file's bytes, a link as a
+//     link (follow none), a directory's entries one by one. A target that lies in from, or is from, is refused whole.
+//   remove(p): p, with recursive everything under it, deepest first.
+// With ask, each step asks `TOOL: path: what? ` on descriptor 2 and goes on only on an answer that starts with y or Y
+// (a line of descriptor 0; none is no). With force, a missing entry is not said and a target that cannot be opened is
+// unlinked and opened again.
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.msg;
+import user.ci.core.path;
+
+const I64 O_RDONLY = 0x0;
+const I64 O_WRONLY = 0x1;
+const I64 O_CREAT = 0x40;
+const I64 O_TRUNC = 0x200;
+const I64 ENOENT = 2;
+const I64 ENOTDIR = 20;
+const I64 EISDIR = 21;
+
+U8[4096] blk;        // a block in transit (every array is bytes of the binary: 4 KiB, as get.ci reads)
+U8[4096] sp;         // the walk's path
+U8[4096] dp;         // its target
+U8[4096] up;         // a path climbing from a target to the root (copy's refusal)
+U8[4096] lnk;        // a link's target
+I64[16] rs;
+I64[16] rd;
+U8[1] one;
+Bool o_rec = false;
+Bool o_force = false;
+Bool o_ask = false;
+Bool o_root = true;   // follow a link named on the command line
+Bool o_all = false;   // follow every link
+I64 fails = 0;
+
+export void set(Bool recursive, Bool force, Bool ask, Bool follow_root, Bool follow_all) {
+    o_rec = recursive;
+    o_force = force;
+    o_ask = ask;
+    o_root = follow_root;
+    o_all = follow_all;
+}
+
+export I64 bad() {
+    return fails;
+}
+
+void said(in U8[_] p, I64 e) {
+    msg.file(p, e);
+    fails = fails + 1;
+}
+
+I64 kind(in I64[_] r) {
+    return r[corectl.ST_MODE] & corectl.S_IFMT;
+}
+
+Bool same(in I64[_] a, in I64[_] b) {
+    return a[corectl.ST_DEV] == b[corectl.ST_DEV] && a[corectl.ST_INO] == b[corectl.ST_INO];
+}
+
+// Asks `TOOL: p: what? `: true for an answer starting with y or Y. The rest of the line is read and dropped.
+export Bool yes(in U8[_] p, in U8[_] what) {
+    msg.ask(p, what);
+    Bool first = true;
+    Bool got = false;
+    Bool going = true;
+    while (going) {
+        I64 r = shctl.fd_read(0, one);
+        if (r <= 0 || one[0] == '\n') {
+            going = false;
+        } else {
+            if (first) { got = one[0] == 'y' || one[0] == 'Y'; }
+            first = false;
+        }
+    }
+    return got;
+}
+
+// A regular file's bytes from s to d, d made with mode (less the umask) or truncated.
+void bytes(in U8[_] s, in U8[_] d, I64 mode) {
+    I64 fi = shctl.sh_open(s, O_RDONLY, 0);
+    if (fi < 0) {
+        said(s, 0 - fi);
+        return;
+    }
+    I64 fo = shctl.sh_open(d, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fo < 0 && o_force && fo != 0 - ENOENT) {
+        _ = corectl.co_unlink(d);
+        fo = shctl.sh_open(d, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    }
+    if (fo < 0) {
+        said(d, 0 - fo);
+        _ = shctl.fd_close(fi);
+        return;
+    }
+    Bool going = true;
+    while (going) {
+        I64 r = shctl.fd_read(fi, blk);
+        if (r < 0) {
+            said(s, 0 - r);
+            going = false;
+        } else if (r == 0) {
+            going = false;
+        } else {
+            I64 w = shctl.fd_write(fo, blk[0..r]);
+            if (w < 0) {
+                said(d, 0 - w);
+                going = false;
+            }
+        }
+    }
+    _ = shctl.fd_close(fi);
+    I64 c = shctl.fd_close(fo);
+    if (c < 0) { said(d, 0 - c); }
+}
+
+// The link s as a link at d (one already at d is replaced).
+void link(in U8[_] s, in U8[_] d) {
+    I64 k = corectl.co_readlink(s, lnk);
+    if (k < 0) {
+        said(s, 0 - k);
+        return;
+    }
+    I64 r = corectl.co_symlink(lnk[0..k], d);
+    if (r == -17) {
+        _ = corectl.co_unlink(d);
+        r = corectl.co_symlink(lnk[0..k], d);
+    }
+    if (r < 0) { said(d, 0 - r); }
+}
+
+// One entry that is no directory, its record in rs, from s to d.
+void entry(in U8[_] s, in U8[_] d) {
+    I64 t = kind(rs);
+    if (t == corectl.S_IFLNK) {
+        link(s, d);
+        return;
+    }
+    if (t != corectl.S_IFREG) {
+        msg.said(s, b"not a regular file");
+        fails = fails + 1;
+        return;
+    }
+    if (corectl.co_stat(d, 1, rd) == 0) {
+        if (same(rs, rd)) {
+            msg.said(s, b"same file");
+            fails = fails + 1;
+            return;
+        }
+        if (kind(rd) == corectl.S_IFDIR) {
+            said(d, EISDIR);
+            return;
+        }
+        if (o_ask && !yes(d, b"overwrite")) { return; }
+    }
+    bytes(s, d, rs[corectl.ST_MODE] & 0x1FF);
+}
+
+// True when the entry at d, or the directory that would hold it, or any above that, is s (record r).
+Bool within(in U8[_] d, in I64[_] r) {
+    I64 n = len(d);
+    for i in 0..n { up[i] = d[i]; }
+    if (corectl.co_stat(d, 1, rd) != 0) {
+        I64 b = path.base_start(d);
+        while (b > 1 && up[b - 1] == '/') { b = b - 1; }
+        n = b;
+        if (n == 0) {
+            up[0] = '.';
+            n = 1;
+        }
+    }
+    Bool going = true;
+    while (going) {
+        if (corectl.co_stat(up[0..n], 1, rd) != 0) { return false; }
+        if (same(r, rd)) { return true; }
+        I64 dev = rd[corectl.ST_DEV];
+        I64 ino = rd[corectl.ST_INO];
+        if (n + 3 >= path.PATH_MAX) { msg.limit(b"PATH_MAX"); }
+        up[n] = '/';
+        up[n + 1] = '.';
+        up[n + 2] = '.';
+        n = n + 3;
+        if (corectl.co_stat(up[0..n], 1, rd) != 0) { return false; }
+        if (rd[corectl.ST_DEV] == dev && rd[corectl.ST_INO] == ino) { going = false; }
+    }
+    return false;
+}
+
+export void clone(in U8[_] s, in U8[_] d) {
+    I64 root = len(s);
+    path.walk_start(s, o_root || o_all, o_all, false);
+    Bool going = true;
+    while (going) {
+        I64 w = path.walk_next();
+        if (w == path.W_END) {
+            going = false;
+        } else {
+            I64 sl = path.walk_path(sp);
+            I64 k = root;
+            while (k < sl && sp[k] == '/') { k = k + 1; }
+            I64 dl = len(d);
+            if (k < sl) {
+                dl = path.join(d, sp[k..sl], dp);
+            } else {
+                for i in 0..dl { dp[i] = d[i]; }
+            }
+            if (w == path.W_ERR) {
+                said(sp[0..sl], path.walk_errno());
+            } else if (w == path.W_FILE) {
+                path.walk_rec(rs);
+                entry(sp[0..sl], dp[0..dl]);
+            } else if (w == path.W_PRE) {
+                path.walk_rec(rs);
+                if (!o_rec) {
+                    msg.said(sp[0..sl], b"is a directory (no -R)");
+                    fails = fails + 1;
+                    path.walk_skip();
+                } else if (path.walk_depth() == 1 && within(dp[0..dl], rs)) {
+                    msg.said(sp[0..sl], b"would copy into itself");
+                    fails = fails + 1;
+                    path.walk_skip();
+                } else if (corectl.co_stat(dp[0..dl], 1, rd) == 0) {
+                    if (kind(rd) != corectl.S_IFDIR) {
+                        said(dp[0..dl], ENOTDIR);
+                        path.walk_skip();
+                    }
+                } else {
+                    I64 m = corectl.co_mkdir(dp[0..dl], rs[corectl.ST_MODE] & 0x1FF);
+                    if (m < 0) {
+                        said(dp[0..dl], 0 - m);
+                        path.walk_skip();
+                    }
+                }
+            }
+        }
+    }
+}
+
+export void remove(in U8[_] p) {
+    I64 r = corectl.co_stat(p, 0, rs);
+    if (r < 0) {
+        if (!(o_force && r == 0 - ENOENT)) { said(p, 0 - r); }
+        return;
+    }
+    if (kind(rs) == corectl.S_IFDIR && !o_rec) {
+        said(p, EISDIR);
+        return;
+    }
+    path.walk_start(p, false, false, false);
+    Bool skipped = false;
+    Bool going = true;
+    while (going) {
+        I64 w = path.walk_next();
+        if (w == path.W_END) {
+            going = false;
+        } else {
+            I64 sl = path.walk_path(sp);
+            if (w == path.W_ERR) {
+                if (!(o_force && path.walk_errno() == ENOENT)) { said(sp[0..sl], path.walk_errno()); }
+            } else if (w == path.W_FILE) {
+                if (!o_ask || yes(sp[0..sl], b"remove")) {
+                    I64 u = corectl.co_unlink(sp[0..sl]);
+                    if (u < 0 && !(o_force && u == 0 - ENOENT)) { said(sp[0..sl], 0 - u); }
+                }
+            } else if (w == path.W_PRE) {
+                if (o_ask && !yes(sp[0..sl], b"descend")) {
+                    path.walk_skip();
+                    skipped = true;
+                }
+            } else if (skipped) {
+                skipped = false;
+            } else if (!o_ask || yes(sp[0..sl], b"remove")) {
+                I64 u = corectl.co_rmdir(sp[0..sl]);
+                if (u < 0 && !(o_force && u == 0 - ENOENT)) { said(sp[0..sl], 0 - u); }
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,77 @@
+// tests/dn20/winrule_test.ci: DN-21's sizes, places, cascade and restore frames (kit/winrule.ci). The numbers are
+// tools/check-hdesk.py --winrule-cases's, the twin's.
+import user.ci.kit.winrule;
+
+test "the default size: 5/8 by 11/16 of the work area, down to a multiple of 8, at least 480 x 320" {
+    I64[2] o;
+    winrule.float_size(0, 0, 1920, 1044, 1, o);             // 1920 x 1080 under a 36 px bar
+    assert(o[0] == 1200 && o[1] == 712);
+    winrule.float_size(0, 0, 1280, 764, 1, o);
+    assert(o[0] == 800 && o[1] == 520);
+    winrule.float_size(0, 0, 640, 444, 1, o);               // small: the minimum
+    assert(o[0] == 480 && o[1] == 320);
+    winrule.float_size(0, 0, 3840, 2088, 2, o);             // 4K at 2x: multiples of 16 device px
+    assert(o[0] == 2400 && o[1] == 1424);
+    winrule.float_size(0, 0, 400, 300, 1, o);               // never past the work area
+    assert(o[0] == 400 && o[1] == 300);
+}
+
+test "the app's ask, clamped to the work area less 32 px a side" {
+    I64[2] o;
+    winrule.float_size(720, 480, 1920, 1044, 1, o);
+    assert(o[0] == 720 && o[1] == 480);
+    winrule.float_size(2000, 1200, 1920, 1044, 1, o);
+    assert(o[0] == 1856 && o[1] == 980);
+    winrule.float_size(2000, 1200, 1920, 1044, 2, o);
+    assert(o[0] == 1792 && o[1] == 916);
+}
+
+test "the first place: centered across, the top a third of the free height under the bar" {
+    I64[2] o;
+    winrule.place_first(1200, 712, 0, 36, 1920, 1044, o);
+    assert(o[0] == 360 && o[1] == 36 + 110);
+    winrule.place_first(2000, 1200, 0, 36, 1920, 1044, o);  // wider than the area: at its left and top
+    assert(o[0] == 0 && o[1] == 36);
+}
+
+test "later floats cascade 32 px and go back to the first place 16 px from an edge" {
+    I64[2] o;
+    winrule.place_next(false, 0, 0, 1200, 712, 0, 36, 1920, 1044, 1, o);
+    assert(o[0] == 360 && o[1] == 146);
+    winrule.place_next(true, 360, 146, 1200, 712, 0, 36, 1920, 1044, 1, o);
+    assert(o[0] == 392 && o[1] == 178);
+    I64 x = 360;
+    I64 y = 146;
+    I64 n = 0;
+    while (n < 20) {                                  // bottom limit: 36 + 1044 - 16 = 1064 >= y + 712
+        winrule.place_next(true, x, y, 1200, 712, 0, 36, 1920, 1044, 1, o);
+        if (o[0] == 360 && o[1] == 146) { break; }
+        assert(o[1] + 712 <= 1064 && o[0] + 1200 <= 1904);
+        x = o[0];
+        y = o[1];
+        n = n + 1;
+    }
+    assert(n == 6);                                   // 146 + 32 * 6 = 338: 338 + 712 = 1050 fits, 370 + 712 does not
+    winrule.place_next(true, 392, 178, 1200, 712, 0, 36, 1920, 1044, 2, o);
+    assert(o[0] == 456 && o[1] == 242);
+}
+
+test "a remembered frame is used only wholly inside the work area" {
+    assert(winrule.on_area(100, 36, 800, 600, 0, 36, 1920, 1044));
+    assert(!winrule.on_area(100, 20, 800, 600, 0, 36, 1920, 1044));
+    assert(!winrule.on_area(1200, 100, 800, 600, 0, 36, 1920, 1044));
+    assert(!winrule.on_area(0, 36, 0, 600, 0, 36, 1920, 1044));
+}
+
+test "the restore frames run from the maximized frame to the one before" {
+    I64[4] f = [0, 36, 1920, 1044];
+    I64[4] t = [360, 146, 1200, 712];
+    I64[4] o;
+    winrule.frame_at(0, f, t, o);
+    assert(o[0] == 0 && o[1] == 36 && o[2] == 1920 && o[3] == 1044);
+    winrule.frame_at(500, f, t, o);
+    assert(o[0] == 180 && o[1] == 91 && o[2] == 1560 && o[3] == 878);
+    winrule.frame_at(1000, f, t, o);
+    assert(o[0] == 360 && o[1] == 146 && o[2] == 1200 && o[3] == 712);
+}
+// SPDX-License-Identifier: Apache-2.0

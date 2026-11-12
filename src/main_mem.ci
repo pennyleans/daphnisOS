@@ -1,0 +1,341 @@
+// src/main_mem.ci: K3 memory. Runs 0 to 5 are bad addresses: the view shim refuses the null
+// page, an address outside its windows, a write to the boot PML4 (only the PDPT is writable), a
+// misaligned range, a range that wraps the address space, and the probe vm_store64 is refused
+// an address in the identity-mapped kernel; each a canonical host.error fault record (the
+// kernel's run loop prints it and goes on). Run 6, the last, reads the Multiboot memory map, runs the allocator
+// sequence of src/allocdemo.ci (the hosted twin runs it too), then builds page tables from
+// cint: it maps, writes a pattern through the mapping, makes the page read-only (a store is a
+// #PF record), maps an executable page and makes it no-execute (a fetch is a #PF record),
+// unmaps and remaps. A heap arena takes real writes. It ends with the allocator-state hash,
+// and returns normally, which ends the loop.
+
+import src.serial;
+import src.trap;
+import src.cpu;
+import src.report;
+import src.phys;
+import src.bootinfo;
+import src.memmap;
+import src.frames;
+import src.heap;
+import src.memstate;
+import src.allocdemo;
+import src.pte;
+import src.paging;
+
+const U64 VA0 = 0x40000000;
+const U64 VA1 = 0x40001000;
+
+void say(in U8[_] s) {
+    serial.serial_write(s);
+}
+
+void yes_no(Bool b) {
+    if (b) {
+        say("yes\n");
+    } else {
+        say("no\n");
+    }
+}
+
+U64 pattern(I64 i) {
+    return ((i + 1) as U64) * 0x0101010101010101;
+}
+
+Bool same_hash[n](in U8[n] h, I64 a, I64 b) {
+    Bool same = true;
+    for i in 0..32 {
+        if (h[32 * a + i] != h[32 * b + i]) {
+            same = false;
+        }
+    }
+    return same;
+}
+
+// The three lines of the memory map, the same under either protocol.
+void map_summary(I64 mib, Bool pool) {
+    say("mmap: valid\n");
+    report.line_dec("ram: MiB ", mib);
+    say("pool 32 MiB to 96 MiB usable: ");
+    yes_no(pool);
+}
+
+// Multiboot 1: the info structure and the map, read where the loader put them through the view shim.
+void memory_map_mb1() {
+    U8[64] info;
+    phys.phys_read8(phys.mb_info(), info);
+    if (!memmap.mmap_valid(info)) {
+        say("mmap: absent\n");
+        return;
+    }
+    I64 length = memmap.mmap_length(info);
+    if (length < 24 || length > 512) {
+        say("mmap: length out of range\n");
+        return;
+    }
+    U8[512] mm;
+    phys.phys_read8(memmap.mmap_address(info) as U64, mm);
+    map_summary(memmap.ram_mib(mm, length), memmap.usable_covers(mm, length, frames.POOL_BASE as U64, (frames.POOL_BASE + frames.FRAMES * frames.FRAME_BYTES) as U64));
+}
+
+// Multiboot 2: the tags of the block rt/boot.c copied (boot_info), memory map tag 6.
+void memory_map_mb2(in U8[_] block) {
+    I64 length = memmap.mb2_length(block);
+    if (length < 0) {
+        say("mmap: length out of range\n");
+        return;
+    }
+    I64 at = memmap.mb2_mmap(block, length);
+    if (at < 0) {
+        say("mmap: absent\n");
+        return;
+    }
+    map_summary(memmap.mb2_ram_mib(block, at), memmap.mb2_usable_covers(block, at, frames.POOL_BASE as U64, (frames.POOL_BASE + frames.FRAMES * frames.FRAME_BYTES) as U64));
+}
+
+// The block is 3,072 bytes: the frame arena (RT_FRAME_ARENA_ELEMENTS, 4,096 elements) must also hold
+// the 576 of memory_map_mb1 below it. A Multiboot 2 block larger than this view is "length out of range".
+void memory_map() {
+    U8[3072] block;
+    I64 protocol = bootinfo.boot_info(block);
+    if (protocol == 1) {
+        memory_map_mb1();
+    } else if (protocol == 2) {
+        memory_map_mb2(block);
+    } else {
+        report.line_dec("mmap: no loader block, status ", protocol);
+    }
+}
+
+void allocator() {
+    I64[20] f;
+    U8[192] h;
+    allocdemo.run(f, h);
+    report.line_dec("frames: a ", f[0]);
+    report.line_dec("frames: b ", f[1]);
+    report.line_dec("frames: c ", f[2]);
+    report.line_dec("frames: d ", f[3]);
+    report.line_dec("frames: e ", f[4]);
+    report.line_dec("refused: too many ", f[5]);
+    report.line_dec("refused: zero ", f[6]);
+    report.line_dec("refused: not owned ", f[7]);
+    report.line_dec("refused: off the pool ", f[8]);
+    report.line_dec("refused: free count plus one ", f[16]);
+    report.line_dec("free after refusals: ", f[9]);
+    report.line_dec("arena: slot ", f[10]);
+    report.line_dec("arena: object 1 at ", f[11]);
+    report.line_dec("arena: object 2 at ", f[12]);
+    report.line_dec("refused: object too big ", f[13]);
+    report.line_dec("arena: bytes in use ", f[15]);
+    report.line_dec("free at the end: ", f[14]);
+    say("hash empty:          ");
+    report.print_hash(h, 0);
+    say("\nhash before refusals: ");
+    report.print_hash(h, 1);
+    say("\nhash after refusals:  ");
+    report.print_hash(h, 2);
+    say("\nframe refusals changed nothing: ");
+    yes_no(same_hash(h, 1, 2));
+    say("hash before big object: ");
+    report.print_hash(h, 3);
+    say("\nhash after big object:  ");
+    report.print_hash(h, 4);
+    say("\nheap refusal changed nothing: ");
+    yes_no(same_hash(h, 3, 4));
+    say("hash final:           ");
+    report.print_hash(h, 5);
+    say("\n");
+}
+
+Bool pattern_ok_virtual(U64 va) {
+    Bool ok = true;
+    for i in 0..8 {
+        if (trap.vm_load64(va + ((8 * i) as U64)) != pattern(i)) {
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+void paging_demo() {
+    say("paging: page directory frame ");
+    report.print_dec(paging.init());
+    say("\n");
+    I64 f1 = frames.alloc(1);
+    U64 pa1 = frames.frame_addr(f1) as U64;
+    report.line_dec("map va 0x40000000 status ", paging.map(VA0, pa1, pte.FLAG_W | pte.FLAG_NX));
+    for i in 0..8 {
+        trap.vm_store64(VA0 + ((8 * i) as U64), pattern(i));
+    }
+    U64[8] back;
+    phys.phys_read64(pa1, back);
+    Bool phys_ok = true;
+    for i in 0..8 {
+        if (back[i] != pattern(i)) {
+            phys_ok = false;
+        }
+    }
+    say("pattern written through the mapping, read through the physical window: ");
+    yes_no(phys_ok);
+    say("pattern read through the mapping: ");
+    yes_no(pattern_ok_virtual(VA0));
+    report.line_dec("translate va 0x40000000 is frame ", (paging.translate(VA0) - frames.POOL_BASE) / frames.FRAME_BYTES);
+
+    // read-only: a store is a #PF with the protection bit set
+    report.line_dec("protect read-only status ", paging.protect(VA0, pte.FLAG_NX));
+    trap.vm_store64(VA0, 0xDEAD as U64);
+    report.print_record("write to a read-only page");
+    U64[1] w0;
+    phys.phys_read64(pa1, w0);
+    say("the refused store left the word unchanged: ");
+    yes_no(w0[0] == pattern(0));
+    report.line_dec("protect writable status ", paging.protect(VA0, pte.FLAG_W | pte.FLAG_NX));
+
+    // no-execute: a fetch is a #PF with the instruction-fetch bit set
+    I64 f2 = frames.alloc(1);
+    U64 pa2 = frames.frame_addr(f2) as U64;
+    U8[1] ret_op;
+    ret_op[0] = 0xC3;
+    phys.phys_write8(pa2, ret_op);
+    report.line_dec("map va 0x40001000 executable status ", paging.map(VA1, pa2, pte.FLAG_W));
+    trap.vm_exec(VA1);
+    say("a fetch from the executable page returned: ");
+    yes_no(trap.trap_record_len() == 0);
+    report.line_dec("protect no-execute status ", paging.protect(VA1, pte.FLAG_W | pte.FLAG_NX));
+    trap.vm_exec(VA1);
+    report.print_record("fetch from a no-execute page");
+
+    // unmap, a load faults, remap to another frame with the pattern copied. The load before the
+    // unmap puts the page in the TLB, so a missing invlpg after the unmap would show here.
+    say("a load through the mapping before the unmap works: ");
+    yes_no(trap.vm_load64(VA0) == pattern(0));
+    report.line_dec("unmap status is the frame ", (paging.unmap(VA0) - frames.POOL_BASE) / frames.FRAME_BYTES);
+    _ = trap.vm_load64(VA0);
+    report.print_record("load from an unmapped page");
+    I64 f3 = frames.alloc(1);
+    U64 pa3 = frames.frame_addr(f3) as U64;
+    U64[512] page;
+    phys.phys_read64(pa1, page);
+    phys.phys_write64(pa3, page);
+    report.line_dec("remap va 0x40000000 status ", paging.map(VA0, pa3, pte.FLAG_W | pte.FLAG_NX));
+    say("pattern after the remap: ");
+    yes_no(pattern_ok_virtual(VA0));
+    report.line_dec("map over a mapped page is refused: ", paging.map(VA0, pa1, pte.FLAG_W));
+    report.line_dec("map outside the region is refused: ", paging.map(0x1000 as U64, pa1, pte.FLAG_W));
+    report.line_dec("unmap of an unmapped page is refused: ", paging.unmap(0x40002000 as U64));
+    _ = paging.unmap(VA0);
+    _ = paging.unmap(VA1);
+    _ = frames.release(f1, 1);
+    _ = frames.release(f2, 1);
+    _ = frames.release(f3, 1);
+}
+
+void heap_demo() {
+    I64 slot = heap.arena_new(1);
+    I64 obj = heap.arena_alloc(slot, 64, 16);
+    U8[64] data;
+    for i in 0..64 {
+        data[i] = (i * 3) as U8;
+    }
+    phys.phys_write8(obj as U64, data);
+    U8[64] back;
+    phys.phys_read8(obj as U64, back);
+    Bool ok = true;
+    for i in 0..64 {
+        if (back[i] != data[i]) {
+            ok = false;
+        }
+    }
+    say("arena object written and read back: ");
+    yes_no(ok);
+    U8[32] before;
+    U8[32] after;
+    memstate.hash(before);
+    report.line_dec("arena: a request of 4,097 bytes is refused: ", heap.arena_alloc(slot, 4097, 8));
+    memstate.hash(after);
+    Bool same = true;
+    for i in 0..32 {
+        if (before[i] != after[i]) {
+            same = false;
+        }
+    }
+    say("the refused request changed nothing: ");
+    yes_no(same);
+    _ = heap.arena_free(slot);
+}
+
+void demo() {
+    serial.serial_init();
+    say("Daphnis K3: memory\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    memory_map();
+    allocator();
+    paging_demo();
+    heap_demo();
+    report.line_dec("frames in use at the end (the bitmap, page directory and table): ", frames.owned_count());   // FB: frame 0 holds the bitmap
+    U8[32] h;
+    memstate.hash(h);
+    say("final state hash: ");
+    report.print_hash(h, 0);
+    say("\nmem: done\n");
+}
+
+void bad_null() {
+    U8[8] buf;
+    phys.phys_read8(0 as U64, buf);
+}
+
+void bad_window() {
+    U64[2] w;
+    w[0] = 1;
+    w[1] = 2;
+    phys.phys_write64(0x00200000 as U64, w);
+}
+
+void bad_table() {
+    U64[2] w;
+    w[0] = 0;
+    w[1] = 0;
+    phys.phys_write64(trap.vm_root(), w);
+}
+
+void bad_align() {
+    U64[1] w;
+    phys.phys_read64(0x02000004 as U64, w);   // misaligned, inside the pool
+}
+
+void bad_wrap() {
+    U64[2] w;
+    phys.phys_read64(0xFFFFFFFFFFFFFFF8 as U64, w);
+}
+
+void bad_vm() {
+    trap.vm_store64(0x00100000 as U64, 1 as U64);
+}
+
+void main(in U8[_] args) {
+    I64 which = (args[0] as I64) - 48;
+    if (which == 0) {
+        bad_null();
+    }
+    if (which == 1) {
+        bad_window();
+    }
+    if (which == 2) {
+        bad_table();
+    }
+    if (which == 3) {
+        bad_align();
+    }
+    if (which == 4) {
+        bad_wrap();
+    }
+    if (which == 5) {
+        bad_vm();
+    }
+    if (which == 6) {
+        demo();
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,30 @@
+// src/stamp.ci: FS-4 with ruling FS-R3 C (docs/specs/2026-11-07-bu2-meta.md section 4.6), the time a file stamp
+// takes. Pure: src/proc.ci keeps the three words and calls this; the hosted test proves the guard
+// (tests/fs/stamp_test.ci).
+//
+// A process's virtual clock starts again at 0 when a program starts, so it is not one time line: a file written later
+// by a fresh program would carry an earlier time. A stamp takes the stamp time instead, one value for the whole
+// system: the boot's base plus the furthest any process's virtual clock has run since boot, in seconds, and never
+// earlier than the last stamp given in the boot. RS-CLK2: a process's CLOCK_REALTIME is on this line too, from where
+// it stood when the program started (src/proc.ci real_rel).
+
+const U64 NS = 1000000000;
+
+// The stamp time: base_s seconds since 1970 plus far_ns nanoseconds, in whole seconds; `last`, the last stamp given,
+// when that would be earlier.
+export I64 time(U64 far_ns, U64 base_s, I64 last) {
+    I64 t = (base_s + far_ns / NS) as I64;
+    if (t < last) {
+        return last;
+    }
+    return t;
+}
+
+// The furthest clock after a process's clock reads clock_ns: the larger of the two.
+export U64 further(U64 far_ns, U64 clock_ns) {
+    if (clock_ns > far_ns) {
+        return clock_ns;
+    }
+    return far_ns;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,18 @@
+ctrlc: start: @> 
+ctrlc: cat: run
+ctrlc: cat reads: x..x..
+ctrlc: after Ctrl-C: @> 
+ctrlc: status: s1=130
+ctrlc: prompt: @> 
+ctrlc: loop: loop
+ctrlc: pipeline reads: y..y..
+ctrlc: after Ctrl-C: @> 
+ctrlc: status: s2=130
+ctrlc: prompt: @> 
+ctrlc: cat: quit
+ctrlc: cat reads: z..z..
+ctrlc: after Ctrl-\: @> 
+ctrlc: status: s3=131
+ctrlc: prompt: @> 
+ctrlc: the shell ended
+status 0

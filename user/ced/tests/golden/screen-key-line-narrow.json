@@ -1,0 +1,25 @@
+{
+  "id": "screen-key-line-narrow",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "",
+  "size": [
+    4,
+    24
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [],
+  "expect": {
+    "text": "",
+    "screen": [
+      "",
+      "",
+      " x                  1:1",
+      "^S save  ^Q quit"
+    ]
+  }
+}

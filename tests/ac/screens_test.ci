@@ -1,0 +1,136 @@
+// tests/ac/screens_test.ci: frame 12 (DN-52, DN-53) as kit/acscreen.ci lays it out, hosted: the first boot rule line
+// is the account store's own minimum (the screen and the check agree, AC-D3), the words of the date and of AC-D2's
+// wait, the column inside the screen at 1920 x 1080, 1024 x 768 and 640 x 480 (the roundel given up last), and the
+// power pills' clicks. Run by check.sh.
+import user.ci.kit.acscreen;
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.acct;
+
+U32[2048] row;
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for k in 0..n {
+        if (a[k] != b[k]) { return false; }
+    }
+    return true;
+}
+
+test "the rule line is the account store's minimum, and the check takes exactly that many (AC-D3, DN-52 (c))" {
+    U8[32] t;
+    I64 n = acscreen.rule_text(acct.PARENT_MIN, t);
+    assert(same(t, n, b"8 characters or more."));
+    assert(acct.pass_ok(acct.PARENT, acct.PARENT_MIN) && !acct.pass_ok(acct.PARENT, acct.PARENT_MIN - 1));
+}
+
+test "the date and the wait as frame 12 words them (DN-52 (b))" {
+    U8[48] t;
+    I64 n = acscreen.date_text(1, 11, 9, t);
+    assert(same(t, n, b"Monday, November 9"));
+    n = acscreen.date_text(3, 9, 30, t);
+    assert(same(t, n, b"Wednesday, September 30"));
+    n = acscreen.wait_text(4, t);
+    assert(same(t, n, b"Wrong password, try again in 4 s"));
+}
+
+// The screen of 1x size w x h under the bar drawn whole at zoom 1; the column's parts inside it.
+void draw_all(I64 w, I64 h) {
+    for y in 0..h {
+        pen.at(0, 0, 1, y);
+        acscreen.row_at(row, 0, 0, w, h);
+    }
+}
+
+test "login, lock and first boot fit 1920 x 1080, 1024 x 768 and 640 x 480 under the bar" {
+    tokens.set_theme(tokens.DARK);
+    I64[3] ws = [1920, 1024, 640];
+    I64[3] hs = [1052, 740, 452];
+    for s in 1..4 {
+        acscreen.set_screen(s);
+        acscreen.set_rows(2, 0);
+        acscreen.set_row(0, b"ci", 2, true);
+        acscreen.set_row(1, b"sam", 3, false);
+        for i in 0..3 {
+            I64 h = hs[i];
+            I64 top = acscreen.col_top(0, h);
+            assert(top >= acscreen.TOP_MIN && top <= acscreen.TOP);
+            I64 last = acscreen.note_top(0, h) + 12;
+            if (s == acscreen.FIRST) { last = last + 20 + acscreen.BTN_H; }
+            assert(last + 16 <= h - acscreen.PILL_FOOT - acscreen.PILL_H);   // the pills stay clear of the column
+            draw_all(ws[i], 8);
+        }
+    }
+    acscreen.set_screen(acscreen.LOGIN);
+    assert(acscreen.col_top(0, 1052) == acscreen.TOP && acscreen.col_top(0, 740) == acscreen.TOP);
+    assert(acscreen.mark_shown(0, 452) && acscreen.col_top(0, 452) < acscreen.TOP);   // 640 x 480: the top gives way
+    acscreen.set_screen(acscreen.FIRST);
+    assert(acscreen.mark_shown(0, 740) && !acscreen.mark_shown(0, 452));   // then first boot's roundel
+}
+
+test "a click on Restart or Shut Down, and nowhere else, on login, first boot and lock (frame 12, DN-56)" {
+    acscreen.set_screen(acscreen.LOGIN);
+    I64 y = 740 - acscreen.PILL_FOOT - acscreen.PILL_H / 2;
+    assert(acscreen.pill_at(0, 0, 1024, 740, 512 - 40, y) == acscreen.ACT_RESTART);
+    assert(acscreen.pill_at(0, 0, 1024, 740, 512 + 40, y) == acscreen.ACT_SHUTDOWN);
+    assert(acscreen.pill_at(0, 0, 1024, 740, 512, y - 40) == 0 && acscreen.pill_at(0, 0, 1024, 740, 100, y) == 0);
+    acscreen.set_screen(acscreen.FIRST);                     // first boot: Shut Down alone, centered
+    assert(acscreen.pill_at(0, 0, 1024, 740, 512, y) == acscreen.ACT_SHUTDOWN);
+    acscreen.set_screen(acscreen.LOCK);                      // DN-56 (A): the lock screen takes both, and Super+Esc
+    assert(acscreen.LOCK_POWER);                             // the constant hdesk's auth_key reads for Super+Esc
+    assert(acscreen.pill_at(0, 0, 1024, 740, 512 - 40, y) == acscreen.ACT_RESTART);
+    assert(acscreen.pill_at(0, 0, 1024, 740, 512 + 40, y) == acscreen.ACT_SHUTDOWN);
+}
+test "a 32-byte name of wide letters, focused: its end and the caret stay inside the field's text area" {
+    tokens.set_theme(tokens.DARK);
+    acscreen.set_screen(acscreen.FIRST);
+    acscreen.set_first(b"wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww", 32, 0, false);
+    I64 top = acscreen.field_top(0, 740, 0);
+    I64 lx = 512 - acscreen.COL_W / 2;
+    I64 y = top + 20;                                        // the caret's middle row
+    pen.at(0, 0, 1, y);
+    acscreen.row_at(row, 0, 0, 1024, 740);
+    U32 ink = tokens.word(tokens.INK);
+    U32 ground = tokens.word(tokens.PAPER);
+    I64 cx = -1;
+    for x in lx..lx + acscreen.COL_W + 200 {
+        if (row[x] == ink) { cx = x; }                       // the rightmost INK pixel: the caret
+    }
+    assert(cx >= lx + 16 && cx < lx + acscreen.COL_W - 16);  // inside the text area
+    Bool drawn = false;                                      // the last letter, just left of the caret
+    for x in cx - 14..cx - 2 {
+        if (row[x] != ground) { drawn = true; }
+    }
+    assert(drawn);
+}
+test "login with 8 and 16 accounts at 640 x 480, 800 x 600 and 1024 x 768: the field and note line above the pills" {
+    acscreen.set_screen(acscreen.LOGIN);
+    I64[3] hs = [452, 572, 740];
+    for i in 0..3 {
+        I64 h = hs[i];
+        acscreen.set_rows(8, 7);                             // as the desk set them before: up to 8 whatever the height
+        I64 pills = h - acscreen.PILL_FOOT - acscreen.PILL_H;
+        assert(acscreen.field_top(0, h, 0) + acscreen.FIELD_H <= acscreen.note_top(0, h));
+        assert(acscreen.note_top(0, h) + 12 + 16 <= pills);  // the note line and the gap over the pills on screen
+    }
+}
+
+test "the desk scrolls by the rows that fit: after Down to the last of 8 or 16 accounts it is among those shown" {
+    acscreen.set_screen(acscreen.LOGIN);
+    I64[3] hs = [452, 572, 740];
+    I64[2] ns = [8, 16];
+    for i in 0..3 {
+        for j in 0..2 {
+            I64 n = ns[j];
+            I64 r = acscreen.rows_fit(0, hs[i], n);
+            assert(r >= 1 && r <= acscreen.ROWS && r <= n);
+            I64 top = 0;
+            for sel in 0..n { top = acct.list_top(sel, top, n, r); }   // Down to the last, as auth_key moves
+            assert(n - 1 >= top && n - 1 < top + r);
+            acscreen.set_rows(r, n - 1 - top);
+            assert(acscreen.note_top(0, hs[i]) + 12 + 16 <= hs[i] - acscreen.PILL_FOOT - acscreen.PILL_H);
+        }
+    }
+    assert(acscreen.rows_fit(0, 452, 8) == 4 && acscreen.rows_fit(0, 740, 8) == 8);
+}
+// SPDX-License-Identifier: Apache-2.0

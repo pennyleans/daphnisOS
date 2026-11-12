@@ -1,0 +1,68 @@
+$ 
+status 1
+$ x
+status 0
+$ ""
+status 1
+$ -n x
+status 0
+$ -n ""
+status 1
+$ -z ""
+status 0
+$ -z x
+status 1
+$ a = a
+status 0
+$ a = b
+status 1
+$ a != b
+status 0
+$ 3 -eq 3
+status 0
+$ 3 -lt 2
+status 1
+$ -2 -le 5
+status 0
+$ 10 -gt 9
+status 0
+$ -f text.txt
+status 0
+$ -f look
+status 1
+$ -d look
+status 0
+$ -e missing
+status 1
+$ -s empty
+status 1
+$ -s text.txt
+status 0
+$ -x look/run.sh
+status 0
+$ -r text.txt
+status 0
+$ ! -f text.txt
+status 1
+$ -f text.txt -a -d look
+status 0
+$ -f missing -o -d look
+status 0
+$ ( -n x )
+status 0
+$ "(" a = a ")"
+status 0
+$ ! ""
+status 0
+$ a -eq 3
+-- stderr
+cish: test: bad number: a
+status 2
+$ 3 -eq
+-- stderr
+cish: test: unknown operator: 3
+status 2
+$ a b c
+-- stderr
+cish: test: unknown operator: b
+status 2

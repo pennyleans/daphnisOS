@@ -1,0 +1,197 @@
+// Refusals and capacity boundaries that cannot be expressed as interactive Vim file scripts.
+import user.ci.cvim.key;
+import user.ci.cvim.state;
+import user.ci.cvim.buf;
+import user.ced.keys;
+
+test "CV-2a: unbound key preserves text, cursor, register and history" {
+    I64[16384] r;
+    I64[16384] before;
+    I64[20000] x;
+    U8[16] orig;
+    U8[16] add;
+    I64[64] sp;
+    I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig[0..2], add));
+    before[0..16384] = r[0..16384];
+    key.step(r, x, orig, add, sp, u, '?');
+    assert(r[state.R_BELL] == 1 && r[state.R_MSG] == '?');
+    for i in 0..16384 {
+        if (i != state.R_BELL && i != state.R_MSG) { assert(r[i] == before[i]); }
+    }
+    assert(buf.total(x) == 2 && buf.byte_at(x, orig, add, 0) == 'a');
+}
+test "CV-2a: full add table refuses Replace without deleting text" {
+    I64[16384] r;
+    I64[20000] x;
+    U8[2] orig;
+    U8[1] add;
+    I64[64] sp;
+    I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig, add));
+    r[state.R_ST_ADD] = 1;
+    key.step(r, x, orig, add, sp, u, 'R');
+    key.step(r, x, orig, add, sp, u, 'Z');
+    assert(r[state.R_FULL] == 1);
+    assert(buf.total(x) == 2 && buf.byte_at(x, orig, add, 0) == 'a');
+    assert(r[state.R_U_N] == 0 && r[state.R_CUR] == 0);
+}
+
+test "CV-2a: full add table refuses compound edits atomically" {
+    I64[16384] r;
+    I64[20000] x;
+    U8[4] orig;
+    U8[1] add;
+    I64[64] sp;
+    I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n'; orig[2] = 'b'; orig[3] = '\n';
+    for trial in 0..4 {
+        key.init(r, x, 64, 256);
+        assert(key.load(r, x, orig, add));
+        r[state.R_ST_ADD] = 1;
+        if (trial == 0) { key.step(r, x, orig, add, sp, u, 'c'); key.step(r, x, orig, add, sp, u, 'c'); }
+        if (trial == 1) { key.step(r, x, orig, add, sp, u, 'J'); }
+        if (trial == 2) { key.step(r, x, orig, add, sp, u, '~'); }
+        if (trial == 3) { key.step(r, x, orig, add, sp, u, 'o'); }
+        assert(r[state.R_FULL] == 1);
+        assert(buf.total(x) == 4);
+        for i in 0..4 { assert(buf.byte_at(x, orig, add, i) == orig[i]); }
+        assert(r[state.R_U_N] == 0 && r[state.R_CUR] == 0);
+    }
+}
+
+test "CV-2a: a control key cannot become a find character" {
+    I64[16384] r;
+    I64[20000] x;
+    U8[2] orig;
+    U8[16] add;
+    I64[64] sp;
+    I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r, x, 64, 256);
+    assert(key.load(r, x, orig, add));
+    key.step(r, x, orig, add, sp, u, 'f');
+    key.step(r, x, orig, add, sp, u, keys.M_CTRL + 'r');
+    assert(r[state.R_BELL] == 1 && r[state.R_MSG] == keys.M_CTRL + 'r');
+    assert(r[state.R_FIND_CMD] == 0 && r[state.R_CUR] == 0);
+}
+
+test "CV-2a: Enter refuses before removing carried whitespace" {
+    I64[16384] r; I64[20000] x; U8[5] orig; U8[1] add; I64[64] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = ' '; orig[2] = ' '; orig[3] = 'b'; orig[4] = '\n';
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig, add));
+    r[state.R_ST_ADD] = 1;
+    key.step(r, x, orig, add, sp, u, 'l'); key.step(r, x, orig, add, sp, u, 'i');
+    key.step(r, x, orig, add, sp, u, keys.K_ENTER);
+    assert(r[state.R_FULL] == 1 && buf.total(x) == 5 && r[state.R_CUR] == 1 && r[state.R_U_N] == 0);
+    for i in 0..5 { assert(buf.byte_at(x, orig, add, i) == orig[i]); }
+}
+test "CV-2a: Replace Backspace reserves restoration bytes" {
+    I64[16384] r; I64[20000] x; U8[2] orig; U8[1] add; I64[64] sp; I64[278528] u;
+    orig[0] = 'b'; orig[1] = '\n';
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig, add));
+    key.step(r, x, orig, add, sp, u, 'R'); key.step(r, x, orig, add, sp, u, 'a');
+    key.step(r, x, orig, add, sp, u, keys.K_BACKSPACE);
+    assert(r[state.R_FULL] == 1 && buf.total(x) == 2 && r[state.R_CUR] == 1);
+    assert(buf.byte_at(x, orig, add, 0) == 'a' && r[state.R_RS_N] == 1);
+}
+test "CV-2a: multi-line shifts reserve the entire command" {
+    I64[16384] r; I64[20000] x; U8[4] orig; U8[4] add; I64[64] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n'; orig[2] = 'b'; orig[3] = '\n';
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig, add));
+    key.step(r, x, orig, add, sp, u, '2'); key.step(r, x, orig, add, sp, u, '>'); key.step(r, x, orig, add, sp, u, '>');
+    assert(r[state.R_FULL] == 1 && buf.total(x) == 4 && r[state.R_U_N] == 0);
+    for i in 0..4 { assert(buf.byte_at(x, orig, add, i) == orig[i]); }
+}
+
+test "CV-2a: undo needs no free register spans" {
+    I64[16384] r; I64[20000] x; U8[2] orig; U8[16] add; I64[6] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig, add));
+    key.step(r, x, orig, add, sp, u, 'i'); key.step(r, x, orig, add, sp, u, 'Z'); key.step(r, x, orig, add, sp, u, keys.K_ESC);
+    key.step(r, x, orig, add, sp, u, 'y'); key.step(r, x, orig, add, sp, u, 'y');
+    assert(r[state.R_SPTOP] == 2);
+    key.step(r, x, orig, add, sp, u, 'u');
+    assert(buf.total(x) == 2 && buf.byte_at(x, orig, add, 0) == 'a');
+    key.step(r, x, orig, add, sp, u, keys.M_CTRL + 'r');
+    assert(buf.total(x) == 3 && buf.byte_at(x, orig, add, 0) == 'Z');
+}
+
+test "CV-2b: a macro that runs itself without failing stops at the work bound" {
+    I64[16384] r; I64[20000] x; U8[4] orig; U8[4096] add; I64[4096] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = 'b'; orig[2] = '\n';
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig[0..3], add));
+    // qa0@aq: 0 never fails, so @a runs until the bound on keys a typed key may run.
+    key.step(r, x, orig, add, sp, u, 'q'); key.step(r, x, orig, add, sp, u, 'a');
+    key.step(r, x, orig, add, sp, u, '0'); key.step(r, x, orig, add, sp, u, '@'); key.step(r, x, orig, add, sp, u, 'a');
+    key.step(r, x, orig, add, sp, u, 'q');
+    assert(r[state.R_REC] == 0);
+    key.step(r, x, orig, add, sp, u, '@'); key.step(r, x, orig, add, sp, u, 'a');
+    assert(r[state.R_BELL] == 1 && r[state.R_TA_N] == 0 && r[state.R_MODE] == state.MODE_NORMAL);
+    assert(buf.total(x) == 3 && r[state.R_CUR] == 0);
+}
+
+test "CV-2b: the window height is an input" {
+    I64[16384] r; I64[20000] x; U8[40] orig; U8[16] add; I64[64] sp; I64[278528] u;
+    for i in 0..20 { orig[2 * i] = 'a'; orig[2 * i + 1] = '\n'; }
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig, add));
+    key.step(r, x, orig, add, sp, u, 'L');
+    assert(r[state.R_CUR] == 2 * 19);
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig, add));
+    key.window(r, 5);
+    key.step(r, x, orig, add, sp, u, 'L');
+    assert(r[state.R_CUR] == 2 * 2 && r[state.R_TOP] == 0);
+    key.step(r, x, orig, add, sp, u, keys.M_CTRL + 'd');
+    assert(r[state.R_TOP] == 2);
+}
+
+test "CV-2b: an unset mark and an unknown register ring the bell and change nothing" {
+    I64[16384] r; I64[16384] before; I64[20000] x; U8[4] orig; U8[16] add; I64[64] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = 'b'; orig[2] = '\n';
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig[0..3], add));
+    before[0..16384] = r[0..16384];
+    key.step(r, x, orig, add, sp, u, '`'); key.step(r, x, orig, add, sp, u, 'a');
+    assert(r[state.R_BELL] == 1 && r[state.R_CUR] == 0);
+    key.step(r, x, orig, add, sp, u, '"'); key.step(r, x, orig, add, sp, u, '!');
+    assert(r[state.R_BELL] == 1 && r[state.R_MSG] == '!');
+    for i in state.R_REG0..state.R_MARK0 + 52 { assert(r[i] == before[i]); }
+    assert(r[state.R_DOT_N] == 0 && r[state.R_PREV] == before[state.R_PREV] && r[state.R_REGNAME] == 0);
+}
+
+test "CV-2b: a refused register append keeps the register it had" {
+    I64[16384] r; I64[20000] x; U8[4] orig; U8[16] add; I64[6] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = 'b'; orig[2] = '\n';
+    key.init(r, x, 64, 256); assert(key.load(r, x, orig[0..3], add));
+    key.step(r, x, orig, add, sp, u, '"'); key.step(r, x, orig, add, sp, u, 'a');
+    key.step(r, x, orig, add, sp, u, 'y'); key.step(r, x, orig, add, sp, u, 'l');
+    I64 from = r[state.R_REG0 + 10 * state.REG_W];
+    key.step(r, x, orig, add, sp, u, '"'); key.step(r, x, orig, add, sp, u, 'A');
+    key.step(r, x, orig, add, sp, u, 'y'); key.step(r, x, orig, add, sp, u, 'y');
+    assert(r[state.R_FULL] == 1 && r[state.R_REG0 + 10 * state.REG_W] == from);
+}
+
+test "CV-3: the modified flag survives dropped history" {
+    I64[16384] r; I64[70000] x; U8[4] orig; U8[16384] add; I64[64] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r, x, 256, 256); assert(key.load(r, x, orig[0..2], add));
+    r[state.R_SAVED_AT] = r[state.R_U_AT];
+    key.step(r, x, orig, add, sp, u, 'x');
+    key.step(r, x, orig, add, sp, u, 'u');
+    assert(r[state.R_U_AT] == r[state.R_SAVED_AT]);
+    // A change after undo drops the redo branch; the saved state (before it) stays reachable.
+    key.step(r, x, orig, add, sp, u, 'i'); key.step(r, x, orig, add, sp, u, 'Z'); key.step(r, x, orig, add, sp, u, keys.K_ESC);
+    assert(r[state.R_SAVED_AT] == 0 && r[state.R_U_AT] == 1);
+    for i in 0..4100 {
+        key.step(r, x, orig, add, sp, u, 'A'); key.step(r, x, orig, add, sp, u, 'Z'); key.step(r, x, orig, add, sp, u, keys.K_ESC);
+        assert(r[state.R_FULL] == 0);
+    }
+    // The oldest steps went: no undo reaches the text as read, so the buffer stays modified.
+    assert(r[state.R_SAVED_AT] == -1);
+    for i in 0..4200 { key.step(r, x, orig, add, sp, u, 'u'); }
+    assert(r[state.R_U_AT] == 0 && r[state.R_U_AT] != r[state.R_SAVED_AT]);
+}
+// SPDX-License-Identifier: Apache-2.0

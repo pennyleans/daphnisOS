@@ -1,0 +1,96 @@
+// src/job.ci: process groups, sessions and what each signal does (K-10, docs/specs/2026-11-07-k-kit2.md section 3a).
+// A process is in one group and one session, each named by the pid of its leader as the process's family sees pids
+// (src/proc.ci vpid); fork keeps both, setpgid and setsid change them. A session leader that opens a pty's slave
+// without O_NOCTTY, or asks TIOCSCTTY, while it has no terminal and the pair has no session, makes that pair its
+// controlling terminal, and its group the pair's foreground group (src/pty.ci).
+// A signal is ignored or takes its default action. rt_sigaction records SIG_IGN; any other handler reads as the
+// default, since no handler frame is ever built. Fork keeps what is ignored, and so does execve, as on Linux.
+// SIGKILL and SIGSTOP cannot be ignored. None of this is in the canonical state (digest edition 7).
+
+import src.uvm;
+
+Bool[64] live;
+I64[64] fam;        // the family: src/proc.ci's root slot
+I64[64] grp;
+I64[64] sess;
+I64[64] tty;        // the controlling terminal, a pty pair, or -1
+U64[64] ign;        // bit s - 1: signal s is ignored
+
+// A process the kernel starts: the leader of its own group and session, with no terminal and nothing ignored.
+export void start(I64 p, I64 f, I64 vp) {
+    live[p] = true;
+    fam[p] = f;
+    grp[p] = vp;
+    sess[p] = vp;
+    tty[p] = -1;
+    ign[p] = 0;
+}
+
+export void clone(I64 parent, I64 c) {
+    live[c] = true;
+    fam[c] = fam[parent];
+    grp[c] = grp[parent];
+    sess[c] = sess[parent];
+    tty[c] = tty[parent];
+    ign[c] = ign[parent];
+}
+
+export void end(I64 p) {
+    live[p] = false;
+}
+
+export I64 family(I64 p) { return fam[p]; }
+export I64 group(I64 p) { return grp[p]; }
+export I64 session(I64 p) { return sess[p]; }
+export I64 terminal(I64 p) { return tty[p]; }
+
+export void set_group(I64 p, I64 g) { grp[p] = g; }
+export void set_terminal(I64 p, I64 i) { tty[p] = i; }
+
+// setsid's change: p leads a new session and group, vp, with no terminal.
+export void new_session(I64 p, I64 vp) {
+    grp[p] = vp;
+    sess[p] = vp;
+    tty[p] = -1;
+}
+
+// True when a live process of family f is in group g of session s.
+export Bool group_in(I64 f, I64 s, I64 g) {
+    for p in 0..uvm.PROCS {
+        if (live[p] && fam[p] == f && sess[p] == s && grp[p] == g) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// True when a live process of family f is in group g, in any session.
+export Bool group_used(I64 f, I64 g) {
+    for p in 0..uvm.PROCS {
+        if (live[p] && fam[p] == f && grp[p] == g) {
+            return true;
+        }
+    }
+    return false;
+}
+
+export Bool can_ignore(I64 sig) {
+    return sig >= 1 && sig <= 64 && sig != 9 && sig != 19;
+}
+
+export Bool ignored(I64 p, I64 sig) {
+    if (!can_ignore(sig)) {
+        return false;
+    }
+    return ((ign[p] >> ((sig - 1) as U64)) & 1) != 0;
+}
+
+export void set_ignored(I64 p, I64 sig, Bool on) {
+    U64 b = (1 as U64) << ((sig - 1) as U64);
+    if (on) {
+        ign[p] = ign[p] | b;
+    } else {
+        ign[p] = ign[p] & (0xFFFFFFFFFFFFFFFF ^ b);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

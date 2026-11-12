@@ -1,0 +1,220 @@
+// user/ci/opltest.ci: gate 7 of stage AU (docs/specs/2026-11-06-au-audio.md section 6): plays the register walk
+// (user/ci/oplwalk.ci, from tools/oplref/walk.txt) on the OPL3 of user/ci/opl/ and prints a SHA-256 of each part's
+// chip-rate samples, of all of them, and of the walk resampled to 48,000 Hz. tools/check-opl.py compares the lines
+// with ymfm's samples (tools/oplref/). A chip sample is the four outputs A, B, C, D, each 16-bit little-endian; a
+// 48 kHz frame is A and B (left and right), 16-bit little-endian.
+//   opltest [--parts N] [--wav PATH]
+// --parts N plays the first N parts only (the boot under Daphnis takes a short walk); --wav writes the 48 kHz
+// stream to PATH as a WAV file, to listen to. Status 2 for a usage error or a WAV file it cannot write.
+import src.sha256;
+import user.ci.dev;
+import user.ci.outfile;
+import user.ci.opl.opl3;
+import user.ci.opl.rate;
+import user.ci.oplwalk;
+
+const I64 CHUNK = 1024;                // samples between digest updates
+
+U8[8192] chip_buf;                     // CHUNK samples x 8 bytes
+U8[4096] wav_buf;                      // CHUNK frames x 4 bytes
+I64 chip_fill = 0;
+I64 wav_fill = 0;
+Bool wav_on = false;
+
+I64 arg(in U8[_] args, I64 k, inout U8[_] word) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(args)) { return -1; }
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return -1; }
+    I64 n = 0;
+    while (args[at + n] != 0) {
+        if (n == len(word) - 1) { return -1; }
+        word[n] = args[at + n];
+        n = n + 1;
+    }
+    word[n] = 0;
+    return n;
+}
+
+I64 number(in U8[_] word, I64 n) {
+    I64 v = 0;
+    for i in 0..n {
+        I64 d = (word[i] as I64) - 48;
+        if (d < 0 || d > 9) { return -1; }
+        v = v * 10 + d;
+    }
+    return v;
+}
+
+void put16(inout U8[_] b, I64 at, I64 v) {
+    I64 u = v & 65535;
+    b[at] = (u & 255) as U8;
+    b[at + 1] = (u >> 8) as U8;
+}
+
+void put32(inout U8[_] b, I64 at, I64 v) {
+    for i in 0..4 { b[at + i] = ((v >> (8 * i)) & 255) as U8; }
+}
+
+void tag(inout U8[_] b, I64 at, in U8[_] t) {
+    for i in 0..4 { b[at + i] = t[i]; }
+}
+
+// The chip samples of the first `parts` parts of the walk.
+I64 played(I64 parts) {
+    I64 part = 0;
+    I64 total = 0;
+    for i in 0..oplwalk.EVENTS {
+        I64 e = oplwalk.event(i);
+        if (e >> 24 == 3) { part = e & 0xffffff; }
+        if (e >> 24 == 2 && part <= parts) { total = total + (e & 0xffffff); }
+    }
+    return total;
+}
+
+void hex(in U8[_] d) {
+    for i in 0..32 { "{d[i]:02x}"; }
+}
+
+void main(in U8[_] args) {
+    U8[256] word;
+    U8[256] path;
+    I64 parts = oplwalk.PARTS;
+    I64 k = 0;
+    I64 n = arg(args, k, word);
+    while (n >= 0) {
+        if (n == 7 && equal(word[0..7], b"--parts")) {
+            I64 m = arg(args, k + 1, word);
+            parts = m > 0 ? number(word, m) : -1;
+            if (parts < 1 || parts > oplwalk.PARTS) {
+                "opltest: --parts takes 1 to {oplwalk.PARTS}\n";
+                dev.exit_now(2);
+            }
+            k = k + 2;
+        } else if (n == 5 && equal(word[0..5], b"--wav")) {
+            I64 m = arg(args, k + 1, path);
+            if (m <= 0) {
+                "opltest: --wav takes a path\n";
+                dev.exit_now(2);
+            }
+            k = k + 2;
+            wav_on = true;
+        } else {
+            "opltest: usage: opltest [--parts N] [--wav PATH]\n";
+            dev.exit_now(2);
+        }
+        n = arg(args, k, word);
+    }
+    if (wav_on) {
+        I64 plen = 0;
+        while (path[plen] != 0) { plen = plen + 1; }
+        if (outfile.out_open(path[0..plen]) != 0) {
+            "opltest: cannot write the WAV file\n";
+            dev.exit_now(2);
+        }
+        I64 bytes = rate.rate_frames(played(parts)) * 4;
+        U8[44] h;
+        tag(h, 0, b"RIFF");
+        put32(h, 4, 36 + bytes);
+        tag(h, 8, b"WAVE");
+        tag(h, 12, b"fmt ");
+        put32(h, 16, 16);
+        put16(h, 20, 1);
+        put16(h, 22, 2);
+        put32(h, 24, rate.OUT_RATE);
+        put32(h, 28, rate.OUT_RATE * 4);
+        put16(h, 32, 4);
+        put16(h, 34, 16);
+        tag(h, 36, b"data");
+        put32(h, 40, bytes);
+        _ = outfile.out_put(h);
+    }
+
+    sha256.Sha256[1] all;
+    sha256.Sha256[1] one;
+    sha256.Sha256[1] wav;
+    sha256.sha_init(all);
+    sha256.sha_init(wav);
+    U8[32] digest;
+    I64[4] o;
+    I64[2] f;
+    opl3.opl_reset();
+    rate.rate_reset();
+    I64 part = 0;
+    Bool open = false;
+    I64 part_samples = 0;
+    I64 samples = 0;
+    I64 frames = 0;
+    for i in 0..oplwalk.EVENTS {
+        I64 e = oplwalk.event(i);
+        I64 kind = e >> 24;
+        I64 data = e & 0xffffff;
+        if (kind == 3) {
+            if (open) {
+                open = false;
+                sha256.sha_update(one, chip_buf, 0, chip_fill * 8);
+                sha256.sha_final(one, digest);
+                "opl: part {part} samples {part_samples} sha256 ";
+                hex(digest);
+                "\n";
+                sha256.sha_update(all, chip_buf, 0, chip_fill * 8);
+                chip_fill = 0;
+            }
+            if (data > parts) { break; }
+            part = data;
+            open = true;
+            part_samples = 0;
+            sha256.sha_init(one);
+        } else if (kind == 1) {
+            opl3.opl_reg(data >> 8, data & 255);
+        } else {
+            for j in 0..data {
+                opl3.opl_sample(o);
+                I64 at = chip_fill * 8;
+                for c in 0..4 { put16(chip_buf, at + 2 * c, o[c]); }
+                chip_fill = chip_fill + 1;
+                if (chip_fill == CHUNK) {
+                    sha256.sha_update(one, chip_buf, 0, CHUNK * 8);
+                    sha256.sha_update(all, chip_buf, 0, CHUNK * 8);
+                    chip_fill = 0;
+                }
+                if (rate.rate_push(o[0], o[1], f) == 1) {
+                    put16(wav_buf, wav_fill * 4, f[0]);
+                    put16(wav_buf, wav_fill * 4 + 2, f[1]);
+                    wav_fill = wav_fill + 1;
+                    frames = frames + 1;
+                    if (wav_fill == CHUNK) {
+                        sha256.sha_update(wav, wav_buf, 0, CHUNK * 4);
+                        if (wav_on) { _ = outfile.out_put(wav_buf); }
+                        wav_fill = 0;
+                    }
+                }
+            }
+            part_samples = part_samples + data;
+            samples = samples + data;
+        }
+    }
+    if (open) {
+        sha256.sha_update(one, chip_buf, 0, chip_fill * 8);
+        sha256.sha_final(one, digest);
+        "opl: part {part} samples {part_samples} sha256 ";
+        hex(digest);
+        "\n";
+        sha256.sha_update(all, chip_buf, 0, chip_fill * 8);
+    }
+    sha256.sha_update(wav, wav_buf, 0, wav_fill * 4);
+    if (wav_on && wav_fill > 0) { _ = outfile.out_put(wav_buf[0..wav_fill * 4]); }
+    sha256.sha_final(all, digest);
+    "opl: chip samples {samples} sha256 ";
+    hex(digest);
+    "\n";
+    sha256.sha_final(wav, digest);
+    "opl: 48000 frames {frames} sha256 ";
+    hex(digest);
+    "\n";
+}
+// SPDX-License-Identifier: Apache-2.0

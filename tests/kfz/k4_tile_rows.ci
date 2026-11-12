@@ -1,0 +1,330 @@
+// tests/kfz/k4_tile_rows.ci: AM-4's kernel half (docs/specs/2026-11-11-am4-appitems.md section 5): a pixel program's own
+// rows through FBIO_TILE_MENU (MENU_ITEM 2 {u32 id | PARENT << 16, u32 2 | MARKS << 8, label[24]}, MENU_KEYS 6 {u32
+// id, u32 6, keys[16], 8 zero bytes}, 38 records at most) and the desk's read of row k, FBIO_TILE_INFO kind 15 + 256 k.
+// What the desk reads is what was declared, in order; every refused declaration leaves the rows, About and Settings
+// as they were; a declaration with no row, execve and the end give the table back, and a 17th window's rows wait;
+// only a window's program declares rows (a review's P3: no program holds every table).
+
+U8[64] ar_got;      // the desk's last read of a row
+
+// A window: the desk offers a tile (FBIO_TILE_NEXT, 200 x 100 at 0, 0) and forks; the child takes it, and holds the
+// desk's descriptor of /dev/fb0 (kz_fb_fd).
+I64 ar_window(I64 d) {
+    kz_set_u32(d, KZ_RW + 1024, 200);
+    kz_set_u32(d, KZ_RW + 1028, 100);
+    kz_set_u32(d, KZ_RW + 1032, 0);
+    kz_set_u32(d, KZ_RW + 1036, 0);
+    assert(kz_call(d, NR_IOCTL, kz_fb_fd as U64, tile.FBIO_TILE_NEXT, KZ_RW + 1024, 0, 0, 0) == 0);
+    I64 c = kz_fork(d);
+    fs.set_login(c, 1000, 1000, fs.GRANT_ALL);
+    kz_fill(c);
+    return c;
+}
+
+// A window the tiler did not fork (W-4): the desk offers a tile at x, 0, and a new process of uid 1000 takes it at its
+// open of /dev/fb0 (kfz's desk forks 16 children at most). Its slot; its descriptor in ar_fd.
+I64 ar_fd = -1;
+I64 ar_opener(I64 d, I64 x) {
+    kz_set_u32(d, KZ_RW + 1024, 200);
+    kz_set_u32(d, KZ_RW + 1028, 100);
+    kz_set_u32(d, KZ_RW + 1032, x as U64);
+    kz_set_u32(d, KZ_RW + 1036, 0);
+    assert(kz_call(d, NR_IOCTL, kz_fb_fd as U64, tile.FBIO_TILE_NEXT, KZ_RW + 1024, 0, 0, 0) == 0);
+    I64 c = kz_proc(1000, fs.GRANT_ALL, 0);
+    ar_fd = kz_fb(c);
+    return c;
+}
+
+// Record r of a declaration at va in p's memory: {u32 w0, u32 w1, then t, NUL padded to 24 bytes}.
+void ar_rec[m](I64 p, U64 va, I64 r, U64 w0, U64 w1, in U8[m] t) {
+    assert(m <= 24);
+    U8[32] e;
+    for k in 0..32 { e[k] = 0; }
+    for k in 0..4 {
+        e[k] = ((w0 >> ((8 * k) as U64)) & 0xFF) as U8;
+        e[4 + k] = ((w1 >> ((8 * k) as U64)) & 0xFF) as U8;
+    }
+    for k in 0..m { e[8 + k] = t[k]; }
+    U64 at = va + 4 + (32 * r) as U64;
+    kz_own(p, at, 32);
+    assert(uvm.poke(p, at, e, 32, false) == 32);
+}
+
+// p's declaration of n records at KZ_RW: the answer.
+I64 ar_menu(I64 p, I64 fd, I64 n) {
+    kz_set_u32(p, KZ_RW, n as U64);
+    return kz_call(p, NR_IOCTL, fd as U64, tile.FBIO_TILE_MENU, KZ_RW, 0, 0, 0);
+}
+
+// The desk reads row k of the pixel window vp into ar_got: the answer.
+I64 ar_read(I64 d, I64 vp, I64 k) {
+    U64 at = KZ_RW + 2048;
+    kz_set_u32(d, at, (15 + 256 * k) as U64);
+    kz_set_u32(d, at + 4, vp as U64);
+    I64 st = kz_call(d, NR_IOCTL, kz_fb_fd as U64, tile.FBIO_TILE_INFO, at, 0, 0, 0);
+    if (st == 0) {
+        assert(uvm.peek(d, at, ar_got, 64) == 64);
+    }
+    return st;
+}
+
+I64 ar_u16(I64 at) {
+    return (ar_got[at] as I64) | ((ar_got[at + 1] as I64) << 8);
+}
+
+// Whether ar_got[at..at + span) is t, NUL padded.
+Bool ar_is[m](I64 at, in U8[m] t, I64 span) {
+    for k in 0..span {
+        U8 w = 0;
+        if (k < m) { w = t[k]; }
+        if (ar_got[at + k] != w) { return false; }
+    }
+    return true;
+}
+
+// Calc's menu of frame 41 and a child: About, Settings (id 1), Copy Result Ctrl+C, Paste Ctrl+V, Clear Tape after a
+// divider, and under it a dimmed row with the dot, "Café" (5 bytes).
+void ar_calc(I64 c, I64 fd) {
+    U8[5] cafe = [0x43, 0x61, 0x66, 0xC3, 0xA9];
+    ar_rec(c, KZ_RW, 0, 0, tile.MENU_ABOUT as U64, "Calc");
+    ar_rec(c, KZ_RW, 1, 1, tile.MENU_SETTINGS as U64, "S");
+    ar_rec(c, KZ_RW, 2, 2, 2, "Copy Result");
+    ar_rec(c, KZ_RW, 3, 2, 6, "Ctrl+C");
+    ar_rec(c, KZ_RW, 4, 3, 2, "Paste");
+    ar_rec(c, KZ_RW, 5, 3, 6, "Ctrl+V");
+    ar_rec(c, KZ_RW, 6, 4, (2 | (tile.MARK_GROUP << 8)) as U64, "Clear Tape");
+    ar_rec(c, KZ_RW, 7, 5 | (4 << 16), (2 | ((tile.MARK_ON | tile.MARK_DIM) << 8)) as U64, cafe);
+    assert(ar_menu(c, fd, 8) == 0);
+}
+
+// Calc's declaration still stands: four rows, the first Copy Result, the last the child; About and Settings.
+Bool ar_kept(I64 c) {
+    return tile.rows_of(c) == 4 && tile.row_byte(c, 0, 0) == 2 && tile.row_byte(c, 0, 8) == 67 &&
+        tile.row_byte(c, 0, 6) == 6 && tile.row_byte(c, 3, 0) == 5 && tile.row_byte(c, 3, 2) == 4 &&
+        tile.menu_byte(c, 0) == 67 && tile.menu_byte(c, 104) == 1 && tile.menu_byte(c, 105) == 1;
+}
+
+test "AM-4 rows: a pixel program's rows and keys reach the desk in the order declared; past the rows, zeros" {
+    I64 d = kz_desk();
+    I64 c = ar_window(d);
+    I64 cfd = kz_fb_fd;
+    ar_calc(c, cfd);
+    I64 vp = vpid[c];
+    assert(ar_read(d, vp, 0) == 0);
+    assert(ar_u16(0) == vp && ar_u16(2) == 0 && ar_got[4] == 4 && ar_u16(8) == 2 && ar_u16(10) == 0 && ar_got[12] == 0);
+    assert(ar_got[13] == 11 && ar_got[14] == 6 && ar_is(16, "Copy Result", 24) && ar_is(40, "Ctrl+C", 16));
+    assert(ar_read(d, vp, 1) == 0 && ar_u16(8) == 3 && ar_is(16, "Paste", 24) && ar_is(40, "Ctrl+V", 16));
+    assert(ar_read(d, vp, 2) == 0 && ar_u16(8) == 4 && ar_got[12] as I64 == tile.MARK_GROUP && ar_got[14] == 0);
+    assert(ar_is(16, "Clear Tape", 24));
+    for k in 40..56 { assert(ar_got[k] == 0); }
+    U8[5] cafe = [0x43, 0x61, 0x66, 0xC3, 0xA9];
+    assert(ar_read(d, vp, 3) == 0 && ar_u16(8) == 5 && ar_u16(10) == 4);
+    assert(ar_got[12] as I64 == (tile.MARK_ON | tile.MARK_DIM) && ar_got[13] == 5 && ar_is(16, cafe, 24));
+    I64[3] past = [4, 16, 65535];
+    for i in 0..3 {
+        assert(ar_read(d, vp, past[i]) == 0 && ar_u16(0) == vp && ar_got[4] == 4);
+        for k in 5..64 { assert(ar_got[k] == 0); }
+    }
+    // kind 8 still reads About and Settings; Settings dimmed sets its bit 1
+    assert(tile.menu_byte(c, 104) == 1 && tile.menu_byte(c, 0) == 67);
+    ar_rec(c, KZ_RW, 1, 1, (tile.MENU_SETTINGS | (tile.MARK_DIM << 8)) as U64, "S");
+    assert(ar_menu(c, cfd, 8) == 0 && tile.menu_byte(c, 104) == 3 && tile.rows_of(c) == 4);
+    // a terminal's kind (16) names no pixel window here, and the caller must be the tiler
+    kz_set_u32(c, KZ_RW + 2048, 15);
+    kz_set_u32(c, KZ_RW + 2052, vp as U64);
+    assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_INFO, KZ_RW + 2048, 0, 0, 0) == E_PERM);
+    // 16 rows, and 38 records (6 of About and Settings, 16 rows, 16 keys), are taken
+    ar_rec(c, KZ_RW, 0, 0, tile.MENU_ABOUT as U64, "Calc");
+    ar_rec(c, KZ_RW, 1, 0, tile.MENU_VERSION as U64, "1");
+    ar_rec(c, KZ_RW, 2, 0, tile.MENU_TEXT as U64, "a");
+    ar_rec(c, KZ_RW, 3, 0, tile.MENU_TEXT as U64, "b");
+    ar_rec(c, KZ_RW, 4, 0, tile.MENU_TEXT as U64, "c");
+    ar_rec(c, KZ_RW, 5, 100, tile.MENU_SETTINGS as U64, "S");
+    for i in 0..16 {
+        ar_rec(c, KZ_RW, 6 + 2 * i, (1 + i) as U64, 2, "Row");
+        ar_rec(c, KZ_RW, 7 + 2 * i, (1 + i) as U64, 6, "Ctrl+Shift+Alt+X");
+    }
+    assert(ar_menu(c, cfd, 38) == 0 && tile.rows_of(c) == 16 && tile.row_byte(c, 15, 0) == 16);
+    assert(ar_read(d, vp, 15) == 0 && ar_got[14] == 16 && ar_is(40, "Ctrl+Shift+Alt+X", 16));
+    assert(ar_menu(c, cfd, 39) == E_INVAL && tile.rows_of(c) == 16);
+    kz_end(c);
+    kz_end(d);
+}
+
+test "AM-4 rows: every refused declaration leaves the rows, About and Settings as they were" {
+    I64 d = kz_desk();
+    I64 c = ar_window(d);
+    I64 cfd = kz_fb_fd;
+    ar_calc(c, cfd);
+    assert(ar_kept(c));
+    // one record after a good row (id 7): each is refused
+    U64[7] w0 = [0, 7, 8 | (6 << 16), 8, 8, 8, 8];
+    U64[7] w1 = [2, 2, 2, (2 | (8 << 8)) as U64, 2 | (1 << 16), 7, (2 | (0x80 << 8)) as U64];
+    for i in 0..7 {
+        ar_rec(c, KZ_RW, 0, 7, 2, "Good");
+        ar_rec(c, KZ_RW, 1, w0[i], w1[i], "Bad");
+        assert(ar_menu(c, cfd, 2) == E_INVAL && ar_kept(c));
+    }
+    // labels: none, a byte after the NUL, a control byte, 0x7F, ';', and UTF-8 that RFC 3629 refuses
+    U8[1] l0 = [0];
+    U8[3] l1 = [0x41, 0, 0x42];
+    U8[2] l2 = [0x41, 0x1F];
+    U8[2] l3 = [0x41, 0x7F];
+    U8[3] l4 = [0x41, 59, 0x42];
+    U8[2] l5 = [0xC0, 0x80];
+    U8[2] l6 = [0xC1, 0xBF];
+    U8[3] l7 = [0xE0, 0x80, 0x80];
+    U8[3] l8 = [0xED, 0xA0, 0x80];
+    U8[4] l9 = [0xF4, 0x90, 0x80, 0x80];
+    U8[4] l10 = [0xF5, 0x80, 0x80, 0x80];
+    U8[1] l11 = [0x80];
+    U8[2] l12 = [0xE2, 0x82];
+    U8[3] l13 = [0xE2, 0x41, 0x41];
+    U8[4] l14 = [0xF0, 0x8F, 0xBF, 0xBF];
+    U8[24] l15 = [0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+        0x41, 0x41, 0x41, 0x41, 0x41, 0xE2, 0x82];  // cut at the 24th byte, no NUL after it
+    for i in 0..16 {
+        ar_rec(c, KZ_RW, 0, 7, 2, "Good");
+        if (i == 0) { ar_rec(c, KZ_RW, 1, 8, 2, l0); }
+        if (i == 1) { ar_rec(c, KZ_RW, 1, 8, 2, l1); }
+        if (i == 2) { ar_rec(c, KZ_RW, 1, 8, 2, l2); }
+        if (i == 3) { ar_rec(c, KZ_RW, 1, 8, 2, l3); }
+        if (i == 4) { ar_rec(c, KZ_RW, 1, 8, 2, l4); }
+        if (i == 5) { ar_rec(c, KZ_RW, 1, 8, 2, l5); }
+        if (i == 6) { ar_rec(c, KZ_RW, 1, 8, 2, l6); }
+        if (i == 7) { ar_rec(c, KZ_RW, 1, 8, 2, l7); }
+        if (i == 8) { ar_rec(c, KZ_RW, 1, 8, 2, l8); }
+        if (i == 9) { ar_rec(c, KZ_RW, 1, 8, 2, l9); }
+        if (i == 10) { ar_rec(c, KZ_RW, 1, 8, 2, l10); }
+        if (i == 11) { ar_rec(c, KZ_RW, 1, 8, 2, l11); }
+        if (i == 12) { ar_rec(c, KZ_RW, 1, 8, 2, l12); }
+        if (i == 13) { ar_rec(c, KZ_RW, 1, 8, 2, l13); }
+        if (i == 14) { ar_rec(c, KZ_RW, 1, 8, 2, l14); }
+        if (i == 15) { ar_rec(c, KZ_RW, 1, 8, 2, l15); }
+        assert(ar_menu(c, cfd, 2) == E_INVAL && ar_kept(c));
+        if (i >= 1 && i <= 4) {             // the same bytes are refused as keys too
+            ar_rec(c, KZ_RW, 1, 7, 6, "K");
+            if (i == 1) { ar_rec(c, KZ_RW, 1, 7, 6, l1); }
+            if (i == 2) { ar_rec(c, KZ_RW, 1, 7, 6, l2); }
+            if (i == 3) { ar_rec(c, KZ_RW, 1, 7, 6, l3); }
+            if (i == 4) { ar_rec(c, KZ_RW, 1, 7, 6, l4); }
+            assert(ar_menu(c, cfd, 2) == E_INVAL && ar_kept(c));
+        }
+    }
+    // the largest of each form is taken: U+07FF, U+FFFD, U+10FFFF
+    U8[11] top = [0x41, 0xDF, 0xBF, 0xEF, 0xBF, 0xBD, 0xF4, 0x8F, 0xBF, 0xBF, 0x7E];
+    // a child's child; an id the Settings item holds; keys of no row, twice, before the row, past 16 bytes
+    ar_rec(c, KZ_RW, 0, 7, 2, "A");
+    ar_rec(c, KZ_RW, 1, 8 | (7 << 16), 2, "B");
+    ar_rec(c, KZ_RW, 2, 9 | (8 << 16), 2, "C");
+    assert(ar_menu(c, cfd, 3) == E_INVAL && ar_kept(c));
+    ar_rec(c, KZ_RW, 0, 9, tile.MENU_SETTINGS as U64, "S");
+    ar_rec(c, KZ_RW, 1, 9, 2, "A");
+    assert(ar_menu(c, cfd, 2) == E_INVAL && ar_kept(c));
+    ar_rec(c, KZ_RW, 0, 9, 2, "A");
+    ar_rec(c, KZ_RW, 1, 1, (tile.MENU_SETTINGS | (tile.MARK_ON << 8)) as U64, "S");   // Settings: dimmed, no other mark
+    assert(ar_menu(c, cfd, 2) == E_INVAL && ar_kept(c));
+    U8[17] k17 = [0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41];
+    U8[19] ktail = [0x41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x41];
+    U64[5] kid = [8, 7, 7, 7, 7 | (1 << 16)];
+    for i in 0..5 {
+        ar_rec(c, KZ_RW, 0, 7, 2, "A");
+        ar_rec(c, KZ_RW, 1, kid[i], 6, "K");
+        if (i == 1) { ar_rec(c, KZ_RW, 2, 7, 6, "K"); }
+        if (i == 2) { ar_rec(c, KZ_RW, 1, 7, 6, k17); }
+        if (i == 3) { ar_rec(c, KZ_RW, 1, 7, 6, ktail); }
+        I64 n = 2;
+        if (i == 1) { n = 3; }
+        assert(ar_menu(c, cfd, n) == E_INVAL && ar_kept(c));
+    }
+    ar_rec(c, KZ_RW, 0, 7, 6, "K");
+    ar_rec(c, KZ_RW, 1, 7, 2, "A");
+    assert(ar_menu(c, cfd, 2) == E_INVAL && ar_kept(c));
+    // 17 rows
+    for i in 0..17 { ar_rec(c, KZ_RW, i, (1 + i) as U64, 2, "Row"); }
+    assert(ar_menu(c, cfd, 17) == E_INVAL && ar_kept(c));
+    // and what is taken: the largest of each UTF-8 form, keys of 16 bytes, a menu row's children in any order
+    ar_rec(c, KZ_RW, 0, 7, 2, top);
+    ar_rec(c, KZ_RW, 1, 8, 2, "B");
+    ar_rec(c, KZ_RW, 2, 9 | (7 << 16), 2, "C");
+    ar_rec(c, KZ_RW, 3, 10 | (8 << 16), 2, "D");
+    ar_rec(c, KZ_RW, 4, 11 | (7 << 16), 2, "E");
+    ar_rec(c, KZ_RW, 5, 11, 6, "Ctrl+Shift+Alt+X");
+    assert(ar_menu(c, cfd, 6) == 0 && tile.rows_of(c) == 5 && tile.row_byte(c, 0, 5) == 11);
+    assert(tile.row_byte(c, 4, 6) == 16 && tile.row_byte(c, 4, 7) == 0 && tile.menu_byte(c, 104) == 0);
+    kz_end(c);
+    kz_end(d);
+}
+
+test "AM-4 rows: no row, execve and the end give the table back; a 17th window's rows wait for one" {
+    I64[17] p;
+    I64[17] f;
+    I64 d = kz_desk();
+    for i in 0..16 {
+        p[i] = ar_window(d);
+        f[i] = kz_fb_fd;
+    }
+    p[16] = ar_opener(d, 300);
+    f[16] = ar_fd;
+    for i in 0..17 {
+        ar_rec(p[i], KZ_RW, 0, 1, 2, "Row");
+        ar_rec(p[i], KZ_RW, 1, 0, tile.MENU_ABOUT as U64, "Z");
+        I64 want = 0;
+        if (i == 16) { want = 0 - 28; }    // -ENOSPC: every table is a window's, and About is not taken either
+        assert(ar_menu(p[i], f[i], 2) == want && tile.rows_of(p[i]) == 1 - i / 16);
+        assert(tile.menu_byte(p[i], 0) == (90 - 90 * (i / 16)) as U8);
+    }
+    // p0 declares About alone: its rows go, and p16's fit
+    ar_rec(p[0], KZ_RW, 0, 0, tile.MENU_ABOUT as U64, "A");
+    assert(ar_menu(p[0], f[0], 1) == 0 && tile.rows_of(p[0]) == 0 && tile.menu_byte(p[0], 0) == 65);
+    ar_rec(p[16], KZ_RW, 0, 1, 2, "Row");
+    assert(ar_menu(p[16], f[16], 1) == 0 && tile.rows_of(p[16]) == 1);
+    // a dirty record alone keeps the rows; a new declaration keeps the table
+    ar_rec(p[3], KZ_RW, 0, 1, tile.MENU_DIRTY as U64, "-");
+    assert(ar_menu(p[3], f[3], 1) == 0 && tile.rows_of(p[3]) == 1 && tile.menu_byte(p[3], 100) == 1);
+    ar_rec(p[3], KZ_RW, 0, 2, 2, "Two");
+    assert(ar_menu(p[3], f[3], 1) == 0 && tile.rows_of(p[3]) == 1 && tile.row_byte(p[3], 0, 0) == 2);
+    ar_rec(p[0], KZ_RW, 0, 1, 2, "Row");
+    assert(ar_menu(p[0], f[0], 1) == 0 - 28 && tile.rows_of(p[0]) == 0);   // a row again: still no table
+    // execve: p1's rows go with its program, and p0's take its table
+    kz_put(p[1], PATHS, "/kzx");
+    _ = kz_call_raw(p[1], 59, PATHS, 0, 0, 0, 0, 0);
+    assert(state[p[1]] == READY && tile.rows_of(p[1]) == 0);
+    assert(ar_menu(p[0], f[0], 1) == 0 && tile.rows_of(p[0]) == 1);
+    // the end: p2's table comes back, zeroed, and p1 takes it
+    kz_end(p[2]);
+    assert(tile.rows_of(p[2]) == 0 && tile.row_byte(p[2], 0, 0) == 0);
+    ar_rec(p[1], KZ_RW, 0, 1, 2, "Row");
+    assert(ar_menu(p[1], f[1], 1) == 0 && tile.rows_of(p[1]) == 1);
+    for i in 0..17 {
+        if (i != 2) { kz_end(p[i]); }
+    }
+    kz_end(d);
+}
+
+test "AM-4 rows: only a window's program declares rows; the screen's holder and a window's child are refused, unchanged" {
+    I64 s = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 sfd = kz_fb(s);                     // opened before there is a tiler: the screen, no window
+    I64 d = kz_desk();
+    ar_rec(s, KZ_RW, 0, 0, tile.MENU_ABOUT as U64, "S");
+    ar_rec(s, KZ_RW, 1, 1, 2, "Row");
+    assert(ar_menu(s, sfd, 2) == E_PERM && tile.rows_of(s) == 0 && tile.menu_byte(s, 0) == 0);
+    assert(ar_menu(s, sfd, 1) == 0 && tile.menu_byte(s, 0) == 83);   // About alone, as AM-2 takes it
+    I64 w = ar_window(d);
+    ar_rec(w, KZ_RW, 0, 1, 2, "Row");
+    assert(ar_menu(w, kz_fb_fd, 1) == 0 && tile.rows_of(w) == 1);
+    I64 k = kz_fork(w);                     // the window's child: its surface words and descriptors, no tile
+    ar_rec(k, KZ_RW, 0, 0, tile.MENU_ABOUT as U64, "K");
+    ar_rec(k, KZ_RW, 1, 1, 2, "Row");
+    assert(ar_menu(k, kz_fb_fd, 2) == E_PERM && tile.rows_of(k) == 0 && tile.menu_byte(k, 0) == 0);
+    I64 u = kz_fork(d);                     // the desk's child with no tile offered
+    ar_rec(u, KZ_RW, 0, 1, 2, "Row");
+    assert(ar_menu(u, kz_fb_fd, 1) == E_PERM && tile.rows_of(u) == 0);
+    assert(tile.rows_of(w) == 1);
+    kz_end(u);
+    kz_end(k);
+    kz_end(w);
+    kz_end(s);
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

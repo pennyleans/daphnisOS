@@ -1,0 +1,12 @@
+// tests/fault_probe.ci: the hosted twin of src/main_fault.ci. The same overflow
+// (src/overflow.ci), run by the hosted cint runtime, so tools/compare-fault.py can compare
+// its fault record with the one the kernel prints. check.sh builds and runs it:
+//   cint build --root . --out DIR tests/fault_probe.ci; DIR/fault_probe RECORD_FILE
+
+import src.overflow;
+
+void main() {
+    I64 r = overflow.max_plus_one();
+    "{r}\n";
+}
+// SPDX-License-Identifier: Apache-2.0

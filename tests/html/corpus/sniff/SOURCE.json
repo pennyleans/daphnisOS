@@ -1,0 +1,30 @@
+{
+  "commit": "c5495c539ca8a79c3c5107f5f14010bcff9a35d5",
+  "repository": "https://github.com/html5lib/html5lib-tests",
+  "files": [
+    {
+      "path": "tests1.dat",
+      "source": "encoding/tests1.dat",
+      "bytes": 45380,
+      "sha256": "ef54dd3d9c256a6830c266808c0277545a156a241b350c613c996a4cea52e5f7"
+    },
+    {
+      "path": "tests2.dat",
+      "source": "encoding/tests2.dat",
+      "bytes": 3113,
+      "sha256": "5e00d81e6207307f1186ea85f85b5f58003af94f5a7c6a3e06ca19c17567f51b"
+    },
+    {
+      "path": "test-yahoo-jp.dat",
+      "source": "encoding/test-yahoo-jp.dat",
+      "bytes": 502,
+      "sha256": "dc353a7ceaa9428a668e7846e78efd18f7e0a09e768d6be61166c12fc223a432"
+    },
+    {
+      "path": "LICENSE",
+      "source": "LICENSE",
+      "bytes": 1103,
+      "sha256": "ff512aac9ef231d504be5afaf4429005024e4b2aaf257be39524f37b8402aaf2"
+    }
+  ]
+}

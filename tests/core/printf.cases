@@ -1,0 +1,25 @@
+# tests/core/printf.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6, CT-5). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree. The tool is cish's own printf (user/ci/cish/fmt.ci).
+hello | - | -
+"a\\nb\\n" | - | -
+"%s-%s\\n" a b c | - | -
+"%d\\n" 42 -7 | - | -
+"%5d]%-5d]\\n" 3 4 | - | -
+"%05d\\n" 42 | - | -
+"%x %X %o\\n" 255 255 8 | - | -
+"%c\\n" abc | - | -
+"%%\\n" | - | -
+"%10s]\\n" hi | - | -
+"%-10s]\\n" hi | - | -
+"%.2s\\n" abcdef | - | -
+"%b\\n" "x\\ty" | - | -
+"%s\\n" | - | -
+"%d\\n" | - | D-56
+"%d\\n" 0x10 | - | -
+"%d\\n" "'A" | - | -
+"%d\\n" 12abc | - | -
+"\\101\\n" | - | -
+"%u\\n" 7 | - | -
+"%f\\n" 1 | - | D-51
+"%e\\n" 1 | - | D-51
+ | - | D-3

@@ -1,0 +1,25 @@
+// user/ci/cish/fields.ci: a program's arguments as cish's builtins take them (CT-5: test, [ and printf on the shell's
+// own code). gather(a, name, ab, fo, fe): field 0 is name, then each NUL-ended argument of a; field i is
+// ab[fo[i]..fe[i]], each followed by a NUL. The count of fields, or -1 past ab or fo (the caller says ARGS_MAX).
+export I64 gather(in U8[_] a, in U8[_] name, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    for i in 0..len(name) { ab[i] = name[i]; }
+    fo[0] = 0;
+    fe[0] = len(name);
+    ab[fe[0]] = 0;
+    I64 k = fe[0] + 1;
+    I64 nf = 1;
+    I64 s = k;
+    for i in 0..len(a) {
+        if (k == len(ab) || nf == len(fo)) { return -1; }
+        ab[k] = a[i];
+        if (a[i] == 0) {
+            fo[nf] = s;
+            fe[nf] = k;
+            nf = nf + 1;
+            s = k + 1;
+        }
+        k = k + 1;
+    }
+    return nf;
+}
+// SPDX-License-Identifier: Apache-2.0

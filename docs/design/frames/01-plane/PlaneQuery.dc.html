@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Super plane, query</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+body{margin:0}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;text-align:left;cursor:pointer}
+input{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;outline:0}
+.app{color:#f3efe6}
+</style>
+</helmet>
+<div style="position: relative; width: 1024px; height: 768px; box-sizing: border-box; background: #1d2021; color: #f3efe6; font-family: 'Inter', sans-serif; font-size: 13px; line-height: 1; overflow: hidden">
+<div style="height: 28px; flex: none; box-sizing: border-box; background: #141413; border-bottom: 1px solid #32363c; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 0 12px">
+<div style="display: flex; align-items: center; gap: 12px">
+<svg width="20" height="20" viewBox="0 0 32 32" role="img" aria-label="Daphnis"><path d="M16 5.76A12.16 12.16 0 0 0 16 30.08Z" fill="#1A4B8C"/><rect x="16" y="2.56" width="12.16" height="15.36" fill="#D62828"/><path d="M16 5.76A12.16 12.16 0 0 1 16 30.08Z" fill="#D62828"/><path d="M16 12.16A5.76 5.76 0 0 0 16 23.68Z" fill="#141413"/><path d="M16 9.92A8 8 0 0 1 16 25.92Z" fill="#F5F4F0"/><circle cx="7.68" cy="6.4" r="3.84" fill="#E5A900"/></svg>
+<span style="font-weight: 600">Daphnis</span>
+</div>
+<div style="display: flex; align-items: stretch; height: 27px; font-family: 'JetBrains Mono', monospace; font-size: 12px">
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; height: 20px; align-self: center; border-radius: 10px; background: #1a4b8c; font-weight: 600">1</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">2</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">3</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">4</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">5</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">6</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">7</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">8</span>
+<span style="width: 28px; display: flex; align-items: center; justify-content: center; color: #a8a295">9</span>
+</div>
+<div style="display: flex; align-items: center; justify-content: flex-end; gap: 16px; font-family: 'JetBrains Mono', monospace; font-size: 12px">
+<svg width="12" height="12" viewBox="0 0 12 12" role="img" aria-label="System panel"><rect width="5" height="5" fill="#4a88c7"/><rect x="7" width="5" height="5" fill="#fabd2f"/><rect y="7" width="5" height="5" fill="#d65d0e"/><rect x="7" y="7" width="5" height="5" fill="#f3efe6"/></svg>
+<span>Mon Nov 9</span>
+<span>01:54</span>
+</div>
+</div>
+<div style="position: absolute; left: 8px; top: 36px; width: 500px; height: 724px; box-sizing: border-box; border-radius: 8px; padding: 0 1px 1px; background: #24272b; display: flex; flex-direction: column; overflow: hidden"><div style="height: 28px; flex: none; display: flex; align-items: center; padding: 0 11px; color: #a8a295; font-weight: 500">Console</div><div style="flex: 1; background: #141413; border-radius: 0 0 7px 7px"></div></div><div style="position: absolute; left: 516px; top: 36px; width: 500px; height: 724px; box-sizing: border-box; border-radius: 8px; padding: 0 1px 1px; background: #24272b; display: flex; flex-direction: column; overflow: hidden"><div style="height: 28px; flex: none; display: flex; align-items: center; padding: 0 11px; color: #a8a295; font-weight: 500">Edit</div><div style="flex: 1; background: #1d2021; border-radius: 0 0 7px 7px"></div></div><div style="position: absolute; left: 0; top: 28px; right: 0; bottom: 0; background: rgba(0,0,0,0.45)"></div>
+<div style="position: absolute; left: 152px; top: 68px; width: 720px; height: 424px; box-sizing: border-box; border-radius: 16px; background: #141413; padding: 20px 20px 0; display: flex; flex-direction: column; gap: 16px; box-shadow: 0 2px 0 rgba(0,0,0,0.35), 0 16px 36px rgba(0,0,0,0.45)">
+<div style="height: 44px; flex: none; box-sizing: border-box; background: #222426; border-radius: 22px; box-shadow: inset 0 0 0 2px #4a88c7; display: flex; align-items: center; gap: 12px; padding: 0 18px">
+<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="5" fill="none" stroke="#f3efe6" stroke-width="2"/><path d="M10.5 10.5L15 15" stroke="#f3efe6" stroke-width="2"/></svg><input type="text" aria-label="Search" value="editor" style="flex: 1; font-size: 15px"><span style="color: #a8a295">1 result</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; border: 1px solid #3a3937; border-radius: 4px; padding: 4px 6px; color: #a8a295">Esc</span>
+</div>
+<div style="flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px">
+<div style="display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; flex-direction: column; gap: 8px"><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: #a8a295;padding-left: 10px">TOP HIT</span>
+<button style="height: 52px; box-sizing: border-box; border-radius: 26px; background: #1a4b8c; padding: 0 16px 0 12px; display: flex; align-items: center; gap: 12px"><img src="/_blob/0e32fb0b970c2bec983709c4b5393a53" alt="" style="width: 32px; height: 32px; flex: none;"><span style="flex: 1; display: flex; flex-direction: column; gap: 6px"><span style="font-size: 15px; font-weight: 500">Edit</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px">/bin/ced</span></span><span>Program</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; border: 1px solid #3a3937; border-radius: 4px; padding: 4px 6px; border-color: #f3efe6">Enter</span></button></div>
+<div style="display: flex; flex-direction: column; gap: 10px"><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: #a8a295;padding-left: 10px">FILES</span><span style="color: #a8a295; padding: 0 10px">No file names match "editor".</span></div>
+<div style="display: flex; flex-direction: column; gap: 10px"><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: #a8a295;padding-left: 10px">WINDOWS</span><span style="color: #a8a295; padding: 0 10px">No open window matches.</span></div>
+</div>
+<div style="background: #1d2021; border-radius: 12px; align-self: start; padding: 16px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; align-items: center; gap: 12px"><img src="/_blob/0e32fb0b970c2bec983709c4b5393a53" alt="" style="width: 48px; height: 48px; flex: none;"><div style="display: flex; flex-direction: column; gap: 8px"><span style="font-size: 18px; font-weight: 600">Edit</span><span style="color: #a8a295">Text editor</span></div></div>
+<div style="display: grid; grid-template-columns: 72px minmax(0, 1fr); row-gap: 10px; line-height: 16px"><span style="color: #a8a295">Program</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px">/bin/ced</span><span style="color: #a8a295">Opens</span><span style="">An untitled file</span><span style="color: #a8a295">Found as</span><span style="">editor, text, ced</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<button style="height: 32px; box-sizing: border-box; border-radius: 6px; background: #282a2c; padding: 0 10px; display: flex; align-items: center; justify-content: space-between"><span style="font-weight: 500">Open</span></button>
+<button style="height: 32px; box-sizing: border-box; border-radius: 6px; background: #282a2c; padding: 0 10px; display: flex; align-items: center; justify-content: space-between"><span style="font-weight: 500">Unpin from Taskbar</span></button>
+</div></div>
+</div>
+<div style="height: 44px; flex: none; box-sizing: border-box; border-top: 1px solid #32363c; display: flex; align-items: center; justify-content: space-between; color: #a8a295; font-size: 12px">
+<span></span>
+<button aria-label="Power" style="width: 28px; height: 28px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: #f3efe6"><svg style="flex: none;" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.75 4.75A5 5 0 1 0 11.25 4.75"/><g style="color: #4a88c7" stroke="currentColor"><path d="M8 2.5V8"/></g></svg></button>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1024,"height":768}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

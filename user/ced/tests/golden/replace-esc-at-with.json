@@ -1,0 +1,26 @@
+{
+  "id": "replace-esc-at-with",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "62",
+    "1b",
+    "",
+    "78"
+  ],
+  "expect": {
+    "text": "x"
+  }
+}

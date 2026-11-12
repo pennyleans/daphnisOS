@@ -1,0 +1,43 @@
+// user/ci/basename.ci: basename STRING [SUFFIX] (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C; XCU basename):
+// STRING less its trailing slashes and everything up to its last slash; a string of slashes alone is `/`. A SUFFIX
+// that ends what is left, and is not all of it, is taken off.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+void main(in U8[_] a) {
+    msg.name(b"basename");
+    args.parse(a, b"", b"");
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    if (n > 2) { msg.usage(b"extra operand"); }
+    I64 s = args.op_start(0);
+    I64 e = args.op_stop(a, 0);
+    if (e > s) {
+        while (e > s + 1 && a[e - 1] == '/') { e = e - 1; }
+        if (e == s + 1 && a[s] == '/') {
+            put.byte('/');
+        } else {
+            I64 b = e;
+            while (b > s && a[b - 1] != '/') { b = b - 1; }
+            if (n == 2) {
+                I64 xs = args.op_start(1);
+                I64 xe = args.op_stop(a, 1);
+                I64 k = xe - xs;
+                if (k > 0 && k < e - b) {
+                    Bool same = true;
+                    for i in 0..k {
+                        if (a[e - k + i] != a[xs + i]) { same = false; }
+                    }
+                    if (same) { e = e - k; }
+                }
+            }
+            put.bytes(a[b..e]);
+        }
+    }
+    put.byte('\n');
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

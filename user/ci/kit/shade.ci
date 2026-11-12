@@ -1,0 +1,231 @@
+// user/ci/kit/shade.ci: MS-3 (docs/specs/2026-11-10-ms-motion-shadows.md, law 2 and section 3), a shape's shadow on
+// one row, read from user/ci/kit/shadow.ci's tables (tools/shadow.py) and drawn through kit/blend.ci's one blend.
+// No blur runs here. tools/check-hdesk.py's shade_row is the twin.
+//
+// A shape is a rounded rectangle [x0, x1) x [y0, y1) at device pixels with corner radius rad at 1x and UI scale sc.
+// Each level casts two layers, the contact line first and the ambient layer over it: the shape moved down by the
+// layer's dy times sc, blurred by a Gaussian of sigma b / 2 at 1x (the tables read it at each device pixel's logical
+// position) and cut where it falls within 2 of 255, at the layer's cut times sc; each pixel moved toward the
+// theme's shadow color by the table's alpha. The shape is opaque, so its inside is left as it is, except under its four corners, where the arc lets the
+// ground show (WB-7 mixes those pixels from what lies under them).
+
+import user.ci.kit.blend;
+import user.ci.kit.shadow;
+
+export const U32 DARK = 0x000000;    // theme 0's shadow color
+export const U32 LIGHT = 0x141413;   // theme 1's: ink
+
+// The shadow color of theme th.
+export U32 color(I64 th) {
+    if (th == 1) { return LIGHT; }
+    return DARK;
+}
+
+// Whether a shape of corner radius rad (at 1x) casts at Size factor sc: tables for sc (1x to 6x) and a corner box
+// that fits (shadow.fits; MS-R2 B: any radius); otherwise shade_row draws nothing.
+export Bool can(I64 rad, I64 sc) {
+    return shadow.fits(rad, sc);
+}
+
+// How far level lv's shadow reaches past the shape in theme th at Size factor sc, at device pixels: below, above
+// and to each side (section 3's extent is reach_down at 1x on the dark theme). MS-4's damage grows by these.
+export I64 reach_down(I64 lv, I64 th, I64 sc) {
+    if (lv < 1 || lv > 3) { return 0; }
+    I64 m = 0;
+    for k in 0..2 {
+        I64 v = shadow.dy(lv, k) + shadow.cut(lv, th, k);
+        if (v > m) { m = v; }
+    }
+    return m * sc;
+}
+
+export I64 reach_up(I64 lv, I64 th, I64 sc) {
+    if (lv < 1 || lv > 3) { return 0; }
+    I64 m = 0;
+    for k in 0..2 {
+        I64 v = shadow.cut(lv, th, k) - shadow.dy(lv, k);
+        if (v > m) { m = v; }
+    }
+    return m * sc;
+}
+
+export I64 reach_side(I64 lv, I64 th, I64 sc) {
+    if (lv < 1 || lv > 3) { return 0; }
+    I64 m = 0;
+    for k in 0..2 {
+        I64 v = shadow.cut(lv, th, k);
+        if (v > m) { m = v; }
+    }
+    return m * sc;
+}
+
+// MS-4: whether level lv's shadow of the shape [x0, x1) x [y0, y1) in theme th at factor sc can touch [lo, hi) of
+// row y: the shape grown by its reach. Where this is false, shade_row leaves the span as it is, so a caller may skip
+// it (hdesk.ci's term_rows).
+export Bool reaches(I64 y, I64 lo, I64 hi, I64 x0, I64 y0, I64 x1, I64 y1, I64 lv, I64 th, I64 sc) {
+    if (lv < 1 || lv > 3) { return false; }
+    I64 s = reach_side(lv, th, sc);
+    return y >= y0 - reach_up(lv, th, sc) && y < y1 + reach_down(lv, th, sc) && hi > x0 - s && lo < x1 + s;
+}
+
+const I64 QC_SIDE = 128;
+const I64 QC_LAYER = 16384;
+U8[32768] qc_buf0;
+U8[32768] qc_buf1;
+I64 qc_key0 = -1;
+I64 qc_key1 = -1;
+I64 qc_next = 0;
+
+void fill_qc_slot(inout U8[32768] dst, I64 si, I64 r, I64 lv, I64 th, I64 b0, I64 b1) {
+    I64 n0 = r + b0;
+    for j in 0..n0 {
+        for i in 0..j + 1 {
+            U8 v = shadow.corner(si, r, lv, th, 0, n0, i, j) as U8;
+            dst[j * QC_SIDE + i] = v;
+            dst[i * QC_SIDE + j] = v;
+        }
+    }
+    I64 n1 = r + b1;
+    for j in 0..n1 {
+        for i in 0..j + 1 {
+            U8 v = shadow.corner(si, r, lv, th, 1, n1, i, j) as U8;
+            dst[QC_LAYER + j * QC_SIDE + i] = v;
+            dst[QC_LAYER + i * QC_SIDE + j] = v;
+        }
+    }
+}
+
+I64 prep_qc(I64 si, I64 r, I64 lv, I64 th, I64 b0, I64 b1) {
+    if (r < 1 || b0 < 0 || b1 < 0 || r + b0 > QC_SIDE || r + b1 > QC_SIDE) { return -1; }
+    I64 key = (((si * 4 + lv) * 2 + th) * 256) + r;
+    if (qc_key0 == key) { return 0; }
+    if (qc_key1 == key) { return 1; }
+    if (qc_next == 0) {
+        qc_next = 1;
+        qc_key0 = key;
+        fill_qc_slot(qc_buf0, si, r, lv, th, b0, b1);
+        return 0;
+    }
+    qc_next = 0;
+    qc_key1 = key;
+    fill_qc_slot(qc_buf1, si, r, lv, th, b0, b1);
+    return 1;
+}
+
+I64 corner_at(I64 qs, I64 si, I64 r, I64 lv, I64 th, I64 k, I64 n, I64 i, I64 j) {
+    if (i < 0 || j < 0 || i >= n || j >= n) { return 0; }
+    if (qs == 0) { return qc_buf0[k * QC_LAYER + j * QC_SIDE + i] as I64; }
+    if (qs == 1) { return qc_buf1[k * QC_LAYER + j * QC_SIDE + i] as I64; }
+    return shadow.corner(si, r, lv, th, k, n, i, j);
+}
+
+// Layer k's alpha at (x, y) for the shadow rectangle [sx0, sx1) x [sy0, sy1) with corner radius r and cut b at
+// device pixels: a corner quarter where x and y are both within r of a corner, else the straight edge's profile at
+// the distance outside the nearer edge.
+I64 layer_at(I64 qs, I64 si, I64 lv, I64 th, I64 k, I64 r, I64 b, I64 x, I64 y, I64 sx0, I64 sy0, I64 sx1, I64 sy1) {
+    I64 i = -1;
+    if (x < sx0 + r) {
+        i = sx0 + r - 1 - x;
+    } else if (x >= sx1 - r) {
+        i = x - (sx1 - r);
+    }
+    I64 j = -1;
+    if (y < sy0 + r) {
+        j = sy0 + r - 1 - y;
+    } else if (y >= sy1 - r) {
+        j = y - (sy1 - r);
+    }
+    if (i >= 0 && j >= 0) {
+        return corner_at(qs, si, r, lv, th, k, r + b, i, j);
+    }
+    if (i < 0 && j < 0) {
+        return shadow.edge(si, lv, th, k, b, 0 - b - 1);
+    }
+    if (i < 0) {
+        if (y < sy0 + r) { return shadow.edge(si, lv, th, k, b, sy0 - y); }
+        return shadow.edge(si, lv, th, k, b, y - (sy1 - 1));
+    }
+    if (x < sx0 + r) { return shadow.edge(si, lv, th, k, b, sx0 - x); }
+    return shadow.edge(si, lv, th, k, b, x - (sx1 - 1));
+}
+
+// Row y of the screen (row holds x = 0 to len(row) - 1): level lv's shadow of the shape [x0, x1) x [y0, y1), corner
+// radius rad at 1x, in theme th at UI scale sc, drawn over the pixels of [lo, hi) only. Nothing is drawn unless
+// can(rad, sc), or when the shape is narrower or shorter than its two corners.
+export void shade_row(inout U32[_] row, I64 lo, I64 hi, I64 y, I64 x0, I64 y0, I64 x1, I64 y1, I64 rad, I64 lv,
+                      I64 th, I64 sc) {
+    if (!can(rad, sc)) { return; }
+    shade_row_dev(row, lo, hi, y, x0, y0, x1, y1, rad * sc, lv, th, sc);
+}
+
+void shade_seg(inout U32[_] row, I64 s0, I64 s1, I64 qs, I64 si, I64 lv, I64 th, I64 k, I64 r, I64 b, I64 y, I64 x0,
+               I64 sy0, I64 x1, I64 sy1, U32 c) {
+    if (y >= sy0 + r && y < sy1 - r) {
+        for x in s0..s1 {
+            I64 d = x - (x1 - 1);
+            if (x < x0 + r) { d = x0 - x; }
+            I64 a = shadow.edge(si, lv, th, k, b, d);
+            if (a > 0) { row[x] = blend.mix_px(row[x], c, a); }
+        }
+        return;
+    }
+    for x in s0..s1 {
+        I64 a = layer_at(qs, si, lv, th, k, r, b, x, y, x0, sy0, x1, sy1);
+        if (a > 0) { row[x] = blend.mix_px(row[x], c, a); }
+    }
+}
+
+// shade_row for a corner radius of r device pixels, which need not be a whole number of 1x pixels (MS-5: a plate's
+// frame and radius as it scales about its center).
+export void shade_row_dev(inout U32[_] row, I64 lo, I64 hi, I64 y, I64 x0, I64 y0, I64 x1, I64 y1, I64 r, I64 lv,
+                          I64 th, I64 sc) {
+    if (!shadow.fits_dev(r, sc) || lv < 1 || lv > 3) { return; }
+    I64 si = shadow.scale_index(sc);
+    if (x1 - x0 < 2 * r || y1 - y0 < 2 * r) { return; }
+    I64 b0 = shadow.cut(lv, th, 0) * sc;
+    I64 b1 = shadow.cut(lv, th, 1) * sc;
+    I64 qs = prep_qc(si, r, lv, th, b0, b1);
+    U32 c = color(th);
+    Bool in_rows = y >= y0 && y < y1;
+    Bool corner_rows = y < y0 + r || y >= y1 - r;
+    I64 mid_l = x0 + r;
+    I64 mid_r = x1 - r;
+    if (in_rows && !corner_rows) {
+        mid_l = x0;
+        mid_r = x1;
+    }
+    for k in 0..2 {
+        I64 dy = shadow.dy(lv, k) * sc;
+        I64 b = b0;
+        if (k == 1) { b = b1; }
+        I64 sy0 = y0 + dy;
+        I64 sy1 = y1 + dy;
+        if (y >= sy0 - b && y < sy1 + b) {
+            I64 xs = x0 - b;
+            I64 xe = x1 + b;
+            if (xs < lo) { xs = lo; }
+            if (xs < 0) { xs = 0; }
+            if (xe > hi) { xe = hi; }
+            if (xe > len(row)) { xe = len(row); }
+            if (xs < xe) {
+                I64 l1 = mid_l;
+                if (l1 > xe) { l1 = xe; }
+                if (xs < l1) { shade_seg(row, xs, l1, qs, si, lv, th, k, r, b, y, x0, sy0, x1, sy1, c); }
+                if (!in_rows) {
+                    I64 m0 = mid_l;
+                    if (m0 < xs) { m0 = xs; }
+                    I64 m1 = mid_r;
+                    if (m1 > xe) { m1 = xe; }
+                    if (m0 < m1) {
+                        I64 a = layer_at(qs, si, lv, th, k, r, b, m0, y, x0, sy0, x1, sy1);
+                        if (a > 0) { blend.mix(row, m0, m1, c, a); }
+                    }
+                }
+                I64 r0 = mid_r;
+                if (r0 < xs) { r0 = xs; }
+                if (r0 < xe) { shade_seg(row, r0, xe, qs, si, lv, th, k, r, b, y, x0, sy0, x1, sy1, c); }
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

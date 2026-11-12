@@ -1,0 +1,33 @@
+// src/taskwork.ci: what a task computes. Extern-free, so the hosted runtime runs it too. A
+// round chains SHA-256 over a block seeded from the task number and returns two bytes of the
+// digest; a task's total is the sum over its rounds.
+
+import src.sha256;
+
+export void init_block(I64 me, inout U8[64] block) {
+    for i in 0..64 {
+        block[i] = ((me * 7 + i) % 256) as U8;
+    }
+}
+
+// One round: the digest of the block replaces its first 32 bytes; returns two of its bytes.
+export I64 round(inout U8[64] block, inout U8[32] d) {
+    sha256.sha_digest(block, 0, 64, d);
+    for i in 0..32 {
+        block[i] = d[i];
+    }
+    return (d[0] as I64) + (d[31] as I64);
+}
+
+// All the rounds in a row, as the hosted twin runs them.
+export I64 work(I64 me, I64 rounds) {
+    U8[64] block;
+    U8[32] d;
+    I64 total = 0;
+    init_block(me, block);
+    for r in 0..rounds {
+        total += round(block, d);
+    }
+    return total;
+}
+// SPDX-License-Identifier: Apache-2.0

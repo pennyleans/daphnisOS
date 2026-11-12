@@ -1,0 +1,15 @@
+// tests/set/fs_corectl.ci: corectl's calls over tests/set/fs_shctl.ci's volume, copied over user/ci/corectl.ci in an
+// isolated root by tools/check-settings.py. The names and numbers are user/ci/corectl.ci's.
+import user.ci.shctl;
+
+export const I64 ST_MODE = 2;
+export const I64 ST_UID = 4;
+export const I64 ST_SIZE = 7;
+export const I64 ST_WORDS = 16;
+export const I64 S_IFMT = 0xF000;
+export const I64 S_IFREG = 0x8000;
+
+export I64 co_mkdir(in U8[_] path, I64 mode) { return shctl.fs_mkdir(path, mode); }
+export I64 co_rename(in U8[_] from, in U8[_] to) { return shctl.fs_rename(from, to); }
+export I64 co_unlink(in U8[_] path) { return shctl.fs_unlink(path); }
+// SPDX-License-Identifier: Apache-2.0

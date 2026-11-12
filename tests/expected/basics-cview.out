@@ -1,0 +1,155 @@
+$ -d img/bad-crc.png
+-- stderr
+cview: img/bad-crc.png: a chunk's CRC differs
+status 1
+$ -d img/bad-form.png
+-- stderr
+cview: img/bad-form.png: not PNG, QOI or Netpbm
+status 1
+$ -d img/bad-short.png
+-- stderr
+cview: img/bad-short.png: the file ends inside the image
+status 1
+$ -d img/png-1x1.png
+cview: img/png-1x1.png 1x1 rgba ca2bc5f545f46ad0196fde417589212ede2f2653b88922903473c8c0fa0815c1
+status 0
+$ -d img/png-c0-d1-i0.png
+cview: img/png-c0-d1-i0.png 13x7 rgba 709e429054bc4202489afa16057c8cfda8eb6162cced3acf4cebcb062c92ead7
+status 0
+$ -d img/png-c0-d1-i1.png
+cview: img/png-c0-d1-i1.png 13x7 rgba 709e429054bc4202489afa16057c8cfda8eb6162cced3acf4cebcb062c92ead7
+status 0
+$ -d img/png-c0-d16-i0.png
+cview: img/png-c0-d16-i0.png 13x7 rgba 954d8cd83f387754dff712afb3f531efebd577c619041bad6c409ce85313d37b
+status 0
+$ -d img/png-c0-d16-i1.png
+cview: img/png-c0-d16-i1.png 13x7 rgba 954d8cd83f387754dff712afb3f531efebd577c619041bad6c409ce85313d37b
+status 0
+$ -d img/png-c0-d2-i0.png
+cview: img/png-c0-d2-i0.png 13x7 rgba 68dfa16b33c190f89167f15e17465a54829b3876db6dad175e4b37ea9f7ff000
+status 0
+$ -d img/png-c0-d2-i1.png
+cview: img/png-c0-d2-i1.png 13x7 rgba 68dfa16b33c190f89167f15e17465a54829b3876db6dad175e4b37ea9f7ff000
+status 0
+$ -d img/png-c0-d4-i0.png
+cview: img/png-c0-d4-i0.png 13x7 rgba 61f4eaa06381994594eb989cdd7ff527fce5193cbfa64a7d726c32706af9157d
+status 0
+$ -d img/png-c0-d4-i1.png
+cview: img/png-c0-d4-i1.png 13x7 rgba 61f4eaa06381994594eb989cdd7ff527fce5193cbfa64a7d726c32706af9157d
+status 0
+$ -d img/png-c0-d8-i0.png
+cview: img/png-c0-d8-i0.png 13x7 rgba 714a358533f46b203a21d242d4a54a6c96a5b5800c9de65873a16e3275c68be2
+status 0
+$ -d img/png-c0-d8-i1.png
+cview: img/png-c0-d8-i1.png 13x7 rgba 714a358533f46b203a21d242d4a54a6c96a5b5800c9de65873a16e3275c68be2
+status 0
+$ -d img/png-c2-d16-i0.png
+cview: img/png-c2-d16-i0.png 13x7 rgba 53ae2a6fe0750a5913fbc6ab65345f24d954fdedceacfbe4bd0f2aa8fd9f8fca
+status 0
+$ -d img/png-c2-d16-i1.png
+cview: img/png-c2-d16-i1.png 13x7 rgba 53ae2a6fe0750a5913fbc6ab65345f24d954fdedceacfbe4bd0f2aa8fd9f8fca
+status 0
+$ -d img/png-c2-d8-i0.png
+cview: img/png-c2-d8-i0.png 13x7 rgba a938da6e6dec456c6d1b961ce1f244c6fc73b5f56a731a312c36483507c3dafe
+status 0
+$ -d img/png-c2-d8-i1.png
+cview: img/png-c2-d8-i1.png 13x7 rgba a938da6e6dec456c6d1b961ce1f244c6fc73b5f56a731a312c36483507c3dafe
+status 0
+$ -d img/png-c3-d1-i0.png
+cview: img/png-c3-d1-i0.png 13x7 rgba 0bd07d4633eb7150027ae0449dac3c2a301c1b01aa85d8f686b61842598b96d9
+status 0
+$ -d img/png-c3-d1-i1.png
+cview: img/png-c3-d1-i1.png 13x7 rgba 0bd07d4633eb7150027ae0449dac3c2a301c1b01aa85d8f686b61842598b96d9
+status 0
+$ -d img/png-c3-d2-i0.png
+cview: img/png-c3-d2-i0.png 13x7 rgba 94469bcdf708cdd65b9fad02879fcf6713414954978ef3a31d9201fc5db20949
+status 0
+$ -d img/png-c3-d2-i1.png
+cview: img/png-c3-d2-i1.png 13x7 rgba 94469bcdf708cdd65b9fad02879fcf6713414954978ef3a31d9201fc5db20949
+status 0
+$ -d img/png-c3-d4-i0.png
+cview: img/png-c3-d4-i0.png 13x7 rgba 5b0d79567cd23faa3cd90e5dd0075ea5f561fc70b8f01bfbd7d3bb0c0e94270e
+status 0
+$ -d img/png-c3-d4-i1.png
+cview: img/png-c3-d4-i1.png 13x7 rgba 5b0d79567cd23faa3cd90e5dd0075ea5f561fc70b8f01bfbd7d3bb0c0e94270e
+status 0
+$ -d img/png-c3-d8-i0.png
+cview: img/png-c3-d8-i0.png 13x7 rgba 90008de129820d54a84eb0970c85a6ecd107c2c791d74564eeb2ae19bf412723
+status 0
+$ -d img/png-c3-d8-i1.png
+cview: img/png-c3-d8-i1.png 13x7 rgba 90008de129820d54a84eb0970c85a6ecd107c2c791d74564eeb2ae19bf412723
+status 0
+$ -d img/png-c4-d16-i0.png
+cview: img/png-c4-d16-i0.png 13x7 rgba 49dd785a7e960d6fca8e8d37a901ae42de2c2fac164d08269b975b96abdc0e9b
+status 0
+$ -d img/png-c4-d16-i1.png
+cview: img/png-c4-d16-i1.png 13x7 rgba 49dd785a7e960d6fca8e8d37a901ae42de2c2fac164d08269b975b96abdc0e9b
+status 0
+$ -d img/png-c4-d8-i0.png
+cview: img/png-c4-d8-i0.png 13x7 rgba b680a6880f550226ec1cdd4c0da45ddc7c357b59636a59994dc82c442a661d4c
+status 0
+$ -d img/png-c4-d8-i1.png
+cview: img/png-c4-d8-i1.png 13x7 rgba b680a6880f550226ec1cdd4c0da45ddc7c357b59636a59994dc82c442a661d4c
+status 0
+$ -d img/png-c6-d16-i0.png
+cview: img/png-c6-d16-i0.png 13x7 rgba d8287bc4e4237cb5578ae7ca2d6f62ef9149240a53955751ed99e618c1dd796b
+status 0
+$ -d img/png-c6-d16-i1.png
+cview: img/png-c6-d16-i1.png 13x7 rgba d8287bc4e4237cb5578ae7ca2d6f62ef9149240a53955751ed99e618c1dd796b
+status 0
+$ -d img/png-c6-d8-i0.png
+cview: img/png-c6-d8-i0.png 13x7 rgba 3a80b0bffbcc94246e0ac26d2a94602c196df8d7878ab611f9214219eb477172
+status 0
+$ -d img/png-c6-d8-i1.png
+cview: img/png-c6-d8-i1.png 13x7 rgba 3a80b0bffbcc94246e0ac26d2a94602c196df8d7878ab611f9214219eb477172
+status 0
+$ -d img/png-trns-gray.png
+cview: img/png-trns-gray.png 9x9 rgba b39d0c61a10e3e124a43be05ba249c370e1fbbc2d88982f6f454b9fac2556991
+status 0
+$ -d img/png-trns-pal.png
+cview: img/png-trns-pal.png 9x9 rgba 31de807cda26c61e64d0c34924dbcd1737c9583096e81d297698d5961fdfacb6
+status 0
+$ -d img/png-trns-rgb.png
+cview: img/png-trns-rgb.png 9x9 rgba 1cf86675b4dda3835a2ce0b277da6734beca8b442f78adb6a73f8e2102009248
+status 0
+$ -d img/png-wide.png
+cview: img/png-wide.png 300x2 rgba 8378f48f040057591baeac41351741523a528c61666b711893d96e71c54e77f3
+status 0
+$ -d img/pnm-p2.pgm
+cview: img/pnm-p2.pgm 5x3 rgba 556aaee307a0b2f2c985ea8afb72f5168e26ad9e9ab410ba77c03f38cc9d4d2d
+status 0
+$ -d img/pnm-p3.ppm
+cview: img/pnm-p3.ppm 4x2 rgba cfa4731f2033fcd4001cd598181b9fe1780ba5d9cbb56ff3afb53d39cefa148b
+status 0
+$ -d img/pnm-p5.pgm
+cview: img/pnm-p5.pgm 6x4 rgba 7374f211c923442bafb13413af1ec12b761a74cc7c678881f3eb80a34b11ceb3
+status 0
+$ -d img/pnm-p6-16.ppm
+cview: img/pnm-p6-16.ppm 3x2 rgba ade9c3673f507c6a09bc3a69dc7c0176f02fc5203c8c1f5c709630cf4a8e494a
+status 0
+$ -d img/qoi-rgb.qoi
+cview: img/qoi-rgb.qoi 23x11 rgba 9491e6ea67ff78b451804274cf5f9066d95de138e8f61e881b0d5ccaf1cb42f9
+status 0
+$ -d img/qoi-rgba.qoi
+cview: img/qoi-rgba.qoi 23x11 rgba e906bf8acdc71e39a469250c1fef3bb34c93241abfd65220970a35262e697690
+status 0
+$ 
+-- stderr
+cview: usage: cview [-d] FILE
+status 2
+$ -d
+-- stderr
+cview: usage: cview [-d] FILE
+status 2
+$ -d missing.png
+-- stderr
+cview: missing.png: No such file or directory
+status 1
+$ -d calc.txt
+-- stderr
+cview: calc.txt: not PNG, QOI or Netpbm
+status 1
+$ -x img/png-1x1.png
+-- stderr
+cview: usage: cview [-d] FILE
+status 2

@@ -1,0 +1,170 @@
+// tests/shot/shotsel_test.ci: RS-SHOT's area select and picture plate (user/ci/kit/shotsel.ci; frame 43): the dim
+// before the press, the area from the press to the pointer with its inset edge, the size label below it, above it
+// and inside it, a release over no area, Esc, the rows to draw again, and the plate: its frame, its picture read
+// a few rows at a time, each pixel the mean of its samples, a tall shot and a tiny one, and the plate at 2x.
+// Run: cint test --root . tests/shot/shotsel_test.ci
+import user.ci.kit.shotsel;
+import user.ci.kit.blend;
+
+U32[1024] row;
+U8[4096] line;
+I64[8] asked;        // the rows of the shot the plate asked for, in order
+I64 asked_n = 0;
+
+void ground(U32 c) {
+    for x in 0..1024 { row[x] = c; }
+}
+
+U32 dimmed(U32 c) { return blend.mix_px(c, shotsel.DIM, shotsel.DIM_A); }
+
+test "before the press: the whole screen dimmed; the crosshair at the pointer, nothing else" {
+    shotsel.begin(1024, 768, 1);
+    assert(shotsel.lo() == 0 && shotsel.hi() == 768);
+    ground(0x808080);
+    shotsel.row_at(row, 10);
+    assert(row[0] == dimmed(0x808080) && row[1023] == dimmed(0x808080));
+    assert(shotsel.point(500, 300) == shotsel.DRAW && shotsel.lo() == 278 && shotsel.hi() == 322);
+    ground(0x808080);
+    shotsel.row_at(row, 300);                       // the crosshair's level stroke: inner ink, outer edge
+    assert(row[500] != dimmed(0x808080) && row[490] != dimmed(0x808080) && row[480] == dimmed(0x808080));
+    assert(shotsel.point(510, 300) == shotsel.DRAW && shotsel.lo() == 278 && shotsel.hi() == 322);
+}
+
+test "frame 43: an area 400 x 260 from (168, 132); the edge inside it; the label 8 below, flush right" {
+    shotsel.begin(1024, 768, 1);
+    assert(shotsel.press(168, 132) == shotsel.DRAW && shotsel.lo() == 0 && shotsel.hi() == 768);
+    assert(shotsel.point(568, 392) == shotsel.DRAW);
+    assert(shotsel.area_x() == 168 && shotsel.area_y() == 132 && shotsel.area_w() == 400 && shotsel.area_h() == 260);
+    assert(shotsel.label_w() == 84 && shotsel.label_x() == 484 && shotsel.label_y() == 400);
+    ground(0x808080);
+    shotsel.row_at(row, 200);
+    assert(row[100] == dimmed(0x808080) && row[167] == dimmed(0x808080) && row[168] == shotsel.EDGE);
+    assert(row[169] == 0x808080 && row[300] == 0x808080 && row[567] == shotsel.EDGE && row[568] == dimmed(0x808080));
+    ground(0x808080);
+    shotsel.row_at(row, 132);
+    assert(row[168] == shotsel.EDGE && row[300] == shotsel.EDGE && row[567] == shotsel.EDGE);
+    ground(0x808080);
+    shotsel.row_at(row, 391);
+    assert(row[300] == shotsel.EDGE);
+    ground(0x808080);
+    shotsel.row_at(row, 412);                       // the label's middle row: its ground left of the words
+    assert(row[488] == shotsel.LABEL && row[483] != shotsel.LABEL && row[700] == dimmed(0x808080));
+    Bool inked = false;
+    for x in 490..562 {
+        if (row[x] != shotsel.LABEL) { inked = true; }
+    }
+    assert(inked);
+    assert(shotsel.release(568, 392) == shotsel.TAKE);
+}
+
+test "the label goes above the area at the screen's foot, and inside it when it fits neither" {
+    shotsel.begin(1024, 768, 1);
+    assert(shotsel.press(100, 500) == shotsel.DRAW);
+    assert(shotsel.point(300, 750) == shotsel.DRAW);
+    assert(shotsel.label_y() == 500 - 8 - 24 && shotsel.label_x() == 300 - 84);
+    shotsel.begin(1024, 768, 1);
+    assert(shotsel.press(10, 100) == shotsel.DRAW && shotsel.point(60, 200) == shotsel.DRAW);
+    assert(shotsel.label_x() == 0 && shotsel.label_y() == 208);   // 50 wide: the label kept on the screen
+    shotsel.begin(1024, 768, 1);
+    assert(shotsel.press(0, 0) == shotsel.DRAW && shotsel.point(1024, 768) == shotsel.DRAW);
+    assert(shotsel.label_y() == 768 - 8 - 24 && shotsel.label_x() == 1024 - shotsel.label_w());
+    assert(shotsel.label_w() > 84);                 // "1024 x 768" is wider than 84 allows
+}
+
+test "a release over no area waits for a new press; Esc ends the select" {
+    shotsel.begin(1024, 768, 1);
+    assert(shotsel.press(200, 200) == shotsel.DRAW);
+    assert(shotsel.release(200, 260) == shotsel.DRAW);
+    ground(0x808080);
+    shotsel.row_at(row, 230);                       // all dimmed again
+    assert(row[100] == dimmed(0x808080) && row[200] == dimmed(0x808080));
+    assert(shotsel.press(200, 200) == shotsel.DRAW && shotsel.release(150, 150) == shotsel.TAKE);
+    assert(shotsel.area_x() == 150 && shotsel.area_w() == 50);
+    assert(shotsel.key(1) == shotsel.CANCEL && shotsel.key(28) == shotsel.NONE);
+}
+
+test "unpack: blue, green, red, unused to 0x00RRGGBB" {
+    line[0] = 0x13;
+    line[1] = 0x14;
+    line[2] = 0x15;
+    line[3] = 0xFF;
+    line[4] = 1;
+    line[5] = 2;
+    line[6] = 3;
+    line[7] = 4;
+    shotsel.unpack(line, row, 2);
+    assert(row[0] == 0x151413 && row[1] == 0x030201);
+}
+
+// The shot's pixel (x, y) as fb_peek gives it: left half blue-green 0x204060, right half 0xc08040; its top row red.
+void shot_row(I64 sy, I64 w) {
+    for x in 0..w {
+        I64 c = 0x204060;
+        if (2 * x >= w) { c = 0xc08040; }
+        if (sy == 0) { c = 0xff0000; }
+        line[4 * x] = (c & 255) as U8;
+        line[4 * x + 1] = ((c >> 8) & 255) as U8;
+        line[4 * x + 2] = ((c >> 16) & 255) as U8;
+        line[4 * x + 3] = 0;
+    }
+}
+
+I64 make(I64 w, I64 h) {
+    I64 k = 0;
+    I64 sy = shotsel.plate_next();
+    while (sy >= 0) {
+        assert(sy < h);
+        if (k < 8) { asked[k] = sy; }
+        shot_row(sy, w);
+        shotsel.plate_feed(line[0..4 * w]);
+        k = k + 1;
+        sy = shotsel.plate_next();
+    }
+    return k;
+}
+
+test "the plate: 200 wide at right 16, bottom 16; frame 43's 400 x 260 makes a picture 188 x 122" {
+    shotsel.plate_begin(400, 260, 1, 1024, 768);
+    assert(shotsel.pic_w() == 188 && shotsel.pic_h() == 122);
+    assert(shotsel.plate_x0() == 808 && shotsel.plate_x1() == 1008);
+    assert(shotsel.plate_y1() == 752 && shotsel.plate_y0() == 752 - 134);
+    I64 k = make(400, 260);
+    assert(shotsel.plate_made() && k <= 4 * 122 && k >= 122);
+    assert(shotsel.plate_hit(808, 618) && shotsel.plate_hit(1007, 751) && !shotsel.plate_hit(807, 700));
+    assert(!shotsel.plate_hit(900, 752) && !shotsel.plate_hit(900, 617));
+    ground(0x808080);
+    shotsel.plate_row_at(row, 700);                 // the picture's left half, its right half, the padding
+    assert(row[814] != 0x808080 && row[850] == 0x204060 && row[950] == 0xc08040 && row[1004] == shotsel.PLATE);
+    assert(row[700] == 0x808080);
+    ground(0x808080);
+    shotsel.plate_row_at(row, 624);                 // the picture's top row: the shot's red row in its mean
+    assert(row[850] != 0x204060 && ((row[850] >> 16) & 255) > 0x20);
+    ground(0x808080);
+    shotsel.plate_row_at(row, 760);                 // under the plate: its shadow only
+    assert(row[900] != 0x808080 && row[700] == 0x808080);
+}
+
+test "a tall shot is 188 high and narrower, centered; a shot smaller than the picture reads each row once" {
+    shotsel.plate_begin(100, 400, 1, 1024, 768);
+    assert(shotsel.pic_h() == 188 && shotsel.pic_w() == 47);
+    I64 k = make(100, 400);
+    assert(shotsel.plate_made() && k >= 188 && k <= 4 * 188);
+    ground(0x808080);
+    shotsel.plate_row_at(row, shotsel.plate_y0() + 100);
+    I64 x0 = 808 + 6 + (188 - 47) / 2;
+    assert(row[x0 - 1] == shotsel.PLATE && row[x0] == 0x204060 && row[x0 + 46] == 0xc08040);
+    assert(row[x0 + 47] == shotsel.PLATE);
+    shotsel.plate_begin(2, 2, 1, 1024, 768);
+    assert(shotsel.pic_w() == 188 && shotsel.pic_h() == 188);
+    asked_n = make(2, 2);
+    assert(shotsel.plate_made() && asked_n == 2 && asked[0] == 0 && asked[1] == 1);
+}
+
+test "at 2x the plate doubles and its picture is kept at 2x" {
+    shotsel.plate_begin(800, 520, 2, 2048, 1536);
+    assert(shotsel.pic_w() == 376 && shotsel.pic_h() == 244);
+    assert(shotsel.plate_x0() == 2048 - 432 && shotsel.plate_y1() == 1536 - 32);
+    I64 k = make(800, 520);
+    assert(shotsel.plate_made() && k <= 4 * 244);
+}
+// SPDX-License-Identifier: Apache-2.0

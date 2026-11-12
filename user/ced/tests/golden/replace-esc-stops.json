@@ -1,0 +1,37 @@
+{
+  "id": "replace-esc-stops",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a a a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "620d",
+    "79",
+    "1b"
+  ],
+  "expect": {
+    "text": "b a a",
+    "sel": [
+      2,
+      3
+    ],
+    "screen": [
+      "b a a",
+      "",
+      "",
+      "",
+      " x [+]  1 replaced                  1:4",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+# tests/core/echo.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6).
+ | - | -
+a | - | -
+a b  c | - | -
+'a  b' c | - | -
+-n x | - | -
+-e 'a\tb' | - | -
+'a\nb' '\c' | - | -
+-- x | - | -
+- | - | -
+'' '' | - | -
+é ∑ | - | -

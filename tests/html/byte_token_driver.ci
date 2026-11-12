@@ -1,0 +1,70 @@
+import user.ci.web.sniff;
+import user.ci.web.encoding;
+import user.ci.web.tokenizer;
+extern unrestricted I64 fixture_next(out U8[_] input, out U8[_] name);
+extern observe I64 fixture_parameter(I64 which);
+extern unrestricted void fixture_scalar(I64 value);
+extern unrestricted void fixture_report(I64 selected, I64 source, I64 faults, I64 status);
+void text(I64 which) {
+    I64 n = 0;
+    if (which == 0) { n = tokenizer.name_len(); }
+    if (which == 1) { n = tokenizer.data_len(); }
+    if (which == 2) { n = tokenizer.public_len(); }
+    if (which == 3) { n = tokenizer.system_len(); }
+    fixture_scalar(n);
+    for i in 0..n {
+        if (which == 0) { fixture_scalar(tokenizer.name_cp(i) as I64); }
+        if (which == 1) { fixture_scalar(tokenizer.data_cp(i) as I64); }
+        if (which == 2) { fixture_scalar(tokenizer.public_cp(i) as I64); }
+        if (which == 3) { fixture_scalar(tokenizer.system_cp(i) as I64); }
+    }
+}
+void main() {
+    U8[131080] input; U8[256] name; U32[131080] points;
+    while (true) {
+        I64 n = fixture_next(input, name); if (n < 0) { return; }
+        I64 stride = fixture_parameter(6);
+        assert(fixture_parameter(2) >= 0 && fixture_parameter(2) <= len(points));
+        I64 selected = 0;
+        if (stride == 1) { selected = sniff.choose(input[3..3+n], name[0..fixture_parameter(0)], fixture_parameter(1)); }
+        else { selected = sniff.choose(input[3..3+n*2 by 2], name[0..fixture_parameter(0)], fixture_parameter(1)); }
+        I64 selected_source = sniff.source();
+        assert(encoding.reset(selected, false, false));
+        I64 at = 0; I64 end = fixture_parameter(4); I64 point_n = 0; I64 status = 0;
+        while (true) {
+            if (end > n) { end = n; }
+            encoding.Step step;
+            if (stride == 1) { step = encoding.next(input[3+at..3+end], end == n); }
+            else { step = encoding.next(input[3+at*2..3+end*2 by 2], end == n); }
+            assert(step.used >= 0 && step.used <= end-at); at = at + step.used;
+            if (step.value >= 0) {
+                if (point_n == fixture_parameter(2)) { status = -4; break; }
+                points[point_n] = step.value as U32; point_n = point_n + 1;
+            } else if (step.value == -3) {
+                assert(at == end && end < n);
+                encoding.Step empty_step = encoding.next(input[0..0], false);
+                assert(empty_step.value == -3 && empty_step.used == 0);
+                end = end + fixture_parameter(5);
+            } else { assert(step.value == -1); break; }
+        }
+        if (status == 0) {
+            tokenizer.reset(0, points[0..0], false);
+            while (true) {
+                I64 k = tokenizer.next(points[0..point_n]); fixture_scalar(k);
+                if (k <= 0) { fixture_scalar(tokenizer.errors()); fixture_scalar(tokenizer.limit_reason()); break; }
+                text(0); text(1); fixture_scalar(tokenizer.attr_count());
+                for i in 0..tokenizer.attr_count() {
+                    fixture_scalar(tokenizer.attr_name_len(i));
+                    for j in 0..tokenizer.attr_name_len(i) { fixture_scalar(tokenizer.attr_name_cp(i,j) as I64); }
+                    fixture_scalar(tokenizer.attr_value_len(i));
+                    for j in 0..tokenizer.attr_value_len(i) { fixture_scalar(tokenizer.attr_value_cp(i,j) as I64); }
+                }
+                fixture_scalar(tokenizer.self_closing() as I64); fixture_scalar(tokenizer.force_quirks() as I64);
+                fixture_scalar(tokenizer.public_present() as I64); text(2);
+                fixture_scalar(tokenizer.system_present() as I64); text(3);
+            }
+        }
+        fixture_report(selected, selected_source, encoding.errors(), status);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

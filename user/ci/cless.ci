@@ -1,0 +1,1251 @@
+// user/ci/cless.ci: cless [FILE] (docs/specs/2026-11-07-bp-basics.md section 2, BP-2): the pager. FILE, or descriptor
+// 0 for none or `-`, a screen at a time on the terminal of descriptor 1; keys from descriptor 2's terminal (else 0's,
+// when the input is a file), in raw mode, given back as it was on every way out. When descriptor 1 is no terminal the
+// input is copied to it unchanged. A file that seeks is read in place; a pipe is held up to PIPE_MAX bytes.
+// In a desk terminal (RS-RE, docs/specs/2026-11-11-rs-rel-s1-units.md; frames 40 and 41) cless is Read: the file's
+// name goes to the window bar as the title (OSC 2), the text fills the window with no status line, the last column
+// holds the place bar, and the commands are rows of the app menu (OSC 7770 item); Ctrl+F opens the find line at the
+// bottom, where every match is lit and the current one brightest, and Ctrl+O the open line. A row's id is the byte of
+// its key, so a chosen row (`ESC ] 7770 ; chose ; ID BEL`) acts as the key does. Elsewhere nothing changes.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.kit.appmenu;   // AM-3: the app menu's About
+import user.ci.kit.appitems;  // AM-4: the app's own rows
+import user.ci.kit.ondesk;
+import user.ci.corectl;
+import user.ci.viewctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.get;
+
+const I64 PIPE_MAX = 524288;       // bytes of a pipe held: 65,536 words of 8
+const I64 STEP = 16;               // lines between two entries of the index
+const I64 INDEX_MAX = 65536;       // index entries: LINES_MAX 1,048,576 lines
+const I64 LIVE = 4194304;          // desk: matches counted as typed up to this many bytes of text, else at Enter
+
+// next_key's codes past a byte
+const I64 K_UP = 256;
+const I64 K_DOWN = 257;
+const I64 K_HOME = 258;
+const I64 K_END = 259;
+const I64 K_PGUP = 260;
+const I64 K_PGDN = 261;
+const I64 K_ESC = 262;             // Esc alone: nothing came with it
+const I64 K_NONE = 263;            // a sequence read whole and dropped
+
+// the menu's rows (frame 41): each id the byte of its key
+const I64 C_COPY = 3;              // Ctrl+C
+const I64 C_FIND = 6;              // Ctrl+F
+const I64 C_NEXT = 7;              // Ctrl+G
+const I64 C_OPEN = 15;             // Ctrl+O
+const I64 O_NONBLOCK = 0x800;      // the Linux number; the hosted build maps it (host.c)
+
+// desk: what the bottom row holds
+const I64 LINE_NONE = 0;
+const I64 LINE_FIND = 1;
+const I64 LINE_OPEN = 2;
+const I64 LINE_FAIL = 3;           // the open line after a name that does not open
+
+I64 fd = 0;
+Bool seeks = false;
+I64 total = 0;                     // bytes known: the size of the file, or what the pipe gave
+Bool clipped = false;              // the pipe went past PIPE_MAX
+U64[65536] store;                  // a pipe's bytes, 8 a word, the first in the low byte
+U8[65536] win;                     // a window of a file that seeks
+I64 win_at = -1;
+I64 win_n = 0;
+Bool cut = false;                  // a read ended short of total: the file was cut short since it was taken (recut)
+I64 cut_at = 0;                    // with cut: where the file ends now; every byte from there is -1 without a read
+
+I64[65536] idx;                    // idx[k]: where line STEP * k starts
+I64 scanned = 1;                   // the lines whose start is known: 0 .. scanned - 1
+I64 scan_off = 0;                  // the start of line scanned - 1, from which the scan goes on
+Bool all = false;                  // the scan reached the end: scanned is the line count
+
+I64 rows = 24;                     // the screen's rows, the status line among them
+I64 cols = 80;
+I64 top = 0;                       // the first row on the screen: line top, its row seg
+I64 seg = 0;
+I64 last_shown = 0;
+Bool end_shown = false;
+I64 top_off = -1;                  // the first byte of row (top, seg), -1 none; paint keeps it for the place bar
+I64 after_off = -1;                // the first byte of the row paint left off the screen, -1 past the end
+
+// A long line, of more rows than twice the screen's, keeps the first byte and the column of every an_step-th row (its
+// anchors), so a row is found by walking at most an_step rows, never from the line's start. Such a line is never all
+// on the screen, so at most two are in use at once (the screen's top and its bottom): two slots, the one used last
+// kept. A frame's work is then the bytes it shows, however long the line.
+const I64 ANCHORS = 2048;
+I64[2] an_k;                       // k + 1 of the line a slot holds, 0 none
+I64[2] an_rows;                    // its rows
+I64[2] an_step;                    // rows between two anchors
+I64[2] an_n;                       // anchors kept
+I64[4096] an_off;                  // slot a's anchor i, the first byte of row i * an_step[a], at ANCHORS * a + i
+I64[4096] an_x;                    // and the column there
+I64 an_last = 0;                   // the slot used last
+I64 ra_off = 0;                    // a row's first byte (row_at, show), -1 no row
+I64 ra_x = 0;                      // and its column
+
+const I64 STARTS = 64;             // start() remembered, line k at k % STARTS
+I64[64] st_k;                      // k + 1 of the line held, 0 none
+I64[64] st_v;
+
+U8[64] saved;                      // the terminal's mode before
+U8[64] raw;
+I64 tio_n = 0;
+I64 kfd = 2;
+U8[256] name;
+I64 name_n = 0;
+U8[256] pat;
+I64 pat_n = 0;
+U8[64] note;
+I64 note_n = 0;
+U8[64] kb;
+I64 kb_at = 0;
+I64 kb_n = 0;
+
+Bool desk = false;                 // Read: in a desk terminal, on a terminal
+I64 wide = 80;                     // the text's columns: cols, less the place bar's on the desk
+I64 line = LINE_NONE;
+I64 hit_at = -1;                   // desk: the current match's offset, -1 none
+I64 hit_n = -1;                    // the matches of pat, -1 not counted
+I64 hit_k = 0;                     // the current match's place among them, from 1
+I64 origin = 0;                    // where the find line opened: typing searches from here
+U8[256] path_in;                   // the open line's text
+I64 path_n = 0;
+
+// The byte at off, or -1 past the end.
+I64 byte_at(I64 off) {
+    if (off < 0 || off >= total || (cut && off >= cut_at)) { return -1; }
+    if (!seeks) {
+        U64 wd = store[off / 8];
+        return ((wd >> ((8 * (off % 8)) as U64)) & 255) as I64;
+    }
+    if (win_at < 0 || off < win_at || off >= win_at + win_n) {
+        I64 base = off - off % 32768;
+        if (corectl.co_lseek(fd, base, 0) < 0) { return -1; }
+        win_n = 0;
+        Bool more = true;
+        while (more && win_n < 65536) {
+            I64 r = shctl.fd_read(fd, win[win_n..65536]);
+            if (r <= 0) { more = false; } else { win_n = win_n + r; }
+        }
+        win_at = base;
+        if (off >= win_at + win_n) {   // off < total, and the file ends before it now
+            I64 end = win_at + win_n;
+            I64 now = corectl.co_lseek(fd, 0, 2);
+            if (now >= 0 && now < end) { end = now; }
+            if (!cut || end < cut_at) { cut_at = end; }
+            cut = true;                // so a search stops here (end_now) and nothing past it is read again
+            return -1;
+        }
+    }
+    return win[off - win_at] as I64;
+}
+
+// Takes the pipe whole, up to PIPE_MAX.
+void hold() {
+    U8[4096] b;
+    Bool more = true;
+    while (more) {
+        I64 r = shctl.fd_read(fd, b);
+        if (r <= 0) {
+            more = false;
+        } else {
+            for k in 0..r {
+                if (total == PIPE_MAX) {
+                    clipped = true;
+                } else {
+                    I64 w = total / 8;
+                    if (total % 8 == 0) { store[w] = 0; }
+                    store[w] = store[w] | ((b[k] as U64) << ((8 * (total % 8)) as U64));
+                    total = total + 1;
+                }
+            }
+        }
+    }
+}
+
+// Scans on until line k's start is known or the input ends.
+void scan_to(I64 k) {
+    while (!all && scanned <= k) {
+        I64 off = scan_off;
+        I64 c = byte_at(off);
+        while (c >= 0 && c != 10) {
+            off = off + 1;
+            c = byte_at(off);
+        }
+        if (c < 0 || off + 1 >= total) {
+            all = true;
+        } else {
+            scan_off = off + 1;
+            if (scanned % STEP == 0) {
+                if (scanned / STEP == INDEX_MAX) {
+                    all = true;
+                    clipped = true;
+                    return;
+                }
+                idx[scanned / STEP] = scan_off;
+            }
+            scanned = scanned + 1;
+        }
+    }
+}
+
+// Where line k starts, or -1 when there is no line k.
+I64 start(I64 k) {
+    if (k < 0) { return -1; }
+    I64 h = k % STARTS;
+    if (st_k[h] == k + 1) { return st_v[h]; }
+    scan_to(k);
+    if (k >= scanned) { return -1; }
+    if (total == 0) { return -1; }
+    I64 off = idx[k / STEP];
+    for i in 0..k % STEP {
+        I64 c = byte_at(off);
+        while (c >= 0 && c != 10) {
+            off = off + 1;
+            c = byte_at(off);
+        }
+        if (c < 0) { return -1; }      // the file ends before line k now (cut is set; draw() takes it again)
+        off = off + 1;
+    }
+    st_k[h] = k + 1;
+    st_v[h] = off;
+    return off;
+}
+
+// The next column after byte c at column x.
+I64 advance(I64 c, I64 x) {
+    if (c == 9) { return (x / 8 + 1) * 8; }
+    return x + 1;
+}
+
+// The rows line k takes, at least 1. A long line is walked once, keeping its anchors.
+I64 segs(I64 k) {
+    I64 a = slot_of(k);
+    if (a >= 0) { return an_rows[a]; }
+    I64 off = start(k);
+    I64 x = 0;
+    I64 c = byte_at(off);
+    while (c >= 0 && c != 10) {
+        x = advance(c, x);
+        if (x > 2 * rows * wide) { return an_rows[anchor(k)]; }
+        off = off + 1;
+        c = byte_at(off);
+    }
+    if (x == 0) { return 1; }
+    return (x + wide - 1) / wide;
+}
+
+// The slot that holds line k's anchors, now the one used last; -1 none.
+I64 slot_of(I64 k) {
+    for a in 0..2 {
+        if (an_k[a] == k + 1) {
+            an_last = a;
+            return a;
+        }
+    }
+    return -1;
+}
+
+// Walks line k once into the slot not used last: its rows and its anchors, at most ANCHORS (when they run out, every
+// other one goes and the rows between them double). The slot.
+I64 anchor(I64 k) {
+    I64 a = 1 - an_last;
+    I64 base = ANCHORS * a;
+    an_k[a] = 0;
+    I64 step = 1;
+    I64 n = 1;
+    I64 off = start(k);
+    I64 x = 0;
+    I64 r = 0;                         // the row the walk is in
+    I64 edge = wide;                   // where row r + 1 begins
+    an_off[base] = off;
+    an_x[base] = 0;
+    I64 c = byte_at(off);
+    while (c >= 0 && c != 10) {
+        x = advance(c, x);
+        off = off + 1;
+        c = byte_at(off);
+        while (x >= edge) {
+            r = r + 1;
+            edge = edge + wide;
+            if (r == n * step) {
+                if (n == ANCHORS) {
+                    for i in 0..ANCHORS / 2 {
+                        an_off[base + i] = an_off[base + 2 * i];
+                        an_x[base + i] = an_x[base + 2 * i];
+                    }
+                    n = ANCHORS / 2;
+                    step = 2 * step;
+                }
+                an_off[base + n] = off;
+                an_x[base + n] = x;
+                n = n + 1;
+            }
+        }
+    }
+    an_k[a] = k + 1;
+    an_rows[a] = max((x + wide - 1) / wide, 1);
+    an_step[a] = step;
+    an_n[a] = n;
+    an_last = a;
+    return a;
+}
+
+// Row s of line k: its first byte (a tab across the row's start counts in the row before) and the column there, in
+// ra_off and ra_x; ra_off is -1 when there is no line k.
+void row_at(I64 k, I64 s) {
+    ra_off = start(k);
+    ra_x = 0;
+    if (ra_off < 0) { return; }
+    I64 r = 0;
+    _ = segs(k);
+    I64 a = slot_of(k);
+    if (a >= 0) {
+        I64 i = min(s / an_step[a], an_n[a] - 1);
+        ra_off = an_off[ANCHORS * a + i];
+        ra_x = an_x[ANCHORS * a + i];
+        r = i * an_step[a];
+    }
+    while (r < s) {
+        I64 hi = (r + 1) * wide;
+        I64 c = byte_at(ra_off);
+        while (c >= 0 && c != 10 && ra_x < hi) {
+            ra_x = advance(c, ra_x);
+            ra_off = ra_off + 1;
+            c = byte_at(ra_off);
+        }
+        r = r + 1;
+    }
+}
+
+// The row of line k that holds offset off.
+I64 row_of(I64 k, I64 off) {
+    I64 p = start(k);
+    I64 x = 0;
+    _ = segs(k);
+    I64 a = slot_of(k);
+    if (a >= 0) {
+        I64 lo = 0;
+        I64 hi = an_n[a] - 1;
+        while (lo < hi) {
+            I64 mid = (lo + hi + 1) / 2;
+            if (an_off[ANCHORS * a + mid] <= off) { lo = mid; } else { hi = mid - 1; }
+        }
+        p = an_off[ANCHORS * a + lo];
+        x = an_x[ANCHORS * a + lo];
+    }
+    while (p >= 0 && p < off) {
+        x = advance(byte_at(p), x);
+        p = p + 1;
+    }
+    return x / wide;
+}
+
+void esc(in U8[_] s) {
+    put.byte(27);
+    put.bytes(s);
+}
+
+void cup(I64 r) {
+    esc(b"[");
+    put.num(r + 1, 0);
+    put.bytes(b";1H");
+}
+
+// Whether the pattern starts at off.
+Bool hit(I64 off) {
+    if (pat_n <= 0) { return false; }
+    for i in 0..pat_n {
+        if (byte_at(off + i) != (pat[i] as I64)) { return false; }
+    }
+    return true;
+}
+
+// Row s, wide columns, from its first byte (ra_off, ra_x); ra_off and ra_x end at row s + 1's. On the desk, with the
+// find line open, every match is lit (ochre on the terminal's black) and the current one brightest (ochre under the
+// ground's color: SGR 33 reversed).
+void show(I64 s) {
+    I64 off = ra_off;
+    I64 x = ra_x;
+    I64 lo = s * wide;
+    I64 hi = lo + wide;
+    if (x > lo) {
+        for i in lo..min(x, hi) { put.byte(' '); }    // the rest of a tab across the row's start
+    }
+    Bool lit = desk && line == LINE_FIND && pat_n > 0;
+    I64 lit_end = 0;                   // the end of the last match begun
+    if (lit) {
+        for p in max(off - pat_n + 1, 0)..off {
+            if (hit(p)) { lit_end = p + pat_n; }
+        }
+    }
+    I64 pen = 0;                       // 0 plain, 1 a match, 2 the current match
+    I64 c = byte_at(off);
+    while (c >= 0 && c != 10 && x < hi) {
+        I64 nx = advance(c, x);
+        if (lit) {
+            if (hit(off)) { lit_end = off + pat_n; }
+            I64 want = 0;
+            if (hit_at >= 0 && off >= hit_at && off < hit_at + pat_n) { want = 2; }
+            else if (off < lit_end) { want = 1; }
+            if (want != pen && nx > lo) {
+                if (want == 2) { esc(b"[0;33;7m"); } else if (want == 1) { esc(b"[0;33;40m"); } else { esc(b"[0m"); }
+                pen = want;
+            }
+        }
+        if (c == 9) {
+            for i in x..nx {
+                if (i >= lo && i < hi) { put.byte(' '); }
+            }
+        } else if (x >= lo) {
+            if (c >= 32 && c < 127) { put.byte(c as U8); } else { put.byte('?'); }
+        }
+        x = nx;
+        off = off + 1;
+        c = byte_at(off);
+    }
+    if (pen != 0) { esc(b"[0m"); }
+    ra_off = off;
+    ra_x = x;
+}
+
+void status() {
+    cup(rows - 1);
+    esc(b"[7m");
+    if (pat_n < 0) {
+        put.byte('/');
+        put.bytes(pat[0..0 - pat_n - 1]);
+    } else {
+        put.bytes(name[0..name_n]);
+        put.bytes(b"  lines ");
+        put.num(top + 1, 0);
+        put.byte('-');
+        put.num(last_shown + 1, 0);
+        if (all) {
+            put.bytes(b" of ");
+            put.num(scanned, 0);
+        }
+        if (clipped) { put.bytes(b" (first 512 KiB)"); }
+        if (end_shown) { put.bytes(b" (END)"); }
+        if (note_n > 0) {
+            put.bytes(b"  ");
+            put.bytes(note[0..note_n]);
+        }
+    }
+    esc(b"[0m");
+    esc(b"[K");
+}
+
+// The rows that hold text: all but the status line; on the desk all but an open bottom line.
+I64 text_rows() {
+    if (desk && line == LINE_NONE) { return rows; }
+    return rows - 1;
+}
+
+// The rows from (top, seg) to the text's last, drawn.
+void paint() {
+    I64 k = top;
+    I64 s = seg;
+    I64 r = 0;
+    end_shown = false;
+    row_at(top, seg);
+    top_off = ra_off;
+    while (r < text_rows()) {
+        cup(r);
+        if (ra_off >= 0) {
+            show(s);
+            last_shown = k;
+            // Row s + 1 is there when the walk passed its start, or stands on it with a byte left.
+            I64 edge = (s + 1) * wide;
+            I64 c = byte_at(ra_off);
+            if (ra_x > edge || (ra_x == edge && c >= 0 && c != 10)) {
+                s = s + 1;
+            } else {
+                k = k + 1;
+                s = 0;
+                ra_off = start(k);
+                ra_x = 0;
+            }
+        } else {
+            end_shown = true;
+        }
+        esc(b"[K");
+        r = r + 1;
+    }
+    if (ra_off < 0) { end_shown = true; }
+    after_off = ra_off;
+}
+
+// The number of rows of the screen left empty past the end at (top, seg).
+I64 empty() {
+    I64 k = top;
+    I64 s = seg;
+    I64 r = 0;
+    while (r < text_rows() && start(k) >= 0) {
+        s = s + 1;
+        if (s >= segs(k)) {
+            k = k + 1;
+            s = 0;
+        }
+        r = r + 1;
+    }
+    return text_rows() - r;
+}
+
+void up(I64 n) {
+    for i in 0..n {
+        if (seg > 0) {
+            seg = seg - 1;
+        } else if (top > 0) {
+            top = top - 1;
+            seg = segs(top) - 1;
+        }
+    }
+}
+
+void down(I64 n) {
+    I64 i = 0;
+    while (i < n && empty() == 0) {
+        seg = seg + 1;
+        if (seg >= segs(top)) {
+            top = top + 1;
+            seg = 0;
+        }
+        i = i + 1;
+    }
+}
+
+void bottom() {
+    scan_to(INDEX_MAX * STEP);
+    if (scanned > 0) {
+        top = scanned - 1;
+        seg = segs(top) - 1;
+    }
+    up(text_rows() - 1);
+}
+
+// The place bar in the last column (frame 40): the rows of the text shown, in proportion to the bytes of the rows on
+// the screen (a long line's rows, not the whole line), as right half blocks (U+2590) in the terminal's black; none when
+// the whole text is on the screen.
+void place() {
+    I64 n = text_rows();
+    I64 a = top_off;
+    I64 b = total;
+    if (after_off >= 0) { b = after_off; }
+    Bool whole = top == 0 && seg == 0 && end_shown;
+    I64 r0 = 0;
+    I64 rn = 0;
+    if (!whole && total > 0 && a >= 0) {
+        r0 = n * a / total;
+        rn = max((n * (b - a) + total - 1) / total, 1);
+        if (r0 + rn > n) { r0 = max(n - rn, 0); }
+    }
+    for r in 0..n {
+        esc(b"[");
+        put.num(r + 1, 0);
+        put.byte(';');
+        put.num(cols, 0);
+        put.byte('H');
+        if (r >= r0 && r < r0 + rn) {
+            esc(b"[30m");
+            put.bytes(b"\xe2\x96\x90");
+            esc(b"[0m");
+        } else {
+            put.byte(' ');
+        }
+    }
+}
+
+// The decimal digits of v (v at least 0).
+I64 digits(I64 v) {
+    I64 n = 1;
+    I64 x = v;
+    while (x >= 10) {
+        x = x / 10;
+        n = n + 1;
+    }
+    return n;
+}
+
+// The width of the count `K of N` (the find line's right side).
+I64 count_width() {
+    return digits(hit_k) + 4 + digits(hit_n);
+}
+
+// The desk's bottom row: the find line (`Find: ` and the pattern, its count `K of N` in bright black at the right),
+// the open line (`Open: ` and the name), or the open line's answer. The cursor ends after what is typed.
+void bottom_line() {
+    cup(rows - 1);
+    esc(b"[0m");
+    esc(b"[K");
+    I64 room = wide - 6;
+    if (line == LINE_FAIL) {
+        put.bytes(b"Couldn't open ");
+        put.bytes(path_in[0..min(path_n, max(wide - 16, 0))]);
+        put.byte('.');
+        return;
+    }
+    if (line == LINE_FIND) {
+        if (hit_n >= 0) {
+            room = room - count_width() - 2;
+            esc(b"[");
+            put.num(rows, 0);
+            put.byte(';');
+            put.num(wide - count_width() + 1, 0);
+            put.byte('H');
+            esc(b"[90m");
+            put.num(hit_k, 0);
+            put.bytes(b" of ");
+            put.num(hit_n, 0);
+            esc(b"[0m");
+            cup(rows - 1);
+        }
+        put.bytes(b"Find: ");
+        I64 from = max(pat_n - max(room, 0), 0);
+        put.bytes(pat[from..pat_n]);
+    } else {
+        put.bytes(b"Open: ");
+        I64 from = max(path_n - max(room, 0), 0);
+        put.bytes(path_in[from..path_n]);
+    }
+    esc(b"[?25h");
+}
+
+void draw() {
+    if (cut) { recut(); }
+    put.bytes(b"\x1b[?25l");
+    paint();
+    if (cut) {                         // the frame met the new end: drawn again from the file as it is now
+        recut();
+        paint();
+    }
+    if (desk) {
+        place();
+        if (line != LINE_NONE) { bottom_line(); }
+    } else {
+        status();
+    }
+    put.flush();
+}
+
+// The file was cut short while Read has it (logrotate's copytruncate, say): a read ended before total. It is taken
+// again at its size now: the index and the kept starts and anchors made again from its bytes, the screen where it
+// was, or the bottom when that is past the new end.
+void recut() {
+    cut = false;
+    total = max(corectl.co_lseek(fd, 0, 2), 0);
+    win_at = -1;
+    win_n = 0;
+    idx[0] = 0;
+    scanned = 1;
+    scan_off = 0;
+    all = false;
+    for i in 0..STARTS { st_k[i] = 0; }
+    an_k[0] = 0;
+    an_k[1] = 0;
+    hit_n = -1;
+    if (hit_at >= total) { hit_at = -1; }
+    scan_to(top);
+    if (top >= scanned || start(top) < 0) {
+        bottom();
+    } else if (seg >= segs(top)) {
+        seg = segs(top) - 1;
+    }
+}
+
+// The terminal back as it was, the cursor shown on the last row, and the status.
+void leave(I64 code) {
+    cup(rows - 1);
+    esc(b"[K");
+    esc(b"[?25h");
+    put.flush();
+    if (tio_n > 0) { _ = shctl.sh_tcset(kfd, saved[0..tio_n]); }
+    msg.finish_with(code);
+}
+
+// The next key byte; -1 when the terminal ends.
+I64 key() {
+    if (kb_at == kb_n) {
+        I64 r = shctl.fd_read(kfd, kb);
+        if (r <= 0) { return -1; }
+        kb_at = 0;
+        kb_n = r;
+    }
+    I64 c = kb[kb_at] as I64;
+    kb_at = kb_at + 1;
+    return c;
+}
+
+// Line k holds the pattern.
+Bool holds(I64 k) {
+    I64 off = start(k);
+    I64 n = pat_n;
+    I64 c = byte_at(off);
+    while (c >= 0 && c != 10) {
+        Bool same = true;
+        I64 i = 0;
+        while (same && i < n) {
+            same = byte_at(off + i) == (pat[i] as I64);
+            i = i + 1;
+        }
+        if (same) { return true; }
+        off = off + 1;
+        c = byte_at(off);
+    }
+    return false;
+}
+
+void say(in U8[_] s) {
+    note_n = 0;
+    for i in 0..len(s) {
+        note[note_n] = s[i];
+        note_n = note_n + 1;
+    }
+}
+
+void find(I64 dir) {
+    if (pat_n == 0) {
+        say(b"no pattern");
+        return;
+    }
+    I64 k = top + dir;
+    while (start(k) >= 0) {
+        if (holds(k)) {
+            top = k;
+            seg = 0;
+            I64 e = empty();
+            if (e > 0) { up(e); }
+            return;
+        }
+        k = k + dir;
+    }
+    say(b"not found");
+}
+
+// Reads the pattern after `/` on the status line; Enter ends it, Esc cancels it.
+void ask() {
+    I64 n = 0;
+    Bool going = true;
+    while (going) {
+        pat_n = 0 - n - 1;
+        status();
+        put.flush();
+        I64 c = key();
+        if (c < 0 || c == 27 || c == 3) {
+            pat_n = 0;
+            going = false;
+        } else if (c == 13 || c == 10) {
+            pat_n = n;
+            going = false;
+            find(1);
+        } else if (c == 127 || c == 8) {
+            if (n > 0) { n = n - 1; }
+        } else if (c >= 32 && c < 127 && n < 256) {
+            pat[n] = c as U8;
+            n = n + 1;
+        }
+    }
+}
+
+// Whether a byte waits in the key buffer. A terminal sends a sequence in one write, so ESC with nothing after it is
+// the Esc key.
+Bool waiting() {
+    return kb_at < kb_n;
+}
+
+// The next key byte, left for key(); -1 when the terminal ends.
+I64 peek() {
+    I64 c = key();
+    if (c >= 0) { kb_at = kb_at - 1; }
+    return c;
+}
+
+// The rest of an OSC after ESC ], to BEL or ESC \: a chosen row of the app menu (`7770 ; chose ; ID`) as its id,
+// when the id is one of cless's rows; else K_NONE; -1 when the terminal ends.
+I64 osc() {
+    U8[72] s;
+    s[0] = 27;
+    s[1] = ']';
+    I64 n = 2;
+    Bool spilled = false;
+    I64 seen = 0;
+    while (true) {
+        I64 c = key();
+        if (c < 0) { return -1; }
+        seen = seen + 1;
+        if (c == 7 || seen > 4096) { break; }
+        if (c == 27) {
+            _ = key();
+            break;
+        }
+        if (n < 70) {
+            s[n] = c as U8;
+            n = n + 1;
+        } else {
+            spilled = true;
+        }
+    }
+    s[n] = 7;
+    I64 id = appmenu.chosen_osc(s, n + 1);
+    if (!spilled && (id == C_COPY || id == C_FIND || id == C_NEXT || id == C_OPEN)) { return id; }
+    return K_NONE;
+}
+
+// The next key: a byte, or K_UP to K_NONE for an escape sequence (arrows, Home, End, PgUp, PgDn, Esc alone, a
+// chosen menu row as its key's byte); -1 when the terminal ends.
+I64 next_key() {
+    I64 c = key();
+    if (c != 27) { return c; }
+    if (!waiting()) {
+        if (kb_n < len(kb)) { return K_ESC; }
+        // The read filled kb, so it was cut there, not where the terminal's write ended: the next byte says
+        // whether the ESC begins a sequence.
+        I64 p = peek();
+        if (p != '[' as I64 && p != 'O' as I64 && p != ']' as I64) { return K_ESC; }
+    }
+    c = key();
+    if (c == ']' as I64) { return osc(); }
+    if (c != '[' as I64 && c != 'O' as I64) { return K_NONE; }
+    I64 f = key();
+    I64 num = 0;
+    while (f >= '0' as I64 && f <= '9' as I64) {
+        num = num * 10 + f - ('0' as I64);
+        f = key();
+    }
+    if (f < 0) { return -1; }
+    if (f == 'A' as I64) { return K_UP; }
+    if (f == 'B' as I64) { return K_DOWN; }
+    if (f == 'H' as I64 || (f == '~' as I64 && num == 1)) { return K_HOME; }
+    if (f == 'F' as I64 || (f == '~' as I64 && num == 4)) { return K_END; }
+    if (f == '~' as I64 && num == 5) { return K_PGUP; }
+    if (f == '~' as I64 && num == 6) { return K_PGDN; }
+    return K_NONE;
+}
+
+// The keys every mode shares: the arrows, Home, End, PgUp, PgDn. Whether k was one.
+Bool moved(I64 k) {
+    if (k == K_UP) { up(1); }
+    else if (k == K_DOWN) { down(1); }
+    else if (k == K_HOME) { top = 0; seg = 0; }
+    else if (k == K_END) { bottom(); }
+    else if (k == K_PGUP) { up(text_rows()); }
+    else if (k == K_PGDN) { down(text_rows()); }
+    else { return false; }
+    return true;
+}
+
+// Desk: where the text ends for a search: total, or cut_at once a read found the file cut short. A search asks it
+// each byte, so the walk that finds the cut stops there and never steps over the old size a byte at a time.
+I64 end_now() {
+    if (cut) { return min(total, cut_at); }
+    return total;
+}
+
+// Desk: the first match at or after a and before b, or -1.
+I64 seek_fwd(I64 a, I64 b) {
+    I64 off = a;
+    while (off < b && off < end_now()) {
+        if (hit(off)) { return off; }
+        off = off + 1;
+    }
+    return -1;
+}
+
+// Desk: the last match before b and at or after a, or -1.
+I64 seek_back(I64 a, I64 b) {
+    I64 off = b - 1;
+    while (off >= a) {
+        if (off >= end_now()) {
+            off = end_now() - 1;
+        } else {
+            if (hit(off)) { return off; }
+            off = off - 1;
+        }
+    }
+    return -1;
+}
+
+// Desk: the matches of pat in the whole text (each start counts, so they may overlap), and the current one's place.
+void tally() {
+    hit_n = 0;
+    hit_k = 0;
+    I64 off = 0;
+    while (off < end_now()) {
+        if (hit(off)) {
+            hit_n = hit_n + 1;
+            if (off <= hit_at) { hit_k = hit_n; }
+        }
+        off = off + 1;
+    }
+}
+
+// Desk: the line that holds offset off.
+I64 line_of(I64 off) {
+    while (!all && scan_off <= off) {
+        I64 next = scanned;
+        scan_to(next);
+    }
+    I64 lo = 0;
+    I64 hi = (scanned - 1) / STEP;
+    while (lo < hi) {
+        I64 mid = (lo + hi + 1) / 2;
+        if (idx[mid] <= off) { lo = mid; } else { hi = mid - 1; }
+    }
+    I64 k = lo * STEP;
+    while (k + 1 < scanned && start(k + 1) >= 0 && start(k + 1) <= off) { k = k + 1; }
+    return k;
+}
+
+// Desk: the row that holds offset off brought onto the screen; the screen stays when it is there.
+void reveal(I64 off) {
+    I64 k = line_of(off);
+    I64 s = row_of(k, off);
+    I64 kk = top;
+    I64 ss = seg;
+    for r in 0..text_rows() {
+        if (kk == k && ss == s) { return; }
+        if (start(kk) < 0) { break; }
+        ss = ss + 1;
+        if (ss >= segs(kk)) {
+            kk = kk + 1;
+            ss = 0;
+        }
+    }
+    top = k;
+    seg = s;
+    I64 e = empty();
+    if (e > 0) { up(e); }
+}
+
+// Desk: the pattern changed. The first match from where the find line opened (around past the end) is the current
+// one. Past LIVE bytes of text a key looks only LIVE bytes on, so typing never waits on the whole file; the count
+// and the search past them wait for Enter (go).
+void refind() {
+    hit_n = -1;
+    hit_k = 0;
+    hit_at = -1;
+    if (pat_n == 0) { return; }
+    I64 span = min(total, LIVE);
+    hit_at = seek_fwd(origin, min(origin + span, total));
+    if (hit_at < 0) { hit_at = seek_fwd(0, min(origin, origin + span - total)); }
+    if (hit_at >= 0) { reveal(hit_at); }
+    if (total <= LIVE) { tally(); }
+}
+
+// Desk: the next match (dir 1) or the one before (dir -1), around the ends; its place kept with it.
+void go(I64 dir) {
+    if (pat_n == 0 || total == 0) { return; }
+    I64 at = hit_at;
+    if (at < 0) { at = max(start(top), 0); }
+    I64 p = -1;
+    Bool around = false;
+    if (dir > 0) {
+        if (hit_at >= 0) { at = at + 1; }
+        p = seek_fwd(at, total);
+        if (p < 0) {
+            p = seek_fwd(0, min(at, total));
+            around = true;
+        }
+    } else {
+        p = seek_back(0, at);
+        if (p < 0) {
+            p = seek_back(at, total);
+            around = true;
+        }
+    }
+    if (p < 0) { return; }
+    Bool known = hit_n >= 0 && hit_at >= 0;
+    hit_at = p;
+    if (!known) {
+        tally();
+    } else if (dir > 0) {
+        if (around) { hit_k = 1; } else { hit_k = hit_k + 1; }
+    } else {
+        if (around) { hit_k = hit_n; } else { hit_k = hit_k - 1; }
+    }
+    reveal(p);
+}
+
+// Desk: the find line. Fresh (Ctrl+F) it starts empty; else (Find Next, n, N) it keeps the pattern and first goes
+// dir. Typing searches from where the line opened; Enter and Ctrl+G go to the next match; Esc closes it, and so
+// does Enter on an empty pattern. The arrows and pages still move the text.
+void find_line(Bool fresh, I64 dir) {
+    line = LINE_FIND;
+    origin = max(start(top), 0);
+    if (fresh) {
+        pat_n = 0;
+        refind();
+    } else if (dir != 0) {
+        go(dir);
+    }
+    Bool going = true;
+    while (going) {
+        draw();
+        I64 c = next_key();
+        if (c < 0) {
+            leave(0);
+        } else if (c == K_ESC) {
+            going = false;
+        } else if (c == C_FIND) {
+            origin = max(start(top), 0);
+            pat_n = 0;
+            refind();
+        } else if (c == 13 || c == 10) {
+            if (pat_n == 0) {
+                going = false;
+            } else {
+                if (hit_n < 0) { tally(); }
+                go(1);
+            }
+        } else if (c == C_NEXT) {
+            go(1);
+        } else if (c == 127 || c == 8) {
+            if (pat_n > 0) {
+                pat_n = pat_n - 1;
+                refind();
+            }
+        } else if (c >= 32 && c < 127) {
+            if (pat_n < 256) {
+                pat[pat_n] = c as U8;
+                pat_n = pat_n + 1;
+                refind();
+            }
+        } else if (c == C_OPEN) {
+            line = LINE_NONE;
+            open_line();
+            return;
+        } else {
+            _ = moved(c);
+        }
+    }
+    line = LINE_NONE;
+}
+
+// Desk: the descriptor of the file named path_in, read from its start, or -1; a name that does not open, a directory
+// and a file that does not seek are -1. Opened without blocking, so a FIFO with no writer is refused, not waited on.
+I64 open_named() {
+    I64 nfd = shctl.sh_open(path_in[0..path_n], O_NONBLOCK, 0);
+    if (nfd < 0) { return -1; }
+    U8[1] one;
+    I64 end = corectl.co_lseek(nfd, 0, 2);
+    Bool bad = end < 0 || corectl.co_lseek(nfd, 0, 0) != 0;
+    if (bad || shctl.fd_read(nfd, one) < 0 || corectl.co_lseek(nfd, 0, 0) != 0) {
+        _ = shctl.fd_close(nfd);
+        return -1;
+    }
+    return nfd;
+}
+
+// Desk: the open line. Enter opens the name in this window (the bar takes its name); a name that does not open
+// leaves `Couldn't open NAME.` until the next key. Esc closes it, and so does Enter on an empty name.
+void open_line() {
+    line = LINE_OPEN;
+    path_n = 0;
+    Bool going = true;
+    while (going) {
+        draw();
+        I64 c = next_key();
+        if (c < 0) {
+            leave(0);
+        } else if (c == K_ESC || c == C_OPEN) {
+            going = false;
+        } else if (c == 13 || c == 10) {
+            if (path_n == 0) {
+                going = false;
+            } else {
+                I64 nfd = open_named();
+                if (nfd >= 0) {
+                    take(nfd);
+                    going = false;
+                } else {
+                    line = LINE_FAIL;
+                    draw();
+                    if (next_key() < 0) { leave(0); }
+                    going = false;
+                }
+            }
+        } else if (c == 127 || c == 8) {
+            if (path_n > 0) { path_n = path_n - 1; }
+        } else if (c >= 32 && c < 127) {
+            if (path_n < 256) {
+                path_in[path_n] = c as U8;
+                path_n = path_n + 1;
+            }
+        } else if (c == C_FIND) {
+            line = LINE_NONE;
+            find_line(true, 0);
+            return;
+        } else {
+            _ = moved(c);
+        }
+    }
+    line = LINE_NONE;
+}
+
+// Desk: reads nfd (a file that seeks) from here on, from its top, under the name path_in; the bar and the menu are
+// declared again for it.
+void take(I64 nfd) {
+    if (fd > 2) { _ = shctl.fd_close(fd); }
+    fd = nfd;
+    seeks = true;
+    total = corectl.co_lseek(fd, 0, 2);
+    _ = corectl.co_lseek(fd, 0, 0);
+    clipped = false;
+    win_at = -1;
+    win_n = 0;
+    idx[0] = 0;
+    scanned = 1;
+    scan_off = 0;
+    all = false;
+    for i in 0..STARTS { st_k[i] = 0; }
+    an_k[0] = 0;
+    an_k[1] = 0;
+    top = 0;
+    seg = 0;
+    pat_n = 0;
+    hit_at = -1;
+    hit_n = -1;
+    hit_k = 0;
+    for i in 0..path_n { name[i] = path_in[i]; }
+    name_n = path_n;
+    declare();
+}
+
+// Desk: the window's declaration. The title (OSC 2) is the file's name after its last `/`, control bytes as `?`, and
+// empty for descriptor 0, so the bar names Read and not the title the shell left; a title clears the rest (AM
+// section 7.2), so About and the rows follow it: Open, Find, Find Next and Copy (frame 41), each row's id its key's
+// byte, Copy dimmed until the desk has a clipboard.
+void declare() {
+    put.bytes(b"\x1b]2;");
+    if (fd != 0) {
+        I64 b = 0;
+        for i in 0..name_n {
+            if (name[i] == '/') { b = i + 1; }
+        }
+        for i in b..name_n {
+            U8 c = name[i];
+            if (c < 32 || c == 127) { c = '?'; }
+            put.byte(c);
+        }
+    }
+    put.byte(7);
+    U8[200] o;
+    I64 n = appmenu.osc_about(o, b"Read", b"0.1.0", b"A pager for text files: page and search with the keys of less.");
+    put.bytes(o[0..n]);
+    n = appmenu.osc_settings_dim(o, 1);   // plan A: no settings of Read's own yet, the row dimmed (frame 41)
+    put.bytes(o[0..n]);
+    row(C_OPEN, b"Open", b"Ctrl+O", appitems.GROUP);
+    row(C_FIND, b"Find", b"Ctrl+F", appitems.GROUP);
+    row(C_NEXT, b"Find Next", b"Ctrl+G", 0);
+    row(C_COPY, b"Copy", b"Ctrl+C", appitems.GROUP | appitems.DIM);   // no desk clipboard yet: DN-58 item 12
+    put.flush();
+}
+
+// One own row of the app menu (AM-4, kit/appitems.ci), in the menu itself (no parent).
+void row(I64 id, in U8[_] label, in U8[_] keys, I64 marks) {
+    U8[80] o;
+    I64 n = appitems.osc_item(o, id, 0, label, keys, marks);
+    if (n > 0) { put.bytes(o[0..n]); }
+}
+
+void pass() {
+    U8[4096] b;
+    Bool more = true;
+    while (more) {
+        I64 r = shctl.fd_read(fd, b);
+        if (r < 0) {
+            msg.file(name[0..name_n], 0 - r);
+            more = false;
+        } else if (r == 0) {
+            more = false;
+        } else {
+            put.bytes(b[0..r]);
+        }
+    }
+    msg.finish();
+}
+
+void main(in U8[_] a) {
+    msg.name(b"cless");
+    I64 e = 0;
+    while (e < len(a) && a[e] != 0) { e = e + 1; }
+    if (e > 0 && e < len(a) - 1) { msg.usage(b"usage: cless [FILE]"); }
+    if (e == 0 || (e == 1 && a[0] == '-')) {
+        name[0] = '-';
+        name_n = 1;
+        fd = 0;
+    } else {
+        for i in 0..e {
+            if (name_n < 256) {
+                name[name_n] = a[i];
+                name_n = name_n + 1;
+            }
+        }
+        fd = get.open(a[0..e]);
+        if (fd < 0) { msg.finish(); }
+    }
+    U8[64] probe;
+    if (shctl.sh_tcget(1, probe) <= 0) { pass(); }
+    kfd = 2;
+    tio_n = shctl.sh_tcget(2, saved);
+    if (tio_n <= 0 && fd != 0) {
+        kfd = 0;
+        tio_n = shctl.sh_tcget(0, saved);
+    }
+    if (tio_n <= 0) { pass(); }
+    desk = ondesk.on_desk();            // AM-3: the menu and the title only in a desk terminal
+    I64 end = corectl.co_lseek(fd, 0, 2);
+    if (end >= 0 && corectl.co_lseek(fd, 0, 0) == 0) {
+        seeks = true;
+        total = end;
+    } else {
+        hold();
+    }
+    idx[0] = 0;
+    I64 ws = viewctl.view_winsize(1);
+    if (ws > 0 && ws >> 16 >= 2 && ws % 65536 >= 8) {
+        rows = ws >> 16;
+        cols = ws % 65536;
+    }
+    wide = cols;
+    if (desk) {
+        wide = cols - 1;
+        declare();
+    }
+    for i in 0..tio_n {
+        raw[i] = saved[i];
+    }
+    raw[12] = raw[12] & 0xF4;    // c_lflag: no ISIG (1), ICANON (2) or ECHO (8)
+    raw[17 + 6] = 1;             // VMIN
+    raw[17 + 5] = 0;             // VTIME
+    _ = shctl.sh_tcset(kfd, raw[0..tio_n]);
+    Bool going = true;
+    while (going) {
+        draw();
+        note_n = 0;
+        I64 c = next_key();
+        I64 half = text_rows() / 2;
+        if (c < 0 || c == 'q' as I64 || c == 'Q' as I64 || (c == 3 && !desk)) { going = false; }
+        else if (c == ' ' as I64 || c == 'f' as I64) { down(text_rows()); }
+        else if (c == 'b' as I64) { up(text_rows()); }
+        else if (c == 'j' as I64 || c == 13 || c == 10) { down(1); }
+        else if (c == 'k' as I64) { up(1); }
+        else if (c == 'd' as I64) { down(half); }
+        else if (c == 'u' as I64) { up(half); }
+        else if (c == 'g' as I64) { top = 0; seg = 0; }
+        else if (c == 'G' as I64) { bottom(); }
+        else if (desk && (c == C_FIND || c == '/' as I64)) { find_line(true, 0); }
+        else if (desk && (c == C_NEXT || c == 'n' as I64)) { find_line(pat_n == 0, 1); }
+        else if (desk && c == 'N' as I64) { find_line(pat_n == 0, -1); }
+        else if (desk && c == C_OPEN) { open_line(); }
+        else if (c == '/' as I64) { ask(); }
+        else if (c == 'n' as I64) { find(1); }
+        else if (c == 'N' as I64) { find(-1); }
+        else { _ = moved(c); }
+    }
+    leave(0);
+}
+// SPDX-License-Identifier: Apache-2.0

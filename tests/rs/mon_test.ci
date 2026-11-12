@@ -1,0 +1,286 @@
+// tests/rs/mon_test.ci: RS-MON (docs/specs/2026-11-11-rs-rel-s1-units.md; frames 42 and 45, DN-63): Monitor's model
+// (user/ci/kit/monpad.ci) driven as user/ci/monitor.ci drives it: shares and rates from two readings, the minute of
+// history, the list's order and pick, the parts that cannot be chosen, the click map at the open size and in the
+// narrow form, and the words. Run: cint test --root . tests/rs/mon_test.ci
+import user.ci.kit.monpad;
+import user.ci.kit.apps;
+import user.ci.kit.icons3;
+
+U8[64] b;
+
+Bool same(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for i in 0..n {
+        if (b[i] != want[i]) { return false; }
+    }
+    return true;
+}
+
+// Two readings a second apart: the processor 25 percent busy, memory a quarter used, three processes.
+void two_readings() {
+    monpad.box(monpad.W, monpad.H);
+    monpad.parts_usable(true, false);
+    monpad.me(7);
+    monpad.cpu(b"Test CPU", 3600, 100, 900);
+    monpad.memory(1073741824, 805306368);
+    monpad.counts(3, 10);
+    monpad.disk(b"Daphnis Disk", 4194304, 1048576, 4206592, 8192);
+    monpad.procs_begin();
+    monpad.proc(1, b"init", 409600, 10, 0);
+    monpad.proc(7, b"monitor", 40960, 50, 0);
+    monpad.proc(9, b"cview", 4096000, 0, monpad.GRANT_DISK);
+    monpad.sample(0);
+    monpad.cpu(b"Test CPU", 3600, 350, 1650);
+    monpad.disk(b"Daphnis Disk", 4194304, 1048576, 4206592 + 32768, 8192 + 4096);
+    monpad.procs_begin();
+    monpad.proc(1, b"init", 409600, 60, 0);
+    monpad.proc(7, b"monitor", 40960, 250, 0);
+    monpad.proc(9, b"cview", 4096000, 0, monpad.GRANT_DISK);
+    monpad.sample(1000000000);
+}
+
+test "RS-MON: every share and rate comes from two readings; the first has none" {
+    monpad.box(monpad.W, monpad.H);
+    monpad.parts_usable(true, false);
+    monpad.cpu(b"Test CPU", 3600, 100, 900);
+    monpad.memory(1073741824, 805306368);
+    monpad.procs_begin();
+    monpad.sample(0);
+    assert(monpad.part_figure(monpad.CPU) == -1);
+    assert(monpad.part_figure(monpad.MEM) == 250);
+    two_readings();
+    assert(monpad.part_figure(monpad.CPU) == 250);                // 250 busy ticks of 1000
+    assert(monpad.part_figure(monpad.DISK) == 36864);             // 32 KiB read and 4 KiB written in a second
+    assert(monpad.part_figure(monpad.NET) == -1);
+    assert(same(monpad.figure_text(b, monpad.CPU), b"25%"));
+    assert(same(monpad.figure_text(b, monpad.MEM), b"256 MiB"));
+    assert(same(monpad.figure_text(b, monpad.DISK), b"36 KiB/s"));
+    assert(monpad.figure_text(b, monpad.NET) == 0);
+}
+
+test "RS-MON: a minute of history a part, the oldest dropped" {
+    monpad.box(monpad.W, monpad.H);
+    monpad.parts_usable(true, false);
+    monpad.memory(1000, 500);
+    monpad.procs_begin();
+    for i in 0..70 { monpad.sample(1000000000 * (i + 1)); }
+    assert(monpad.held(monpad.MEM) == 61);
+    assert(monpad.held(monpad.NET) == 0);                         // no reading, no history
+}
+
+test "RS-MON: Processor sorts by share, Memory by bytes; the pick follows its process" {
+    two_readings();
+    assert(monpad.chosen() == monpad.CPU);
+    assert(monpad.rows() == 3);
+    assert(monpad.row_pid(0) == 7 && monpad.row_share(0) == 200);   // 200 of 1000 ticks: 20.0%
+    assert(monpad.row_pid(1) == 1 && monpad.row_share(1) == 50);
+    assert(monpad.row_pid(2) == 9 && monpad.row_share(2) == 0);
+    assert(monpad.step(1));                                         // no pick yet: Down picks the first row
+    assert(monpad.end_pid() == 7);
+    assert(monpad.step(1) && monpad.end_pid() == 1);
+    assert(monpad.choose(monpad.DISK) && monpad.end_pid() == -1);  // no list shown: nothing to end
+    assert(monpad.choose(monpad.MEM));
+    assert(monpad.row_pid(0) == 9 && monpad.row_pid(1) == 1 && monpad.row_pid(2) == 7);
+    assert(monpad.end_pid() == 1);
+    monpad.procs_begin();                                          // process 1 ends: the pick goes with it
+    monpad.proc(7, b"monitor", 40960, 300, 0);
+    monpad.proc(9, b"cview", 4096000, 0, monpad.GRANT_DISK);
+    monpad.sample(2000000000);
+    assert(monpad.rows() == 2 && monpad.end_pid() == -1);
+}
+
+test "RS-MON: Network (no facts kind 3) and Graphics Memory cannot be chosen; Tab steps over them" {
+    two_readings();
+    assert(!monpad.can_choose(monpad.NET) && !monpad.can_choose(monpad.GMEM));
+    assert(!monpad.choose(monpad.NET) && !monpad.choose(monpad.GMEM));
+    assert(monpad.choose(monpad.DISK));
+    assert(monpad.next_part(1) && monpad.chosen() == monpad.GPU);
+    assert(monpad.next_part(1) && monpad.chosen() == monpad.CPU);
+    assert(monpad.next_part(-1) && monpad.chosen() == monpad.GPU);
+    monpad.parts_usable(false, false);                             // no disk: Disk too, and the choice falls back
+    assert(!monpad.can_choose(monpad.DISK));
+    assert(monpad.choose(monpad.MEM));
+}
+
+test "RS-MON: the click map at the open size (frame 42)" {
+    two_readings();
+    monpad.parts_usable(true, false);
+    assert(monpad.click(100, 12 + 50 + 10) == monpad.MEM);         // a sidebar row
+    assert(monpad.click(100, 12 + 50 * 5 + 10) == monpad.NONE);    // Graphics Memory
+    assert(monpad.click(100, 12 + 10) == monpad.CPU);
+    assert(monpad.click(700, 330) == monpad.NONE);                 // End Process with nothing picked
+    assert(monpad.click(400, 388 + 5) == monpad.PICK);             // the first row
+    assert(monpad.end_pid() == 7);
+    assert(monpad.click(400, 388 + 30 + 27) == monpad.PICK && monpad.end_pid() == 1);
+    assert(monpad.click(400, 388 + 30 + 28) == monpad.NONE);       // the gap between rows
+    assert(monpad.click(700, 330) == monpad.END);
+    assert(monpad.click(250, 330) == monpad.FOLD && monpad.is_folded());
+    assert(monpad.click(700, 330) == monpad.NONE);                 // folded: End Process rests
+    assert(monpad.click(400, 393) == monpad.NONE);
+    assert(monpad.click(250, 330) == monpad.FOLD && !monpad.is_folded());
+}
+
+test "RS-MON: under 640 the sidebar folds behind a button; a choice, a click outside or Esc closes it" {
+    two_readings();
+    monpad.box(600, 400);
+    assert(monpad.click(100, 12 + 50 + 10) == monpad.NONE);        // no sidebar: the page is there
+    assert(monpad.click(30, 30) == monpad.SIDE_FLIP);              // the sidebar button
+    assert(monpad.click(100, 12 + 50 + 10) == monpad.MEM);         // a choice closes it
+    assert(monpad.chosen() == monpad.MEM);
+    assert(!monpad.close_side());
+    assert(monpad.click(30, 30) == monpad.SIDE_FLIP);
+    assert(monpad.click(400, 200) == monpad.SIDE_FLIP);            // a click outside
+    assert(monpad.click(30, 30) == monpad.SIDE_FLIP);
+    assert(monpad.close_side());                                   // Esc
+    monpad.box(monpad.W, monpad.H);
+    assert(monpad.click(100, 12 + 10) == monpad.CPU);
+}
+
+test "RS-MON: Disk's large figure is the space used, as its wheel; its sidebar figure stays the rate (note 68)" {
+    two_readings();
+    assert(monpad.choose(monpad.DISK));
+    assert(same(monpad.large_text(b), b"3 MiB"));                 // 4 MiB less 1 MiB free
+    assert(same(monpad.figure_text(b, monpad.DISK), b"36 KiB/s"));
+    assert(monpad.choose(monpad.MEM));
+    assert(same(monpad.large_text(b), b"256 MiB"));               // the others as the sidebar's
+}
+
+test "RS-MON: a network device is at full strength however idle: 0 B/s, a flat graph; none is at 40 percent" {
+    two_readings();
+    monpad.parts_usable(true, true);
+    monpad.net(false, b"", b"Wired", 5000, 7000);
+    monpad.sample(2000000000);
+    monpad.net(false, b"", b"Wired", 5000, 7000);
+    monpad.sample(3000000000);
+    assert(monpad.can_choose(monpad.NET) && monpad.part_figure(monpad.NET) == 0);
+    assert(same(monpad.figure_text(b, monpad.NET), b"0 B/s"));
+    assert(monpad.held(monpad.NET) == 1);
+    assert(monpad.choose(monpad.NET) && same(monpad.large_text(b), b"0 B/s"));
+    monpad.net(true, b"10.0.2.15", b"Wired", 5000 + 2048, 7000 + 1024);
+    monpad.sample(4000000000);
+    assert(same(monpad.figure_text(b, monpad.NET), b"3 KiB/s"));
+    monpad.parts_usable(true, false);                              // no device: no figure, and the choice falls back
+    assert(monpad.chosen() == monpad.CPU && monpad.figure_text(b, monpad.NET) == 0);
+    U8[4] a = [10, 0, 2, 15];
+    assert(same(monpad.addr_text(b, a), b"10.0.2.15"));
+    U8[4] m = [255, 255, 255, 0];
+    assert(same(monpad.addr_text(b, m), b"255.255.255.0"));
+    U8[4] z = [0, 0, 0, 0];
+    assert(monpad.addr_text(b, z) == 0);
+}
+
+test "RS-MON: the least box keeps a whole row of the list; with none in the box nothing is stepped or ended" {
+    two_readings();
+    monpad.box(480, 360);                                          // the graph gives way: the list starts at 332
+    assert(monpad.click(100, 332 + 5) == monpad.PICK && monpad.end_pid() == 7);
+    assert(monpad.step(1) && monpad.end_pid() == 1);               // the pick scrolls into the one row
+    assert(monpad.click(100, 332 + 5) == monpad.PICK && monpad.end_pid() == 1);
+    assert(monpad.click(440, 264 + 10) == monpad.END);
+    monpad.cpu(b"Test CPU", 999999999999, 350, 1650);              // facts too wide for one line: no whole row
+    monpad.counts(1000000000000000, 1000000000000);
+    assert(!monpad.step(1) && monpad.end_pid() == -1);
+    assert(monpad.click(440, 310 + 10) == monpad.NONE);
+    monpad.box(monpad.W, monpad.H);
+}
+
+test "RS-MON: a Child's list holds fewer rows than the machine's totals; the count and the pick hold (DN-69 item 5)" {
+    two_readings();
+    monpad.procs_begin();                                          // the kernel gives a Child its own two
+    monpad.proc(7, b"monitor", 40960, 450, 0);
+    monpad.proc(9, b"cview", 4096000, 0, monpad.GRANT_DISK);
+    monpad.cpu(b"Test CPU", 3600, 600, 2400);
+    monpad.sample(2000000000);
+    assert(monpad.rows() == 2 && monpad.part_figure(monpad.CPU) == 250);
+    assert(monpad.row_pid(0) == 7 && monpad.row_share(0) == 200);  // the rows sum under the machine's share
+    assert(monpad.step(1) && monpad.step(1) && monpad.end_pid() == 9);
+    assert(!monpad.step(1) && monpad.end_pid() == 9);
+}
+
+test "RS-MON: a counter's step past I64's reach is shown at the most, never a trap; a counter gone back reads 0" {
+    two_readings();
+    monpad.parts_usable(true, true);
+    monpad.net(true, b"10.0.2.15", b"Wired", 0, 0);
+    monpad.sample(2000000000);
+    monpad.net(true, b"10.0.2.15", b"Wired", 10000000000, 0);       // 10 GB in 2 s: past 9.2e9 times 1e9
+    monpad.sample(4000000000);
+    assert(monpad.part_figure(monpad.NET) == 5000000000);
+    monpad.net(true, b"10.0.2.15", b"Wired", 9000000000000000000, 0);
+    monpad.sample(5000000000);
+    assert(monpad.part_figure(monpad.NET) == 1125899906842624);    // 1 PiB/s, the most a rate reads
+    assert(same(monpad.figure_text(b, monpad.NET), b"1024 TiB/s"));
+    monpad.net(true, b"10.0.2.15", b"Wired", 4096, 0);             // the device replugged: its counter starts again
+    monpad.sample(6000000000);
+    assert(monpad.part_figure(monpad.NET) == 0);
+    monpad.net(true, b"10.0.2.15", b"Wired", 4096 + 2048, 0);
+    monpad.sample(7000000000);
+    assert(monpad.part_figure(monpad.NET) == 2048);
+    monpad.net(true, b"10.0.2.15", b"Wired", 8192, 0);             // readings under a millisecond apart: no rate
+    monpad.sample(7000500000);
+    assert(monpad.part_figure(monpad.NET) == -1);
+}
+
+test "RS-MON: Disk's space used is one statfs pair, as Storage; free past the capacity reads 0 B, none no figure" {
+    two_readings();
+    assert(monpad.choose(monpad.DISK));
+    monpad.disk(b"Daphnis Disk", 4194304, 8388608, 4206592, 8192);   // free past the capacity: held at it
+    assert(same(monpad.large_text(b), b"0 B"));
+    monpad.disk(b"Daphnis Disk", -1, -1, 4206592, 8192);             // no statfs: no wheel, no figure
+    assert(monpad.large_text(b) == 0);
+    monpad.disk(b"Daphnis Disk", 4194304, -1, 4206592, 8192);
+    assert(monpad.large_text(b) == 0);
+    monpad.disk(b"Daphnis Disk", 4194304, 1048576, 4206592, 8192);
+    assert(same(monpad.large_text(b), b"3 MiB"));
+}
+
+test "RS-MON: sizes in binary units, one decimal under 10, shares whole or in tenths" {
+    assert(same(monpad.size_text(b, 512), b"512 B"));
+    assert(same(monpad.size_text(b, 1536), b"1.5 KiB"));
+    assert(same(monpad.size_text(b, 2048), b"2 KiB"));
+    assert(same(monpad.size_text(b, 268435456), b"256 MiB"));
+    assert(same(monpad.size_text(b, 8589934592), b"8 GiB"));
+    assert(same(monpad.size_text(b, 12884901888), b"12 GiB"));
+    assert(same(monpad.share_text(b, 142, true), b"14.2%"));
+    assert(same(monpad.share_text(b, 225, false), b"23%"));
+    assert(same(monpad.share_text(b, 0, true), b"0.0%"));
+}
+// The list row of process pid, or -1.
+I64 row_of(I64 pid) {
+    for i in 0..monpad.rows() {
+        if (monpad.row_pid(i) == pid) { return i; }
+    }
+    return -1;
+}
+
+// Whether process pid's row reads want with the icon of the app whose program is prog (Program for none).
+Bool reads(I64 pid, in U8[_] want, in U8[_] prog) {
+    I64 r = row_of(pid);
+    if (r < 0) { return false; }
+    I64 ic = icons3.PROGRAM;
+    if (len(prog) > 0) { ic = apps.icon(apps.by_program(prog)); }
+    return same(monpad.row_name(b, r), want) && monpad.row_icon(r) == ic;
+}
+
+test "note 28 (RG-1): an app's process reads its app's name and icon, by kit/winname.ci's program; others keep theirs" {
+    monpad.box(monpad.W, monpad.H);
+    monpad.me(7);
+    monpad.procs_begin();
+    monpad.proc(7, b"bin/monitor", 40960, 0, 0);
+    monpad.proc(11, b"bin/calc", 40960, 0, 0);        // the release image's comm: the member path
+    monpad.proc(12, b"bin/finder", 40960, 0, 0);
+    monpad.proc(13, b"sh", 40960, 0, 0);              // the session's shell is cish, Console
+    monpad.proc(14, b"bin/sh", 40960, 0, 0);
+    monpad.proc(15, b"finder", 40960, 0, 0);
+    monpad.proc(16, b"bin/ced", 40960, 0, 0);
+    monpad.proc(17, b"bin/cat", 40960, 0, 0);         // not apps: their own names, the Program icon
+    monpad.proc(18, b"init", 40960, 0, 0);
+    monpad.proc(19, b"bin/authd", 40960, 0, 0);
+    monpad.sample(0);
+    assert(monpad.rows() == 10);
+    assert(reads(7, b"Monitor", b"/bin/monitor"));
+    assert(reads(11, b"Calc", b"/bin/calc"));
+    assert(reads(12, b"Index", b"/bin/finder") && reads(15, b"Index", b"/bin/finder"));
+    assert(reads(13, b"Console", b"/bin/cish") && reads(14, b"Console", b"/bin/cish"));
+    assert(reads(16, b"Edit", b"/bin/ced"));
+    assert(reads(17, b"bin/cat", b"") && reads(18, b"init", b"") && reads(19, b"bin/authd", b""));
+}
+// SPDX-License-Identifier: Apache-2.0

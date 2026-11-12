@@ -1,0 +1,96 @@
+// src/main_cish.ci: CS-1, the cish flavor (docs/specs/2026-11-06-cish-shell.md section 9). The user flavor's kernel
+// with another main: the scripted input is read once at boot, as the user flavor reads it, and cish runs it as its
+// standard input, live, its children's output with it; then again with other frames, which must not desync.
+// check-cish.sh compares cish's block with cish and busybox ash on Linux in a directory holding the same image.
+// K-10: with daphnis.ctrlc=1 on the boot line it runs ctrlc (user/ci/ctrlc.ci) in cish's place, the same two ways,
+// from an image check-cish.sh makes (cish, ctrlc, /bin/cat): ctrlc runs cish on a pty and types Ctrl-C and Ctrl-\ at it.
+// K-9: with daphnis.keyed=1, keyed (user/ci/keyed.ci) the same way, from its own image: it types at cish's line editor.
+
+import src.serial;
+import src.serialrx;
+import src.trap;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.surface;
+import src.input;
+import src.pool;
+import src.dsp;
+import src.bootarg;
+
+U8[512] line;
+I64 line_n = 0;
+
+// True when the boot line holds key followed by 1, as a word.
+Bool asked[m](in U8[m] key) {
+    for at in 0..line_n {
+        if ((at == 0 || line[at - 1] == 32) && at + m < line_n) {
+            Bool same = true;
+            for i in 0..m {
+                if (line[at + i] != key[i]) { same = false; }
+            }
+            if (same && line[at + m] == 49) { return true; }
+        }
+    }
+    return false;
+}
+
+void main() {
+    serialrx.serial_init_rx();   // not serial_init: its FIFO clear would drop the first byte of the input
+    serial.serial_write("Daphnis CS: cish\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    user.user_init();
+    fs.init();
+    pit.pic_remap();
+    pit.pit_start(11932);
+    _ = dsp.init();           // AU-3: /dev/dsp when an HDA controller is there; nothing said when none is
+    serial.serial_write("daphnis: image ");
+    proc.put_dec(user.initrd_size());
+    serial.serial_write(" bytes from the loader module\n");
+    Bool more = true;
+    I64 quiet = trap.timer_ticks();
+    while (more) {
+        I64 c = serialrx.serial_getc();
+        if (c == 4) {
+            more = false;
+        } else if (c >= 0) {
+            fs.stdin_push(c as U8);
+            quiet = trap.timer_ticks();
+        } else if (trap.timer_ticks() - quiet > 200) {
+            more = false;
+        }
+    }
+    serial.serial_write("daphnis: input ");
+    proc.put_dec(fs.stdin_len());
+    serial.serial_write(" bytes\n");
+    line_n = bootarg.boot_cmdline(line);
+    if (asked("daphnis.ctrlc=")) {
+        proc.run_alone(1, "ctrlc");
+        I64 held = proc.hold_frames(37);
+        proc.run_alone(2, "ctrlc");
+        proc.release_frames(held, 37);
+    } else if (asked("daphnis.keyed=")) {
+        proc.run_alone(1, "keyed");
+        I64 held = proc.hold_frames(37);
+        proc.run_alone(2, "keyed");
+        proc.release_frames(held, 37);
+    } else {
+        proc.run_alone(1, "cish");
+        I64 held = proc.hold_frames(37);
+        proc.run_alone(2, "cish");
+        proc.release_frames(held, 37);
+    }
+    serial.serial_write("daphnis: desync cish pid 2 (other frames) against pid 1: ");
+    if (proc.same_state(2, 1)) {
+        serial.serial_write("none\n");
+    } else {
+        serial.serial_write("DESYNC\n");
+    }
+    proc.report_pool();
+    serial.serial_write("cish: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

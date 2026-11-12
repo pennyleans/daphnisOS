@@ -1,0 +1,502 @@
+// Operator ranges and direct editing commands. Registers hold immutable piece spans.
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.edit;
+import user.ci.cvim.undo;
+import user.ci.cvim.mode;
+import user.ci.cvim.unicode;
+import user.ci.cvim.reg;
+import user.ci.cvim.motion;
+
+// Operators of two keys: g~, gu and gU.
+export const I64 OP_TILDE = 2001;
+export const I64 OP_LOWER = 2002;
+export const I64 OP_UPPER = 2003;
+
+export void range(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                  inout I64[_] u, I64 cmd, I64 target, Bool line, Bool inclusive) {
+    if (buf.total(x) == 0) {
+        if (cmd == 'y') {
+            if (!edit.reserve(r,x,add,sp,u,1,1,0,0)) { return; }
+            I64 at = r[state.R_SPTOP];
+            I64 off = r[state.R_ST_ADD];
+            add[off] = '\n';
+            r[state.R_ST_ADD] += 1;
+            sp[at * buf.SPAN] = buf.SRC_ADD;
+            sp[at * buf.SPAN + 1] = off;
+            sp[at * buf.SPAN + 2] = 1;
+            r[state.R_SPTOP] = at + 1;
+            reg.store(r, add, sp, 'y', at, at + 1, state.KIND_LINE, 0, false, false);
+        }
+        if (cmd == 'c') { mode.begin(r, 'c', 1); }
+        return;
+    }
+    I64 p = r[state.R_CUR];
+    I64 lo = min(p, target);
+    I64 hi = max(p, target);
+    I64 l0 = text.lineof(x, orig, add, lo);
+    I64 l1 = text.lineof(x, orig, add, hi);
+    Bool whole = line;
+    if (!whole && !inclusive && l1 > l0 && hi == text.lstart(x, orig, add, l1)) {
+        if (text.in_indent(x, orig, add, lo)) { whole = true; l1 -= 1; }
+        else { l1 -= 1; hi = text.lend(x, orig, add, l1); }
+    }
+    if (whole) {
+        lo = text.lstart(x, orig, add, l0);
+        hi = text.lend(x, orig, add, l1);
+        if (hi < buf.total(x)) { hi += 1; }
+    } else if (inclusive && hi < buf.total(x)) {
+        // An inclusive end on an empty line's end takes nothing there (Vim's oap->empty, op_delete on NUL).
+        if (!(lo == hi && text.empty_at(x, orig, add, hi))) { hi = text.nextc(x, orig, add, hi); }
+    }
+    hi = min(hi, buf.total(x));
+    if (cmd == 'd' && !whole && l1 > l0 && text.in_indent(x, orig, add, lo)) {
+        // op_delete: a characterwise delete over lines that ends where only blanks are left on its last line, and
+        // starts in the first line's indent, deletes whole lines.
+        I64 q = hi;
+        while (text.white(text.ch(x, orig, add, q))) { q += 1; }
+        if (text.ch(x, orig, add, q) == '\n' && q >= hi) {
+            whole = true;
+            lo = text.lstart(x, orig, add, l0);
+            hi = min(text.lend(x, orig, add, l1) + 1, buf.total(x));
+        }
+    }
+    I64 at_cur = p;
+    if (whole && target < p) { at_cur = target; }
+    apply(r, x, orig, add, sp, u, cmd, lo, hi, whole, l0, l1, at_cur);
+}
+
+// The spans an append to the command's uppercase register copies besides the yank's own (reg.ci's append).
+I64 append_spans(in I64[_] r, in I64[_] x, I64 lo, I64 hi) {
+    I64 name = r[state.R_REGNAME];
+    if (!reg.appends(name)) { return 0; }
+    I64 i = reg.index(name);
+    return reg.to_of(r, i) - reg.from_of(r, i) + edit.span_cost(x, lo, hi - lo) + 2;
+}
+
+I64 append_bytes(in I64[_] r) {
+    if (reg.appends(r[state.R_REGNAME])) { return 1; }
+    return 0;
+}
+
+// Case of c for g~ (OP_TILDE), gu and gU: Vim's swapchar with the toggle table; a cased letter whose toggle is a
+// smaller code point is lowercase, but for the letters the table lists as exceptions. Vim 9.1.1752's swapchar makes
+// ß (U+00DF) ẞ (U+1E9E) for ~, g~ and gU, though its case table has no upper case for it; gu leaves it.
+export const I64 SHARP_S = 0xDF;
+export const I64 CAP_SHARP_S = 0x1E9E;
+export I64 recase(I64 cmd, I64 c) {
+    if (c == SHARP_S && cmd != OP_LOWER) { return CAP_SHARP_S; }   // Vim's swapchar: ß to ẞ for g~ and gU (CV-R7 A)
+    I64 d = unicode.toggle_case(c);
+    if (c >= 'a' && c <= 'z') { d = c - 32; }
+    else if (c >= 'A' && c <= 'Z') { d = c + 32; }
+    if (cmd == OP_TILDE || d == c) { return d; }
+    Bool is_lc = (c >= 'a' && c <= 'z') || (c >= 128 && (d < c || c == 181 || c == 255 || c == 305 || c == 383));
+    if ((c >= 'A' && c <= 'Z') || c == CAP_SHARP_S) { is_lc = false; }   // ẞ is upper case (its lower is ß)
+    if (cmd == OP_UPPER) { if (is_lc) { return d; } return c; }
+    if (is_lc) { return c; }
+    return d;
+}
+
+// [lo, hi) to cased text, keeping every other byte.
+export Bool recase_range(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                  I64 cmd, I64 lo, I64 hi) {
+    I64 needed = 0; I64 spans = 0; I64 ops = 0; I64 pieces = 0;
+    U8[4] encoded;
+    I64 scan = lo;
+    while (scan < hi) {
+        I64 c = text.code_at(x, orig, add, scan);
+        I64 next = text.nextc(x, orig, add, scan);
+        if (c != '\n') {
+            I64 d = recase(cmd, c);
+            if (d != c) {
+                I64 n = text.encode_utf8(d, encoded); needed += n;
+                spans += edit.span_cost(x, scan, next - scan);
+                ops += 2; pieces += 4 + buf.chunks(x, n);
+            }
+        }
+        scan = next;
+    }
+    if (!edit.reserve(r, x, add, sp, u, needed, spans, ops, pieces)) { return false; }
+    I64 q = lo;
+    I64 end = hi;
+    while (q < end) {
+        I64 c = text.code_at(x, orig, add, q);
+        I64 next = text.nextc(x, orig, add, q);
+        if (c != '\n') {
+            I64 d = recase(cmd, c);
+            if (d != c) {
+                if (!edit.del(r, x, orig, add, sp, u, q, next - q)) { return false; }
+                U8[4] s;
+                I64 n = text.encode_utf8(d, s);
+                if (!edit.ins(r, x, orig, add, u, q, s[0..n])) { return false; }
+                end += n - (next - q);
+                next = q + n;
+            }
+        }
+        q = next;
+    }
+    return true;
+}
+
+// What recase_range (cmd g~ gu gU) or replace_range (cmd 'r', character c) of [lo, hi) needs, added to need: bytes,
+// spans, operations, pieces.
+export void change_need(in I64[_] x, in U8[_] orig, in U8[_] add, I64 cmd, I64 c, I64 lo, I64 hi,
+                        inout I64[_] need) {
+    U8[4] enc;
+    I64 q = lo;
+    while (q < hi) {
+        I64 next = text.nextc(x, orig, add, q);
+        I64 k = text.code_at(x, orig, add, q);
+        if (k != '\n') {
+            I64 d = c;
+            if (cmd != 'r') { d = recase(cmd, k); }
+            if (d != k || cmd == 'r') {
+                I64 n = text.encode_utf8(d, enc);
+                need[0] += n; need[1] += edit.span_cost(x, q, next - q); need[2] += 2; need[3] += 4 + buf.chunks(x, n);
+            }
+        }
+        q = next;
+    }
+}
+
+// Every character of [lo, hi) but the line feeds made c (Visual r).
+export Bool replace_range(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                          inout I64[_] u, I64 c, I64 lo, I64 hi) {
+    U8[4] s;
+    I64 n = text.encode_utf8(c, s);
+    I64 chars = 0; I64 spans = 0;
+    I64 q = lo;
+    while (q < hi) {
+        I64 next = text.nextc(x, orig, add, q);
+        if (text.ch(x, orig, add, q) != '\n') { chars += 1; spans += edit.span_cost(x, q, next - q); }
+        q = next;
+    }
+    if (!edit.reserve(r, x, add, sp, u, n * chars, spans, 2 * chars, chars * (4 + buf.chunks(x, n)))) { return false; }
+    q = lo;
+    I64 end = hi;
+    while (q < end) {
+        I64 next = text.nextc(x, orig, add, q);
+        if (text.ch(x, orig, add, q) != '\n') {
+            if (!edit.del(r, x, orig, add, sp, u, q, next - q)) { return false; }
+            if (!edit.ins(r, x, orig, add, u, q, s[0..n])) { return false; }
+            end += n - (next - q);
+            next = q + n;
+        }
+        q = next;
+    }
+    return true;
+}
+
+// The indent = gives line l (section 6's rules, as Vim's C indenting gives them for braces): a line that starts with }
+// takes the indent of its { line; a line after one that ends with { one shiftwidth more than it; a line after a } line
+// the indent of that block's { line; any other line the previous line's; a blank line none.
+I64 reindent_of(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    I64 fnb = text.first_nonblank(x, orig, add, l, false);
+    if (fnb == text.lend(x, orig, add, l)) { return 0; }
+    if (text.ch(x, orig, add, fnb) == '}') {
+        I64 m = motion.open_before(x, orig, add, fnb, '{');
+        if (m < 0) { return 0; }
+        return text.indent(x, orig, add, text.lineof(x, orig, add, m));
+    }
+    I64 pl = l - 1;
+    while (pl >= 0 && text.first_nonblank(x, orig, add, pl, false) == text.lend(x, orig, add, pl)) { pl -= 1; }
+    if (pl < 0) { return 0; }
+    I64 last = text.lend(x, orig, add, pl);
+    while (last > text.lstart(x, orig, add, pl) && text.white(text.ch(x, orig, add, last - 1))) { last -= 1; }
+    if (text.ch(x, orig, add, last - 1) == '{') { return text.indent(x, orig, add, pl) + text.TS; }
+    I64 pf = text.first_nonblank(x, orig, add, pl, false);
+    if (text.ch(x, orig, add, pf) == '}') {
+        I64 m = motion.open_before(x, orig, add, pf, '{');
+        if (m >= 0) { return text.indent(x, orig, add, text.lineof(x, orig, add, m)); }
+    }
+    return text.indent(x, orig, add, pl);
+}
+
+Bool reindent(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+              I64 l0, I64 l1) {
+    I64 deepest = 0;
+    I64 opens = 0;
+    for l in 0..l1 + 1 { deepest = max(deepest, text.indent(x, orig, add, l)); }
+    for q in text.lstart(x, orig, add, l0)..text.lend(x, orig, add, l1) {
+        if (text.ch(x, orig, add, q) == '{') { opens += 1; }
+    }
+    I64 most = deepest + text.TS * (opens + 1);
+    I64 needed = 0; I64 spans = 0; I64 ops = 0; I64 pieces = 0;
+    for l in l0..l1 + 1 {
+        I64 ls = text.lstart(x, orig, add, l);
+        I64 e = text.first_nonblank(x, orig, add, l, false);
+        needed += most; spans += edit.span_cost(x, ls, text.lend(x, orig, add, l) - ls);
+        ops += 1 + edit.blank_ops(most); pieces += 2 + edit.blank_cost(x, most);
+        if (e < ls) { return false; }
+    }
+    if (!edit.reserve(r, x, add, sp, u, needed, spans, ops, pieces)) { return false; }
+    for l in l0..l1 + 1 {
+        I64 n = reindent_of(x, orig, add, l);
+        I64 ls = text.lstart(x, orig, add, l);
+        I64 e = text.lend(x, orig, add, l);
+        if (text.first_nonblank(x, orig, add, l, false) == e) {
+            if (!edit.del(r, x, orig, add, sp, u, ls, e - ls)) { return false; }
+        } else if (!edit.set_indent(r, x, orig, add, sp, u, l, n)) { return false; }
+    }
+    return true;
+}
+
+// > and < on lines l0 to l1, amount shiftwidths, as one reserved command.
+export void shift(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                  I64 cmd, I64 l0, I64 l1, I64 amount) {
+    I64 needed = 0; I64 spans = 0; I64 ops = 0; I64 pieces = 0;
+    for l in l0..l1 + 1 {
+        I64 n = text.indent(x, orig, add, l);
+        if (cmd == '>') { n += text.TS * amount; } else { n = max(n - text.TS * amount, 0); }
+        I64 ls = text.lstart(x, orig, add, l);
+        I64 e = text.first_nonblank(x, orig, add, l, false);
+        if (ls != text.lend(x, orig, add, l) && (e - ls != n || text.indent(x, orig, add, l) != n)) {
+            needed += n; spans += edit.span_cost(x,ls,e-ls);
+            ops += 1+edit.blank_ops(n); pieces += 2+edit.blank_cost(x,n);
+        }
+    }
+    if (!edit.reserve(r,x,add,sp,u,needed,spans,ops,pieces)) { return; }
+    for l in l0..l1 + 1 {
+        I64 n = text.indent(x, orig, add, l);
+        if (cmd == '>') { n = n + text.TS * amount; }
+        else { n = max(n - text.TS * amount, 0); }
+        if (text.lstart(x, orig, add, l) != text.lend(x, orig, add, l)) {
+            if (!edit.set_indent(r, x, orig, add, sp, u, l, n)) { return; }
+        }
+    }
+    r[state.R_CUR] = text.first_nonblank(x, orig, add, l0, true);
+    r[state.R_WANT] = -1;
+    return;
+}
+
+// The operator cmd on [lo, hi), whole lines l0 to l1 when whole; the cursor of a linewise yank or case change goes to
+// at_cur. The registers it writes follow Vim's op_delete and op_yank (reg.ci).
+export void apply(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                  inout I64[_] u, I64 cmd, I64 lo0, I64 hi0, Bool whole, I64 l0, I64 l1, I64 at_cur) {
+    I64 lo = lo0;
+    I64 hi = hi0;
+    I64 p = r[state.R_CUR];
+    if (cmd == '=') {
+        if (!reindent(r, x, orig, add, sp, u, l0, l1)) { return; }
+        r[state.R_CUR] = text.first_nonblank(x, orig, add, l0, true);
+        r[state.R_WANT] = -1;
+        return;
+    }
+    if (cmd == OP_TILDE || cmd == OP_UPPER || cmd == OP_LOWER) {
+        if (!recase_range(r, x, orig, add, sp, u, cmd, lo, hi)) { return; }
+        r[state.R_CUR] = lo;
+        if (whole) { r[state.R_CUR] = at_cur; }
+        r[state.R_CUR] = text.normal_pos(x, orig, add, r[state.R_CUR]);
+        r[state.R_WANT] = -1;
+        return;
+    }
+    if (cmd == '>' || cmd == '<') { shift(r, x, orig, add, sp, u, cmd, l0, l1, 1); return; }
+    if (cmd != 'y' && !whole && lo == hi) {
+        // Nothing to delete: Vim's op_delete returns before any register (a c still begins Insert mode).
+        r[state.R_CUR] = text.normal_pos(x, orig, add, lo);
+        if (cmd == 'c') { r[state.R_CUR] = lo; mode.begin(r, 'c', 1); }
+        r[state.R_WANT] = -1;
+        return;
+    }
+    if (cmd != 'y') {
+        I64 dl = lo; I64 dh = hi;
+        if (whole && hi == buf.total(x) && lo > 0 && cmd != 'c') { dl -= 1; dh -= 1; }
+        I64 bytes = 0; I64 ops = 1; I64 pieces = 2;
+        if (cmd == 'c' && whole) {
+            I64 ind = text.indent(x,orig,add,l0);
+            bytes = ind+1; ops += 1+edit.blank_ops(ind); pieces += 3+edit.blank_cost(x,ind);
+        }
+        if (!edit.reserve(r,x,add,sp,u,bytes+append_bytes(r),edit.span_cost(x,lo,hi-lo)+edit.span_cost(x,dl,dh-dl)+append_spans(r,x,lo,hi),ops,pieces)) { return; }
+    } else if (reg.appends(r[state.R_REGNAME]) && !edit.reserve(r,x,add,sp,u,1,edit.span_cost(x,lo,hi-lo)+append_spans(r,x,lo,hi),0,0)) { return; }
+    if (!edit.yank(r, x, sp, lo, hi - lo, whole)) { return; }
+    I64 kind = state.KIND_CHAR;
+    if (whole) { kind = state.KIND_LINE; }
+    reg.store(r, add, sp, cmd, r[state.R_REG_FROM], r[state.R_REG_TO], kind, 0, l1 > l0, r[state.R_USE_ONE] != 0);
+    if (cmd == 'y') {
+        if (whole) { r[state.R_CUR] = at_cur; }
+        else { r[state.R_CUR] = lo; }
+        return;
+    }
+    if (cmd == 'c' && whole) {
+        // cc keeps the first line's indent and its terminating line feed.
+        I64 ind = text.indent(x, orig, add, l0);
+        I64 start = lo;
+        if (!edit.del(r, x, orig, add, sp, u, lo, hi - lo)) { return; }
+        U8[1] lf; lf[0] = '\n';
+        if (buf.total(x) == 0) { if (!edit.own_line(r, x, orig, add, u)) { return; } }
+        else { if (!edit.ins(r, x, orig, add, u, start, lf)) { return; } }
+        if (!edit.blanks(r, x, orig, add, u, start, ind)) { return; }
+        r[state.R_CUR] = start + ind;
+        mode.begin(r, 'c', 1);
+        r[state.R_DID_AI] = 1;
+        r[state.R_CAN_SI] = 1;
+        return;
+    }
+    if (whole && hi == buf.total(x) && lo > 0) {
+        // Deleting the last lines also takes the preceding line feed, keeping one final line feed.
+        lo -= 1;
+        hi -= 1;
+    }
+    if (!edit.del(r, x, orig, add, sp, u, lo, hi - lo)) { return; }
+    r[state.R_CUR] = lo;
+    if (cmd == 'c') { mode.begin(r, 'c', 1); }
+    else if (whole) {
+        r[state.R_CUR] = text.first_nonblank(x, orig, add, min(l0, text.nlines(x) - 1), true);
+    } else { r[state.R_CUR] = text.normal_pos(x, orig, add, lo); }
+    r[state.R_WANT] = -1;
+}
+
+export void paste(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                  inout I64[_] u, Bool after, I64 rep) {
+    I64 from = r[state.R_REG_FROM];
+    I64 to = r[state.R_REG_TO];
+    if (from == to) { return; }
+    I64 cost = 2;
+    for s in from..to { cost += buf.chunks(x,sp[s*buf.SPAN+2]); }
+    I64 extra = 0; if (buf.total(x) == 0) { extra = 1; }
+    if (!edit.reserve(r,x,add,sp,u,extra,0,rep+extra,rep*cost+3*extra)) { return; }
+    if (!edit.own_line(r, x, orig, add, u)) { return; }
+    I64 sz = 0;
+    for s in from..to { sz += sp[s * buf.SPAN + 2]; }
+    I64 p = r[state.R_CUR];
+    Bool line = r[state.R_REG_LINE] != 0;
+    if (line) {
+        I64 l = text.lineof(x, orig, add, p);
+        p = text.lstart(x, orig, add, l);
+        if (after) { p = text.lend(x, orig, add, l) + 1; }
+        p = min(p, buf.total(x));
+    } else if (after && text.ch(x, orig, add, p) != '\n') { p = text.nextc(x, orig, add, p); }
+    I64 start = p;
+    for i in 0..rep {
+        if (!edit.put(r, x, orig, add, sp, u, p, from, to)) { return; }
+        p += sz;
+    }
+    if (line) { r[state.R_CUR] = text.first_nonblank(x, orig, add, text.lineof(x, orig, add, start), true); }
+    else {
+        r[state.R_CUR] = text.prevc(x, orig, add, p);
+        for s in from..to {
+            I64 src = sp[s * buf.SPAN];
+            I64 off = sp[s * buf.SPAN + 1];
+            for j in 0..sp[s * buf.SPAN + 2] {
+                U8 b = 0;
+                if (src == buf.SRC_ORIG) { b = orig[off + j]; } else { b = add[off + j]; }
+                if (b == '\n') { r[state.R_CUR] = start; }
+            }
+        }
+    }
+    r[state.R_WANT] = -1;
+}
+
+export void replace(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                    inout I64[_] u, I64 c, I64 rep) {
+    I64 p = r[state.R_CUR];
+    I64 q = p;
+    for i in 0..rep {
+        if (text.ch(x, orig, add, q) == '\n') { r[state.R_BELL] = 1; return; }
+        q = text.nextc(x, orig, add, q);
+    }
+    U8[4] enc;
+    I64 enc_n = text.encode_utf8(c, enc);
+    I64 spans = edit.span_cost(x,p,q-p);
+    I64 bytes = enc_n*rep; I64 ops = rep+1; I64 cost = 2+rep*(buf.chunks(x,enc_n)+2);
+    if (c == '\n') {
+        I64 tail = q; while (text.white(text.ch(x,orig,add,tail))) { tail += 1; }
+        spans += edit.span_cost(x,q,tail-q); bytes = 1; ops = 3; cost = 7;
+    }
+    if (!edit.reserve(r,x,add,sp,u,bytes,spans,ops,cost)) { return; }
+    if (!edit.del(r, x, orig, add, sp, u, p, q - p)) { return; }
+    if (c == '\n') {
+        I64 tail = p;
+        while (text.white(text.ch(x, orig, add, tail))) { tail += 1; }
+        if (!edit.del(r, x, orig, add, sp, u, p, tail - p)) { return; }
+        U8[1] lf; lf[0] = '\n';
+        if (!edit.ins(r, x, orig, add, u, p, lf)) { return; }
+        r[state.R_CUR] = p + 1;
+        r[state.R_WANT] = -1;
+        return;
+    }
+    U8[4] s;
+    I64 n = text.encode_utf8(c, s);
+    for i in 0..rep { if (!edit.ins(r, x, orig, add, u, p + i * n, s[0..n])) { return; } }
+    r[state.R_CUR] = p + (rep - 1) * n;
+    r[state.R_WANT] = -1;
+}
+
+export void join(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                 inout I64[_] u, I64 rep) {
+    I64 l = text.lineof(x, orig, add, r[state.R_CUR]);
+    if (l + max(rep, 2) > text.nlines(x)) { r[state.R_BELL] = 1; return; }
+    I64 needed = 0; I64 spans = 0;
+    I64 first_start = text.lstart(x, orig, add, l);
+    I64 first_end = text.lend(x, orig, add, l);
+    Bool has_text = first_end > first_start;
+    U8 last = '\n';
+    if (has_text) { last = text.ch(x, orig, add, first_end - 1); }
+    for i in 1..max(rep, 2) {
+        I64 next_start = text.first_nonblank(x, orig, add, l + i, false);
+        I64 next_end = text.lend(x, orig, add, l + i);
+        I64 prev_end = text.lend(x,orig,add,l+i-1);
+        spans += edit.span_cost(x,prev_end,next_start-prev_end);
+        U8 c = text.ch(x, orig, add, next_start);
+        if (has_text && !text.white(last) && c != ')' && c != '\n') { needed += 1; }
+        if (next_start < next_end) { has_text = true; last = text.ch(x, orig, add, next_end - 1); }
+    }
+    if (!edit.reserve(r,x,add,sp,u,needed,spans,2*(max(rep,2)-1),5*(max(rep,2)-1))) { return; }
+    for i in 1..max(rep, 2) {
+        I64 e = text.lend(x, orig, add, l);
+        I64 next = text.first_nonblank(x, orig, add, l + 1, false);
+        Bool space = e > text.lstart(x, orig, add, l) && !text.white(text.ch(x, orig, add, e - 1)) && text.ch(x, orig, add, next) != ')' && text.ch(x, orig, add, next) != '\n';
+        if (!edit.del(r, x, orig, add, sp, u, e, next - e)) { return; }
+        if (space) {
+            if (!edit.blanks(r, x, orig, add, u, e, 1)) { return; }
+            edit.marks_shift(r, l, e - text.lstart(x, orig, add, l), 1);
+        }
+        r[state.R_CUR] = e;
+    }
+    r[state.R_CUR] = text.normal_pos(x, orig, add, r[state.R_CUR]);
+    r[state.R_WANT] = -1;
+}
+
+export void toggle(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                   inout I64[_] u, I64 rep) {
+    I64 p = r[state.R_CUR];
+    I64 scan = p;
+    I64 needed = 0; I64 spans = 0; I64 ops = 0; I64 pieces = 0;
+    U8[4] encoded;
+    for i in 0..rep {
+        I64 c = text.code_at(x, orig, add, scan);
+        if (c == '\n') { break; }
+        I64 d = unicode.toggle_case(c);
+        if (c >= 'a' && c <= 'z') { d = c - 32; }
+        else if (c >= 'A' && c <= 'Z') { d = c + 32; }
+        if (c == SHARP_S) { d = CAP_SHARP_S; }           // ~ (Vim's swapchar, OP_NOP)
+        if (d != c) {
+            I64 n = text.encode_utf8(d,encoded); needed += n;
+            spans += edit.span_cost(x,scan,text.nextc(x,orig,add,scan)-scan);
+            ops += 2; pieces += 4+buf.chunks(x,n);
+        }
+        scan = text.nextc(x, orig, add, scan);
+    }
+    if (!edit.reserve(r,x,add,sp,u,needed,spans,ops,pieces)) { return; }
+    for i in 0..rep {
+        I64 c = text.code_at(x, orig, add, p);
+        if (c == '\n') { break; }
+        I64 next = text.nextc(x, orig, add, p);
+        I64 d = unicode.toggle_case(c);
+        if (c >= 'a' && c <= 'z') { d = c - 32; }
+        else if (c >= 'A' && c <= 'Z') { d = c + 32; }
+        if (c == SHARP_S) { d = CAP_SHARP_S; }           // ~ (Vim's swapchar, OP_NOP)
+        if (d != c) {
+            if (!edit.del(r, x, orig, add, sp, u, p, next - p)) { return; }
+            U8[4] s;
+            I64 n = text.encode_utf8(d, s);
+            if (!edit.ins(r, x, orig, add, u, p, s[0..n])) { return; }
+            next = p + n;
+        }
+        p = next;
+    }
+    r[state.R_CUR] = text.normal_pos(x, orig, add, p);
+    r[state.R_WANT] = -1;
+}
+// SPDX-License-Identifier: Apache-2.0

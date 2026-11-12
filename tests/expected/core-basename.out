@@ -1,0 +1,38 @@
+$ /a/b/c
+c
+status 0
+$ /a/b/c/
+c
+status 0
+$ ///
+/
+status 0
+$ a
+a
+status 0
+$ ""
+
+status 0
+$ /a/b.txt .txt
+b
+status 0
+$ b.txt b.txt
+b.txt
+status 0
+$ /a//b//
+b
+status 0
+$ x/y .y
+y
+status 0
+$ -- -a
+-a
+status 0
+$ 
+-- stderr
+basename: missing operand
+status 2
+$ a b c
+-- stderr
+basename: extra operand
+status 2

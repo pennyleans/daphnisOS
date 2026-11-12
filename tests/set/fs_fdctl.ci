@@ -1,0 +1,8 @@
+// tests/set/fs_fdctl.ci: fdctl's call over tests/set/fs_shctl.ci's volume, copied over user/ci/fdctl.ci in an
+// isolated root by tools/check-settings.py. The names and numbers are user/ci/fdctl.ci's.
+import user.ci.shctl;
+
+export I64 fd_stat(I64 fd, inout I64[_] rec) { return shctl.fs_fstat(fd, rec); }
+
+export const I64 O_NOFOLLOW = 0x20000;
+// SPDX-License-Identifier: Apache-2.0

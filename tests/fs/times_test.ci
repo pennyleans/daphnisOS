@@ -1,0 +1,194 @@
+// tests/fs/times_test.ci: FS-4 (ruling FS-R2, docs/specs/2026-11-07-bu2-meta.md section 4.6), hosted: src/ext2.ci as
+// it is, on the volume of tests/fs/ext2_vol.ci (mke2fs's, every time 1) in the hosted disk. Each call that changes
+// the volume is given a time of its own, and the three times of every inode it should touch, and of the ones it
+// should not, are read back. A test starts from fresh module state, so each one replays the steps before its own
+// (the functions below, in order) and then checks its step. check.sh runs it from a copy of the tree with
+// tests/hosted/src/{bits,phys,blk}.ci in src/.
+
+import src.blk;
+import src.ext2;
+import tests.fs.ext2_vol;
+
+const I64 ROOT = 2;
+
+void volume() {
+    blk.blank(ext2_vol.SECTORS);
+    for k in 0..ext2_vol.RUNS {
+        blk.load(ext2_vol.start(k), ext2_vol.span(k), ext2_vol.value(k));
+    }
+    assert(ext2.mount() == 0);
+    assert(ext2.is_writable());
+}
+
+// The three times of inode i are a, c and m.
+Bool times(I64 i, I64 a, I64 c, I64 m) {
+    return ext2.atime(i) == a && ext2.ctime(i) == c && ext2.mtime(i) == m;
+}
+
+// --- the steps, each at a time of its own ---
+
+I64 file() { return ext2.lookup(ROOT, "a", 1); }
+I64 dir() { return ext2.lookup(ROOT, "d", 1); }
+
+void do_create() {
+    volume();
+    assert(ext2.create(ROOT, "a", 1, 0x1A4, 1000) > 0);
+}
+
+void do_write() {
+    do_create();
+    U8[8] b = [104, 101, 108, 108, 111, 0, 0, 0];
+    assert(ext2.write_at(file(), 0, b, 0, 5, 1010) == 5);
+}
+
+void do_truncate() {
+    do_write();
+    ext2.truncate(file(), 2, 1020);
+    ext2.truncate(file(), 2, 1021);
+}
+
+void do_mkdir() {
+    do_truncate();
+    assert(ext2.mkdir(ROOT, "d", 1, 0x1ED, 1030) > 0);
+}
+
+void do_meta() {
+    do_mkdir();
+    ext2.set_perm(file(), 0x180, 1040);
+    ext2.set_owner(file(), 5, 6, 1041);
+}
+
+void do_utimens() {
+    do_meta();
+    ext2.set_times(file(), 7, 8, 1050);
+    U8[4] b = [1, 2, 3, 4];
+    assert(ext2.write_at(file(), 0, b, 0, 4, 1060) == 4);
+    ext2.set_times(file(), -1, 9, 1070);
+}
+
+void do_link() {
+    do_utimens();
+    assert(ext2.link(dir(), "b", 1, file(), 1080) == 0);
+}
+
+void do_rename() {
+    do_link();
+    assert(ext2.rename(ROOT, "a", 1, dir(), "c", 1, 1090) == 0);
+}
+
+// --- the tests ---
+
+test "the volume mounts with every time 1" {
+    volume();
+    assert(times(ROOT, 1, 1, 1));
+}
+
+test "create: the file's three times, the directory's mtime and ctime" {
+    do_create();
+    assert(times(file(), 1000, 1000, 1000));
+    assert(times(ROOT, 1, 1000, 1000));
+}
+
+test "write: mtime and ctime, only when bytes were written; a read sets nothing" {
+    do_write();
+    I64 f = file();
+    assert(times(f, 1000, 1010, 1010));
+    assert(times(ROOT, 1, 1000, 1000));
+    U8[8] b;
+    assert(ext2.write_at(f, 5, b, 0, 0, 1011) == 0);
+    assert(times(f, 1000, 1010, 1010));
+    U8[8] r;
+    assert(ext2.read_at(f, 0, r, 0, 5) == 5 && r[0] == 104 && r[4] == 111);
+    assert(times(f, 1000, 1010, 1010));
+}
+
+test "truncate: mtime and ctime, also when the size does not move" {
+    do_write();
+    I64 f = file();
+    ext2.truncate(f, 2, 1020);
+    assert(ext2.file_size(f) == 2);
+    assert(times(f, 1000, 1020, 1020));
+    ext2.truncate(f, 2, 1021);
+    assert(times(f, 1000, 1021, 1021));
+}
+
+test "mkdir: the new directory's times, the parent's mtime and ctime" {
+    do_mkdir();
+    assert(times(dir(), 1030, 1030, 1030));
+    assert(times(ROOT, 1, 1030, 1030));
+    assert(times(file(), 1000, 1021, 1021));
+}
+
+test "chmod and chown: ctime only" {
+    do_mkdir();
+    I64 f = file();
+    ext2.set_perm(f, 0x180, 1040);
+    assert(times(f, 1000, 1040, 1021));
+    ext2.set_owner(f, 5, 6, 1041);
+    assert(times(f, 1000, 1041, 1021));
+    assert(ext2.uid(f) == 5 && ext2.gid(f) == 6);
+}
+
+test "utimensat: the times it names and ctime; a later write moves mtime; set again, it wins" {
+    do_meta();
+    I64 f = file();
+    ext2.set_times(f, 7, 8, 1050);
+    assert(times(f, 7, 1050, 8));
+    U8[4] b = [1, 2, 3, 4];
+    assert(ext2.write_at(f, 0, b, 0, 4, 1060) == 4);
+    assert(times(f, 7, 1060, 1060));
+    ext2.set_times(f, -1, 9, 1070);
+    assert(times(f, 7, 1070, 9));
+}
+
+test "link: the file's ctime, the directory's mtime and ctime" {
+    do_link();
+    assert(times(file(), 7, 1080, 9));
+    assert(times(dir(), 1030, 1080, 1080));
+    assert(times(ROOT, 1, 1030, 1030));
+}
+
+test "rename: both directories' mtime and ctime, the moved file's ctime" {
+    do_link();
+    I64 f = file();
+    I64 d = dir();
+    assert(ext2.rename(ROOT, "a", 1, d, "c", 1, 1090) == 0);
+    assert(ext2.lookup(d, "c", 1) == f && ext2.lookup(ROOT, "a", 1) == 0);
+    assert(times(f, 7, 1090, 9));
+    assert(times(d, 1030, 1090, 1090));
+    assert(times(ROOT, 1, 1090, 1090));
+}
+
+test "unlink: the directory's mtime and ctime, the file's ctime" {
+    do_rename();
+    I64 d = dir();
+    I64 f = ext2.lookup(d, "c", 1);
+    assert(ext2.unlink(d, "b", 1, 1100) == f);
+    assert(ext2.links(f) == 1);
+    assert(times(f, 7, 1100, 9));
+    assert(times(d, 1030, 1100, 1100));
+    assert(times(ROOT, 1, 1090, 1090));
+}
+
+test "symlink: the link's times, the directory's mtime and ctime" {
+    volume();
+    I64 s = ext2.symlink(ROOT, "s", 1, "d/c", 3, 1110);
+    assert(s > 0);
+    assert(times(s, 1110, 1110, 1110));
+    assert(times(ROOT, 1, 1110, 1110));
+}
+
+test "rmdir: the parent's mtime and ctime" {
+    volume();
+    I64 e = ext2.mkdir(ROOT, "e", 1, 0x1ED, 1120);
+    assert(e > 0);
+    assert(ext2.rmdir(ROOT, "e", 1, 1130) == e);
+    assert(times(ROOT, 1, 1130, 1130));
+}
+
+test "the changes reach the device" {
+    do_rename();
+    assert(ext2.commit());
+    assert(!ext2.failed());
+}
+// SPDX-License-Identifier: Apache-2.0

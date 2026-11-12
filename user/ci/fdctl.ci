@@ -1,0 +1,10 @@
+// user/ci/fdctl.ci: the row of FS-5 (user/ci/host.c, CI_ROWS_FD with CI_ROWS_CORE;
+// docs/specs/2026-11-07-bu2-meta.md section 4.9); it returns the call's value or -errno.
+//   fd_stat(fd, rec): fstat of the open descriptor fd into rec, at least corectl.ST_WORDS words in the order of
+//     corectl's ST_ names (co_stat's record); 0, or -errno.
+// With shctl.sh_open's O_NOFOLLOW (FS-5) it closes the gap between checking a path and opening it: open the name
+// without following a link, then ask the descriptor who owns the file and what kind it is.
+export extern unrestricted I64 fd_stat(I64 fd, out I64[_] rec);
+
+export const I64 O_NOFOLLOW = 0x20000;         // open's flag: a symbolic link as the last component is -ELOOP
+// SPDX-License-Identifier: Apache-2.0

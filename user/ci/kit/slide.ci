@@ -1,0 +1,210 @@
+// user/ci/kit/slide.ci: MS-7 (docs/specs/2026-11-10-ms-motion-shadows.md section 4; DN-54, design note 50), the
+// desktop switch's slide. Desktops 1 to 9 stand side by side as one strip, a higher number to the right. A switch
+// from desktop a to b moves the strip by b - a screens over SLIDE_MS on the out curve, so a switch of more than one
+// desktop passes over the ones between in the same time. Pure: the caller passes the curve's progress p (0 to 1000,
+// kit/anim.ci progress); at any p at most two desktops show. tools/check-hdesk.py's slide_at is the twin.
+//
+// MS-R5, the slide cache: the rows of each desktop that shows are kept once per slide in one of two slots (one for
+// each desktop that shows) and given back on the slide's later frames, word for word the rows they were made from. A
+// kept row is its 32 px segments in order: a segment of one color below 2^24 is a word (bit 31 clear, the count of
+// such segments in a row in bits 24 to 30, the color below), any other a word with bit 31 set and then its pixels as
+// they are. A row's words lie in one bank of 65536, or are the row above's when the two are equal; a row that would
+// pass CACHE_WORDS is not kept, and the caller paints it each frame. (A loop and draw.paint, not `equal` and
+// `fill`, which cost several times as much a pixel.)
+import user.ci.kit.draw;
+
+export const I64 SLIDE_MS = 240;
+
+// How far the strip has moved, in px, at progress p of a switch from a to b on a screen w wide: toward a higher
+// number positive. The size is cut before the sign, so a switch back mirrors the switch out to the pixel.
+export I64 moved(I64 a, I64 b, I64 w, I64 p) {
+    if (b < a) { return 0 - (a - b) * w * p / 1000; }
+    return (b - a) * w * p / 1000;
+}
+
+// Where desktop d's left edge stands on the screen at that point.
+export I64 at(I64 a, I64 b, I64 d, I64 w, I64 p) { return (d - a) * w - moved(a, b, w, p); }
+
+// Whether desktop d shows at that point: one of a to b whose left edge stands within (-w, w).
+export Bool shows(I64 a, I64 b, I64 d, I64 w, I64 p) {
+    I64 lo = a;
+    I64 hi = b;
+    if (b < a) {
+        lo = b;
+        hi = a;
+    }
+    if (d < lo || d > hi) { return false; }
+    I64 x = at(a, b, d, w, p);
+    return x > 0 - w && x < w;
+}
+
+export const I64 CACHE_WORDS = 131072;    // a slot's words: 2 banks of 65536 (an array holds at most 65536)
+const I64 BANK = 65536;
+const I64 BANKS = 2;
+const I64 ROWS = 3840;                    // the tallest screen, 4K portrait
+const I64 SEG = 32;
+const U32 RAW = 0x80000000;
+U32[65536] k0;                            // slot 0's banks
+U32[65536] k1;
+U32[65536] k2;                            // slot 1's banks
+U32[65536] k3;
+I64[2 * 3840] kept;                       // slot s's row y at s * ROWS + y: (first word << 16) | words, or -1
+I64[2] desk;                              // the desktop each slot holds, 0 for none
+I64[2] wide;                              // the row width it was kept at
+I64[2] used;                              // its words so far
+U32[4096] words;                          // a row as encode leaves it: at most 120 tags and 3840 pixels
+
+// Nothing kept: the next frame paints every row again.
+export void clear() {
+    desk[0] = 0;
+    desk[1] = 0;
+}
+
+// The slot that holds desktop d, or -1.
+export I64 held(I64 d) {
+    if (d <= 0) { return -1; }
+    if (desk[0] == d) { return 0; }
+    if (desk[1] == d) { return 1; }
+    return -1;
+}
+
+// An empty slot for desktop d, rows w wide: the one that does not hold `other` (the other desktop that shows, or 0).
+export I64 take(I64 d, I64 other, I64 w) {
+    I64 s = 0;
+    if (other > 0 && desk[0] == other) { s = 1; }
+    desk[s] = d;
+    wide[s] = w;
+    used[s] = 0;
+    for y in 0..ROWS { kept[s * ROWS + y] = -1; }
+    return s;
+}
+
+// Whether ch[of..of + n] is words[0..n].
+Bool same_as(in U32[_] ch, I64 of, I64 n) {
+    for i in 0..n {
+        if (ch[of + i] != words[i]) { return false; }
+    }
+    return true;
+}
+
+// Whether bank b's words [of, of + n) are words[0..n].
+Bool same(I64 b, I64 of, I64 n) {
+    if (b == 0) { return same_as(k0, of, n); }
+    if (b == 1) { return same_as(k1, of, n); }
+    if (b == 2) { return same_as(k2, of, n); }
+    return same_as(k3, of, n);
+}
+
+// words[0..n] into bank b from of.
+void put(I64 b, I64 of, I64 n) {
+    if (b == 0) {
+        copy(k0[of..of + n], words[0..n]);
+    } else if (b == 1) {
+        copy(k1[of..of + n], words[0..n]);
+    } else if (b == 2) {
+        copy(k2[of..of + n], words[0..n]);
+    } else {
+        copy(k3[of..of + n], words[0..n]);
+    }
+}
+
+// src[0..sw] as segments in `words`: their count of words.
+I64 encode(in U32[_] src, I64 sw) {
+    I64 n = 0;
+    I64 tag = -1;                         // the last word when it is a one-color tag
+    I64 x = 0;
+    while (x < sw) {
+        I64 e = min(x + SEG, sw);
+        U32 c = src[x];
+        I64 u = x + 1;
+        while (u < e && src[u] == c) { u = u + 1; }
+        if (c < 0x1000000 && u == e) {
+            if (tag >= 0 && (words[tag] & 0xFFFFFF) == c && words[tag] >> 24 < 127) {
+                words[tag] = words[tag] + 0x1000000;
+            } else {
+                tag = n;
+                words[n] = 0x1000000 | c;
+                n = n + 1;
+            }
+        } else {
+            tag = -1;
+            words[n] = RAW;
+            copy(words[n + 1..n + 1 + e - x], src[x..e]);
+            n = n + 1 + e - x;
+        }
+        x = e;
+    }
+    return n;
+}
+
+// Row y of slot s kept from src[0..sw] (a frame's row before it is moved), when it fits.
+export void store(I64 s, I64 y, in U32[_] src, I64 sw) {
+    if (s < 0 || s > 1 || y < 0 || y >= ROWS || sw != wide[s] || sw > 3840) { return; }
+    I64 k = s * ROWS + y;
+    kept[k] = -1;
+    I64 nw = encode(src, sw);
+    if (nw <= 0) { return; }
+    if (y > 0 && kept[k - 1] >= 0 && (kept[k - 1] & 65535) == nw) {   // the row above, when equal
+        I64 ps = kept[k - 1] >> 16;
+        if (same(s * BANKS + ps / BANK, ps % BANK, nw)) {
+            kept[k] = kept[k - 1];
+            return;
+        }
+    }
+    I64 st = used[s];
+    if (st % BANK + nw > BANK) { st = st - st % BANK + BANK; }   // a row's words in one bank
+    if (st + nw > CACHE_WORDS) { return; }
+    put(s * BANKS + st / BANK, st % BANK, nw);
+    kept[k] = (st << 16) | nw;
+    used[s] = st + nw;
+}
+
+// words ch[of..of + nw] into dst from 0, sw wide: the pixels painted.
+I64 unpack(in U32[_] ch, I64 of, I64 nw, inout U32[_] dst, I64 sw) {
+    I64 x = 0;
+    I64 k = of;
+    while (k < of + nw && x < sw) {
+        U32 t = ch[k];
+        if (t >= RAW) {
+            I64 e = min(x + SEG, sw);
+            copy(dst[x..e], ch[k + 1..k + 1 + e - x]);
+            k = k + 1 + e - x;
+            x = e;
+        } else {
+            I64 e = min(x + SEG * ((t >> 24) as I64), sw);
+            draw.paint(dst, x, e, t);
+            k = k + 1;
+            x = e;
+        }
+    }
+    return x;
+}
+
+// Row y of slot s's code: equal codes are equal rows; -1 when it is not kept.
+export I64 code(I64 s, I64 y) {
+    if (s < 0 || s > 1 || y < 0 || y >= ROWS || desk[s] == 0) { return -1; }
+    return kept[s * ROWS + y];
+}
+
+// Row y of slot s into dst[0..sw] as it was kept: false when it was not (dst is then not to be read).
+export Bool load(I64 s, I64 y, inout U32[_] dst, I64 sw) {
+    if (s < 0 || s > 1 || y < 0 || y >= ROWS || desk[s] == 0 || sw != wide[s] || sw > len(dst)) { return false; }
+    I64 d = kept[s * ROWS + y];
+    if (d < 0) { return false; }
+    I64 st = d >> 16;
+    I64 nw = d & 65535;
+    I64 b = s * BANKS + st / BANK;
+    I64 of = st % BANK;
+    I64 x = 0;
+    if (b == 0) {
+        x = unpack(k0, of, nw, dst, sw);
+    } else if (b == 1) {
+        x = unpack(k1, of, nw, dst, sw);
+    } else if (b == 2) {
+        x = unpack(k2, of, nw, dst, sw);
+    } else {
+        x = unpack(k3, of, nw, dst, sw);
+    }
+    return x == sw;
+}
+// SPDX-License-Identifier: Apache-2.0

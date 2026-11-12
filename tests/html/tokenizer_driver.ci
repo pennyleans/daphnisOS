@@ -1,0 +1,72 @@
+import user.ci.web.tokenizer;
+extern unrestricted I64 row_read(out U32[_] input, out U32[_] last_tag);
+extern observe I64 row_mode();
+extern observe I64 row_last_len();
+extern observe Bool row_cdata();
+extern observe I64 row_select_mode(I64 token_index);
+extern observe Bool row_select_cdata(I64 token_index);
+extern observe Bool row_select_success(I64 token_index);
+extern unrestricted void number(I64 value);
+void text(I64 which) {
+    I64 n = 0;
+    if (which == 0) { n = tokenizer.name_len(); }
+    if (which == 1) { n = tokenizer.data_len(); }
+    if (which == 2) { n = tokenizer.public_len(); }
+    if (which == 3) { n = tokenizer.system_len(); }
+    number(n);
+    for i in 0..n {
+        if (which == 0) { number(tokenizer.name_cp(i) as I64); }
+        if (which == 1) { number(tokenizer.data_cp(i) as I64); }
+        if (which == 2) { number(tokenizer.public_cp(i) as I64); }
+        if (which == 3) { number(tokenizer.system_cp(i) as I64); }
+    }
+}
+void main() {
+    U32[262144] input; U32[2048] last_tag;
+    while (true) {
+        I64 n = row_read(input, last_tag);
+        if (n < 0) { return; }
+        tokenizer.reset(row_mode(), last_tag[0..row_last_len()], row_cdata());
+        I64 token_index = 0;
+        while (true) {
+            I64 k = tokenizer.next(input[0..n]); number(k);
+            assert(tokenizer.name_cp(-1) == 0 && tokenizer.name_cp(tokenizer.name_len()) == 0);
+            assert(tokenizer.data_cp(-1) == 0 && tokenizer.data_cp(tokenizer.data_len()) == 0);
+            assert(tokenizer.public_cp(-1) == 0 && tokenizer.public_cp(tokenizer.public_len()) == 0);
+            assert(tokenizer.system_cp(-1) == 0 && tokenizer.system_cp(tokenizer.system_len()) == 0);
+            assert(tokenizer.attr_name_len(-1) == 0 && tokenizer.attr_name_len(tokenizer.attr_count()) == 0);
+            assert(tokenizer.attr_value_len(-1) == 0 && tokenizer.attr_value_len(tokenizer.attr_count()) == 0);
+            assert(tokenizer.attr_name_cp(-1, 0) == 0 && tokenizer.attr_name_cp(tokenizer.attr_count(), 0) == 0);
+            assert(tokenizer.attr_value_cp(-1, 0) == 0 && tokenizer.attr_value_cp(tokenizer.attr_count(), 0) == 0);
+            if (k <= 0) {
+                I64 before = tokenizer.errors(); I64 reason = tokenizer.limit_reason();
+                assert(tokenizer.next(input[0..n]) == k);
+                assert(!tokenizer.select_mode(0, true));
+                assert(tokenizer.errors() == before && tokenizer.limit_reason() == reason);
+                number(before); number(reason); break;
+            }
+            token_index = token_index + 1;
+            I64 selected = row_select_mode(token_index);
+            if (selected != -999999) {
+                I64 before = tokenizer.errors();
+                Bool success = tokenizer.select_mode(selected, row_select_cdata(token_index));
+                assert(success == row_select_success(token_index));
+                assert(tokenizer.errors() == before);
+            }
+            text(0); text(1);
+            number(tokenizer.attr_count());
+            for i in 0..tokenizer.attr_count() {
+                assert(tokenizer.attr_name_cp(i, -1) == 0 && tokenizer.attr_name_cp(i, tokenizer.attr_name_len(i)) == 0);
+                assert(tokenizer.attr_value_cp(i, -1) == 0 && tokenizer.attr_value_cp(i, tokenizer.attr_value_len(i)) == 0);
+                number(tokenizer.attr_name_len(i));
+                for j in 0..tokenizer.attr_name_len(i) { number(tokenizer.attr_name_cp(i, j) as I64); }
+                number(tokenizer.attr_value_len(i));
+                for j in 0..tokenizer.attr_value_len(i) { number(tokenizer.attr_value_cp(i, j) as I64); }
+            }
+            number(tokenizer.self_closing() as I64); number(tokenizer.force_quirks() as I64);
+            number(tokenizer.public_present() as I64); text(2);
+            number(tokenizer.system_present() as I64); text(3);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

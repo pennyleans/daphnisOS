@@ -1,0 +1,75 @@
+# tests/core/grep.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Run in tests/core/search.
+# The regex corpus (CORE-3): BRE and ERE against the oracle's grep and grep -E.
+apple words.txt | - | -
+ apple | words.txt | -
+-c apple words.txt | - | -
+-v apple words.txt | - | -
+-n fig words.txt | - | -
+-i banana words.txt | - | -
+-x aaa words.txt | - | -
+-w ab words.txt | - | -
+-w '' words.txt | - | D-35
+-x '' words.txt | - | -
+-l apple words.txt cols.txt text.txt | - | -
+-L apple words.txt cols.txt | - | D-1
+-q apple words.txt | - | -
+-q nothing words.txt | - | -
+-s apple missing words.txt | - | -
+apple missing words.txt | - | -
+-h apple words.txt text.txt | - | -
+-H apple words.txt | - | -
+-e apple -e cherry words.txt | - | -
+-F 'x*y+z?' words.txt | - | -
+-F -x 'x*y+z?' words.txt | - | -
+-f words.txt cols.txt | - | -
+-c '' empty | - | -
+'^a' words.txt | - | -
+'3$' words.txt | - | -
+'^$' words.txt | - | -
+'a.a' words.txt | - | -
+'a*' words.txt | - | -
+'*y' words.txt | - | -
+'ab*' words.txt | - | -
+'\(ab\)*$' words.txt | - | -
+'a\{2\}' words.txt | - | -
+'a\{2,\}' words.txt | - | -
+'a\{1,2\}b' words.txt | - | -
+'[[:upper:]]' words.txt | - | -
+'[^a-z ]' words.txt | - | -
+'[]x]' words.txt | - | -
+'[a-c][^a-c]' words.txt | - | -
+'[[:digit:]]\{3\}-' words.txt | - | -
+'[[:space:]]' words.txt | - | -
+'[[.-.]]' words.txt | - | D-36
+'[[=a=]]pp' words.txt | - | D-36
+'\.' words.txt | - | -
+'\$' words.txt | - | -
+'(bar)' words.txt | - | -
+'colou\?r' words.txt | - | -
+'ap\+le' words.txt | - | -
+'fig\|date' words.txt | - | -
+-E 'fig|Date' words.txt | - | -
+-E '(ab)+$' words.txt | - | -
+-E '^(a|b)+$' words.txt | - | -
+-E 'colou?r' words.txt | - | -
+-E 'a{2}' words.txt | - | -
+-E '[0-9]{3}-[0-9]{4}' words.txt | - | -
+-E '\(bar\)' words.txt | - | -
+-E 'x\*y\+z\?' words.txt | - | -
+-E '^ +' words.txt | - | -
+-E '()' words.txt | - | -
+-E 'a|' words.txt | - | -
+-iE 'APPLE|banana' words.txt | - | -
+-r apple dir | - | D-4
+-rl apple dir | - | D-4
+-rh -i apple dir | - | D-4
+'\(a\)\1' words.txt | - | D-30
+-E '(a)\1' words.txt | - | D-30
+'a\{2' words.txt | - | -
+-E '*a' words.txt | - | -
+'[a' words.txt | - | -
+'[[:nope:]]' words.txt | - | -
+-E 'a{3,1}' words.txt | - | -
+-e | - | -
+ | - | -
+-P apple words.txt | - | -

@@ -1,0 +1,12 @@
+// user/ci/tilewin.ci: a pixel window's asks of the desk (H-3c3, docs/specs/2026-11-05-h-hybrid.md HX-4, HX-6), rows of
+// user/ci/host.c built only into a program that imports this file (CI_ROWS_WIN), so no other program's bytes change:
+//   win_want(w, h): the surface size the next dev.fb_open asks (FBIO_TILE_WANT, 1..1920 x 1..1080); 0
+//   win_var(v): the bar's variable for this process (FBIO_TILE_VAR), v's first 64 bytes; 0, or -errno
+//   win_resize(on): EV_WIN_RESIZE (type 5, code w, value h) in this process's queue when its content box changes; 0,
+//     or -errno
+export extern unrestricted I64 win_want(I64 w, I64 h);
+export extern unrestricted I64 win_var(in U8[_] v);
+export extern unrestricted I64 win_resize(I64 on);
+//   win_menu(rec): AM-2, the app menu's declaration (FBIO_TILE_MENU, kit/appmenu.ci's record); 0, or -errno
+export extern unrestricted I64 win_menu(in U8[_] rec);
+// SPDX-License-Identifier: Apache-2.0

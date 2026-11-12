@@ -1,0 +1,105 @@
+// tests/am/unsaved_test.ci: AM section 7 (DN-47), the desk's ask before Restart or Shut Down (user/ci/kit/unsaved.ci):
+// the gate, the keys (DN-69, note 68), the clicks, and the plate's cells at 1x and 2x. Run by check.sh.
+import user.ci.kit.unsaved;
+import user.ci.kit.tokens;
+
+U8[96] names;
+I64[4] lens;
+
+void two() {
+    U8[24] a = b"cvim notes.txt          ";
+    U8[24] b = b"Edit plan.md            ";
+    for k in 0..24 {
+        names[k] = a[k];
+        names[24 + k] = b[k];
+    }
+    lens[0] = 14;
+    lens[1] = 12;
+}
+
+test "the gate: ask only when a window reports unsaved work" {
+    assert(!unsaved.gate(0));
+    assert(unsaved.gate(1) && unsaved.gate(7));
+}
+
+test "keys: Enter never loses work; Enter and Esc cancel wherever the focus is; Space takes the focused button" {
+    two();
+    unsaved.open(unsaved.ACT_RESTART, names, lens, 2);
+    assert(unsaved.is_up() && !unsaved.focus_go());                     // the focus starts on Cancel, the blue button
+    assert(unsaved.key(28) == unsaved.CANCEL && !unsaved.is_up());      // Enter: Cancel
+    unsaved.open(unsaved.ACT_SHUTDOWN, names, lens, 2);
+    assert(unsaved.key(1) == unsaved.CANCEL);                          // Esc
+    unsaved.open(unsaved.ACT_SHUTDOWN, names, lens, 2);
+    assert(unsaved.key(15) == unsaved.STAY && !unsaved.focus_go());   // the first Tab shows the focus where it is
+    assert(unsaved.key(15) == unsaved.STAY && unsaved.focus_go());    // the next moves it to the action
+    assert(unsaved.key(28) == unsaved.CANCEL && !unsaved.is_up());     // Enter with the focus on the action: Cancel
+    unsaved.open(unsaved.ACT_SHUTDOWN, names, lens, 2);
+    assert(unsaved.key(15) == unsaved.STAY && unsaved.key(15) == unsaved.STAY && unsaved.focus_go());
+    assert(unsaved.key(1) == unsaved.CANCEL && !unsaved.is_up());      // Esc with the focus on the action: Cancel
+    unsaved.open(unsaved.ACT_SHUTDOWN, names, lens, 2);
+    assert(unsaved.key(57) == unsaved.CANCEL);                         // Space on Cancel
+    unsaved.open(unsaved.ACT_SHUTDOWN, names, lens, 2);
+    assert(unsaved.key(105) == unsaved.STAY && !unsaved.focus_go());  // the first Left only shows the focus
+    assert(unsaved.key(105) == unsaved.STAY && unsaved.focus_go());   // Left: the action
+    assert(unsaved.key(57) == unsaved.GO && unsaved.action() == unsaved.ACT_SHUTDOWN);   // Space on the action
+    unsaved.open(unsaved.ACT_RESTART, names, lens, 2);
+    assert(unsaved.key(106) == unsaved.STAY && !unsaved.focus_go());  // Right shows the focus on Cancel
+    assert(unsaved.key(105) == unsaved.STAY && unsaved.focus_go());   // Left: the action
+    assert(unsaved.key(106) == unsaved.STAY && !unsaved.focus_go());  // Right: Cancel
+    unsaved.close();
+}
+
+test "clicks: the action, plain, at the left; Cancel, blue, at the right; elsewhere nothing" {
+    two();
+    unsaved.open(unsaved.ACT_RESTART, names, lens, 2);
+    I64 bt = unsaved.height() - unsaved.PAD - unsaved.BTN_H;
+    assert(unsaved.height() == 60 + 48 + 20 + 36 + 24);
+    assert(unsaved.click(10, bt + 10) == unsaved.STAY && unsaved.is_up());
+    assert(unsaved.click(unsaved.PAD + 4, bt + 10) == unsaved.GO && !unsaved.is_up());
+    unsaved.open(unsaved.ACT_RESTART, names, lens, 2);
+    assert(unsaved.click(unsaved.W - unsaved.PAD - 4, bt + 10) == unsaved.CANCEL);
+    unsaved.open(unsaved.ACT_RESTART, names, lens, 2);
+    assert(unsaved.click(unsaved.cancel_x0() - 4, bt + 10) == unsaved.STAY && unsaved.is_up());   // between them
+    unsaved.open(unsaved.ACT_RESTART, names, lens, 9);           // more than four: four rows and +5
+    assert(unsaved.height() == 60 + 24 * 5 + 20 + 36 + 24);
+    unsaved.close();
+}
+
+// The plate's cells: the action plain SURF1, Cancel FILL with its Esc keycap, a focus ring only after Tab, at zoom z.
+Bool cells(I64 z, I64 th) {
+    tokens.set_theme(th);
+    two();
+    unsaved.open(unsaved.ACT_SHUTDOWN, names, lens, 2);
+    U32[1000] row;
+    I64 bt = unsaved.height() - unsaved.PAD - unsaved.BTN_H;
+    I64 y = (bt + 4) * z;
+    for x in 0..1000 { row[x] = tokens.word(tokens.PAPER); }
+    unsaved.row_at(row, y, 0, 0, z);
+    Bool ok = row[(unsaved.PAD + 4) * z] == tokens.word(tokens.SURF1);                 // the action, plain
+    ok = ok && row[(unsaved.W - unsaved.PAD - 4) * z] == tokens.word(tokens.FILL);     // Cancel, blue
+    I64 ky = (bt + (unsaved.BTN_H - unsaved.KEY_H) / 2 + unsaved.KEY_H / 2) * z;   // frame 23's keycap, mid height
+    for x in 0..1000 { row[x] = tokens.word(tokens.PAPER); }
+    unsaved.row_at(row, ky, 0, 0, z);
+    ok = ok && row[(unsaved.PAD + unsaved.BTN_SIDE) * z] == tokens.word(tokens.SURF1);   // the action: no keycap
+    ok = ok && row[(unsaved.cancel_x0() + unsaved.BTN_SIDE) * z] == tokens.word(tokens.ON_FILL);   // Esc's
+    I64 ry = (bt - 2) * z;                                               // above the buttons: no ring yet
+    for x in 0..1000 { row[x] = tokens.word(tokens.PAPER); }
+    unsaved.row_at(row, ry, 0, 0, z);
+    for x in 0..unsaved.W * z { ok = ok && row[x] == tokens.word(tokens.PAPER); }
+    I64 k = unsaved.key(15);                                             // Tab: Cancel's ring shows
+    for x in 0..1000 { row[x] = tokens.word(tokens.PAPER); }
+    unsaved.row_at(row, ry, 0, 0, z);
+    Bool ring = false;
+    for x in 0..unsaved.W * z {
+        if (row[x] == tokens.word(tokens.ULTRAMARINE)) { ring = true; }
+    }
+    unsaved.close();
+    tokens.set_theme(tokens.DARK);
+    return ok && ring;
+}
+
+test "the plate's cells at 1x and 2x, both themes: a plain action, a blue Cancel with Esc, the ring only after Tab" {
+    assert(cells(1, tokens.DARK) && cells(2, tokens.DARK));
+    assert(cells(1, tokens.LIGHT) && cells(2, tokens.LIGHT));
+}
+// SPDX-License-Identifier: Apache-2.0

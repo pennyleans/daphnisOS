@@ -1,0 +1,138 @@
+// tests/hosted/dhcp/dhcp_test.ci: src/dhcp.ci's clock (NW-5 under NW-1). Retransmits and the lease's T1 count
+// net.timers(), the 100 Hz timer wakes that tcp.ci's RTO counts, never net.ticks(): under NW-1's wait a key or a
+// frame is a pump too, so a clock of pumps resends early. check.sh runs it from a copy of src/dhcp.ci and
+// src/text.ci beside the stand-ins of tests/hosted/dhcp/src.
+import src.dhcp;
+import src.net;
+import src.ip;
+import src.eth;
+
+const I64 SRV = 0x0A000202;
+const I64 OURS = 0x0A00020F;
+
+// A BOOTREPLY of message type mtype offering or acknowledging OURS from SRV, the lease lease_s seconds.
+void reply(inout U8[1514] f, I64 mtype, I64 lease_s) {
+    for i in 0..1514 {
+        f[i] = 0;
+    }
+    f[42] = 2;
+    f[43] = 1;
+    f[44] = 6;
+    eth.put32(f, 46, 0x44415048);
+    eth.put32(f, 58, OURS);
+    for i in 0..6 {
+        f[70 + i] = net.mac_byte(i);
+    }
+    eth.put32(f, 278, 0x63825363);
+    I64 at = 282;
+    f[at] = 53;
+    f[at + 1] = 1;
+    f[at + 2] = mtype as U8;
+    f[at + 3] = 54;
+    f[at + 4] = 4;
+    eth.put32(f, at + 5, SRV);
+    f[at + 9] = 51;
+    f[at + 10] = 4;
+    eth.put32(f, at + 11, lease_s);
+    f[at + 15] = 1;
+    f[at + 16] = 4;
+    eth.put32(f, at + 17, 0xFFFFFF00);
+    f[at + 21] = 3;
+    f[at + 22] = 4;
+    eth.put32(f, at + 23, SRV);
+    f[at + 27] = 255;
+}
+
+// n pumps that bring no timer wake (keys, frames): the clock that counts must not move.
+void pumps(I64 n) {
+    for k in 0..n {
+        net.advance(1, 0);
+        dhcp.timers();
+    }
+}
+
+// n timer wakes, one pump each.
+void wakes(I64 n) {
+    for k in 0..n {
+        net.advance(1, 1);
+        dhcp.timers();
+    }
+}
+
+test "a DISCOVER goes again after 100 timer wakes, not after 100 pumps" {
+    I64 s0 = ip.sends();
+    assert(dhcp.boot_begin());
+    assert(ip.sends() == s0 + 1 && ip.last_message() == 1);
+    pumps(500);
+    assert(ip.sends() == s0 + 1);
+    wakes(99);
+    assert(ip.sends() == s0 + 1);
+    wakes(1);
+    assert(ip.sends() == s0 + 2 && ip.last_message() == 1);
+}
+
+test "a REQUEST goes again after 100 timer wakes, and the lease renews at half its length in timer wakes" {
+    U8[1514] f;
+    assert(dhcp.boot_begin());
+    reply(f, 2, 20);                     // OFFER
+    I64 s0 = ip.sends();
+    dhcp.input(f, 300);
+    assert(ip.sends() == s0 + 1 && ip.last_message() == 3 && ip.last_destination() == eth.BROADCAST);
+    pumps(300);
+    assert(ip.sends() == s0 + 1);
+    wakes(100);
+    assert(ip.sends() == s0 + 2 && ip.last_message() == 3);
+    reply(f, 5, 20);                     // ACK, 20 s: T1 at 1,000 timer wakes
+    dhcp.input(f, 300);
+    assert(dhcp.bound() && eth.our_ip() == OURS);
+    I64 s1 = ip.sends();
+    pumps(5000);
+    assert(ip.sends() == s1);
+    wakes(999);
+    assert(ip.sends() == s1);
+    wakes(1);
+    assert(ip.sends() == s1 + 1 && ip.last_message() == 3 && ip.last_destination() == SRV);
+}
+
+test "an offer whose server goes quiet: four REQUESTs a second apart, then a DISCOVER again" {
+    U8[1514] f;
+    assert(dhcp.boot_begin());
+    reply(f, 2, 20);                     // OFFER
+    I64 s0 = ip.sends();
+    dhcp.input(f, 300);
+    assert(ip.sends() == s0 + 1 && ip.last_message() == 3);
+    wakes(300);
+    assert(ip.sends() == s0 + 4 && ip.last_message() == 3);   // the second, third and fourth REQUEST
+    wakes(100);
+    assert(ip.sends() == s0 + 5 && ip.last_message() == 1);   // then discovery starts again
+    reply(f, 2, 20);                     // a new OFFER is taken
+    dhcp.input(f, 300);
+    assert(ip.sends() == s0 + 6 && ip.last_message() == 3);
+}
+
+// KF-3c: what facts kind 3 reads of the client: where the address came from, and the lease's seconds left in the
+// client's own clock (timer wakes), never in pumps.
+test "the record's source is DHCP, and the lease's seconds left count timer wakes from the ACK to its end" {
+    U8[1514] f;
+    assert(dhcp.boot_begin());
+    assert(dhcp.source() == 1);
+    assert(dhcp.lease_left() == 0);      // no lease while selecting
+    reply(f, 2, 20);                     // OFFER
+    dhcp.input(f, 300);
+    assert(dhcp.lease_left() == 0);      // nor while requesting
+    reply(f, 5, 20);                     // ACK, 20 s
+    dhcp.input(f, 300);
+    assert(dhcp.bound() && dhcp.lease_left() == 20);
+    pumps(5000);
+    assert(dhcp.lease_left() == 20);     // keys and frames are not time
+    wakes(99);
+    assert(dhcp.lease_left() == 20);     // whole seconds, rounded down: 99 wakes are not one yet
+    wakes(1);
+    assert(dhcp.lease_left() == 19);
+    wakes(1899);                         // renewing from 1,000 wakes on, rebinding from 1,750: still the same lease
+    assert(dhcp.bound() && dhcp.lease_left() == 1);
+    wakes(1);                            // the lease's end: the client starts again and holds no lease
+    assert(!dhcp.bound() && dhcp.lease_left() == 0);
+    assert(dhcp.source() == 1);
+}
+// SPDX-License-Identifier: Apache-2.0

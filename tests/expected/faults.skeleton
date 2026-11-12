@@ -1,0 +1,35 @@
+run 0
+fault: cint-core-1/fault/v2 211 bytes
+HEX
+run 1
+fault: cint-core-1/fault/v2 181 bytes
+HEX
+run 2
+fault: cint-core-1/fault/v2 195 bytes
+HEX
+run 3
+fault: cint-core-1/fault/v2 180 bytes
+HEX
+run 4
+fault: cint-core-1/fault/v2 188 bytes
+HEX
+run 5
+fault: cint-core-1/fault/v2 188 bytes
+HEX
+run 6
+fault: cint-core-1/fault/v2 193 bytes
+HEX
+run 7
+fault: cint-core-1/fault/v2 190 bytes
+HEX
+run 8
+fault: cint-core-1/fault/v2 189 bytes
+HEX
+run 9
+fault: cint-core-1/fault/v2 6499 bytes
+HEX
+run 10
+fault: cint-core-1/fault/v2 175 bytes
+HEX
+run 11
+runs: 11 faulted, then one entry returned

@@ -1,0 +1,179 @@
+import user.ci.url;
+Bool same(in U8[_] a, in U8[_] b) {
+    if (len(a) != len(b)) { return false; }
+    for i in 0..len(a) { if (a[i] != b[i]) { return false; } }
+    return true;
+}
+Bool norm(in U8[_] s, in U8[_] want) {
+    U8[4096] b;
+    I64 n = url.normalize(s, b);
+    if (n < 0) { return false; }
+    return same(b[0..n], want);
+}
+Bool ref(in U8[_] s, in U8[_] want) {
+    U8[4096] b;
+    I64 n = url.resolve(b"http://a/b/c/d;p?q", s, b);
+    if (n < 0) { return false; }
+    return same(b[0..n], want);
+}
+test "parts and normalization" {
+    url.Parts p = url.parse(b"HtTpS://EXAMPLE.com:00443/a?x#f");
+    assert(p.valid && p.secure && p.err == 0 && p.port == 443);
+    assert(p.host_start == 8 && p.host_end == 19 && p.authority_end == 25 && p.path_end == 27);
+    assert(norm(b"HtTpS://EXAMPLE.com:00443/a?x#f", b"https://example.com:00443/a?x"));
+    assert(norm(b"http://Example.com", b"http://example.com/"));
+    assert(norm(b"http://Example.com?", b"http://example.com/?"));
+    assert(norm(b"http://127.0.0.1:65535?q#x", b"http://127.0.0.1:65535/?q"));
+}
+test "rfc3986 normal vectors excluding fragments" {
+    assert(ref(b"g", b"http://a/b/c/g"));
+    assert(ref(b"./g", b"http://a/b/c/g"));
+    assert(ref(b"g/", b"http://a/b/c/g/"));
+    assert(ref(b"/g", b"http://a/g"));
+    assert(ref(b"//g", b"http://g/"));
+    assert(ref(b"?y", b"http://a/b/c/d;p?y"));
+    assert(ref(b"g?y", b"http://a/b/c/g?y"));
+    assert(ref(b"#s", b"http://a/b/c/d;p?q"));
+    assert(ref(b"g#s", b"http://a/b/c/g"));
+    assert(ref(b"g?y#s", b"http://a/b/c/g?y"));
+    assert(ref(b";x", b"http://a/b/c/;x"));
+    assert(ref(b"g;x", b"http://a/b/c/g;x"));
+    assert(ref(b"g;x?y#s", b"http://a/b/c/g;x?y"));
+    assert(ref(b"", b"http://a/b/c/d;p?q"));
+    assert(ref(b".", b"http://a/b/c/"));
+    assert(ref(b"./", b"http://a/b/c/"));
+    assert(ref(b"..", b"http://a/b/"));
+    assert(ref(b"../", b"http://a/b/"));
+    assert(ref(b"../g", b"http://a/b/g"));
+    assert(ref(b"../..", b"http://a/"));
+    assert(ref(b"../../", b"http://a/"));
+    assert(ref(b"../../g", b"http://a/g"));
+}
+test "rfc3986 abnormal vectors" {
+    assert(ref(b"../../../g", b"http://a/g"));
+    assert(ref(b"../../../../g", b"http://a/g"));
+    assert(ref(b"/./g", b"http://a/g"));
+    assert(ref(b"/../g", b"http://a/g"));
+    assert(ref(b"g.", b"http://a/b/c/g."));
+    assert(ref(b".g", b"http://a/b/c/.g"));
+    assert(ref(b"g..", b"http://a/b/c/g.."));
+    assert(ref(b"..g", b"http://a/b/c/..g"));
+    assert(ref(b"./../g", b"http://a/b/g"));
+    assert(ref(b"./g/.", b"http://a/b/c/g/"));
+    assert(ref(b"g/./h", b"http://a/b/c/g/h"));
+    assert(ref(b"g/../h", b"http://a/b/c/h"));
+    assert(ref(b"g;x=1/./y", b"http://a/b/c/g;x=1/y"));
+    assert(ref(b"g;x=1/../y", b"http://a/b/c/y"));
+    assert(ref(b"g?y/./x", b"http://a/b/c/g?y/./x"));
+    assert(ref(b"g?y/../x", b"http://a/b/c/g?y/../x"));
+    assert(ref(b"g#s/./x", b"http://a/b/c/g"));
+    assert(ref(b"g#s/../x", b"http://a/b/c/g"));
+}
+test "encoded dots and repeated separators" {
+    assert(norm(b"http://a/a/%2e/b/.%2E/c/%2e%2E/d", b"http://a/a/d"));
+    assert(norm(b"http://a/%2F/a%2fb?x=%2f", b"http://a/%2F/a%2fb?x=%2f"));
+    assert(norm(b"http://a/a//b/../c///", b"http://a/a//c///"));
+    assert(norm(b"http://a//../x", b"http://a/x"));
+    assert(norm(b"http://a/..", b"http://a/"));
+    assert(norm(b"http://a/.", b"http://a/"));
+    assert(norm(b"http://a/.../.x", b"http://a/.../.x"));
+    assert(ref(b"?", b"http://a/b/c/d;p?"));
+    assert(ref(b"#", b"http://a/b/c/d;p?q"));
+}
+test "invalid hosts schemes and ports" {
+    assert(!url.parse(b"https://").valid);
+    assert(!url.parse(b"http:///x").valid);
+    assert(!url.parse(b"ftp://example.com/").valid);
+    assert(!url.parse(b"http:/example.com/").valid);
+    assert(!url.parse(b"http://user@host/").valid);
+    assert(!url.parse(b"http://[::1]/").valid);
+    assert(!url.parse(b"http://a%2eb/").valid);
+    assert(!url.parse(b"http://a_b/").valid);
+    assert(!url.parse(b"http://-a/").valid);
+    assert(!url.parse(b"http://a-/").valid);
+    assert(!url.parse(b"http://a..b/").valid);
+    assert(!url.parse(b"http://256.1.2.3/").valid);
+    assert(!url.parse(b"http://127.1/").valid);
+    assert(url.parse(b"http://a:0/").err == -2);
+    assert(url.parse(b"http://a:65536/").err == -2);
+    assert(url.parse(b"http://a:999999999999999999999999/").err == -2);
+    assert(url.parse(b"http://a:/").err == -2);
+    assert(url.parse(b"http://a:+1/").err == -2);
+    assert(url.parse(b"http://a:80:90/").err == -2);
+}
+test "untrusted bytes and malformed references" {
+    U8[4096] result;
+    assert(url.normalize(b"http://a/a b", result) == -1);
+    assert(url.normalize(b"http://a/a\\b", result) == -1);
+    assert(url.normalize(b"http://a/%", result) == -1);
+    assert(url.normalize(b"http://a/%0g", result) == -1);
+    assert(url.normalize(b"http://a/#x\r\n", result) == -1);
+    assert(url.normalize(b"http://a/#%", result) == -1);
+    assert(url.resolve(b"http://a/", b"g:h", result) == -1);
+    assert(url.resolve(b"http://a/", b":x", result) == -1);
+    assert(url.resolve(b"http://a/", b"//user@host/x", result) == -1);
+    assert(url.resolve(b"http://a/", b"//host:0/x", result) == -2);
+    assert(url.resolve(b"http://a/", b"#x\n", result) == -1);
+}
+test "exact capacity and maximum length" {
+    U8[9] exact;
+    assert(url.normalize(b"http://a", exact) == 9);
+    U8[8] short;
+    short[0] = 77;
+    assert(url.normalize(b"http://a", short) == -3);
+    assert(short[0] == 77);
+    assert(url.resolve(b"http://a/", b"x", short) == -3);
+    U8[4097] huge;
+    for i in 0..4097 { huge[i] = 'a'; }
+    assert(url.normalize(huge, exact) == -3);
+    assert(url.resolve(b"http://a/", huge, exact) == -3);
+    U8[4096] long;
+    for i in 0..8 { long[i] = b"http://a"[i]; }
+    long[8] = '/';
+    for i in 9..4096 { long[i] = 'x'; }
+    U8[4096] result;
+    assert(url.normalize(long, result) == 4096);
+}
+
+test "absolute references and bases without paths" {
+    U8[4096] b;
+    I64 n = url.resolve(b"https://EXAMPLE.com?old", b"child", b);
+    assert(n > 0 && same(b[0..n], b"https://example.com/child"));
+    n = url.resolve(b"https://EXAMPLE.com?old#f", b"?", b);
+    assert(n > 0 && same(b[0..n], b"https://example.com/?"));
+    n = url.resolve(b"https://EXAMPLE.com?old#f", b"#new", b);
+    assert(n > 0 && same(b[0..n], b"https://example.com/?old"));
+    n = url.resolve(b"https://a/old", b"HTTP://B:8080/x/../?", b);
+    assert(n > 0 && same(b[0..n], b"http://b:8080/?"));
+    n = url.resolve(b"https://a/old", b"//B:8080/x", b);
+    assert(n > 0 && same(b[0..n], b"https://b:8080/x"));
+    n = url.resolve(b"http://a/b/c", b"./g:h", b);
+    assert(n > 0 && same(b[0..n], b"http://a/b/g:h"));
+    assert(url.resolve(b"bad", b"http://a/", b) == -1);
+}
+test "label and authority bounds" {
+    U8[263] b;
+    for i in 0..7 { b[i] = b"http://"[i]; }
+    for i in 7..263 { b[i] = 'a'; }
+    assert(url.parse(b[0..70]).valid);
+    assert(!url.parse(b[0..71]).valid);
+    for i in 0..4 { b[70 + 64 * i] = '.'; }
+    assert(url.parse(b[0..260]).valid);
+    assert(!url.parse(b[0..261]).valid);
+    assert(norm(b"http://Example.com./", b"http://example.com./"));
+    assert(!url.parse(b"http://a/\x7f").valid);
+    assert(!url.parse(b"http://a/\x80").valid);
+}
+test "zero output and merge capacity are checked before writes" {
+    U8[1] b;
+    b[0] = 61;
+    assert(url.normalize(b"http://a/", b[0..0]) == -3);
+    assert(url.resolve(b"http://a/", b"x", b[0..0]) == -3);
+    assert(b[0] == 61);
+    U8[4096] full;
+    for i in 0..9 { full[i] = b"http://a/"[i]; }
+    for i in 9..4096 { full[i] = 'x'; }
+    assert(url.resolve(full, b"?y", b) == -3);
+    assert(b[0] == 61);
+}
+// SPDX-License-Identifier: Apache-2.0

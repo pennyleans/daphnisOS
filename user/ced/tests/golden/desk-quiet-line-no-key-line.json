@@ -1,0 +1,33 @@
+{
+ "id": "desk-quiet-line-no-key-line",
+ "rules": [
+  "RUN-7",
+  "VIEW-1"
+ ],
+ "desk": true,
+ "text": "1\n2\n3\n4",
+ "size": [
+  4,
+  12
+ ],
+ "sel": [
+  0,
+  0
+ ],
+ "chunks": [
+  "1b5b313b3546"
+ ],
+ "expect": {
+  "text": "1\n2\n3\n4",
+  "sel": [
+   7,
+   7
+  ],
+  "screen": [
+   "2",
+   "3",
+   "4",
+   "        4:2"
+  ]
+ }
+}

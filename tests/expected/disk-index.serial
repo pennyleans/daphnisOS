@@ -1,0 +1,68 @@
+Daphnis P: the block device
+daphnis: input 496 bytes
+daphnis: disk virtio-blk, 8192 sectors, 5 frames held
+daphnis: disk 8192 sha256 a14c408710f4ef0073ec388bf9a2dcdbecab2ba12ae115a7552a22b0c6fd3f48
+daphnis: disk write probe: the pattern read back equal, the sectors restored
+daphnis: /home mounted, ext2, block 4096, cache 64 frames, writes need the disk grant
+daphnis: run hello pid 1
+hello from ring 3
+daphnis: state 5c6d6d6e0a037abbcfa5d73c0498412515e00277227de3571ad7b498c263099d
+daphnis: exit 0
+daphnis: run sh pid 2
+-- the ring kept beside a session
+ix: ring 1 create 18 2 new.txt
+ix: ring 2 change 18 0 
+ix: ring 3 change 18 2 new.txt
+ix: ring 4 change 18 0 
+ix: ring 5 create 19 2 m
+ix: ring 6 create 20 19 n
+ix: ring 7 create 21 20 copy
+ix: ring 8 change 21 0 
+ix: ring 9 from 21 20 copy
+ix: ring 10 to 21 19 moved
+ix: ring 11 from 20 19 n
+ix: ring 12 to 20 12 n
+ix: ring 13 unlink 15 2 hello.txt
+ix: ring 14 from 18 2 new.txt
+ix: ring 15 to 18 2 hello.txt
+ix: ring 16 unlink 16 2 link
+ix: ring 17 change 14 2 big
+ix: ring 18 change 14 0 
+ix: ring 19 change 14 0 
+ix: ring 20 unlink 20 12 n
+ix: kept 8 entries sha256 c95292b13c256c69ebc44f117f583e1ac5348f6ede38ad46ffa06245f13b41be
+ix: /home/a/ 4096
+ix: /home/big 5000
+ix: /home/hello.txt 8
+ix: /home/lost+found/ 16384
+ix: /home/m/ 4096
+ix: /home/sparse 6291456
+ix: /home/a/b.txt 26
+ix: /home/m/moved 8
+ix: walk 8 entries sha256 c95292b13c256c69ebc44f117f583e1ac5348f6ede38ad46ffa06245f13b41be
+ix: equal
+ix: 0
+-- the ring overflows
+ix: ring 4200 lost 0 0 
+ix: kept 9 entries sha256 62a5ea1f960c8a810e182a15cf8d37fde5ed165009c3582848b086194f37e213
+ix: /home/a/ 4096
+ix: /home/big 5000
+ix: /home/hello.txt 8
+ix: /home/lost+found/ 16384
+ix: /home/m/ 4096
+ix: /home/many 9390
+ix: /home/sparse 6291456
+ix: /home/a/b.txt 26
+ix: /home/m/moved 8
+ix: the ring rebuilt the index by the walk 1 time(s)
+ix: walk 9 entries sha256 62a5ea1f960c8a810e182a15cf8d37fde5ed165009c3582848b086194f37e213
+ix: equal
+ix: 0
+daphnis: state 5c98f249d784628119ae5ed65af69d198a604641cd4d635dd22b8d3f2016723e
+daphnis: exit 0
+daphnis: pid 2 forked 2
+daphnis: disk 8192 sha256 8355680c49d738387c307e1e56a7dcddbf66af9d610585f12082ff2dc9abbbe2
+daphnis: disk requests 6356
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16297 of 16383
+daphnis: done

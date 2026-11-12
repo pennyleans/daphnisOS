@@ -1,0 +1,114 @@
+// tests/am/termsosc_test.ci: the checks for mini's wiring of RS-TTL and AM-4 into user/ci/terms.ci
+// (docs/specs/2026-11-11-rs-ttl-bartitle.md section 4.1, docs/specs/2026-11-11-am4-appitems.md section 4.1), through
+// terms.feed as a program's bytes arrive: a title of up to 255 bytes, UTF-8 kept, C0 and C1 dropped, an unterminated
+// OSC bounded and kept to its slot, an AM-4 row with a UTF-8 label, About's text with ';', and the order title, then
+// About and rows, then dirty. terms.ci as it stands fails it (a 32-byte title, OSC bytes past 0x7E dropped, no
+// appitems); the wiring adds it to check.sh's AM loop (gate_want + 1).
+import user.ci.terms;
+import user.ci.kit.appitems;
+
+U8[6000] o;
+U8[300] got;
+
+// ESC ] 2 ; t BEL into slot s.
+void title(I64 s, in U8[_] t) {
+    terms.feed(s, 27);
+    terms.feed(s, ']');
+    terms.feed(s, '2');
+    terms.feed(s, ';');
+    for k in 0..len(t) { terms.feed(s, t[k]); }
+    terms.feed(s, 7);
+}
+
+// ESC ] 7770 ; t BEL into slot s.
+void menu(I64 s, in U8[_] t) {
+    terms.feed(s, 27);
+    terms.feed(s, ']');
+    for k in 0..4 { terms.feed(s, b"7770"[k]); }
+    terms.feed(s, ';');
+    for k in 0..len(t) { terms.feed(s, t[k]); }
+    terms.feed(s, 7);
+}
+
+Bool var_is(I64 s, in U8[_] want) {
+    I64 n = terms.var_of(s, got);
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+// o[0..n]: n bytes of 'a', then tail; its length.
+I64 run(I64 n, in U8[_] tail) {
+    for k in 0..n { o[k] = 'a'; }
+    for k in 0..len(tail) { o[n + k] = tail[k]; }
+    return n + len(tail);
+}
+
+test "a title of 255 bytes is kept whole; a longer one is cut at a character's end" {
+    terms.init(0, 80, 24);
+    title(0, o[0..run(255, b"")]);
+    assert(terms.var_of(0, got) == 255 && got[254] == 'a');
+    title(0, o[0..run(300, b"")]);
+    assert(terms.var_of(0, got) == 255);
+    title(0, o[0..run(254, b"\xc3\xa9")]);
+    assert(terms.var_of(0, got) == 254);
+    title(0, o[0..run(253, b"\xc3\xa9")]);
+    assert(terms.var_of(0, got) == 255 && got[253] == 0xC3 && got[254] == 0xA9);
+}
+
+test "UTF-8 is kept; C0, DEL and C1 are dropped; a stray byte is U+FFFD" {
+    terms.init(1, 80, 24);
+    title(1, b"r\xc3\xa9sum\xc3\xa9.txt");
+    assert(var_is(1, b"r\xc3\xa9sum\xc3\xa9.txt"));
+    title(1, b"\xe6\x97\xa5\xe8\xa8\x98.md");
+    assert(var_is(1, b"\xe6\x97\xa5\xe8\xa8\x98.md"));
+    title(1, b"a\tb\x7fc\xc2\x9bd");
+    assert(var_is(1, b"abcd"));
+    title(1, b"x\x9by");
+    assert(var_is(1, b"x\xef\xbf\xbdy"));
+}
+
+test "an unterminated OSC is bounded and stays in its slot; the screen is untouched until it ends" {
+    terms.init(2, 80, 24);
+    terms.init(3, 80, 24);
+    title(3, b"three");
+    terms.feed(2, 27);
+    terms.feed(2, ']');
+    terms.feed(2, '2');
+    terms.feed(2, ';');
+    for k in 0..5000 { terms.feed(2, 'b'); }
+    assert(var_is(3, b"three") && terms.cursor_x(2) == 0 && terms.cursor_y(2) == 0);
+    terms.feed(2, 7);
+    assert(terms.var_of(2, got) == 255 && got[0] == 'b' && var_is(3, b"three"));
+    terms.feed(2, 'z');
+    assert(terms.code(2, 0, 0) == 'z' && terms.cursor_x(2) == 1);
+    title(2, b"x\x1b\\");                                           // ST ends it as BEL does
+    assert(var_is(2, b"x"));
+}
+
+test "AM-4 through the terminal: a UTF-8 label arrives whole, a new title clears the rows" {
+    terms.init(4, 80, 24);
+    title(4, b"notes.txt");
+    menu(4, b"about;Edit;0.1.0;A text editor; plain");
+    menu(4, b"item;5;0;Caf\xc3\xa9;Ctrl+K;g");
+    assert(appitems.rows(4) == 1 && appitems.row_id(4, 0) == 5);
+    assert(appitems.row_label(4, 0, got) == 5 && got[3] == 0xC3 && got[4] == 0xA9);
+    assert(appitems.row_keys(4, 0, got) == 6 && (appitems.row_marks(4, 0) & appitems.GROUP) != 0);
+    assert(terms.menu_name(4, got) == 4 && terms.menu_text(4, got) == 20 && got[13] == ';');
+    title(4, b"other.txt");
+    assert(appitems.rows(4) == 0 && terms.menu_name(4, got) == 0 && var_is(4, b"other.txt"));
+}
+
+test "the order: a title, then About and rows, then dirty; a new title clears the dot" {
+    terms.init(5, 80, 24);
+    title(5, b"notes.txt");
+    menu(5, b"dirty;1");
+    assert(terms.menu_unsaved(5));
+    title(5, b"notes.txt");
+    assert(!terms.menu_unsaved(5));
+    menu(5, b"dirty;1");
+    assert(terms.menu_unsaved(5) && var_is(5, b"notes.txt"));
+}
+// SPDX-License-Identifier: Apache-2.0

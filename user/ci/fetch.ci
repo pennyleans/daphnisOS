@@ -1,0 +1,265 @@
+// Fetch one HTTP or HTTPS resource to a file or standard output. HTTPS is authenticated
+// before a request is sent or the destination opened, including at each redirect.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.kit.appmenu;   // AM-3: the app menu's About
+import user.ci.kit.ondesk;
+import user.ci.udp;
+import user.ci.tcp;
+import user.ci.dns;
+import user.ci.tls;
+import user.ci.http;
+import user.ci.url;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.traycall;     // SP-7: the desk's Downloads in the tray (tray(3) started, tray(4) finished)
+import user.ci.core.args;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 O_WRONLY = 0x1;
+const I64 O_CREAT = 0x40;
+const I64 O_EXCL = 0x80;
+const I64 O_TRUNC = 0x200;
+const I64 EACCES = 13;
+const U64 RESOLVER = 0x0A000203;   // 10.0.2.3, QEMU's user network
+
+U8[4096] chunk;
+U8[4096] body;
+U8[8192] req;
+U8[4096] target;
+U8[4096] next_target;
+U8[4096] location;
+I64 target_n = 0;
+U8[256] sl;
+
+// a[s..e] as a dotted quad: the address as a word, or -1.
+I64 quad(in U8[_] a, I64 s, I64 e) {
+    I64 v = 0;
+    I64 b = 0;
+    I64 digits = 0;
+    I64 parts = 0;
+    for i in s..e + 1 {
+        if (i == e || a[i] == '.') {
+            if (digits == 0 || b > 255) { return -1; }
+            v = 256 * v + b;
+            parts = parts + 1;
+            b = 0;
+            digits = 0;
+        } else {
+            if (a[i] < '0' || a[i] > '9' || digits == 3) { return -1; }
+            b = 10 * b + ((a[i] - 48) as I64);
+            digits = digits + 1;
+        }
+    }
+    if (parts != 4) { return -1; }
+    return v;
+}
+
+// a[s..e] is the word w.
+Bool is(in U8[_] a, I64 s, I64 e, in U8[_] w) {
+    if (e - s != len(w)) { return false; }
+    for i in 0..len(w) {
+        if (a[s + i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+// Ends fetch with status 1 after the line said.
+void fail() {
+    put.flush();
+    dev.exit_now(1);
+}
+
+// A connect that failed with errno e, said for peer (HOST[:PORT]); the kit has musl's words for the socket errors.
+void refused(in U8[_] peer, I64 e) {
+    if (e == EACCES) {
+        msg.file(b"socket", EACCES);
+    } else {
+        msg.file(peer, e);
+    }
+    fail();
+}
+
+void tls_says(I64 e) {
+    msg.begin();
+    msg.text(b"tls: error ");
+    msg.num(0 - e);
+    if (e == -38) { msg.text(b", no entropy source"); }
+    if (e == -1054) { msg.text(b", certificate is out of its dates"); }
+    if (e == -1056) { msg.text(b", certificate is not for this name"); }
+    if (e == -1062) { msg.text(b", certificate has no trusted root"); }
+    msg.send();
+}
+
+// The destination is chosen only after the final response accepts the request.
+void destination(in U8[_] a, I64 path, I64 path_end) {
+    I64 os = args.val_start('o');
+    I64 oe = args.val_stop('o');
+    I64 fd = 1;
+    if (args.has('o') && !is(a, os, oe, b"-")) {
+        fd = shctl.sh_open(a[os..oe], O_WRONLY | O_CREAT | O_TRUNC, 0x1B6);
+        if (fd < 0) { msg.file(a[os..oe], 0 - fd); fail(); }
+    } else if (!args.has('o')) {
+        os = path_end;
+        while (os > path && target[os - 1] != '/') { os = os - 1; }
+        if (os == path_end) {
+            fd = shctl.sh_open(b"index.html", O_WRONLY | O_CREAT | O_EXCL, 0x1B6);
+            if (fd < 0) { msg.file(b"index.html", 0 - fd); fail(); }
+        } else {
+            fd = shctl.sh_open(target[os..path_end], O_WRONLY | O_CREAT | O_EXCL, 0x1B6);
+            if (fd < 0) { msg.file(target[os..path_end], 0 - fd); fail(); }
+        }
+    }
+    put.to(fd);
+}
+
+Bool redirects(I64 code) {
+    return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+}
+
+void close_connection(I64 sock, Bool secure) {
+    if (secure) { _ = tls.tls_close(); }
+    _ = tcp.fd_close(sock);
+}
+
+Bool transfer(in U8[_] a, U64 resolver, I64 resolver_port, I64 followed) {
+    url.Parts u = url.parse(target[0..target_n]);
+    if (!u.valid) { msg.said(b"URL", b"invalid"); fail(); }
+    I64 hs = u.host_start;
+    I64 he = u.host_end;
+    // The DNS root label is left out of resolution and of the TLS server name.
+    // The HTTP authority retains the URL's spelling.
+    if (he > hs && target[he - 1] == '.') { he = he - 1; }
+    I64 path = u.authority_end;
+    Bool secure = u.secure;
+    I64 ip = quad(target, hs, he);
+    if (ip < 0 && is(target, hs, he, b"localhost")) { ip = 0x7F000001; }
+    if (ip < 0) {
+        ip = dns.resolve(target[hs..he], resolver, resolver_port);
+        if (ip < 0) { msg.said(target[hs..he], b"cannot resolve"); fail(); }
+    }
+    I64 rn = http.get(target[hs..path], target[path..target_n], req);
+    if (rn < 0) { msg.limit(b"REQUEST_MAX"); }
+    I64 sock = tcp.tcp_connect(ip as U64, u.port);
+    if (sock < 0) { refused(target[hs..path], 0 - sock); }
+    if (secure) {
+        I64 h = tls.tls_open(sock, target[hs..he]);
+        if (h < 0) { _ = tcp.fd_close(sock); tls_says(h); fail(); }
+    }
+    I64 sent = 0;
+    while (sent < rn) {
+        I64 w = 0;
+        if (secure) {
+            I64 stop = rn;
+            if (stop - sent > 4096) { stop = sent + 4096; }
+            w = tls.tls_write(req[sent..stop]);
+        }
+        else { w = tcp.fd_write(sock, req[sent..rn]); }
+        if (w <= 0) {
+            _ = tcp.fd_close(sock);
+            if (secure && w < 0) { tls_says(w); }
+            else if (w < 0) { msg.file(b"write", 0 - w); }
+            else { msg.file(b"write", 5); }
+            fail();
+        }
+        sent = sent + w;
+    }
+    http.start();
+    Bool opened = false;
+    I64 r = 1;
+    while (r > 0 && !http.done() && !http.bad()) {
+        if (secure) { r = tls.tls_read(chunk); }
+        else { r = tcp.fd_read(sock, chunk); }
+        if (r > 0) {
+            I64 n = http.take(chunk[0..r], body);
+            if (!opened && http.headed()) {
+                if (redirects(http.status())) {
+                    close_connection(sock, secure);
+                    I64 ln = http.location(location);
+                    if (ln < 0) { msg.said(b"redirect", b"missing or invalid location"); fail(); }
+                    I64 nn = url.resolve(target[0..target_n], location[0..ln], next_target);
+                    if (nn < 0) { msg.said(b"redirect", b"invalid location"); fail(); }
+                    url.Parts next = url.parse(next_target[0..nn]);
+                    if (secure && !next.secure) { msg.said(b"redirect", b"https downgrade refused"); fail(); }
+                    if (followed >= 10) { msg.said(b"redirect", b"redirect limit reached"); fail(); }
+                    for i in 0..nn { target[i] = next_target[i]; }
+                    target_n = nn;
+                    return true;
+                }
+                if (http.status() < 200 || http.status() > 299) {
+                    close_connection(sock, secure);
+                    I64 k = http.status_line(sl);
+                    msg.said(b"server returned error", sl[0..k]);
+                    fail();
+                }
+                destination(a, path, u.path_end);
+                opened = true;
+            }
+            put.bytes(body[0..n]);
+        }
+    }
+    // A complete authenticated HTTP frame needs no further TLS input.
+    if (secure && r >= 0) { _ = tls.tls_close(); }
+    _ = tcp.fd_close(sock);
+    if (r < 0) {
+        if (secure) { tls_says(r); }
+        else { msg.file(b"read", 0 - r); }
+        fail();
+    }
+    if (http.bad() || !http.headed()) { msg.said(b"response", b"not HTTP"); fail(); }
+    if (!http.done() && http.framed()) {
+        msg.begin();
+        msg.text(b"short body: ");
+        msg.num(http.received());
+        if (http.length() >= 0) {
+            msg.text(b" of ");
+            msg.num(http.length());
+            msg.text(b" bytes");
+        } else { msg.text(b" bytes, no last chunk"); }
+        msg.send();
+        msg.status_one();
+    }
+    return false;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"fetch");
+    if (ondesk.on_desk()) {            // AM-3: About in the app menu (OSC 7770 on descriptor 2), only in a desk terminal
+        U8[200] am_o;
+        I64 am_n = appmenu.osc_about(am_o, b"Fetch", b"0.1.0", b"Downloads one URL over HTTP or HTTPS.");
+        I64 am_w = shctl.fd_write(2, am_o[0..am_n]);
+    }
+    args.parse(a, b"", b"od");
+    if (args.operands() != 1) { msg.usage(b"one URL"); }
+    U64 resolver = RESOLVER;
+    I64 resolver_port = 53;
+    if (args.has('d')) {
+        I64 ds = args.val_start('d');
+        I64 de = args.val_stop('d');
+        I64 colon = ds;
+        while (colon < de && a[colon] != ':') { colon = colon + 1; }
+        I64 dip = quad(a, ds, colon);
+        if (dip < 0) { msg.usage(b"bad resolver"); }
+        resolver = dip as U64;
+        if (colon < de) {
+            resolver_port = args.count_of(a, colon + 1, de, b"bad resolver");
+            if (resolver_port < 1 || resolver_port > 65535) { msg.usage(b"bad resolver"); }
+        }
+    }
+    I64 us = args.op_start(0);
+    I64 ue = args.op_stop(a, 0);
+    target_n = url.normalize(a[us..ue], target);
+    if (target_n == -2) { msg.usage(b"bad port"); }
+    if (target_n == -3) { msg.limit(b"URL_MAX"); }
+    if (target_n < 0) { msg.said(a[us..ue], b"not an http URL"); fail(); }
+    I64 told = traycall.tray_ask(3);   // SP-7 (SP-R6 A): the Fetch icon in the desk's tray while it downloads; -ENOSYS on Linux
+    Bool again = true;
+    I64 followed = 0;
+    while (again) {
+        again = transfer(a, resolver, resolver_port, followed);
+        followed = followed + 1;
+    }
+    put.flush();
+    if (msg.ok() && !put.failed()) { told = traycall.tray_ask(4); }   // finished: the tooltip's count
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

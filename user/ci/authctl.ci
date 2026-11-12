@@ -1,0 +1,5 @@
+// user/ci/authctl.ci: authd's row of user/ci/host.c (CI_ROWS_AUTH), AC-1b (docs/specs/2026-11-08-ac-accounts.md).
+//   rand_fill(out U8[_] buf) -> I64: fills buf (at most 256 bytes) from getrandom (318); the count, or -errno. A salt
+//     is public (section 4), so the journaled source of A-3 serves; no key is ever drawn here (DS-3).
+export extern unrestricted I64 rand_fill(out U8[_] buf);
+// SPDX-License-Identifier: Apache-2.0

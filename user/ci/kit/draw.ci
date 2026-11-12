@@ -1,0 +1,131 @@
+// user/ci/kit/draw.ci: the kit's drawing (docs/specs/2026-11-05-w-tiler.md section 2, W-1; D-ROW in
+// docs/specs/2026-11-07-ds-desk-speed.md section 2). A surface is drawn one row at a time, as the surface contract
+// hands it over (DESIGN.html): the caller holds row y as one U32 a pixel, XRGB8888 as the surface holds it (little
+// endian, bits 24 to 31 zero), and each call paints what of its figure falls on that row. A module array holds at
+// most 65,536 elements, so a 640 x 480 surface is never held whole. Every coordinate is a pixel; a rectangle is
+// [x0, x1) x [y0, y1); nothing blends and nothing is drawn outside the row. A run is clipped to the row once and
+// drawn with a store a pixel below RUN pixels, and by copies from a strip of its color at or above (D-ROW).
+import user.ci.kit.face;
+import user.ci.kit.face2;
+import user.ci.kit.mark;
+
+export const I64 RUN = 64;      // a run this long or longer is copied from a strip
+const I64 STRIP = 1024;         // pixels a strip
+const I64 STRIPS = 4;
+
+U32[4096] strips;               // STRIPS strips of STRIP pixels, each one color
+U32[4] strip_c;
+Bool[4] strip_on;
+I64 strip_next = 0;             // the strip a miss refills
+
+// Pixel x of the row in color c, when x is on the row.
+export void put(inout U32[_] row, I64 x, U32 c) {
+    if (x >= 0 && x < len(row)) { row[x] = c & 0xFFFFFF; }
+}
+
+// The strip of color c: found, or the next one round robin filled with it.
+I64 strip_of(U32 c) {
+    for k in 0..STRIPS {
+        if (strip_on[k] && strip_c[k] == c) { return k; }
+    }
+    I64 k = strip_next;
+    strip_next = (strip_next + 1) % STRIPS;
+    for x in STRIP * k..STRIP * (k + 1) { strips[x] = c; }
+    strip_c[k] = c;
+    strip_on[k] = true;
+    return k;
+}
+
+// Pixels [x0, x1) of the row in color c.
+export void paint(inout U32[_] row, I64 x0, I64 x1, U32 c) {
+    I64 a = x0;
+    I64 b = x1;
+    if (a < 0) { a = 0; }
+    if (b > len(row)) { b = len(row); }
+    if (a >= b) { return; }
+    U32 w = c & 0xFFFFFF;
+    if (b - a < RUN) {
+        for x in a..b { row[x] = w; }
+        return;
+    }
+    I64 at = STRIP * strip_of(w);
+    while (a < b) {
+        I64 n = b - a;
+        if (n > STRIP) { n = STRIP; }
+        copy(row[a..a + n], strips[at..at + n]);
+        a = a + n;
+    }
+}
+
+// The rectangle [x0, x1) x [y0, y1) on row y; a rule is a rectangle 1 px thick.
+export void rect(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 x1, I64 y1, U32 c) {
+    if (y >= y0 && y < y1) { paint(row, x0, x1, c); }
+}
+
+// A frame t pixels thick inside the rectangle [x0, x1) x [y0, y1), on row y.
+export void frame(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 x1, I64 y1, I64 t, U32 c) {
+    if (y < y0 || y >= y1) { return; }
+    if (y < y0 + t || y >= y1 - t) {
+        paint(row, x0, x1, c);
+        return;
+    }
+    paint(row, x0, x0 + t, c);
+    paint(row, x1 - t, x1, c);
+}
+
+// The ink pixels of one glyph row, bits (column 0 in bit 7), from pixel x: eight tests, a store each ink pixel.
+export void ink(inout U32[_] row, I64 x, I64 bits, U32 w) {
+    if (bits == 0) { return; }
+    if (x >= 0 && x + 8 <= len(row)) {
+        if ((bits & 0x80) != 0) { row[x] = w; }
+        if ((bits & 0x40) != 0) { row[x + 1] = w; }
+        if ((bits & 0x20) != 0) { row[x + 2] = w; }
+        if ((bits & 0x10) != 0) { row[x + 3] = w; }
+        if ((bits & 0x08) != 0) { row[x + 4] = w; }
+        if ((bits & 0x04) != 0) { row[x + 5] = w; }
+        if ((bits & 0x02) != 0) { row[x + 6] = w; }
+        if ((bits & 0x01) != 0) { row[x + 7] = w; }
+        return;
+    }
+    for b in 0..8 {
+        if (((bits >> (7 - b)) & 1) == 1) { put(row, x + b, w); }
+    }
+}
+
+// The first n bytes of s in the face from (x0, y0), on row y: whole glyphs only, none past x1. Returns the x
+// after the last glyph drawn.
+export I64 text(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c) {
+    I64 x = x0;
+    for k in 0..n {
+        if (x + face.W > x1) { return x; }
+        if (y >= y0 && y < y0 + face.H) {
+            ink(row, x, face.row(s[k] as I64, y - y0), c & 0xFFFFFF);
+        }
+        x = x + face.W;
+    }
+    return x;
+}
+
+// K-2: s as text draws it, in Daphnis Mono's own 16 x 32 drawing (face2.ci, F-2 A): 16 px an advance.
+export I64 text2(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c) {
+    I64 x = x0;
+    for k in 0..n {
+        if (x + face2.W > x1) { return x; }
+        if (y >= y0 && y < y0 + face2.H) {
+            I64 bits = face2.row(s[k] as I64, y - y0);
+            for b in 0..face2.W { if (((bits >> (15 - b)) & 1) == 1) { put(row, x + b, c); } }
+        }
+        x = x + face2.W;
+    }
+    return x;
+}
+
+// The mark at scale s (1 or 2) from (x0, y0), on row y.
+export void mark_at(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 s, U32 c) {
+    if (y < y0 || y >= y0 + s * mark.H) { return; }
+    I64 my = (y - y0) / s;
+    for mx in 0..mark.W {
+        if (mark.ink(mx, my)) { paint(row, x0 + s * mx, x0 + s * mx + s, c); }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

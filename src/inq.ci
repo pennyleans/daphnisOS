@@ -1,0 +1,323 @@
+// src/inq.ci: the event queue of /dev/input/event0 and the key path into it (F-2, F-3, HW-4, RS-KR;
+// docs/specs/2026-11-05-f-surface.md section 4, docs/specs/2026-11-11-rs-rel-s1-units.md section 2). src/input.ci
+// feeds it: the PS/2 keyboard's set-1 bytes and the mouse's packet bytes from the rings of rt/ps2.c, the USB keyboard's
+// and mouse's events from src/xhci.ci, and at each pull the timer's tick for a key repeat; it reads the queue back out
+// to the reader. Every key event, PS/2 or USB, goes through keyrep.key first: the hardware's own repeat (a press of a
+// key already down) and a release of a key not down never reach the queue, and keyrep.due gives the one repeat, a press
+// of value 1, made from the tick. Pure, so the hosted tests reach the whole path (tests/kr/inq_test.ci).
+//
+// The queue holds 128 events, each type | code << 16 | value << 32, and a full queue never drops a release: it keeps
+// two places, a release and its EV_SYN, for each key down and each mouse button down (kept()). A press is taken only
+// when it and its release fit with a place left for an EV_SYN; one that does not is refused at the door and counted.
+// keyrep never sees a refused press, so the key's release is dropped as that of a key not down, and a press and its
+// release reach the reader both or neither. What is queued is never taken back, and the reader gets the events in the
+// order they came. src/input.ci drains the PS/2 rings only while a byte's events fit (KEY_ROOM, MOUSE_ROOM), so the
+// PS/2 keyboard's and mouse's bytes wait in their rings and none is refused here; a USB report has no ring, and its
+// press or motion past the room is the one refused.
+//
+// The size, from the tick: xhci gives at most one keyboard report and one mouse report a tick (10 ms), at most 16 key
+// events (32 queue events) and 7 mouse events; the places kept are at most 34 (a boot keyboard's 14 keys and the
+// three buttons). A desk at 60 frames a second pulls every 1.67 ticks, so two ticks between pulls: 78 events and 34
+// kept, 112. 64 does not hold one tick (39 and 34); 128 holds two. A read gives at most 64 events (src/input.ci).
+
+import src.keyrep;
+import src.text;
+
+export const I64 QUEUE = 128;
+export const I64 KEY_ROOM = 4;       // a PS/2 keyboard byte: a key event, its EV_SYN, and a press's two kept places
+export const I64 MOUSE_ROOM = 12;    // a PS/2 mouse byte: a packet's two motions, three presses and their kept
+                                     // places, and the EV_SYN
+export const I64 EV_SYN = 0;
+export const I64 EV_KEY = 1;
+export const I64 EV_REL = 2;
+const I64 REL_X = 0;
+const I64 REL_Y = 1;
+const I64 REL_WHEEL = 8;
+const I64 BTN_LEFT = 0x110;       // BTN_RIGHT 0x111 and BTN_MIDDLE 0x112 follow it
+
+U64[128] events;    // type | code << 16 | value << 32
+I64 qhead = 0;
+I64 qcount = 0;
+Bool e0 = false;
+I64 skip = 0;       // bytes of an E1 (pause) sequence still to drop
+I64 lost = 0;       // events past a full queue: none while kept() holds, so the guard in push() is the last line
+I64 presses_lost = 0;   // key presses refused for want of room, each with its release
+I64 mouse_lost = 0;     // mouse motions and button presses refused for want of room
+I64[3] packet;      // the mouse packet being assembled (F-3)
+I64 packet_at = 0;
+I64 buttons = 0;    // the mouse buttons down: bit 0 left, 1 right, 2 middle
+
+// The places kept for releases still to come: two, the release and its EV_SYN, for each key down and each mouse
+// button down.
+I64 kept() {
+    I64 b = (buttons & 1) + ((buttons >> 1) & 1) + ((buttons >> 2) & 1);
+    return 2 * (keyrep.keys_down() + b);
+}
+
+// The places free past those kept for releases.
+export I64 room() {
+    return QUEUE - qcount - kept();
+}
+
+void push(I64 t, I64 c, I64 v) {
+    if (qcount == QUEUE) {
+        lost += 1;
+        return;
+    }
+    U64 uv = 0;
+    if (v < 0) {
+        uv = (v + 0x100000000) as U64;     // the 32-bit two's complement of a relative motion (F-3)
+    } else {
+        uv = v as U64;
+    }
+    events[(qhead + qcount) % QUEUE] = (t as U64) | ((c as U64) << 16) | (uv << 32);
+    qcount += 1;
+}
+
+// A key event at tick now, PS/2 or USB: with its EV_SYN into the queue when keyrep lets it pass. True when it did. A
+// release always fits, in its kept places; a press of a key not down needs its own two and two to keep.
+Bool key(I64 code, I64 value, I64 now) {
+    if (value != 0 && !keyrep.is_down(code) && room() < KEY_ROOM) {
+        presses_lost += 1;                 // refused: keyrep never sees it, so its release is dropped too
+        return false;
+    }
+    if (!keyrep.key(code, value, now)) {
+        return false;                      // RS-KR: the hardware's own repeat, or a release of a key not down
+    }
+    push(EV_KEY, code, value);
+    push(EV_SYN, 0, 0);
+    return true;
+}
+
+// The Linux key code of a set-1 code after E0, or 0 for one that is dropped.
+I64 e0_code(I64 code) {
+    if (code == 0x48) {
+        return 103;                    // KEY_UP
+    }
+    if (code == 0x50) {
+        return 108;                    // KEY_DOWN
+    }
+    if (code == 0x4B) {
+        return 105;                    // KEY_LEFT
+    }
+    if (code == 0x4D) {
+        return 106;                    // KEY_RIGHT
+    }
+    if (code == 0x1D) {
+        return 97;                     // KEY_RIGHTCTRL
+    }
+    if (code == 0x38) {
+        return 100;                    // KEY_RIGHTALT
+    }
+    if (code == 0x5B) {
+        return 125;                    // KEY_LEFTMETA, the tiler's Super (W-3)
+    }
+    if (code == 0x5C) {
+        return 126;                    // KEY_RIGHTMETA
+    }
+    if (code == 0x37) {
+        return 99;                     // KEY_SYSRQ: Print (E0 2A E0 37; the E0 2A before it is dropped), RS-SHOT
+    }
+    return 0;
+}
+
+// One scancode byte of the PS/2 keyboard at tick now: a key event and its EV_SYN, or nothing (a prefix, an unknown E0
+// code, a byte of a pause sequence, the keyboard's own repeat). The code of a press that reached the queue, for K-12's
+// stamp (src/input.ci), else 0.
+export I64 decode(I64 b, I64 now) {
+    if (skip > 0) {
+        skip -= 1;
+        return 0;
+    }
+    if (b == 0xE0) {
+        e0 = true;
+        return 0;
+    }
+    if (b == 0xE1) {
+        skip = 2;
+        return 0;
+    }
+    I64 code = b & 0x7F;
+    I64 value = 1;
+    if (b >= 0x80) {
+        value = 0;
+    }
+    if (e0) {
+        e0 = false;
+        code = e0_code(code);
+        if (code == 0) {
+            return 0;
+        }
+    } else if (code == 0x54) {
+        code = 99;                     // RS-SHOT: Alt+Print is set 1's SysRq, 0x54, with no E0: Print still
+    }
+    if (key(code, value, now) && value == 1) {
+        return code;
+    }
+    return 0;
+}
+
+// A byte of the mouse: the third byte of a packet gives its events. A first byte without bit 3 is out of
+// step and dropped (the stream resynchronizes on the next byte that has it).
+export void decode_mouse(I64 b) {
+    if (packet_at == 0 && (b & 8) == 0) {
+        return;
+    }
+    packet[packet_at] = b;
+    packet_at += 1;
+    if (packet_at < 3) {
+        return;
+    }
+    packet_at = 0;
+    I64 flags = packet[0];
+    I64 dx = packet[1];
+    I64 dy = packet[2];
+    if ((flags & 0x10) != 0) {
+        dx = dx - 256;
+    }
+    if ((flags & 0x20) != 0) {
+        dy = dy - 256;
+    }
+    Bool any = motion(REL_X, dx);
+    any = motion(REL_Y, 0 - dy) || any;
+    for k in 0..3 {
+        any = button(k, (flags >> k) & 1) || any;
+    }
+    if (any) {
+        push(EV_SYN, 0, 0);
+    }
+}
+
+// A motion of the mouse on axis by v: queued when it fits with a place left for the packet's EV_SYN, else dropped and
+// counted. True when queued.
+Bool motion(I64 axis, I64 v) {
+    if (v == 0) {
+        return false;
+    }
+    if (room() < 2) {
+        mouse_lost += 1;
+        return false;
+    }
+    push(EV_REL, axis, v);
+    return true;
+}
+
+// Mouse button k (0 left, 1 right, 2 middle) at state on (1 down, 0 up): its event when it changed. A release always
+// fits, in its kept places. A press needs its place, two to keep and one for the EV_SYN; one that does not fit is
+// counted and the button stays up, so the next packet or report that holds it down gives the press. True when queued.
+Bool button(I64 k, I64 on) {
+    I64 bit = 1 << k;
+    I64 was = (buttons >> k) & 1;
+    if (on == was) {
+        return false;
+    }
+    if (on == 1 && room() < 4) {
+        mouse_lost += 1;
+        return false;
+    }
+    buttons = buttons ^ bit;
+    push(EV_KEY, BTN_LEFT + k, on);
+    return true;
+}
+
+// HW-4: a key of the USB keyboard at tick now, its event and EV_SYN as a set-1 key gives. True when it reached the
+// queue (a USB keyboard sends no repeat of its own; a release of a key not down is dropped).
+export Bool usb_key(I64 code, I64 value, I64 now) {
+    return key(code, value, now);
+}
+
+// HW-4: a USB boot mouse report: the buttons that changed, the motion, the wheel, then EV_SYN when any (F-3's events).
+export void usb_mouse(I64 b, I64 dx, I64 dy, I64 wheel) {
+    Bool any = false;
+    for k in 0..3 {
+        any = button(k, (b >> k) & 1) || any;
+    }
+    any = motion(REL_X, dx) || any;
+    any = motion(REL_Y, dy) || any;
+    any = motion(REL_WHEEL, wheel) || any;
+    if (any) {
+        push(EV_SYN, 0, 0);
+    }
+}
+
+// RS-KR, at each pull after the rings are drained: the held key's repeat due at tick now, a press (value 1) and its
+// EV_SYN. True when one was queued. A repeat is not a press of the hardware, so it has no K-12 stamp. Its key is down
+// and its release kept, so it needs two places past those; without them it waits for a pull with room, and comes as
+// one, as a keyboard's own repeat never queues. A repeat that waits is not lost.
+export Bool repeat(I64 now) {
+    if (room() < 2) {
+        return false;
+    }
+    I64 r = keyrep.due(now);
+    if (r == 0) {
+        return false;
+    }
+    push(EV_KEY, r, 1);
+    push(EV_SYN, 0, 0);
+    return true;
+}
+
+// The events queued.
+export I64 queued() {
+    return qcount;
+}
+
+// Event i of the queue, 0 the oldest: type | code << 16 | value << 32; 0 past the last.
+export U64 at(I64 i) {
+    if (i < 0 || i >= qcount) {
+        return 0;
+    }
+    return events[(qhead + i) % QUEUE];
+}
+
+// The oldest n events, read out: gone from the queue.
+export void take(I64 n) {
+    I64 k = n;
+    if (k > qcount) {
+        k = qcount;
+    }
+    if (k <= 0) {
+        return;
+    }
+    qhead = (qhead + k) % QUEUE;
+    qcount -= k;
+}
+
+// What the queue dropped since boot: key presses refused, mouse events refused, and events past a full queue.
+export I64 dropped() {
+    return presses_lost + mouse_lost + lost;
+}
+
+I64 put[n, d](in U8[n] s, I64 pos, inout U8[d] line) {
+    for i in 0..n {
+        line[pos + i] = s[i];
+    }
+    return pos + n;
+}
+
+I64 put_num[d](I64 v, I64 pos, inout U8[d] line) {
+    U8[20] digits;
+    I64 k = text.dec_digits(v, digits);
+    for i in 0..k {
+        line[pos + i] = digits[i];
+    }
+    return pos + k;
+}
+
+// The line that says what was dropped, after `daphnis: input dropped` at the end of a run (src/input.ci
+// say_dropped): the queue's three counts, then ring_bytes (rt/ps2.c's rings) and tile_events (src/tile.ci's client
+// queues). Into line, which holds 200; its length.
+export I64 drop_line(I64 ring_bytes, I64 tile_events, inout U8[200] line) {
+    I64 pos = put("daphnis: input dropped: key presses ", 0, line);
+    pos = put_num(presses_lost, pos, line);
+    pos = put(", mouse events ", pos, line);
+    pos = put_num(mouse_lost, pos, line);
+    pos = put(", queue events ", pos, line);
+    pos = put_num(lost, pos, line);
+    pos = put(", ring bytes ", pos, line);
+    pos = put_num(ring_bytes, pos, line);
+    pos = put(", tile events ", pos, line);
+    pos = put_num(tile_events, pos, line);
+    return put("\n", pos, line);
+}
+// SPDX-License-Identifier: Apache-2.0

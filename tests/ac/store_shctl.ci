@@ -1,0 +1,57 @@
+// Scripted file descriptors for account-store tests, copied over shctl in an isolated test root.
+U8[9216] data;
+I64[2] sizes;
+I64[2] starts;
+I64[2] open_errors;
+I64[2] end_errors;
+I64[2] chunks;
+I64[2] opens;
+I64[2] closes;
+
+export void reset() {
+    for k in 0..2 {
+        sizes[k] = 0; starts[k] = 0; open_errors[k] = -2;
+        end_errors[k] = 0; chunks[k] = 512; opens[k] = 0; closes[k] = 0;
+    }
+}
+export void file(I64 i, in U8[_] bytes, I64 n, I64 oe, I64 re, I64 chunk) {
+    assert(i >= 0 && i < 2 && n >= 0 && n <= 4608 && n <= len(bytes));
+    sizes[i] = n; starts[i] = 0; open_errors[i] = oe; end_errors[i] = re; chunks[i] = chunk;
+    for k in 0..n { data[i * 4608 + k] = bytes[k]; }
+}
+export I64 opened(I64 i) { return opens[i]; }
+export I64 closed(I64 i) { return closes[i]; }
+export I64 sh_open(in U8[_] path, I64 flags, I64 mode) {
+    assert(flags == 0 && mode == 0);
+    I64 i = -1;
+    if (len(path) == len(b"/home/.daphnis/accounts")) {
+        i = 0;
+        for k in 0..len(path) { assert(path[k] == b"/home/.daphnis/accounts"[k]); }
+    } else {
+        assert(len(path) == len(b"/home/.daphnis/accounts.prev"));
+        i = 1;
+        for k in 0..len(path) { assert(path[k] == b"/home/.daphnis/accounts.prev"[k]); }
+    }
+    opens[i] = opens[i] + 1;
+    if (open_errors[i] < 0) { return open_errors[i]; }
+    return i + 10;
+}
+export I64 fd_read(I64 fd, inout U8[_] buf) {
+    I64 i = fd - 10;
+    assert(i >= 0 && i < 2);
+    for k in 0..len(buf) { buf[k] = 0; }
+    if (starts[i] == sizes[i]) { return end_errors[i]; }
+    I64 n = sizes[i] - starts[i];
+    if (n > len(buf)) { n = len(buf); }
+    if (n > chunks[i]) { n = chunks[i]; }
+    for k in 0..n { buf[k] = data[i * 4608 + starts[i] + k]; }
+    starts[i] = starts[i] + n;
+    return n;
+}
+export I64 fd_close(I64 fd) {
+    I64 i = fd - 10;
+    assert(i >= 0 && i < 2 && closes[i] == 0);
+    closes[i] = closes[i] + 1;
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

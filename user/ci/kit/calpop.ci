@@ -1,0 +1,304 @@
+// user/ci/kit/calpop.ci: RS-CAL, the calendar under the bar's clock (frame 44, DN-58), the desk's kit in place of
+// hdesk's K-6 drawing. It opens on today's month in the desk's zone (kit/clocktext.ci, RS-TZb); the chevrons and Left
+// and Right step a month within years 1 to 9999; a click on the month's name returns to today's month; Esc or a
+// click outside closes it. The first column follows Week Starts On (0 Sunday, 1 Monday).
+//
+// Look (frame 44): a plate 272 wide, radius 12, SURF2, shadow High (MS-3 level 3), padding 14 top, 12 sides and
+// bottom, 10 between its three blocks. The header 24 high: the month and year in NAME_BOLD from 20 in; two chevron
+// buttons 24 x 24, radius 6, 2 apart, 16 in from the right, each a 10 px chevron stroked 1.5 in INK, the hovered one
+// BAR_RULE. The weekdays 11 high, one letter each in LABEL INK_DIM centered on its column. The weeks (4 to 6, as the
+// month needs), cells 32 x 28 on a 36 pitch, 2 between weeks, the day in PATH centered; today a FILL pill of radius
+// 14, its day ON_FILL; the days of the months before and after that fill the first and last weeks dim (frame 44's
+// #6f6b62 dark, #8a94a3 light).
+//
+// Coordinates are logical pixels; row_at draws device row y at zoom z (1 or 2) with no ground: the plate and its
+// shadow mix over what lies under them. One calendar at a time; the state is this module's.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;
+import user.ci.kit.shade;
+import user.ci.kit.stroke;
+import user.ci.kit.clocktext;
+import user.ci.core.tz;
+import user.ci.core.cal;
+
+export const I64 W = 272;
+export const I64 RAD = 12;
+export const I64 SHADOW = 3;           // High
+export const I64 TOP = 14;
+export const I64 SIDE = 12;
+export const I64 BOTTOM = 12;
+export const I64 GAP = 10;
+export const I64 HEAD = 24;
+export const I64 WD_H = 11;            // the weekdays' row
+export const I64 BTN = 24;             // a chevron button
+export const I64 CELL_W = 32;
+export const I64 CELL_H = 28;
+export const I64 PITCH = 36;           // a column's left to the next's
+export const I64 LINE = 30;            // a week's top to the next's
+
+export const I64 NONE = 0;             // nothing to do, or a key that is not the calendar's
+export const I64 DRAW = 1;
+export const I64 CLOSE = 2;
+
+export const I64 K_ESC = 1;
+export const I64 K_LEFT = 105;
+export const I64 K_RIGHT = 106;
+
+U32[2] DIM = [0x006f6b62, 0x008a94a3];   // frame 44: the other months' days
+
+Bool up = false;
+I64 ax = 0;
+I64 ay = 0;
+I64 sy = 2026;                         // the month shown
+I64 sm = 1;
+I64 ty = 2026;                         // today, in the zone
+I64 tm = 1;
+I64 td = 1;
+I64 ws = 0;                            // the first column's weekday
+I64 hot = -1;                          // the hovered chevron: 0 back, 1 on, -1 none
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// Today from the zone's local time at t; whether it changed.
+Bool take_today(I64 zone, I64 t) {
+    I64 o = tz.local(zone, t);
+    Bool ch = cal.year() != ty || cal.month() != tm || cal.day() != td;
+    ty = cal.year();
+    tm = cal.month();
+    td = cal.day();
+    return ch;
+}
+
+// Open on today's month at t in zone, the first column weekday week, the plate's right edge at xr and its top at yt.
+export void open(I64 zone, I64 t, I64 week, I64 xr, I64 yt) {
+    Bool ch = take_today(zone, t);
+    sy = ty;
+    sm = tm;
+    ws = week % 2;
+    ax = xr - W;
+    ay = yt;
+    hot = -1;
+    up = true;
+}
+
+export void close() {
+    up = false;
+    hot = -1;
+}
+
+export Bool is_up() { return up; }
+
+// The clock moved on: whether today changed, so the open calendar redraws.
+export Bool set_now(I64 zone, I64 t) { return take_today(zone, t) && up; }
+
+export void set_week(I64 week) { ws = week % 2; }
+
+// --- the month ---
+
+export I64 year() { return sy; }
+export I64 month() { return sm; }
+export I64 days() { return cal.month_days(sy, sm); }
+export I64 first() { return (cal.days(sy, sm, 1) % 7 + 11) % 7; }   // the 1st's weekday, 0 Sunday
+export I64 today() {                                             // today's day in the month shown, else 0
+    if (sy == ty && sm == tm) { return td; }
+    return 0;
+}
+
+I64 lead() { return (first() - ws + 7) % 7; }
+export I64 weeks() { return (lead() + days() + 6) / 7; }
+export I64 height() { return TOP + HEAD + GAP + WD_H + GAP + LINE * weeks() - 2 + BOTTOM; }
+export I64 left() { return ax; }
+export I64 top() { return ay; }
+
+// Step d months, within 0001-01 to 9999-12; whether it moved.
+export Bool step(I64 d) {
+    I64 k = sy * 12 + sm - 1 + d;
+    if (k < 12 || k >= 10000 * 12) { return false; }
+    sy = k / 12;
+    sm = k % 12 + 1;
+    return true;
+}
+
+// Today's month again; whether it moved.
+export Bool go_today() {
+    Bool ch = sy != ty || sm != tm;
+    sy = ty;
+    sm = tm;
+    return ch;
+}
+
+// --- input ---
+
+I64 btn_x(I64 b) { return ax + W - SIDE - 4 - BTN - (BTN + 2) * (1 - b); }
+
+I64 title_w() {
+    U8[24] t;
+    I64 n = clocktext.month_year(t, 0, sy, sm);
+    return ctext.width(t, n, faces.NAME_BOLD, 1);
+}
+
+Bool in_box(I64 px, I64 py, I64 x0, I64 y0, I64 w, I64 h) { return px >= x0 && px < x0 + w && py >= y0 && py < y0 + h; }
+
+export Bool inside(I64 px, I64 py) { return in_box(px, py, ax, ay, W, height()); }
+
+I64 btn_at(I64 px, I64 py) {
+    for b in 0..2 {
+        if (in_box(px, py, btn_x(b), ay + TOP, BTN, BTN)) { return b; }
+    }
+    return -1;
+}
+
+// The pointer at (px, py): whether the hovered chevron changed.
+export Bool hover(I64 px, I64 py) {
+    I64 h = -1;
+    if (up) { h = btn_at(px, py); }
+    Bool ch = h != hot;
+    hot = h;
+    return ch;
+}
+
+// A press at (px, py): a chevron steps, the month's name returns to today, outside the plate closes.
+export I64 click(I64 px, I64 py) {
+    if (!up) { return NONE; }
+    if (!inside(px, py)) {
+        close();
+        return CLOSE;
+    }
+    I64 b = btn_at(px, py);
+    if (b == 0 && step(-1)) { return DRAW; }
+    if (b == 1 && step(1)) { return DRAW; }
+    if (b < 0 && in_box(px, py, ax + SIDE + 8, ay + TOP, title_w(), HEAD) && go_today()) { return DRAW; }
+    return NONE;
+}
+
+// A key: Left and Right step, Esc closes; any other is not the calendar's (NONE).
+export I64 key(I64 c) {
+    if (!up) { return NONE; }
+    if (c == K_ESC) {
+        close();
+        return CLOSE;
+    }
+    if (c == K_LEFT && step(-1)) { return DRAW; }
+    if (c == K_RIGHT && step(1)) { return DRAW; }
+    return NONE;
+}
+
+// --- drawing ---
+
+// The baseline that centers face f's line box in [y0, y0 + h) (logical) at zoom z, in device rows.
+I64 mid_base(I64 y0, I64 h, I64 f, I64 z) {
+    I64 a = ctext.ascent(f, z);
+    return y0 * z + (h * z - a - ctext.descent(f, z)) / 2 + a;
+}
+
+// s[0..n] in face f centered in [x0, x0 + w) (logical) on baseline base.
+void centered(inout U32[_] row, I64 y, I64 x0, I64 w, I64 base, in U8[_] s, I64 n, U32 c, I64 f, I64 z) {
+    I64 tw = ctext.width(s, n, f, z);
+    I64 x = x0 * z + (w * z - tw) / 2;
+    I64 e = ctext.text(row, y, x, base, x + tw, s, n, c, f, z);
+}
+
+// Chevron b (0 back, 1 on), frame 44's 10 px path stroked 1.5, in its button at x0, y0 (logical).
+void chevron(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 b, I64 z) {
+    I64[8] back = [104, 32, 56, 80, 56, 80, 104, 128];   // M6.5 2 L3.5 5 L6.5 8, in sixteenths
+    I64[8] on = [56, 32, 104, 80, 104, 80, 56, 128];     // M3.5 2 L6.5 5 L3.5 8
+    if (b == 0) { stroke.path_row(row, y, (x0 + 7) * z, (y0 + 7) * z, z, 1, back, 2, 24, tok(tokens.INK)); }
+    if (b == 1) { stroke.path_row(row, y, (x0 + 7) * z, (y0 + 7) * z, z, 1, on, 2, 24, tok(tokens.INK)); }
+}
+
+void head_row(inout U32[_] row, I64 y, I64 z) {
+    I64 hy = ay + TOP;
+    if (y < hy * z || y >= (hy + HEAD) * z) { return; }
+    U8[24] t;
+    I64 n = clocktext.month_year(t, 0, sy, sm);
+    I64 e = ctext.text(row, y, (ax + SIDE + 8) * z, mid_base(hy, HEAD, faces.NAME_BOLD, z), btn_x(0) * z, t, n,
+                       tok(tokens.INK), faces.NAME_BOLD, z);
+    for b in 0..2 {
+        I64 bx = btn_x(b);
+        if (b == hot) {
+            shape.rounded(row, y, bx * z, hy * z, (bx + BTN) * z, (hy + BTN) * z, 6 * z, tok(tokens.BAR_RULE));
+        }
+        chevron(row, y, bx, hy, b, z);
+    }
+}
+
+void weekday_row(inout U32[_] row, I64 y, I64 z) {
+    I64 wy = ay + TOP + HEAD + GAP;
+    if (y < wy * z || y >= (wy + WD_H) * z) { return; }
+    I64 base = mid_base(wy, WD_H, faces.LABEL, z);
+    for c in 0..7 {
+        I64 d = (c + ws) % 7;
+        U8[1] t;
+        t[0] = b"SMTWTFS"[d];
+        centered(row, y, ax + SIDE + PITCH * c, CELL_W, base, t, 1, tok(tokens.INK_DIM), faces.LABEL, z);
+    }
+}
+
+void week_row(inout U32[_] row, I64 y, I64 th, I64 z) {
+    I64 gy = ay + TOP + HEAD + GAP + WD_H + GAP;
+    if (y < gy * z) { return; }
+    I64 r = (y / z - gy) / LINE;
+    if (r >= weeks()) { return; }
+    I64 cy = gy + LINE * r;
+    if (y >= (cy + CELL_H) * z) { return; }
+    I64 base = mid_base(cy, CELL_H, faces.PATH, z);
+    I64 l = lead();
+    I64 n = days();
+    I64 pd = 31;                                   // December's, before January
+    if (sm > 1) { pd = cal.month_days(sy, sm - 1); }
+    I64 now = today();
+    for c in 0..7 {
+        I64 day = 7 * r + c - l + 1;
+        U32 fg = tok(tokens.INK);
+        I64 v = day;
+        if (day < 1) {
+            v = pd + day;
+            fg = DIM[th % 2];
+        } else if (day > n) {
+            v = day - n;
+            fg = DIM[th % 2];
+        }
+        I64 cx = ax + SIDE + PITCH * c;
+        if (now > 0 && day == now) {
+            shape.rounded(row, y, cx * z, cy * z, (cx + CELL_W) * z, (cy + CELL_H) * z, 14 * z, tok(tokens.FILL));
+            fg = tok(tokens.ON_FILL);
+        }
+        U8[2] t;
+        I64 tn = 1;
+        if (v >= 10) {
+            t[0] = (48 + v / 10) as U8;
+            t[1] = (48 + v % 10) as U8;
+            tn = 2;
+        } else {
+            t[0] = (48 + v) as U8;
+        }
+        centered(row, y, cx, CELL_W, base, t, tn, fg, faces.PATH, z);
+    }
+}
+
+// Row y (device) of the open calendar at zoom z on theme th: its shadow, plate, header, weekdays and weeks.
+export void row_at(inout U32[_] row, I64 y, I64 z, I64 th) {
+    if (!up) { return; }
+    I64 x0 = ax * z;
+    I64 y0 = ay * z;
+    I64 x1 = (ax + W) * z;
+    I64 y1 = (ay + height()) * z;
+    if (y < area_top(z, th) || y >= area_bottom(z, th)) { return; }
+    I64 sd = shade.reach_side(SHADOW, th, z);
+    shade.shade_row(row, max(x0 - sd, 0), min(x1 + sd, len(row)), y, x0, y0, x1, y1, RAD, SHADOW, th, z);
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, x0, y0, x1, y1, RAD * z, tok(tokens.SURF2));
+    head_row(row, y, z);
+    weekday_row(row, y, z);
+    week_row(row, y, th, z);
+}
+
+// The device box the calendar and its shadow touch at zoom z on theme th: [area_left, area_right) x [area_top,
+// area_bottom), for the host's window under it.
+export I64 area_left(I64 z, I64 th) { return ax * z - shade.reach_side(SHADOW, th, z); }
+export I64 area_right(I64 z, I64 th) { return (ax + W) * z + shade.reach_side(SHADOW, th, z); }
+export I64 area_top(I64 z, I64 th) { return ay * z - shade.reach_up(SHADOW, th, z); }
+export I64 area_bottom(I64 z, I64 th) { return (ay + height()) * z + shade.reach_down(SHADOW, th, z); }
+// SPDX-License-Identifier: Apache-2.0

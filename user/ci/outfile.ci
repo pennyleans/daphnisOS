@@ -1,0 +1,6 @@
+// user/ci/outfile.ci: the output file of a cint program in ring 3 (user/ci/host.c), stage W-1.
+//   out_open(path): creates or truncates the file at path, mode 0644, for out_put; 0, or -errno
+//   out_put(bytes): appends bytes to it; the count written, or -errno (-EBADF before out_open)
+export extern unrestricted I64 out_open(in U8[_] path);
+export extern unrestricted I64 out_put(in U8[_] bytes);
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,25 @@
+{
+  "id": "tab-inserts-tab",
+  "rules": [
+    "KEY-4"
+  ],
+  "text": "a\n\tb",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "09"
+  ],
+  "expect": {
+    "text": "\ta\n\tb",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

@@ -1,0 +1,1431 @@
+// tests/kfz/xhc.ci: a fake xHCI controller for the hosted kernel of tests/kfz (tests/kfz/hostroot.py), and the USB
+// devices on its root hub: a disk that speaks bulk-only transport and SCSI, as src/usbms.ci asks it, and a device of
+// a class the kernel does not drive. The controller is function 0 of slot 5 on bus 0 of PCI mechanism 1 (ports 0xCF8
+// and 0xCFC) with a memory BAR; its registers answer src/xhci.ci's mmio_in32 and mmio_out32; it reads its rings and
+// the input contexts, and writes its events and the devices' bytes, in the pool through tests/kfz/machine.ci, as a
+// bus master does. Time is the controller's own: each register access is one microframe (125 us), so MFINDEX moves as
+// the kernel reads it, and kfz_xhc_run lets time pass with the kernel elsewhere. A transfer can stay out (no answer)
+// or answer at a later time; Stop Endpoint, a dropped endpoint, Disable Slot, a halt and a reset take it back, as
+// they do on a controller, and nothing else does. Unplugged (the start), the bus is empty.
+//
+// A lie (kfz_xhc_lie) makes the disk answer one command wrong, the first one of an opcode or any: the CSW's signature,
+// tag, status or residue; a data stage short of what the CSW says; a stage that never answers or answers late; a
+// stall; babble; the device gone mid transfer, with transaction errors or silently. The kfz_ functions are the tests'.
+
+import tests.kfz.machine;
+
+const I64 PCI_AT = 0x28;               // bus 0, slot 5, function 0: bits 23 to 8 of a mechanism 1 address
+export const U64 BAR = 0xFEBF0000;
+const I64 NS = 16;                     // slot ids kept: 1 to 15
+const I64 NP = 16;                     // ports kept: 1 to 15
+const I64 HOLD = 4;                    // transfers out at once
+const U64 NEVER = 0xFFFFFFFFFFFFFFFF;
+const U64 EV_TRANSFER = 0x8000;        // an event TRB's type field: 32, a transfer event
+const U64 EV_COMMAND = 0x8400;         // 33, a command completion
+const U64 EV_PORT = 0x8800;            // 34, a port status change
+
+const U64 C_SUCCESS = 1;
+const U64 C_BABBLE = 3;
+const U64 C_TRANSACTION = 4;
+const U64 C_TRB = 5;
+const U64 C_STALL = 6;
+const U64 C_NO_SLOTS = 9;
+const U64 C_SLOT_OFF = 11;
+const U64 C_SHORT = 13;
+const U64 C_PARAMETER = 17;
+const U64 C_CONTEXT = 19;
+const U64 C_STOPPED = 26;
+
+const I64 OFF = 0;                     // an endpoint's state
+const I64 RUNNING = 1;
+const I64 HALTED = 2;
+const I64 STOPPED = 3;
+
+export const I64 NONE = 0;             // a device's kind
+export const I64 DISK = 1;
+export const I64 OTHER = 2;            // vendor class: neither HID nor storage, so the kernel gives its slot back
+export const I64 KEYBOARD = 3;         // a boot keyboard: its interrupt IN endpoint 1 answers only kfz_xhc_key
+
+const I64 P_CBW = 0;                   // the disk's bulk-only phase
+const I64 P_IN = 1;
+const I64 P_OUT = 2;
+const I64 P_CSW = 3;
+const I64 P_STUCK = 4;                 // an invalid CBW: every bulk stage stalls until a mass storage reset
+
+export const I64 LIE_CSW_SIGNATURE = 1;
+export const I64 LIE_CSW_TAG = 2;
+export const I64 LIE_CSW_STATUS = 3;   // arg: the status byte
+export const I64 LIE_CSW_RESIDUE = 4;  // arg: the residue
+export const I64 LIE_SHORT = 5;        // arg: bytes the data stage sends fewer; the CSW says 0
+export const I64 LIE_DATA_MUTE = 6;
+export const I64 LIE_DATA_LATE = 7;    // arg: milliseconds; an OUT stage reads its frame then
+export const I64 LIE_CSW_MUTE = 8;
+export const I64 LIE_GONE = 9;         // at the data stage, then transaction errors
+export const I64 LIE_GONE_QUIET = 10;  // at the data stage, then nothing at all
+export const I64 LIE_DATA_STALL = 11;  // arg: the CSW's status after it
+export const I64 LIE_CSW_STALL = 12;   // arg: how many CSW reads stall
+export const I64 LIE_BABBLE = 13;
+export const I64 LIE_CBW_MUTE = 14;
+export const I64 LIE_HONEST_SHORT = 15; // arg: bytes the data stage sends fewer; the CSW says so
+export const I64 LIE_CSW_LATE = 16;    // arg: milliseconds; the CSW comes then (a stick writing its cache out)
+
+// --- the machine as the tests set it ---
+
+Bool plugged = false;
+U64 span = 0x10000;
+U64 db_off = 0x2000;
+U64 rt_off = 0x1000;
+I64 max_slots = 8;
+I64 max_ports = 4;
+U64 caplen = 0x20;                     // CAPLENGTH as the controller says it; its operational registers stay at 0x20
+U64 xecp = 0;                          // HCCPARAMS1's xECP (dwords from the BAR) and the register there
+U64 xcap = 0;
+I64[2] dev_kind;
+I64[2] dev_port;
+I64[2] dev_speed;
+Bool[2] dev_here;
+Bool gone_quiet = false;
+I64 slot_lie = -1;                     // the next Enable Slot answers this id and makes no slot
+I64 slot_lie_after = 0;                // after this many honest ones
+U64 mute_cmd = 0;                      // a command type the controller takes and never completes
+I64 ep_out = 0x01;                     // the disk's endpoints as its descriptors give them
+I64 ep_in = 0x82;
+I64 ep_mps = 512;
+U8[16] model;
+I64 pdt = 0;
+U64 cap_last = 1023;
+U64 cap_blen = 512;
+I64 not_ready = 0;
+Bool sense_long = false;
+I64 lie = 0;
+I64 lie_op = -1;
+I64 lie_arg = 0;
+I64 lie_left = 0;
+
+// --- what the tests read ---
+
+U64 now = 0;                           // microseconds
+I64 outside = 0;                       // register accesses outside the window mmio_map was asked for
+I64 lost = 0;                          // events the ring had no room for
+I64[256] ops;                          // SCSI commands by opcode
+I64 resets = 0;                        // bulk-only mass storage resets
+I64 halts_cleared = 0;
+I64 stops = 0;
+I64 disables = 0;
+I64 strays = 0;                        // commands naming a slot past MaxSlotsEn
+I64 cap_writes = 0;                    // writes to the extended capability's two registers
+Bool stuck = false;                    // the controller takes no run bit: it stays halted
+I64 writes = 0;
+U8[8192] store;                        // sectors 0 to 15 as written, or as the disk came (kfz_xhc_put)
+Bool[16] stored;
+Bool[16] held;                         // sectors 0 to 15 the disk came with, until written
+I64 wrote_lo = -1;                     // the lowest and highest sector a WRITE's data stage reached, -1 for none
+I64 synced = -1;                       // the WRITEs the last SYNCHRONIZE CACHE (10) came after, -1 for none
+Bool sync_immed = false;               // a SYNCHRONIZE CACHE (10) asked to answer before its cache was written
+Bool no_sync = false;                  // the disk has no SYNCHRONIZE CACHE (10): ILLEGAL REQUEST, as for any opcode
+I64 wrote_hi = -1;
+
+// --- the controller ---
+
+U32 cf8 = 0;
+U32 pci_cmd = 0;
+Bool sizing = false;
+U64 bar_reg = 0;
+U64 win_lo = 0;
+U64 win_hi = 0;
+Bool run = false;
+U64 lo_word = 0;                       // the low half of a 64-bit register, until its high half is written
+U64 dcbaap = 0;
+I64 slots_en = 0;
+U64 erstsz = 0;
+U64 erstba = 0;
+U64 seg = 0;
+I64 seg_n = 0;
+I64 enq = 0;
+U64 pcs = 1;
+U64 erdp = 0;
+Bool[16] slot_on;
+I64[16] slot_dev;
+U64[512] deq;                          // ring 32 * slot + dci; ring 0 the command ring
+U64[512] dcs;
+I64[512] st;
+Bool[16] port_en;
+Bool[16] port_prc;
+Bool[16] port_csc;
+U64 t_at = 0;                          // the TRB take() found
+U64 t_p = 0;
+U64 t_st = 0;
+U64 t_ctl = 0;
+
+// transfers out: the ring, its TRB, the frame, the bytes, the event's code and residue, when it answers; an OUT
+// stage's bytes are read from its frame when it answers
+Bool[4] h_on;
+Bool[4] h_out;
+I64[4] h_ring;
+U64[4] h_trb;
+U64[4] h_buf;
+I64[4] h_n;
+U8[16384] h_bytes;
+U64[4] h_code;
+I64[4] h_resid;
+U64[4] h_due;
+U64 watch = 0;                         // a frame the test watches (kfz_xhc_watch)
+I64 watched = 0;                       // bulk TRBs that named it
+
+// --- the disk ---
+
+I64 phase = P_CBW;
+U64 tag = 0;
+I64 dlen = 0;
+I64 cur = 0;                           // this command's lie
+I64 cur_arg = 0;
+I64 status = 0;
+U8[4096] reply;
+I64 reply_n = 0;
+I64 moved = 0;                         // bytes of this command's data stage
+I64 w_lba = 0;
+I64 sense_key = 0;
+I64 sense_asc = 0;
+I64 sense_ascq = 0;
+I64 csw_stalls = 0;
+
+// --- memory, as a bus master sees it ---
+
+U64 rd(U64 a) {
+    U64[1] v;
+    machine.phys_phys_read64(a, v);
+    return v[0];
+}
+
+U64 rd32(U64 a) {
+    U64 w = rd(a & 0xFFFFFFFFFFFFFFF8);
+    return (w >> (8 * (a & 7))) & 0xFFFFFFFF;
+}
+
+void put_le32(inout U8[_] b, I64 at, U64 v) {
+    for k in 0..4 {
+        b[at + k] = ((v >> (8 * k) as U64) & 0xFF) as U8;
+    }
+}
+
+U64 le32(in U8[_] b, I64 at) {
+    U64 v = 0;
+    for k in 0..4 {
+        v |= (b[at + k] as U64) << (8 * k) as U64;
+    }
+    return v;
+}
+
+U64 be32(in U8[_] b, I64 at) {
+    U64 v = 0;
+    for k in 0..4 {
+        v = v * 256 + b[at + k] as U64;
+    }
+    return v;
+}
+
+// Byte k of sector lba as the disk holds it: as written or put for sectors 0 to 15, else a pattern of both.
+export U8 kfz_xhc_byte(I64 lba, I64 k) {
+    if (lba >= 0 && lba < 16 && (stored[lba] || held[lba])) {
+        return store[512 * lba + k];
+    }
+    return (((lba as U64) * 31 + (k as U64) * 7 + 0x5A) & 0xFF) as U8;
+}
+
+// --- events ---
+
+void post(U64 p, U64 status_word, U64 ctl) {
+    if (seg == 0 || seg_n < 2) {
+        lost += 1;
+        return;
+    }
+    I64 nxt = (enq + 1) % seg_n;
+    if (seg + (16 * nxt) as U64 == (erdp & 0xFFFFFFFFFFFFFFF0)) {
+        lost += 1;                     // full: the kernel has not moved ERDP past what it read
+        return;
+    }
+    U64[2] t = [p, status_word | ((ctl | pcs) << 32)];
+    machine.phys_phys_write64(seg + (16 * enq) as U64, t);
+    enq = nxt;
+    if (enq == 0) {
+        pcs = 1 - pcs;
+    }
+}
+
+void completion(U64 at, U64 code, I64 s) {
+    post(at, code << 24, EV_COMMAND | ((s as U64) << 24));
+}
+
+void event(I64 s, I64 dci, U64 at, U64 code, I64 resid) {
+    I64 r = resid;
+    if (r < 0) {
+        r = 0;
+    }
+    post(at, (code << 24) | ((r as U64) & 0xFFFFFF), EV_TRANSFER | ((dci as U64) << 16) | ((s as U64) << 24));
+}
+
+// --- transfers out ---
+
+Bool busy(I64 e) {
+    for i in 0..HOLD {
+        if (h_on[i] && h_ring[i] == e) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A transfer that answers at due (NEVER: not at all): n bytes from src at its frame, then its event.
+void hold(I64 e, U64 at, U64 buf, in U8[_] src, I64 n, U64 code, I64 resid, U64 due) {
+    for i in 0..HOLD {
+        if (!h_on[i]) {
+            h_on[i] = true;
+            h_out[i] = false;
+            h_ring[i] = e;
+            h_trb[i] = at;
+            h_buf[i] = buf;
+            h_n[i] = n;
+            for k in 0..n {
+                h_bytes[4096 * i + k] = src[k];
+            }
+            h_code[i] = code;
+            h_resid[i] = resid;
+            h_due[i] = due;
+            return;
+        }
+    }
+    assert(false);                     // more out than HOLD: the kernel posts one at a time
+}
+
+// Taken back without its bytes: true when ring e had one out (its frame is the kernel's again).
+Bool take_back(I64 e) {
+    Bool had = false;
+    for i in 0..HOLD {
+        if (h_on[i] && h_ring[i] == e) {
+            h_on[i] = false;
+            had = true;
+        }
+    }
+    return had;
+}
+
+void answer(I64 i) {
+    h_on[i] = false;
+    U8[4096] b;
+    if (h_out[i]) {
+        take_out(h_buf[i], h_n[i]);
+    } else if (h_n[i] > 0) {
+        for k in 0..h_n[i] {
+            b[k] = h_bytes[4096 * i + k];
+        }
+        machine.phys_phys_write8(h_buf[i], b[0..h_n[i]]);
+    }
+    I64 e = h_ring[i];
+    event(e / 32, e % 32, h_trb[i], h_code[i], h_resid[i]);
+    if (st[e] == RUNNING) {
+        process(e);                    // the ring's next transfer, when the kernel posted one meanwhile
+    }
+}
+
+void ripe() {
+    if (!run) {
+        return;
+    }
+    for i in 0..HOLD {
+        if (h_on[i] && h_due[i] != NEVER && now >= h_due[i]) {
+            answer(i);
+        }
+    }
+}
+
+void step() {
+    now += 125;
+    ripe();
+}
+
+// --- rings ---
+
+// The next TRB of ring e its producer has given (its cycle bit is the ring's), into t_at, t_p, t_st, t_ctl; a link
+// TRB is followed.
+Bool take(I64 e) {
+    I64 links = 0;
+    while (links < 4) {
+        U64 a = deq[e];
+        if (a == 0) {
+            return false;
+        }
+        U64 p = rd(a);
+        U64 w = rd(a + 8);
+        U64 ctl = w >> 32;
+        if ((ctl & 1) != dcs[e]) {
+            return false;
+        }
+        if (((ctl >> 10) & 63) == 6) {
+            deq[e] = p & 0xFFFFFFFFFFFFFFF0;
+            if ((ctl & 2) != 0) {
+                dcs[e] = 1 - dcs[e];
+            }
+            links += 1;
+        } else {
+            t_at = a;
+            t_p = p;
+            t_st = w & 0xFFFFFFFF;
+            t_ctl = ctl;
+            deq[e] = a + 16;
+            return true;
+        }
+    }
+    return false;
+}
+
+void ring_off(I64 e) {
+    _ = take_back(e);
+    st[e] = OFF;
+    deq[e] = 0;
+    dcs[e] = 1;
+}
+
+// --- commands ---
+
+U64 cmd_address(I64 s, U64 ictx) {
+    I64 port = ((rd32(ictx + 36) >> 16) & 0xFF) as I64;
+    I64 d = -1;
+    for k in 0..2 {
+        if (dev_kind[k] != NONE && dev_port[k] == port) {
+            d = k;
+        }
+    }
+    if (slot_dev[s] >= 0) {
+        return C_CONTEXT;                                  // addressed already: BSR 0 takes Enabled or Default only
+    }
+    if (d < 0 || port < 1 || port >= NP || !port_en[port] || !dev_here[d]) {
+        return C_TRANSACTION;
+    }
+    slot_dev[s] = d;
+    U64 tr = rd32(ictx + 72) | (rd32(ictx + 76) << 32);
+    I64 e = 32 * s + 1;
+    deq[e] = tr & 0xFFFFFFFFFFFFFFF0;
+    dcs[e] = tr & 1;
+    st[e] = RUNNING;
+    return C_SUCCESS;
+}
+
+U64 cmd_configure(I64 s, U64 ictx) {
+    U64 drop = rd32(ictx);
+    U64 add = rd32(ictx + 4);
+    for dci in 2..32 {
+        if (((add >> dci as U64) & 1) != 0) {
+            U64 c = ictx + (32 * (1 + dci)) as U64;
+            U64 mps = (rd32(c + 4) >> 16) & 0xFFFF;
+            U64 tr = rd32(c + 8) | (rd32(c + 12) << 32);
+            if (mps == 0 || (tr & 0xFFFFFFFFFFFFFFF0) == 0) {
+                return C_PARAMETER;
+            }
+        }
+    }
+    for dci in 2..32 {
+        I64 e = 32 * s + dci;
+        if (((drop >> dci as U64) & 1) != 0) {
+            ring_off(e);
+        }
+        if (((add >> dci as U64) & 1) != 0) {
+            U64 c = ictx + (32 * (1 + dci)) as U64;
+            U64 tr = rd32(c + 8) | (rd32(c + 12) << 32);
+            _ = take_back(e);
+            deq[e] = tr & 0xFFFFFFFFFFFFFFF0;
+            dcs[e] = tr & 1;
+            st[e] = RUNNING;
+        }
+    }
+    return C_SUCCESS;
+}
+
+void command(U64 at, U64 p, U64 ctl) {
+    U64 kind = (ctl >> 10) & 63;
+    I64 s = ((ctl >> 24) & 0xFF) as I64;
+    I64 dci = ((ctl >> 16) & 31) as I64;
+    if (kind == mute_cmd) {
+        return;
+    }
+    if (kind == 9) {                                       // Enable Slot
+        if (slot_lie >= 0 && slot_lie_after == 0) {
+            completion(at, C_SUCCESS, slot_lie);
+            slot_lie = -1;
+            return;
+        }
+        if (slot_lie >= 0) {
+            slot_lie_after -= 1;
+        }
+        for k in 1..NS {
+            if (k <= slots_en && !slot_on[k]) {
+                slot_on[k] = true;
+                slot_dev[k] = -1;
+                for j in 0..32 {
+                    ring_off(32 * k + j);
+                }
+                completion(at, C_SUCCESS, k);
+                return;
+            }
+        }
+        completion(at, C_NO_SLOTS, 0);
+        return;
+    }
+    if (kind == 23) {                                      // No Op
+        completion(at, C_SUCCESS, 0);
+        return;
+    }
+    if (s > slots_en) {
+        strays += 1;
+    }
+    if (s < 1 || s >= NS || !slot_on[s]) {
+        completion(at, C_SLOT_OFF, s);
+        return;
+    }
+    I64 e = 32 * s + dci;
+    U64 code = C_SUCCESS;
+    if (kind == 10) {                                      // Disable Slot
+        for j in 0..32 {
+            ring_off(32 * s + j);
+        }
+        slot_on[s] = false;
+        slot_dev[s] = -1;
+        disables += 1;
+    } else if (kind == 11) {                               // Address Device
+        code = cmd_address(s, p & 0xFFFFFFFFFFFFFFF0);
+    } else if (kind == 12) {                               // Configure Endpoint
+        code = cmd_configure(s, p & 0xFFFFFFFFFFFFFFF0);
+    } else if (kind == 13) {                               // Evaluate Context
+        code = C_SUCCESS;
+    } else if (kind == 14) {                               // Reset Endpoint
+        if (st[e] == HALTED) {
+            st[e] = STOPPED;
+        } else {
+            code = C_CONTEXT;
+        }
+    } else if (kind == 15) {                               // Stop Endpoint
+        stops += 1;
+        if (st[e] == RUNNING) {
+            for i in 0..HOLD {
+                if (h_on[i] && h_ring[i] == e) {
+                    h_on[i] = false;
+                    event(s, dci, h_trb[i], C_STOPPED, 0);
+                }
+            }
+            st[e] = STOPPED;
+        } else {
+            code = C_CONTEXT;
+        }
+    } else if (kind == 16) {                               // Set TR Dequeue Pointer
+        if (st[e] == STOPPED || st[e] == HALTED) {
+            deq[e] = p & 0xFFFFFFFFFFFFFFF0;
+            dcs[e] = p & 1;
+        } else {
+            code = C_CONTEXT;
+        }
+    } else {
+        code = C_TRB;
+    }
+    completion(at, code, s);
+}
+
+// --- the disk's commands ---
+
+void sense_set(I64 key, I64 asc, I64 ascq) {
+    sense_key = key;
+    sense_asc = asc;
+    sense_ascq = ascq;
+}
+
+void cbw(in U8[31] c) {
+    phase = P_CBW;
+    if (le32(c, 0) != 0x43425355) {
+        phase = P_STUCK;
+        return;
+    }
+    tag = le32(c, 4);
+    dlen = le32(c, 8) as I64;
+    Bool inward = (c[12] & 0x80) != 0;
+    I64 op = c[15] as I64;
+    ops[op] += 1;
+    cur = 0;
+    cur_arg = 0;
+    if (lie_left > 0 && (lie_op < 0 || lie_op == op)) {
+        cur = lie;
+        cur_arg = lie_arg;
+        lie_left -= 1;
+    }
+    csw_stalls = 0;
+    if (cur == LIE_CSW_STALL) {
+        csw_stalls = cur_arg;
+    }
+    status = 0;
+    reply_n = 0;
+    moved = 0;
+    if (op == 0x12) {                                      // INQUIRY
+        for k in 0..36 { reply[k] = 0x20; }
+        reply[0] = pdt as U8;
+        reply[1] = 0x80;
+        reply[2] = 6;
+        reply[3] = 2;
+        reply[4] = 31;
+        reply[5] = 0;
+        reply[6] = 0;
+        reply[7] = 0;
+        reply[8] = 75;                                     // KFZ
+        reply[9] = 70;
+        reply[10] = 90;
+        for k in 0..16 { reply[16 + k] = model[k]; }
+        reply_n = 36;
+    } else if (op == 0x00) {                               // TEST UNIT READY
+        if (not_ready > 0) {
+            not_ready -= 1;
+            status = 1;
+            sense_set(2, 4, 1);
+        }
+    } else if (op == 0x03) {                               // REQUEST SENSE
+        for k in 0..18 { reply[k] = 0; }
+        reply[0] = 0x70;
+        reply[2] = sense_key as U8;
+        reply[7] = 10;
+        if (sense_long) { reply[7] = 0xF5; }
+        reply[12] = sense_asc as U8;
+        reply[13] = sense_ascq as U8;
+        reply_n = 18;
+        sense_set(0, 0, 0);
+    } else if (op == 0x25) {                               // READ CAPACITY (10)
+        for k in 0..4 {
+            reply[k] = ((cap_last >> (8 * (3 - k)) as U64) & 0xFF) as U8;
+            reply[4 + k] = ((cap_blen >> (8 * (3 - k)) as U64) & 0xFF) as U8;
+        }
+        reply_n = 8;
+    } else if (op == 0x35 && !no_sync) {                    // SYNCHRONIZE CACHE (10): every WRITE so far is down
+        synced = writes;
+        if ((c[16] & 2) != 0) {
+            sync_immed = true;
+        }
+    } else if (op == 0x28 || op == 0x2A) {                 // READ (10), WRITE (10)
+        I64 lba = be32(c, 17) as I64;
+        I64 blocks = (c[22] as I64) * 256 + c[23] as I64;
+        if ((lba + blocks) as U64 > cap_last + 1 || 512 * blocks > 4096) {
+            status = 1;
+            sense_set(5, 0x21, 0);
+        } else if (op == 0x28) {
+            for b in 0..blocks {
+                for k in 0..512 {
+                    reply[512 * b + k] = kfz_xhc_byte(lba + b, k);
+                }
+            }
+            reply_n = 512 * blocks;
+        } else {
+            w_lba = lba;
+            writes += 1;
+        }
+    } else {
+        status = 1;
+        sense_set(5, 0x20, 0);
+    }
+    if (dlen == 0) {
+        phase = P_CSW;
+    } else if (inward) {
+        phase = P_IN;
+        if (reply_n > dlen) { reply_n = dlen; }
+    } else {
+        phase = P_OUT;
+    }
+}
+
+// A WRITE's data stage: n bytes from the frame at buf onto the disk.
+void take_out(U64 buf, I64 n) {
+    U8[4096] b;
+    machine.phys_phys_read8(buf, b[0..n]);
+    for k in 0..n {
+        I64 lba = w_lba + (moved + k) / 512;
+        if (moved + k < dlen && lba >= 0 && lba < 16) {
+            store[512 * lba + (moved + k) % 512] = b[k];
+            stored[lba] = true;
+        }
+        if (moved + k < dlen && (wrote_lo < 0 || lba < wrote_lo)) {
+            wrote_lo = lba;
+        }
+        if (moved + k < dlen && lba > wrote_hi) {
+            wrote_hi = lba;
+        }
+    }
+    moved += n;
+    if (moved >= dlen) {
+        phase = P_CSW;
+    }
+}
+
+void unplug(I64 d) {
+    dev_here[d] = false;
+    I64 p = dev_port[d];
+    port_en[p] = false;
+    port_csc[p] = true;
+}
+
+void stall(I64 s, I64 dci, U64 at, I64 n) {
+    event(s, dci, at, C_STALL, n);
+    st[32 * s + dci] = HALTED;
+}
+
+// Device d's answer to a bulk TRB of n bytes at buf on endpoint dci of slot s.
+void bulk(I64 s, I64 d, I64 dci, U64 at, U64 buf, I64 n) {
+    if (watch != 0 && n > 0 && buf < watch + 4096 && buf + n as U64 > watch) {
+        watched += 1;
+    }
+    I64 e = 32 * s + dci;
+    U8[1] none;
+    I64 o = 2 * (ep_out & 15);
+    I64 i = 2 * (ep_in & 15) + 1;
+    if (dev_kind[d] != DISK || phase == P_STUCK || (dci != o && dci != i)) {
+        stall(s, dci, at, n);
+        return;
+    }
+    if (dci == o && phase == P_CBW) {
+        if (n != 31) {
+            phase = P_STUCK;
+            stall(s, dci, at, n);
+            return;
+        }
+        U8[31] c;
+        machine.phys_phys_read8(buf, c);
+        cbw(c);
+        if (cur == LIE_CBW_MUTE) {
+            hold(e, at, buf, none, 0, C_SUCCESS, 0, NEVER);
+            return;
+        }
+        event(s, dci, at, C_SUCCESS, 0);
+        return;
+    }
+    if (dci == o && phase == P_OUT) {
+        if (cur == LIE_DATA_LATE) {
+            hold(e, at, buf, none, 0, C_SUCCESS, 0, now + 1000 * (cur_arg as U64));
+            for k in 0..HOLD {
+                if (h_on[k] && h_ring[k] == e) {
+                    h_out[k] = true;
+                    h_n[k] = n;
+                }
+            }
+            return;
+        }
+        take_out(buf, n);
+        event(s, dci, at, C_SUCCESS, 0);
+        return;
+    }
+    if (dci == i && phase == P_IN) {
+        I64 m = reply_n;
+        if (m > n) { m = n; }
+        if (cur == LIE_SHORT || cur == LIE_HONEST_SHORT) {
+            m -= cur_arg;
+            if (m < 0) { m = 0; }
+        }
+        phase = P_CSW;
+        moved = m;
+        if (cur == LIE_DATA_MUTE) {
+            hold(e, at, buf, reply, m, C_SUCCESS, n - m, NEVER);
+            return;
+        }
+        if (cur == LIE_DATA_LATE) {
+            U64 code = C_SUCCESS;
+            if (m < n) { code = C_SHORT; }
+            hold(e, at, buf, reply, m, code, n - m, now + 1000 * (cur_arg as U64));
+            return;
+        }
+        if (cur == LIE_GONE || cur == LIE_GONE_QUIET) {
+            unplug(d);
+            gone_quiet = cur == LIE_GONE_QUIET;
+            if (!gone_quiet) {
+                event(s, dci, at, C_TRANSACTION, n);
+                st[e] = HALTED;
+            }
+            return;
+        }
+        if (cur == LIE_DATA_STALL || reply_n == 0) {
+            moved = 0;
+            if (cur == LIE_DATA_STALL) { status = cur_arg; }
+            stall(s, dci, at, n);
+            return;
+        }
+        if (cur == LIE_BABBLE) {
+            machine.phys_phys_write8(buf, reply[0..n]);
+            event(s, dci, at, C_BABBLE, 0);
+            st[e] = HALTED;
+            return;
+        }
+        if (m > 0) {
+            machine.phys_phys_write8(buf, reply[0..m]);
+        }
+        if (m < n) {
+            event(s, dci, at, C_SHORT, n - m);
+        } else {
+            event(s, dci, at, C_SUCCESS, 0);
+        }
+        return;
+    }
+    if (dci == i && phase == P_CSW) {
+        if (csw_stalls > 0) {
+            csw_stalls -= 1;
+            stall(s, dci, at, n);
+            return;
+        }
+        U8[13] w;
+        put_le32(w, 0, 0x53425355);
+        put_le32(w, 4, tag);
+        U64 resid = 0;
+        if (dlen > moved) { resid = (dlen - moved) as U64; }
+        put_le32(w, 8, resid);
+        w[12] = status as U8;
+        if (cur == LIE_CSW_SIGNATURE) { put_le32(w, 0, 0x53425356); }
+        if (cur == LIE_CSW_TAG) { put_le32(w, 4, (tag + 1) & 0xFFFFFFFF); }
+        if (cur == LIE_CSW_STATUS) { w[12] = cur_arg as U8; }
+        if (cur == LIE_CSW_RESIDUE) { put_le32(w, 8, cur_arg as U64); }
+        if (cur == LIE_SHORT) { put_le32(w, 8, 0); }
+        phase = P_CBW;
+        if (cur == LIE_CSW_MUTE) {
+            hold(e, at, buf, w, 13, C_SUCCESS, n - 13, NEVER);
+            return;
+        }
+        if (cur == LIE_CSW_LATE) {
+            hold(e, at, buf, w, 13, C_SUCCESS, n - 13, now + 1000 * (cur_arg as U64));
+            return;
+        }
+        if (n < 13) {
+            machine.phys_phys_write8(buf, w[0..n]);
+            event(s, dci, at, C_BABBLE, 0);
+            st[e] = HALTED;
+            return;
+        }
+        machine.phys_phys_write8(buf, w);
+        if (n > 13) {
+            event(s, dci, at, C_SHORT, n - 13);
+        } else {
+            event(s, dci, at, C_SUCCESS, 0);
+        }
+        return;
+    }
+    stall(s, dci, at, n);
+}
+
+// --- EP0 ---
+
+U8[1024] ctl_reply;
+I64 ctl_n = 0;
+Bool ctl_ok = false;
+
+void desc(I64 at, I64 v) {
+    ctl_reply[at] = v as U8;
+}
+
+// The configuration descriptor of device d into ctl_reply: its length.
+I64 config(I64 d) {
+    I64[23] b = [9, 2, 32, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 2, 8, 6, 0x50, 0, 7, 5, 0, 2, 0];
+    for k in 0..23 { desc(k, b[k]); }
+    if (dev_kind[d] == OTHER) {
+        desc(14, 0xFF);
+        desc(15, 0);
+        desc(16, 0);
+    }
+    if (dev_kind[d] == KEYBOARD) {
+        desc(14, 3);
+        desc(15, 1);
+        desc(16, 1);
+    }
+    desc(20, ep_out);
+    desc(21, 2);
+    desc(22, ep_mps & 0xFF);
+    desc(23, (ep_mps >> 8) & 0xFF);
+    desc(24, 0);
+    desc(25, 7);
+    desc(26, 5);
+    desc(27, ep_in);
+    desc(28, 2);
+    desc(29, ep_mps & 0xFF);
+    desc(30, (ep_mps >> 8) & 0xFF);
+    desc(31, 0);
+    if (dev_kind[d] == KEYBOARD) {                         // its IN endpoint: 0x81, interrupt, 8 bytes, interval 10
+        desc(27, 0x81);
+        desc(28, 3);
+        desc(29, 8);
+        desc(30, 0);
+        desc(31, 10);
+    }
+    return 32;
+}
+
+void setup(I64 d, U64 p) {
+    U64 rtype = p & 0xFF;
+    U64 req = (p >> 8) & 0xFF;
+    U64 value = (p >> 16) & 0xFFFF;
+    ctl_n = 0;
+    ctl_ok = true;
+    if (rtype == 0x80 && req == 6 && value == 0x0100) {
+        I64[18] b = [18, 1, 0, 2, 0, 0, 0, 64, 0x36, 0x1B, 0x46, 0x4B, 0, 1, 0, 0, 0, 1];
+        for k in 0..18 { desc(k, b[k]); }
+        ctl_n = 18;
+    } else if (rtype == 0x80 && req == 6 && value == 0x0200) {
+        ctl_n = config(d);
+    } else if (rtype == 0x00 && req == 9) {
+        ctl_ok = true;
+    } else if (rtype == 0x21 && req == 0xFF && dev_kind[d] == DISK) {
+        resets += 1;
+        phase = P_CBW;
+    } else if (rtype == 0x02 && req == 1) {
+        halts_cleared += 1;
+    } else if (rtype == 0x21 && (req == 0x0B || req == 0x0A) && dev_kind[d] == KEYBOARD) {
+        ctl_ok = true;                                     // SET_PROTOCOL, SET_IDLE
+    } else {
+        ctl_ok = false;
+    }
+}
+
+void control(I64 s, I64 d) {
+    I64 e = 32 * s + 1;
+    I64 guard = 0;
+    while (guard < 64 && take(e)) {
+        guard += 1;
+        U64 kind = (t_ctl >> 10) & 63;
+        if (kind == 2) {
+            setup(d, t_p);
+        } else if (kind == 3 && ctl_ok) {
+            I64 n = (t_st & 0x1FFFF) as I64;
+            if (n > ctl_n) { n = ctl_n; }
+            if (n > 0) {
+                machine.phys_phys_write8(t_p, ctl_reply[0..n]);
+            }
+        } else if (kind == 4) {
+            if (ctl_ok) {
+                event(s, 1, t_at, C_SUCCESS, 0);
+            } else {
+                event(s, 1, t_at, C_STALL, 0);
+                st[e] = HALTED;
+            }
+        }
+    }
+}
+
+// Ring e's transfers from its dequeue pointer, while it runs and has none out.
+void process(I64 e) {
+    I64 s = e / 32;
+    I64 dci = e % 32;
+    I64 d = slot_dev[s];
+    if (d < 0 || st[e] != RUNNING) {
+        return;
+    }
+    if (!dev_here[d]) {
+        if (!gone_quiet) {
+            while (st[e] == RUNNING && take(e)) {
+                event(s, dci, t_at, C_TRANSACTION, (t_st & 0x1FFFF) as I64);
+                st[e] = HALTED;
+            }
+        }
+        return;
+    }
+    if (dci == 1) {
+        control(s, d);
+        return;
+    }
+    if (dev_kind[d] == KEYBOARD) {
+        return;                                            // its TRBs wait for kfz_xhc_key
+    }
+    I64 guard = 0;
+    while (guard < 8 && st[e] == RUNNING && !busy(e) && take(e)) {
+        guard += 1;
+        if (((t_ctl >> 10) & 63) == 1) {
+            bulk(s, d, dci, t_at, t_p, (t_st & 0x1FFFF) as I64);
+        } else {
+            event(s, dci, t_at, C_TRB, 0);
+        }
+    }
+}
+
+void doorbell(I64 i, U64 v) {
+    if (!run) {
+        return;
+    }
+    if (i == 0) {
+        I64 guard = 0;
+        while (guard < 64 && take(0)) {
+            guard += 1;
+            command(t_at, t_p, t_ctl);
+        }
+        return;
+    }
+    I64 dci = (v & 0xFF) as I64;
+    if (i >= NS || !slot_on[i] || dci < 1 || dci > 31) {
+        return;
+    }
+    I64 e = 32 * i + dci;
+    if (st[e] == STOPPED) {
+        st[e] = RUNNING;
+    }
+    process(e);
+}
+
+// --- the controller's state at a reset ---
+
+void hc_reset() {
+    run = false;
+    for i in 0..HOLD { h_on[i] = false; }
+    for k in 0..NS {
+        slot_on[k] = false;
+        slot_dev[k] = -1;
+    }
+    for e in 0..512 {
+        deq[e] = 0;
+        dcs[e] = 1;
+        st[e] = OFF;
+    }
+    for p in 0..NP {
+        port_en[p] = false;
+        port_prc[p] = false;
+        port_csc[p] = false;
+    }
+    for d in 0..2 {
+        if (dev_kind[d] != NONE && dev_here[d] && dev_speed[d] >= 4) {
+            port_en[dev_port[d]] = true;           // SuperSpeed: enabled by its link, no reset
+        }
+    }
+    dcbaap = 0;
+    slots_en = 0;
+    seg = 0;
+    seg_n = 0;
+    enq = 0;
+    pcs = 1;
+    erdp = 0;
+    erstba = 0;
+}
+
+I64 port_dev(I64 p) {
+    for d in 0..2 {
+        if (dev_kind[d] != NONE && dev_here[d] && dev_port[d] == p) {
+            return d;
+        }
+    }
+    return -1;
+}
+
+U64 portsc(I64 p) {
+    U64 v = 0x200;
+    I64 d = port_dev(p);
+    if (d >= 0) {
+        v |= 1 | ((dev_speed[d] as U64) << 10);
+    }
+    if (port_en[p]) { v |= 2; }
+    if (port_csc[p]) { v |= 0x20000; }
+    if (port_prc[p]) { v |= 0x200000; }
+    return v;
+}
+
+void port_write(I64 p, U64 v) {
+    if ((v & 0x10) != 0 && port_dev(p) >= 0) {
+        port_en[p] = true;
+        port_prc[p] = true;
+    }
+    if ((v & 0x200000) != 0) { port_prc[p] = false; }
+    if ((v & 0x20000) != 0) { port_csc[p] = false; }
+    if ((v & 2) != 0) { port_en[p] = false; }
+}
+
+// --- the externs: PCI configuration and the BAR ---
+
+Bool ours() {
+    U64 a = cf8 as U64;
+    return plugged && (a & 0x80000000) != 0 && ((a >> 8) & 0xFFFF) == PCI_AT as U64;
+}
+
+export U32 portwide_port_in32(U16 port) {
+    if (!ours() || (port as I64) != 0xCFC) {
+        return 0xFFFFFFFF;
+    }
+    U64 reg = (cf8 as U64) & 0xFC;
+    if (reg == 0) { return 0x000D1B36; }
+    if (reg == 4) { return pci_cmd; }
+    if (reg == 8) { return 0x0C033001; }
+    if (reg == 0x10) {
+        if (sizing) {
+            return ((~(span - 1)) & 0xFFFFFFF0) as U32;
+        }
+        return bar_reg as U32;
+    }
+    return 0;
+}
+
+export void portwide_port_out32(U16 port, U32 v) {
+    if ((port as I64) == 0xCF8) {
+        cf8 = v;
+        return;
+    }
+    if (!ours() || (port as I64) != 0xCFC) {
+        return;
+    }
+    U64 reg = (cf8 as U64) & 0xFC;
+    if (reg == 4) { pci_cmd = v & 0xFFFF; }
+    if (reg == 0x10) {
+        sizing = v == 0xFFFFFFFF;
+        if (!sizing) { bar_reg = (v as U64) & 0xFFFFFFF0; }
+    }
+}
+
+export I64 xhci_mmio_map(U64 base, U64 n) {
+    win_lo = base;
+    win_hi = base;
+    if (n <= 0xFFFFFFFFFFFFFFFF - base) {
+        win_hi = base + n;
+    }
+    return 0;
+}
+
+// The register at a, when it is inside the window: its offset from the BAR; else counted, and -1.
+I64 reg_of(U64 a) {
+    if (!plugged || a < win_lo || a >= win_hi || win_hi - a < 4 || (a & 3) != 0 || a < bar_reg) {
+        outside += 1;
+        return -1;
+    }
+    return (a - bar_reg) as I64;
+}
+
+export U32 xhci_mmio_in32(U64 a) {
+    step();
+    I64 r = reg_of(a);
+    if (r < 0) {
+        return 0xFFFFFFFF;
+    }
+    U64 o = r as U64;
+    U64 v = 0;
+    I64 ports_at = 0x420;
+    if (o == 0) { v = 0x01000000 | caplen; }
+    if (o == 4) { v = (max_slots as U64) | 0x100 | ((max_ports as U64) << 24); }
+    if (o == 0x10) { v = 1 | (xecp << 16); }
+    if (xecp != 0 && o == 4 * xecp) { v = xcap; }
+    if (o == 0x14) { v = db_off; }
+    if (o == 0x18) { v = rt_off; }
+    if (o == 0x20) { if (run) { v = 1; } }
+    if (o == 0x24) { if (!run) { v = 1; } }
+    if (o == 0x28) { v = 1; }
+    if (o == 0x58) { v = slots_en as U64; }
+    if (r >= ports_at && r < ports_at + 16 * max_ports && (r - ports_at) % 16 == 0) {
+        I64 p = (r - ports_at) / 16 + 1;
+        if (p < NP) { v = portsc(p); }
+    }
+    if (o == rt_off) { v = (now / 125) & 0x3FFF; }
+    if (o == rt_off + 0x28) { v = erstsz; }
+    return (v & 0xFFFFFFFF) as U32;
+}
+
+export void xhci_mmio_out32(U64 a, U32 val) {
+    step();
+    I64 r = reg_of(a);
+    if (r < 0) {
+        return;
+    }
+    U64 o = r as U64;
+    U64 v = val as U64;
+    I64 ports_at = 0x420;
+    if (o == 0x20) {
+        if ((v & 2) != 0) {
+            hc_reset();
+        } else {
+            run = (v & 1) != 0 && !stuck;
+        }
+    }
+    if (o == 0x38 || o == 0x50 || o == rt_off + 0x30 || o == rt_off + 0x38) { lo_word = v; }
+    if (xecp != 0 && (o == 4 * xecp || o == 4 * xecp + 4)) { cap_writes += 1; }
+    if (o == 0x3C) {                                       // CRCR's high half: the command ring
+        U64 crcr = lo_word | (v << 32);
+        deq[0] = crcr & 0xFFFFFFFFFFFFFFC0;
+        dcs[0] = crcr & 1;
+    }
+    if (o == 0x54) { dcbaap = lo_word | (v << 32); }
+    if (o == 0x58) { slots_en = (v & 0xFF) as I64; }
+    if (r >= ports_at && r < ports_at + 16 * max_ports && (r - ports_at) % 16 == 0) {
+        I64 p = (r - ports_at) / 16 + 1;
+        if (p < NP) { port_write(p, v); }
+    }
+    if (o == rt_off + 0x28) { erstsz = v; }
+    if (o == rt_off + 0x34) {                              // ERSTBA's high half: the event ring's one segment
+        erstba = lo_word | (v << 32);
+        seg = rd(erstba) & 0xFFFFFFFFFFFFFFC0;
+        seg_n = (rd(erstba + 8) & 0xFFFF) as I64;
+        enq = 0;
+        pcs = 1;
+    }
+    if (o == rt_off + 0x3C) { erdp = lo_word | (v << 32); }
+    if (o >= db_off && o < db_off + (4 * NS) as U64) {
+        doorbell(((o - db_off) / 4) as I64, v);
+    }
+}
+
+// --- the tests' side ---
+
+// The controller on the bus, reset, with one device of kind on port at speed (1 full, 3 high, 4 super) and the
+// disk's identity as given; every lie off, every count zero.
+export void kfz_xhc_plug(I64 kind, I64 port, I64 speed) {
+    plugged = true;
+    span = 0x10000;
+    db_off = 0x2000;
+    rt_off = 0x1000;
+    max_slots = 8;
+    max_ports = 4;
+    caplen = 0x20;
+    xecp = 0;
+    xcap = 0;
+    cap_writes = 0;
+    stuck = false;
+    for d in 0..2 {
+        dev_kind[d] = NONE;
+        dev_port[d] = 0;
+        dev_speed[d] = 3;
+        dev_here[d] = false;
+    }
+    dev_kind[0] = kind;
+    dev_port[0] = port;
+    dev_speed[0] = speed;
+    dev_here[0] = true;
+    gone_quiet = false;
+    slot_lie = -1;
+    slot_lie_after = 0;
+    mute_cmd = 0;
+    ep_out = 0x01;
+    ep_in = 0x82;
+    ep_mps = 512;
+    for k in 0..16 { model[k] = 0x20; }
+    model[0] = 75;                                          // "KFZ DISK"
+    model[1] = 70;
+    model[2] = 90;
+    model[4] = 68;
+    model[5] = 73;
+    model[6] = 83;
+    model[7] = 75;
+    pdt = 0;
+    cap_last = 1023;
+    cap_blen = 512;
+    not_ready = 0;
+    sense_long = false;
+    lie = 0;
+    lie_op = -1;
+    lie_arg = 0;
+    lie_left = 0;
+    outside = 0;
+    lost = 0;
+    for k in 0..256 { ops[k] = 0; }
+    resets = 0;
+    halts_cleared = 0;
+    stops = 0;
+    disables = 0;
+    writes = 0;
+    for k in 0..8192 { store[k] = 0; }
+    for k in 0..16 { stored[k] = false; }
+    for k in 0..16 { held[k] = false; }
+    wrote_lo = -1;
+    wrote_hi = -1;
+    cf8 = 0;
+    pci_cmd = 0;
+    sizing = false;
+    bar_reg = BAR;
+    win_lo = 0;
+    win_hi = 0;
+    phase = P_CBW;
+    sense_set(0, 0, 0);
+    hc_reset();
+}
+
+// A second device, of kind on port.
+export void kfz_xhc_also(I64 kind, I64 port) {
+    dev_kind[1] = kind;
+    dev_port[1] = port;
+    dev_speed[1] = 3;
+    dev_here[1] = true;
+}
+
+// The second device, of kind, plugged into port at speed while the kernel runs: its connect change set and the Port
+// Status Change event sent.
+export void kfz_xhc_arrive(I64 kind, I64 port, I64 speed) {
+    dev_kind[1] = kind;
+    dev_port[1] = port;
+    dev_speed[1] = speed;
+    dev_here[1] = true;
+    port_csc[port] = true;
+    post((port as U64) << 24, C_SUCCESS << 24, EV_PORT);
+}
+
+// The bus empty again; the kernel's controller reads all ones from here on.
+export void kfz_xhc_unplug() {
+    plugged = false;
+    hc_reset();
+}
+
+// The disk answers the next count commands of opcode op (-1: any) with the lie (LIE_*) and its arg.
+export void kfz_xhc_lie(I64 what, I64 op, I64 arg, I64 n) {
+    lie = what;
+    lie_op = op;
+    lie_arg = arg;
+    lie_left = n;
+}
+
+export void kfz_xhc_capacity(U64 last, U64 blen) {
+    cap_last = last;
+    cap_blen = blen;
+}
+
+// The disk's INQUIRY product identification: the 16 bytes as given, spaces past n.
+export void kfz_xhc_model[n](in U8[n] m) {
+    for k in 0..16 {
+        model[k] = 0x20;
+        if (k < n) { model[k] = m[k]; }
+    }
+}
+
+export void kfz_xhc_kind(I64 peripheral) {
+    pdt = peripheral;
+}
+
+export void kfz_xhc_not_ready(I64 n, Bool long_sense) {
+    not_ready = n;
+    sense_long = long_sense;
+}
+
+export void kfz_xhc_endpoints(I64 out_addr, I64 in_addr, I64 mps) {
+    ep_out = out_addr;
+    ep_in = in_addr;
+    ep_mps = mps;
+}
+
+export void kfz_xhc_slot_lie(I64 id) {
+    slot_lie = id;
+    slot_lie_after = 0;
+}
+
+// The same at the Enable Slot after n honest ones.
+export void kfz_xhc_slot_lie_after(I64 id, I64 n) {
+    slot_lie = id;
+    slot_lie_after = n;
+}
+
+export void kfz_xhc_mute(U64 command_type) {
+    mute_cmd = command_type;
+}
+
+// A controller that says it has slots slots and ports ports, with its registers in a BAR of bar_span bytes, the
+// runtime ones at rt and the doorbells at db.
+export void kfz_xhc_shape(I64 slots, I64 ports, U64 bar_span, U64 rt, U64 db) {
+    max_slots = slots;
+    max_ports = ports;
+    span = bar_span;
+    rt_off = rt;
+    db_off = db;
+}
+
+// A controller whose CAPLENGTH says cl, whose first extended capability is ecp dwords from the BAR (0: none), and
+// whose register there reads word. Its own registers do not move.
+export void kfz_xhc_caps(U64 cl, U64 ecp, U64 word) {
+    caplen = cl;
+    xecp = ecp;
+    xcap = word;
+}
+
+// The firmware left the controller mastering the bus (memory decoding and bus master on).
+export void kfz_xhc_firmware_dma() {
+    pci_cmd = pci_cmd | 6;
+}
+
+// A controller that never runs: USBCMD's run bit is not taken.
+export void kfz_xhc_stuck() {
+    stuck = true;
+}
+
+export U32 kfz_xhc_pci_cmd() { return pci_cmd; }
+export I64 kfz_xhc_cap_writes() { return cap_writes; }
+
+// The keyboard on slot s sends report r: its next TRB on endpoint dci takes the 8 bytes, and its event says success.
+export void kfz_xhc_key(I64 s, I64 dci, in U8[8] r) {
+    I64 e = 32 * s + dci;
+    if (st[e] == RUNNING && take(e)) {
+        machine.phys_phys_write8(t_p, r);
+        event(s, dci, t_at, C_SUCCESS, 0);
+    }
+}
+
+// A transfer event the controller makes up: slot s, endpoint dci, completion code, TRB pointer at.
+export void kfz_xhc_event(I64 s, I64 dci, U64 code, U64 at) {
+    event(s, dci, at, code, 0);
+}
+
+// Time passes with the kernel elsewhere: ms milliseconds of the controller's clock, a microframe at a time.
+export void kfz_xhc_run(I64 ms) {
+    for k in 0..8 * ms {
+        step();
+    }
+}
+
+export U64 kfz_xhc_now() { return now; }
+
+// src/xhci.ci's clock (us_now, for the hot plug's 100 ms): the controller's.
+export I64 xhci_us_now() { return now as I64; }
+export I64 kfz_xhc_outside() { return outside; }
+export I64 kfz_xhc_lost() { return lost; }
+export I64 kfz_xhc_ops(I64 op) { return ops[op]; }
+export I64 kfz_xhc_resets() { return resets; }
+export I64 kfz_xhc_stops() { return stops; }
+
+// The bulk TRBs whose buffer lies in the frame at a, from now on.
+export void kfz_xhc_watch(U64 a) {
+    watch = a;
+    watched = 0;
+}
+export I64 kfz_xhc_watched() { return watched; }
+export I64 kfz_xhc_disables() { return disables; }
+export I64 kfz_xhc_strays() { return strays; }
+export I64 kfz_xhc_writes() { return writes; }
+export I64 kfz_xhc_halts_cleared() { return halts_cleared; }
+
+// True when sector lba (0 to 15) was written.
+export Bool kfz_xhc_stored(I64 lba) {
+    return lba >= 0 && lba < 16 && stored[lba];
+}
+
+// Sector lba (0 to 15) as the disk comes: a partition table written with dd. Not a write: kfz_xhc_stored stays false.
+export void kfz_xhc_put(I64 lba, in U8[512] b) {
+    assert(lba >= 0 && lba < 16);
+    for k in 0..512 {
+        store[512 * lba + k] = b[k];
+    }
+    held[lba] = true;
+    stored[lba] = false;
+}
+
+// The lowest and highest sector a WRITE's data stage reached since the plug: -1 for none.
+export I64 kfz_xhc_wrote_lo() { return wrote_lo; }
+export I64 kfz_xhc_synced() { return synced; }
+export Bool kfz_xhc_sync_immed() { return sync_immed; }
+export void kfz_xhc_no_sync() { no_sync = true; }
+export I64 kfz_xhc_wrote_hi() { return wrote_hi; }
+export U64 kfz_xhc_dcbaap() { return dcbaap; }
+
+// MaxSlotsEn as the kernel wrote it (CONFIG).
+export I64 kfz_xhc_slots_en() {
+    return slots_en;
+}
+
+// Transfers the controller still has out (taken from a ring, neither answered nor taken back).
+export I64 kfz_xhc_out() {
+    I64 n = 0;
+    for i in 0..HOLD {
+        if (h_on[i]) { n += 1; }
+    }
+    return n;
+}
+
+// The doorbell target of the disk's bulk endpoints as its descriptors make them: OUT, IN.
+export I64 kfz_xhc_dci(Bool inward) {
+    if (inward) {
+        return 2 * (ep_in & 15) + 1;
+    }
+    return 2 * (ep_out & 15);
+}
+
+// True when endpoint dci of slot s runs.
+export Bool kfz_xhc_running(I64 s, I64 dci) {
+    return s >= 1 && s < NS && slot_on[s] && st[32 * s + dci] == RUNNING;
+}
+// SPDX-License-Identifier: Apache-2.0

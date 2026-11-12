@@ -1,0 +1,19 @@
+// src/idt.ci: installs the IDT. The gate words are src/gate.ci; the stubs and the IDT storage
+// of rt/trap.c are reached through externs. Vectors 32..47 cover the remapped PICs, including a
+// routed NIC interrupt acknowledged at halt (NW-1).
+
+import src.trap;
+import src.gate;
+
+const U64 CODE_SELECTOR = 0x08;
+const I64 VECTORS = 48;
+
+// Installs a gate for each vector 0..47 and loads the IDT.
+export void idt_install() {
+    for v in 0..VECTORS {
+        U64 offset = trap.trap_stub(v);
+        trap.idt_set(v, gate.gate_lo(offset, CODE_SELECTOR), gate.gate_hi(offset));
+    }
+    trap.idt_load();
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,56 @@
+$ -c %n:%s:%a:%A:%F:%h:%B:%f:%t:%T text.txt
+text.txt:47:644:-rw-r--r--:regular file:1:512:81a4:0:0
+status 0
+$ -c %x:%X:%y:%Y text.txt look/a.txt
+2001-09-09 02:17:40.000000000 +0000:1000001860:2001-09-09 02:17:40.000000000 +0000:1000001860
+2001-09-09 02:08:40.000000000 +0000:1000001320:2001-09-09 02:08:40.000000000 +0000:1000001320
+status 0
+$ -c %F:%a:%A look look/run.sh empty
+directory:755:drwxr-xr-x
+regular file:755:-rwxr-xr-x
+regular empty file:644:-rw-r--r--
+status 0
+$ -c '%-6s:%06s:%6.2n:%.3F:%5a:%-5a:' text.txt
+47    :000047:    te:reg:  644:644  :
+status 0
+$ -c '%% %q' text.txt
+% q
+status 0
+$ -c '' text.txt
+
+status 0
+$ -L -c %n:%s text.txt
+text.txt:47
+status 0
+$ -c %n look/sp\ ace.txt
+look/sp ace.txt
+status 0
+$ -c %s missing text.txt
+47
+-- stderr
+stat: missing: No such file or directory
+status 1
+$ -c %u:%g:%b:%d:%D:%o text.txt look
+-- host: 2 lines
+status 0
+$ -c %U:%G text.txt
+UNKNOWN:UNKNOWN
+status 0
+$ text.txt
+-- host: 7 lines
+status 0
+$ look
+-- host: 7 lines
+status 0
+$ 
+-- stderr
+stat: missing operand
+status 2
+$ -c
+-- stderr
+stat: option requires an argument: -c
+status 2
+$ -f text.txt
+-- stderr
+stat: not supported: -f
+status 2

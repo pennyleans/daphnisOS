@@ -1,0 +1,214 @@
+// user/ci/kit/clocktext.ci: RS-TZb, the clock and date text of one zone (docs/specs/2026-11-11-rs-tza.md section 5),
+// over user/ci/core/tz.ci and cal.ci. Pure: no file and no screen, so the desk, the pages and programs import it.
+// zone is a city of tz (any other value is UTC); t and now are seconds since 1970-01-01 00:00:00 UTC. Each writer
+// puts its text into o from at, keeps what fits, and returns the end.
+//   zone_of(s): the city of the zone file's bytes as read, at most ZONE_READ (/home/.daphnis-zone: one zone name up to
+//     the line end); -1 UTC, as for ZONE_READ bytes or more (a full read: a file larger than any zone line).
+//   hm(o, at, zone, t, h24): "01:59" on 24 hours, "1:59 AM" on 12 (the login, lock and Date and Time clocks).
+//   bar(o, at, zone, t, h24): "Mon Nov 9  01:59" (the bar clock).
+//   long_date(o, at, zone, t, yr): "Monday, November 9", with yr "Monday, November 9, 2026".
+//   stamp(o, at, zone, t, now, h24): "Nov 9, 01:40" in now's year, else "Nov 9, 2025" (Index, Properties, Trash).
+//   ls_time(o, at, zone, t, now): "Nov  9 01:59" within half a year before now, else "Nov  9  2025" (ls -l).
+//   iso(o, at, zone, t): "2026-11-09 01:59:12", the year unpadded as stat prints it (stat).
+//   hhmm(o, at, zone, t): the offset as "-0500" (stat, date's %z); utc(o, at, zone, t): as "UTC-05:00" (the Date and
+//     Time page and its Time Zone menu).
+//   month_year(o, at, y, m): "November 2026" (the calendar).
+//   local_s(zone, t): t as the zone's wall clock reads it, in seconds since 1970-01-01 00:00:00 of that clock (the
+//     desk's calendar, its Today and the login and lock dates: local_s / 86400 is the local day, floored).
+//   wday_name(o, at, d, full), month_name(o, at, m, full): "Monday" or "Mon" (d 0 is Sunday), "November" or "Nov".
+//   redraw(zone, t): the first time after t at which the bar's text changes: the next local minute, or a change of
+//     offset if sooner.
+import user.ci.core.tz;
+import user.ci.core.cal;
+
+// --- writers ---
+
+I64 str(inout U8[_] o, I64 at, in U8[_] s) {
+    I64 m = max(0, min(len(s), len(o) - at));
+    for q in 0..m { o[at + q] = s[q]; }
+    return at + m;
+}
+
+// v (0 or more) in at least w places, f before it.
+I64 num(inout U8[_] o, I64 at, I64 v, I64 w, U8 f) {
+    U8[20] d;
+    I64 n = 0;
+    I64 x = v;
+    while (n == 0 || x > 0) {
+        d[19 - n] = (48 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    while (n < w) {
+        d[19 - n] = f;
+        n = n + 1;
+    }
+    return str(o, at, d[20 - n..20]);
+}
+
+I64 name(inout U8[_] o, I64 at, in U8[_] s, Bool full) {
+    if (full) { return str(o, at, s); }
+    return str(o, at, s[0..3]);
+}
+
+export I64 wday_name(inout U8[_] o, I64 at, I64 d, Bool full) {
+    if (d == 0) { return name(o, at, b"Sunday", full); }
+    if (d == 1) { return name(o, at, b"Monday", full); }
+    if (d == 2) { return name(o, at, b"Tuesday", full); }
+    if (d == 3) { return name(o, at, b"Wednesday", full); }
+    if (d == 4) { return name(o, at, b"Thursday", full); }
+    if (d == 5) { return name(o, at, b"Friday", full); }
+    return name(o, at, b"Saturday", full);
+}
+
+export I64 month_name(inout U8[_] o, I64 at, I64 m, Bool full) {
+    if (m == 1) { return name(o, at, b"January", full); }
+    if (m == 2) { return name(o, at, b"February", full); }
+    if (m == 3) { return name(o, at, b"March", full); }
+    if (m == 4) { return name(o, at, b"April", full); }
+    if (m == 5) { return name(o, at, b"May", full); }
+    if (m == 6) { return name(o, at, b"June", full); }
+    if (m == 7) { return name(o, at, b"July", full); }
+    if (m == 8) { return name(o, at, b"August", full); }
+    if (m == 9) { return name(o, at, b"September", full); }
+    if (m == 10) { return name(o, at, b"October", full); }
+    if (m == 11) { return name(o, at, b"November", full); }
+    return name(o, at, b"December", full);
+}
+
+// h:m on 24 or 12 hours.
+I64 clock(inout U8[_] o, I64 at, I64 h, I64 m, Bool h24) {
+    if (h24) {
+        I64 e = num(o, at, h, 2, '0');
+        e = str(o, e, b":");
+        return num(o, e, m, 2, '0');
+    }
+    I64 hh = h % 12;
+    if (hh == 0) { hh = 12; }
+    I64 e = num(o, at, hh, 1, '0');
+    e = str(o, e, b":");
+    e = num(o, e, m, 2, '0');
+    if (h < 12) { return str(o, e, b" AM"); }
+    return str(o, e, b" PM");
+}
+
+// Offset f seconds as "-0500", or with colon "-05:00".
+I64 offset(inout U8[_] o, I64 at, I64 f, Bool colon) {
+    I64 a = f;
+    I64 e = str(o, at, b"+");
+    if (f < 0) {
+        a = 0 - f;
+        e = str(o, at, b"-");
+    }
+    e = num(o, e, a / 3600, 2, '0');
+    if (colon) { e = str(o, e, b":"); }
+    return num(o, e, a % 3600 / 60, 2, '0');
+}
+
+I64 bound(I64 t) { return max(tz.FIRST, min(t, tz.LAST)); }
+
+export const I64 ZONE_READ = 64;       // a zone file's bytes read: the longest zone name of the 418 is 30
+
+// --- the texts ---
+
+export I64 zone_of(in U8[_] s) {
+    if (len(s) >= ZONE_READ) { return -1; }
+    I64 n = 0;
+    while (n < len(s) && s[n] > 32) { n = n + 1; }
+    if (n == 0) { return -1; }
+    return tz.find(s[0..n]);
+}
+
+export I64 hm(inout U8[_] o, I64 at, I64 zone, I64 t, Bool h24) {
+    I64 f = tz.local(zone, t);
+    return clock(o, at, cal.hour(), cal.minute(), h24);
+}
+
+export I64 bar(inout U8[_] o, I64 at, I64 zone, I64 t, Bool h24) {
+    I64 f = tz.local(zone, t);
+    I64 e = wday_name(o, at, cal.weekday(), false);
+    e = str(o, e, b" ");
+    e = month_name(o, e, cal.month(), false);
+    e = str(o, e, b" ");
+    e = num(o, e, cal.day(), 1, ' ');
+    e = str(o, e, b"  ");
+    return clock(o, e, cal.hour(), cal.minute(), h24);
+}
+
+export I64 local_s(I64 zone, I64 t) {
+    I64 u = bound(t);
+    return u + tz.offset(zone, u);
+}
+
+export I64 long_date(inout U8[_] o, I64 at, I64 zone, I64 t, Bool yr) {
+    I64 f = tz.local(zone, t);
+    I64 e = wday_name(o, at, cal.weekday(), true);
+    e = str(o, e, b", ");
+    e = month_name(o, e, cal.month(), true);
+    e = str(o, e, b" ");
+    e = num(o, e, cal.day(), 1, ' ');
+    if (!yr) { return e; }
+    e = str(o, e, b", ");
+    return num(o, e, cal.year(), 1, ' ');
+}
+
+export I64 stamp(inout U8[_] o, I64 at, I64 zone, I64 t, I64 now, Bool h24) {
+    I64 f = tz.local(zone, now);
+    I64 y = cal.year();
+    f = tz.local(zone, t);
+    I64 e = month_name(o, at, cal.month(), false);
+    e = str(o, e, b" ");
+    e = num(o, e, cal.day(), 1, ' ');
+    e = str(o, e, b", ");
+    if (cal.year() != y) { return num(o, e, cal.year(), 1, ' '); }
+    return clock(o, e, cal.hour(), cal.minute(), h24);
+}
+
+export I64 ls_time(inout U8[_] o, I64 at, I64 zone, I64 t, I64 now) {
+    I64 age = bound(now) - bound(t);
+    I64 f = tz.local(zone, t);
+    I64 e = month_name(o, at, cal.month(), false);
+    e = str(o, e, b" ");
+    e = num(o, e, cal.day(), 2, ' ');
+    if (age < 15768000 && age > -900) {
+        e = str(o, e, b" ");
+        return clock(o, e, cal.hour(), cal.minute(), true);
+    }
+    e = str(o, e, b"  ");
+    return num(o, e, cal.year(), 4, ' ');
+}
+
+export I64 iso(inout U8[_] o, I64 at, I64 zone, I64 t) {
+    I64 f = tz.local(zone, t);
+    I64 e = num(o, at, cal.year(), 1, '0');
+    e = str(o, e, b"-");
+    e = num(o, e, cal.month(), 2, '0');
+    e = str(o, e, b"-");
+    e = num(o, e, cal.day(), 2, '0');
+    e = str(o, e, b" ");
+    e = clock(o, e, cal.hour(), cal.minute(), true);
+    e = str(o, e, b":");
+    return num(o, e, cal.second(), 2, '0');
+}
+
+export I64 hhmm(inout U8[_] o, I64 at, I64 zone, I64 t) { return offset(o, at, tz.offset(zone, bound(t)), false); }
+
+export I64 utc(inout U8[_] o, I64 at, I64 zone, I64 t) {
+    I64 e = str(o, at, b"UTC");
+    return offset(o, e, tz.offset(zone, bound(t)), true);
+}
+
+export I64 month_year(inout U8[_] o, I64 at, I64 y, I64 m) {
+    I64 e = month_name(o, at, m, true);
+    e = str(o, e, b" ");
+    return num(o, e, y, 1, ' ');
+}
+
+export I64 redraw(I64 zone, I64 t) {
+    I64 u = bound(t);
+    I64 n = u + 60 - (u + tz.offset(zone, u)) % 60;
+    I64 c = tz.next(zone, u);
+    if (c >= 0 && c < n) { return c; }
+    return n;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,18 @@
+// kernel/main.ci: K1. Banner, SHA-256 of "abc", exit.
+
+import src.serial;
+import src.sha256;
+import src.text;
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("Daphnis K1: cint kernel up on COM1\n");
+    U8[32] digest;
+    sha256.sha_digest("abc", 0, 3, digest);
+    U8[64] hex;
+    text.hex_bytes(digest, 32, hex);
+    serial.serial_write("sha256(\"abc\") = ");
+    serial.serial_write(hex);
+    serial.serial_write("\n");
+}
+// SPDX-License-Identifier: Apache-2.0

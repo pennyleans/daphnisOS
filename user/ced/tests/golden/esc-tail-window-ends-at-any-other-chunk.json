@@ -1,0 +1,28 @@
+{
+  "id": "esc-tail-window-ends-at-any-other-chunk",
+  "rules": [
+    "KEY-2"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "7a",
+    "5b41"
+  ],
+  "expect": {
+    "text": "z[Aabc",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

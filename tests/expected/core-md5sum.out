@@ -1,0 +1,70 @@
+$ text.txt
+4d940f893a5ab77a3e0ed3026bb8b3c7  text.txt
+status 0
+$ text.txt nonl.txt empty long.txt utf8.txt
+4d940f893a5ab77a3e0ed3026bb8b3c7  text.txt
+1c04762a69084a577eddecd735aed5a1  nonl.txt
+d41d8cd98f00b204e9800998ecf8427e  empty
+b9182025c6c394c99d579bbc8e8c7e82  long.txt
+9c969cc32c927ec69978a3b030a3e750  utf8.txt
+status 0
+$  < long.txt
+b9182025c6c394c99d579bbc8e8c7e82  -
+status 0
+$ - < text.txt
+4d940f893a5ab77a3e0ed3026bb8b3c7  -
+status 0
+$ missing text.txt
+4d940f893a5ab77a3e0ed3026bb8b3c7  text.txt
+-- stderr
+md5sum: missing: No such file or directory
+status 1
+$ -c sums.md5
+text.txt: OK
+nonl.txt: OK
+empty: OK
+long.txt: OK
+status 0
+$ -c bad.md5
+text.txt: FAILED
+utf8.txt: OK
+missing: FAILED
+text.txt: FAILED
+-- stderr
+md5sum: missing: No such file or directory
+md5sum: invalid format
+md5sum: WARNING: 3 of 4 computed checksums did NOT match
+status 1
+$ -c -s bad.md5
+-- stderr
+md5sum: missing: No such file or directory
+md5sum: invalid format
+status 1
+$ -c -w bad.md5
+text.txt: FAILED
+utf8.txt: OK
+missing: FAILED
+text.txt: FAILED
+-- stderr
+md5sum: missing: No such file or directory
+md5sum: invalid format
+md5sum: WARNING: 3 of 4 computed checksums did NOT match
+status 1
+$ -c < sums.md5
+text.txt: OK
+nonl.txt: OK
+empty: OK
+long.txt: OK
+status 0
+$ -c missing
+-- stderr
+md5sum: missing: No such file or directory
+status 1
+$ -s text.txt
+-- stderr
+md5sum: -s and -w need -c
+status 2
+$ -b text.txt
+-- stderr
+md5sum: not supported: -b
+status 2

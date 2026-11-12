@@ -1,0 +1,1344 @@
+// src/ext2.ci: ext2 (P-2 reads, P-3 writes; docs/specs/2026-11-05-p-disk.md section 2), over the block device of
+// src/blk.ci. The volume is read in 4 KiB windows (8 sectors, one request) through a cache of 64 pool frames,
+// replaced in turn; a block of 1 KiB, 2 KiB or 4 KiB lies inside one window. What is read: the superblock,
+// the group descriptors, inodes (128 bytes or the revision 1 size), linear directories (a hashed directory
+// reads as linear too), and a file's blocks through the direct, single and double indirect maps; a hole
+// reads as zeros. A triple indirect block is past what is read: such a file reads as failed. A symlink of
+// fewer than 60 bytes keeps its target in the inode's block map, a longer one in its first block.
+//
+// P-3: a write goes into the cached windows, which are marked dirty; commit() writes the dirty windows to the
+// device in ascending order, and src/fs.ci commits at the end of each call that wrote, so the volume holds every
+// call's result when the call returns (a window taken for another before then is written first). The allocator
+// is deterministic: the lowest free inode of the parent directory's group and the lowest free block of the
+// inode's group, then the groups after it; a new block is zeroed. Every time a write sets is 1, as mkdisk.sh
+// sets them. A freed inode is zeroed whole. A directory written loses the hashed index flag (it reads linear).
+// A request the device fails sets failed(); src/fs.ci turns that into -EIO.
+
+import src.frames;
+import src.phys;
+import src.blk;
+
+export const I64 ROOT_INO = 2;
+export const I64 S_IFMT = 0xF000;
+export const I64 S_IFDIR = 0x4000;
+export const I64 S_IFREG = 0x8000;
+export const I64 S_IFLNK = 0xA000;
+export const I64 NAME_BYTES = 255;
+
+const I64 WIN = 4096;
+const I64 CACHE = 64;
+const I64 SB = 1024;              // the superblock's byte offset
+const I64 FT_FILETYPE = 2;        // the one incompatible feature read: the type byte of a directory entry
+const I64 RO_KNOWN = 3;           // the read-only compatible features written: sparse_super, large_file
+const I64 INDEX_FL = 0x1000;
+const I64 ENOENT = 2;
+const I64 EIO = 5;
+const I64 ENOTDIR = 20;
+const I64 EISDIR = 21;
+const I64 EINVAL = 22;
+const I64 EFBIG = 27;
+const I64 ENOSPC = 28;
+const I64 EROFS = 30;
+const I64 EMLINK = 31;
+const I64 EPERM = 1;
+const I64 EEXIST = 17;
+const I64 ENOTEMPTY = 39;
+
+Bool mounted = false;
+Bool bad = false;
+I64 bs = 0;                       // the block size
+I64 first_data = 0;               // the block of the superblock: 1 for 1 KiB blocks, else 0
+I64 ipg = 0;                      // inodes a group
+I64 isz = 0;                      // the inode size
+I64 n_inodes = 0;
+I64 n_blocks = 0;
+I64 bpg = 0;                      // blocks a group
+I64 n_groups = 0;
+Bool writable = false;            // no read-only compatible feature this module does not write
+I64 c_first = -1;                 // the cache's first frame; slot s is frame c_first + s
+I64[64] c_win;                    // the window a slot holds, or -1
+Bool[64] c_dirty;                 // the slot holds bytes the device does not have yet
+I64 hand = 0;
+
+// The last directory entry dirent() found.
+I64 de_i = 0;
+I64 de_t = 0;
+I64 de_k = 0;
+U8[256] de_nm;
+
+// The cache slot holding window w, read in if it is not there; -1 when the device fails.
+I64 slot(I64 w) {
+    for s in 0..CACHE {
+        if (c_win[s] == w) {
+            return s;
+        }
+    }
+    I64 s = hand;
+    hand = (hand + 1) % CACHE;
+    if (c_win[s] >= 0 && c_dirty[s]) {
+        if (!blk.write(8 * c_win[s], c_first + s)) {
+            bad = true;
+            return -1;
+        }
+        c_dirty[s] = false;
+    }
+    c_win[s] = -1;
+    if (!blk.read(8 * w, c_first + s)) {
+        bad = true;
+        return -1;
+    }
+    c_win[s] = w;
+    return s;
+}
+
+// k bytes of the volume from byte off into b[at..at+k); zeros where the device failed.
+void vread[n](I64 off, inout U8[n] b, I64 at, I64 k) {
+    I64 done = 0;
+    while (done < k) {
+        I64 p = off + done;
+        I64 o = p % WIN;
+        I64 c = WIN - o;
+        if (c > k - done) {
+            c = k - done;
+        }
+        I64 s = slot(p / WIN);
+        if (s < 0) {
+            for i in 0..c {
+                b[at + done + i] = 0;
+            }
+        } else {
+            phys.phys_read8((frames.frame_addr(c_first + s) + o) as U64, b[at + done..at + done + c]);
+        }
+        done += c;
+    }
+}
+
+I64 u16at(I64 off) {
+    U8[2] b;
+    vread(off, b, 0, 2);
+    return (b[0] as I64) | ((b[1] as I64) << 8);
+}
+
+I64 u32at(I64 off) {
+    U8[4] b;
+    vread(off, b, 0, 4);
+    return (b[0] as I64) | ((b[1] as I64) << 8) | ((b[2] as I64) << 16) | ((b[3] as I64) << 24);
+}
+
+// Reads the superblock: 0, or -1 when the volume is not ext2 this module reads (the magic, a block past
+// 4 KiB, an incompatible feature but the entry type byte, a volume past the device). The cache's frames
+// are held from here on.
+export I64 mount() {
+    if (mounted || blk.sector_count() < 8) {
+        return -1;
+    }
+    c_first = frames.alloc(CACHE);
+    if (c_first < 0) {
+        return -1;
+    }
+    for s in 0..CACHE {
+        c_win[s] = -1;
+        c_dirty[s] = false;
+    }
+    hand = 0;
+    bad = false;
+    I64 log = u32at(SB + 24);
+    Bool ok = u16at(SB + 56) == 0xEF53 && log <= 2;
+    if (ok) {
+        bs = 1024 << log;
+        n_inodes = u32at(SB);
+        n_blocks = u32at(SB + 4);
+        first_data = u32at(SB + 20);
+        ipg = u32at(SB + 40);
+        bpg = u32at(SB + 32);
+        isz = 128;
+        if (u32at(SB + 76) >= 1) {
+            isz = u16at(SB + 88);
+        }
+        if (bpg > 0) {
+            n_groups = (n_blocks - first_data + bpg - 1) / bpg;
+        }
+        writable = (u32at(SB + 100) & ~RO_KNOWN) == 0;
+        ok = (u32at(SB + 96) & ~FT_FILETYPE) == 0 && ipg > 0 && isz >= 128 && bpg > 0
+            && n_blocks * bs <= 512 * blk.sector_count() && !bad;
+    }
+    if (!ok) {
+        _ = frames.release(c_first, CACHE);
+        c_first = -1;
+        return -1;
+    }
+    mounted = true;
+    return 0;
+}
+
+export Bool is_mounted() {
+    return mounted;
+}
+
+// True once a request has failed since the last clear.
+export Bool failed() {
+    return bad;
+}
+
+export void clear_failed() {
+    bad = false;
+}
+
+// KF-1 (docs/specs/2026-11-11-kf-facts.md section 2): the counts statfs gives, the superblock's own, which are the ones
+// dumpe2fs prints for the volume: blocks and inodes in all, free blocks and inodes as alloc and free keep them, and
+// the blocks reserved for uid 0. 0 with no volume mounted.
+export I64 blocks_total() {
+    if (!mounted) { return 0; }
+    return n_blocks;
+}
+
+export I64 blocks_free() {
+    if (!mounted) { return 0; }
+    return u32at(SB + 12);
+}
+
+export I64 blocks_reserved() {
+    if (!mounted) { return 0; }
+    return u32at(SB + 8);
+}
+
+export I64 inodes_total() {
+    if (!mounted) { return 0; }
+    return n_inodes;
+}
+
+export I64 inodes_free() {
+    if (!mounted) { return 0; }
+    return u32at(SB + 16);
+}
+
+export I64 block_size() {
+    return bs;
+}
+
+export I64 cache_frames() {
+    if (c_first < 0) {
+        return 0;
+    }
+    return CACHE;
+}
+
+// The byte offset of inode i on the volume, or -1 for a number outside the volume.
+I64 at_inode(I64 i) {
+    if (i < 1 || i > n_inodes) {
+        return -1;
+    }
+    I64 g = (i - 1) / ipg;
+    I64 table = u32at((first_data + 1) * bs + 32 * g + 8);
+    return table * bs + ((i - 1) % ipg) * isz;
+}
+
+I64 field16(I64 i, I64 off) {
+    I64 a = at_inode(i);
+    if (a < 0) {
+        return 0;
+    }
+    return u16at(a + off);
+}
+
+I64 field32(I64 i, I64 off) {
+    I64 a = at_inode(i);
+    if (a < 0) {
+        return 0;
+    }
+    return u32at(a + off);
+}
+
+export I64 mode(I64 i) {
+    return field16(i, 0);
+}
+
+export Bool is_dir(I64 i) {
+    return (mode(i) & S_IFMT) == S_IFDIR;
+}
+
+export Bool is_link(I64 i) {
+    return (mode(i) & S_IFMT) == S_IFLNK;
+}
+
+// BU-2: the owner and group with their high words (osd2 bytes 120 and 122, as Linux writes them).
+export I64 uid(I64 i) {
+    return field16(i, 2) | (field16(i, 120) << 16);
+}
+
+export I64 gid(I64 i) {
+    return field16(i, 24) | (field16(i, 122) << 16);
+}
+
+export I64 links(I64 i) {
+    return field16(i, 26);
+}
+
+export I64 atime(I64 i) {
+    return field32(i, 8);
+}
+
+export I64 ctime(I64 i) {
+    return field32(i, 12);
+}
+
+export I64 mtime(I64 i) {
+    return field32(i, 16);
+}
+
+// i_blocks: 512-byte units the inode holds, its map blocks counted.
+export I64 sectors_held(I64 i) {
+    return field32(i, 28);
+}
+
+// The size in bytes; a regular file's high word is i_size_high (large_file).
+export I64 file_size(I64 i) {
+    I64 s = field32(i, 4);
+    if ((mode(i) & S_IFMT) == S_IFREG) {
+        s = s | (field32(i, 108) << 32);
+    }
+    return s;
+}
+
+// A symlink whose target is in its block map: shorter than 60 bytes and no block held.
+Bool fast_link(I64 i) {
+    return is_link(i) && sectors_held(i) == 0;
+}
+
+// The volume block of block lb of inode i: 0 for a hole, -1 past the double indirect map.
+I64 map_block(I64 i, I64 lb) {
+    I64 a = at_inode(i);
+    I64 p = bs / 4;
+    if (a < 0 || lb < 0) {
+        return -1;
+    }
+    if (lb < 12) {
+        return u32at(a + 40 + 4 * lb);
+    }
+    I64 r = lb - 12;
+    if (r < p) {
+        I64 ind = u32at(a + 88);
+        if (ind == 0) {
+            return 0;
+        }
+        return u32at(ind * bs + 4 * r);
+    }
+    r -= p;
+    if (r < p * p) {
+        I64 dbl = u32at(a + 92);
+        if (dbl == 0) {
+            return 0;
+        }
+        I64 ind = u32at(dbl * bs + 4 * (r / p));
+        if (ind == 0) {
+            return 0;
+        }
+        return u32at(ind * bs + 4 * (r % p));
+    }
+    return -1;
+}
+
+// Up to k bytes of inode i from byte off into b[at..at+k); the count (0 at or past the end).
+export I64 read_at[n](I64 i, I64 off, inout U8[n] b, I64 at, I64 k) {
+    I64 sz = file_size(i);
+    if (off < 0 || off >= sz) {
+        return 0;
+    }
+    I64 c = sz - off;
+    if (c > k) {
+        c = k;
+    }
+    if (fast_link(i)) {
+        vread(at_inode(i) + 40 + off, b, at, c);
+        return c;
+    }
+    I64 done = 0;
+    while (done < c) {
+        I64 p = off + done;
+        I64 o = p % bs;
+        I64 take = bs - o;
+        if (take > c - done) {
+            take = c - done;
+        }
+        I64 pb = map_block(i, p / bs);
+        if (pb < 0) {
+            bad = true;
+            return done;
+        }
+        if (pb == 0) {
+            for t in 0..take {
+                b[at + done + t] = 0;
+            }
+        } else {
+            vread(pb * bs + o, b, at + done, take);
+        }
+        done += take;
+    }
+    return c;
+}
+
+// The entry of directory i at byte pos or after it: the next entry's byte position, with de_ino(),
+// de_type() and de_name() set, or -1 at the end.
+export I64 dirent(I64 i, I64 pos) {
+    I64 sz = file_size(i);
+    I64 p = pos;
+    while (p + 8 <= sz) {
+        U8[8] h;
+        _ = read_at(i, p, h, 0, 8);
+        I64 e = (h[0] as I64) | ((h[1] as I64) << 8) | ((h[2] as I64) << 16) | ((h[3] as I64) << 24);
+        I64 rec = (h[4] as I64) | ((h[5] as I64) << 8);
+        I64 k = h[6] as I64;
+        if (rec < 8 || p + rec > sz || 8 + k > rec || bad) {
+            bad = true;
+            return -1;
+        }
+        if (e != 0) {
+            de_i = e;
+            de_t = h[7] as I64;
+            de_k = k;
+            _ = read_at(i, p + 8, de_nm, 0, k);
+            return p + rec;
+        }
+        p += rec;
+    }
+    return -1;
+}
+
+export I64 de_ino() {
+    return de_i;
+}
+
+// The entry's type as getdents64 gives it: DT_REG 8, DT_DIR 4, DT_LNK 10, the others by the ext2 type byte.
+export I64 de_type() {
+    if (de_t == 1) {
+        return 8;
+    }
+    if (de_t == 2) {
+        return 4;
+    }
+    if (de_t == 3) {
+        return 2;
+    }
+    if (de_t == 4) {
+        return 6;
+    }
+    if (de_t == 5) {
+        return 1;
+    }
+    if (de_t == 6) {
+        return 12;
+    }
+    if (de_t == 7) {
+        return 10;
+    }
+    return 0;
+}
+
+// The entry's name into nm[0..k); k.
+export I64 de_name[m](inout U8[m] nm) {
+    for t in 0..de_k {
+        nm[t] = de_nm[t];
+    }
+    return de_k;
+}
+
+// The inode called nm[0..k) in directory d, or 0.
+export I64 lookup[m](I64 d, in U8[m] nm, I64 k) {
+    I64 p = dirent(d, 0);
+    while (p >= 0) {
+        if (de_k == k) {
+            Bool same = true;
+            for t in 0..k {
+                if (de_nm[t] != nm[t]) {
+                    same = false;
+                }
+            }
+            if (same) {
+                return de_i;
+            }
+        }
+        p = dirent(d, p);
+    }
+    return 0;
+}
+
+// The name directory d holds inode i under (not "." or ".."), into nm; its length, or 0.
+export I64 name_in[m](I64 d, I64 i, inout U8[m] nm) {
+    I64 p = dirent(d, 0);
+    while (p >= 0) {
+        Bool dots = (de_k == 1 && de_nm[0] == 46) || (de_k == 2 && de_nm[0] == 46 && de_nm[1] == 46);
+        if (de_i == i && !dots && de_k <= m) {
+            for t in 0..de_k {
+                nm[t] = de_nm[t];
+            }
+            return de_k;
+        }
+        p = dirent(d, p);
+    }
+    return 0;
+}
+
+// --- P-3: writing ---
+
+export Bool is_writable() {
+    return mounted && writable;
+}
+
+I64 u8at(I64 off) {
+    U8[1] b;
+    vread(off, b, 0, 1);
+    return b[0] as I64;
+}
+
+// k bytes of b[at..at+k) into the volume at byte off, in the cache; the windows are marked dirty.
+void vwrite[n](I64 off, in U8[n] b, I64 at, I64 k) {
+    I64 done = 0;
+    while (done < k) {
+        I64 p = off + done;
+        I64 o = p % WIN;
+        I64 c = WIN - o;
+        if (c > k - done) {
+            c = k - done;
+        }
+        I64 s = slot(p / WIN);
+        if (s >= 0) {
+            phys.phys_write8((frames.frame_addr(c_first + s) + o) as U64, b[at + done..at + done + c]);
+            c_dirty[s] = true;
+        }
+        done += c;
+    }
+}
+
+void put16(I64 off, I64 v) {
+    U8[2] b;
+    b[0] = (v & 0xFF) as U8;
+    b[1] = ((v >> 8) & 0xFF) as U8;
+    vwrite(off, b, 0, 2);
+}
+
+void put32(I64 off, I64 v) {
+    U8[4] b;
+    for t in 0..4 {
+        b[t] = ((v >> (8 * t)) & 0xFF) as U8;
+    }
+    vwrite(off, b, 0, 4);
+}
+
+// k zero bytes at byte off.
+void zero_range(I64 off, I64 k) {
+    U8[256] z;
+    for t in 0..256 {
+        z[t] = 0;
+    }
+    I64 done = 0;
+    while (done < k) {
+        I64 c = k - done;
+        if (c > 256) {
+            c = 256;
+        }
+        vwrite(off + done, z, 0, c);
+        done += c;
+    }
+}
+
+// Writes the dirty windows to the device, lowest window first; false when a request failed.
+export Bool commit() {
+    Bool more = true;
+    while (more) {
+        I64 best = -1;
+        for s in 0..CACHE {
+            if (c_dirty[s] && (best < 0 || c_win[s] < c_win[best])) {
+                best = s;
+            }
+        }
+        if (best < 0) {
+            more = false;
+        } else {
+            if (!blk.write(8 * c_win[best], c_first + best)) {
+                bad = true;
+                return false;
+            }
+            c_dirty[best] = false;
+        }
+    }
+    return true;
+}
+
+// The group descriptor of group g: its byte offset.
+I64 gd(I64 g) {
+    return (first_data + 1) * bs + 32 * g;
+}
+
+I64 group_blocks(I64 g) {
+    I64 c = n_blocks - first_data - g * bpg;
+    if (c > bpg) {
+        c = bpg;
+    }
+    return c;
+}
+
+// The lowest clear bit of the bitmap in block bm among its first k bits, or -1.
+I64 lowest_clear(I64 bm, I64 k) {
+    I64 idx = 0;
+    while (idx < k) {
+        I64 v = u8at(bm * bs + idx / 8);
+        I64 end = idx - idx % 8 + 8;
+        while (idx < end && idx < k) {
+            if (((v >> (idx % 8)) & 1) == 0) {
+                return idx;
+            }
+            idx += 1;
+        }
+    }
+    return -1;
+}
+
+void bit_put(I64 bm, I64 idx, Bool on) {
+    I64 off = bm * bs + idx / 8;
+    I64 v = u8at(off);
+    I64 m = 1 << (idx % 8);
+    if (on) {
+        v = v | m;
+    } else {
+        v = v & ~m;
+    }
+    U8[1] b;
+    b[0] = v as U8;
+    vwrite(off, b, 0, 1);
+}
+
+// The lowest free block of group goal, then of the groups after it (wrapping), taken and zeroed; 0 if none.
+I64 alloc_block(I64 goal) {
+    for t in 0..n_groups {
+        I64 g = (goal + t) % n_groups;
+        if (u16at(gd(g) + 12) > 0) {
+            I64 idx = lowest_clear(u32at(gd(g)), group_blocks(g));
+            if (idx >= 0) {
+                bit_put(u32at(gd(g)), idx, true);
+                put16(gd(g) + 12, u16at(gd(g) + 12) - 1);
+                put32(SB + 12, u32at(SB + 12) - 1);
+                I64 b = first_data + g * bpg + idx;
+                zero_range(b * bs, bs);
+                return b;
+            }
+        }
+    }
+    return 0;
+}
+
+void free_block(I64 b) {
+    I64 g = (b - first_data) / bpg;
+    bit_put(u32at(gd(g)), (b - first_data) % bpg, false);
+    put16(gd(g) + 12, u16at(gd(g) + 12) + 1);
+    put32(SB + 12, u32at(SB + 12) + 1);
+}
+
+// The lowest free inode of group goal, then of the groups after it, taken and zeroed; 0 if none.
+I64 alloc_inode(I64 goal, Bool dir) {
+    for t in 0..n_groups {
+        I64 g = (goal + t) % n_groups;
+        if (u16at(gd(g) + 14) > 0) {
+            I64 idx = lowest_clear(u32at(gd(g) + 4), ipg);
+            if (idx >= 0) {
+                bit_put(u32at(gd(g) + 4), idx, true);
+                put16(gd(g) + 14, u16at(gd(g) + 14) - 1);
+                put32(SB + 16, u32at(SB + 16) - 1);
+                if (dir) {
+                    put16(gd(g) + 16, u16at(gd(g) + 16) + 1);
+                }
+                I64 i = g * ipg + idx + 1;
+                zero_range(at_inode(i), isz);
+                return i;
+            }
+        }
+    }
+    return 0;
+}
+
+void free_inode(I64 i, Bool dir) {
+    I64 g = (i - 1) / ipg;
+    bit_put(u32at(gd(g) + 4), (i - 1) % ipg, false);
+    put16(gd(g) + 14, u16at(gd(g) + 14) + 1);
+    put32(SB + 16, u32at(SB + 16) + 1);
+    if (dir) {
+        put16(gd(g) + 16, u16at(gd(g) + 16) - 1);
+    }
+    zero_range(at_inode(i), isz);
+}
+
+void iset16(I64 i, I64 off, I64 v) {
+    put16(at_inode(i) + off, v);
+}
+
+void iset32(I64 i, I64 off, I64 v) {
+    put32(at_inode(i) + off, v);
+}
+
+void set_size(I64 i, I64 s) {
+    iset32(i, 4, s & 0xFFFFFFFF);
+    if ((mode(i) & S_IFMT) == S_IFREG) {
+        iset32(i, 108, s >> 32);
+    }
+}
+
+void set_links(I64 i, I64 k) {
+    iset16(i, 26, k);
+}
+
+// The block the map entry at byte e names, taken (zeroed, counted in i_blocks) and entered if it is 0; 0
+// when the volume is full.
+I64 entry_alloc(I64 i, I64 e) {
+    I64 b = u32at(e);
+    if (b == 0) {
+        b = alloc_block((i - 1) / ipg);
+        if (b == 0) {
+            return 0;
+        }
+        put32(e, b);
+        iset32(i, 28, sectors_held(i) + bs / 512);
+    }
+    return b;
+}
+
+// The volume block of block lb of inode i, taken with its map blocks where they are holes: 0 when the volume
+// is full, -1 past the double indirect map.
+I64 map_alloc(I64 i, I64 lb) {
+    I64 a = at_inode(i);
+    I64 p = bs / 4;
+    if (lb < 12) {
+        return entry_alloc(i, a + 40 + 4 * lb);
+    }
+    I64 r = lb - 12;
+    if (r < p) {
+        I64 ind = entry_alloc(i, a + 88);
+        if (ind == 0) {
+            return 0;
+        }
+        return entry_alloc(i, ind * bs + 4 * r);
+    }
+    r -= p;
+    if (r < p * p) {
+        I64 dbl = entry_alloc(i, a + 92);
+        if (dbl == 0) {
+            return 0;
+        }
+        I64 ind = entry_alloc(i, dbl * bs + 4 * (r / p));
+        if (ind == 0) {
+            return 0;
+        }
+        return entry_alloc(i, ind * bs + 4 * (r % p));
+    }
+    return -1;
+}
+
+// The byte offset of the map entry of block lb of inode i, or -1 where its map block is a hole.
+I64 map_entry(I64 i, I64 lb) {
+    I64 a = at_inode(i);
+    I64 p = bs / 4;
+    if (lb < 12) {
+        return a + 40 + 4 * lb;
+    }
+    I64 r = lb - 12;
+    if (r < p) {
+        I64 ind = u32at(a + 88);
+        if (ind == 0) {
+            return -1;
+        }
+        return ind * bs + 4 * r;
+    }
+    r -= p;
+    if (r < p * p) {
+        I64 dbl = u32at(a + 92);
+        if (dbl == 0) {
+            return -1;
+        }
+        I64 ind = u32at(dbl * bs + 4 * (r / p));
+        if (ind == 0) {
+            return -1;
+        }
+        return ind * bs + 4 * (r % p);
+    }
+    return -1;
+}
+
+// Frees the block the map entry at byte e names, if any, and clears the entry.
+void drop_entry(I64 i, I64 e) {
+    I64 b = u32at(e);
+    if (b != 0) {
+        free_block(b);
+        put32(e, 0);
+        iset32(i, 28, sectors_held(i) - bs / 512);
+    }
+}
+
+// Frees blocks nb..top of inode i and every map block left with nothing under it.
+void free_from(I64 i, I64 nb, I64 top) {
+    I64 a = at_inode(i);
+    I64 p = bs / 4;
+    I64 end = top;
+    if (end > 12 + p + p * p) {
+        end = 12 + p + p * p;
+    }
+    for lb in nb..end {
+        I64 e = map_entry(i, lb);
+        if (e >= 0) {
+            drop_entry(i, e);
+        }
+    }
+    if (nb <= 12) {
+        drop_entry(i, a + 88);
+    }
+    I64 dbl = u32at(a + 92);
+    if (dbl != 0) {
+        for j in 0..p {
+            if (nb <= 12 + p + j * p) {
+                drop_entry(i, dbl * bs + 4 * j);
+            }
+        }
+        if (nb <= 12 + p) {
+            drop_entry(i, a + 92);
+        }
+    }
+}
+
+// FS-4 (ruling FS-R2, docs/specs/2026-11-07-bu2-meta.md section 4.6): every call that changes the volume takes the
+// time of the change, now, in seconds: the system's stamp time (src/proc.ci stamp_s, FS-R3 C), never a clock read here.
+// changed: inode i's ctime. written: its mtime and ctime (a file's bytes or size; a directory's entries).
+void changed(I64 i, I64 now) {
+    iset32(i, 12, now);
+}
+
+void written(I64 i, I64 now) {
+    iset32(i, 12, now);
+    iset32(i, 16, now);
+}
+
+// k bytes of b[at..at+k) into inode i from byte off, growing it: the count, or -ENOSPC (-EFBIG past the
+// double indirect map) when nothing was written. Bytes written set the file's mtime and ctime to now.
+export I64 write_at[n](I64 i, I64 off, in U8[n] b, I64 at, I64 k, I64 now) {
+    I64 done = 0;
+    I64 err = 0;
+    while (done < k && err == 0) {
+        I64 p = off + done;
+        I64 o = p % bs;
+        I64 take = bs - o;
+        if (take > k - done) {
+            take = k - done;
+        }
+        I64 pb = map_alloc(i, p / bs);
+        if (pb < 0) {
+            err = 0 - EFBIG;
+        } else if (pb == 0) {
+            err = 0 - ENOSPC;
+        } else {
+            vwrite(pb * bs + o, b, at + done, take);
+            done += take;
+        }
+    }
+    if (off + done > file_size(i)) {
+        set_size(i, off + done);
+    }
+    if (done > 0) {
+        written(i, now);
+    }
+    if (done == 0 && err != 0) {
+        return err;
+    }
+    return done;
+}
+
+// The size of inode i becomes sz: past it the blocks go and the last block's tail is zeroed. Its mtime and ctime
+// become now, whether or not the size moved (ftruncate and O_TRUNC, as on Linux; src/fs.ci does not call this for a
+// truncate by path to the size the file has).
+export void truncate(I64 i, I64 sz, I64 now) {
+    I64 old = file_size(i);
+    if (sz < old) {
+        I64 o = sz % bs;
+        if (o != 0) {
+            I64 pb = map_block(i, sz / bs);
+            if (pb > 0) {
+                zero_range(pb * bs + o, bs - o);
+            }
+        }
+        free_from(i, (sz + bs - 1) / bs, (old + bs - 1) / bs);
+    }
+    set_size(i, sz);
+    written(i, now);
+}
+
+// The type byte of a directory entry for inode i.
+I64 ftype(I64 i) {
+    I64 m = mode(i) & S_IFMT;
+    if (m == S_IFREG) {
+        return 1;
+    }
+    if (m == S_IFDIR) {
+        return 2;
+    }
+    if (m == S_IFLNK) {
+        return 7;
+    }
+    if (m == 0x2000) {
+        return 3;
+    }
+    if (m == 0x6000) {
+        return 4;
+    }
+    if (m == 0x1000) {
+        return 5;
+    }
+    if (m == 0xC000) {
+        return 6;
+    }
+    return 0;
+}
+
+// The bytes an entry with a name of k bytes takes.
+I64 rec_need(I64 k) {
+    return 8 + ((k + 3) / 4) * 4;
+}
+
+// An entry at byte off: inode i, record length rec, the name nm[0..k) padded with zeros.
+void put_entry[m](I64 off, I64 i, I64 rec, in U8[m] nm, I64 k) {
+    U8[264] e;
+    for t in 0..264 {
+        e[t] = 0;
+    }
+    for t in 0..4 {
+        e[t] = ((i >> (8 * t)) & 0xFF) as U8;
+    }
+    e[4] = (rec & 0xFF) as U8;
+    e[5] = ((rec >> 8) & 0xFF) as U8;
+    e[6] = k as U8;
+    e[7] = ftype(i) as U8;
+    for t in 0..k {
+        e[8 + t] = nm[t];
+    }
+    vwrite(off, e, 0, rec_need(k));
+}
+
+// A directory written reads linear from then on.
+void dir_written(I64 d) {
+    I64 f = field32(d, 32);
+    if ((f & INDEX_FL) != 0) {
+        iset32(d, 32, f & ~INDEX_FL);
+    }
+}
+
+// The entry at byte e names nm[0..k).
+Bool entry_is[m](I64 e, in U8[m] nm, I64 k) {
+    if (u8at(e + 6) != k) {
+        return false;
+    }
+    U8[256] h;
+    vread(e + 8, h, 0, k);
+    for t in 0..k {
+        if (h[t] != nm[t]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Adds the entry nm[0..k) -> inode i to directory d: in the first gap that holds it, else in a new block at
+// its end. 0, or -ENOSPC.
+I64 add_entry[m](I64 d, in U8[m] nm, I64 k, I64 i) {
+    I64 need = rec_need(k);
+    I64 nb = file_size(d) / bs;
+    for lb in 0..nb {
+        I64 pb = map_block(d, lb);
+        if (pb > 0) {
+            I64 base = pb * bs;
+            I64 pos = 0;
+            while (pos < bs) {
+                I64 e = u32at(base + pos);
+                I64 rec = u16at(base + pos + 4);
+                if (rec < 8 || pos + rec > bs) {
+                    bad = true;
+                    return 0 - EIO;
+                }
+                I64 held = 0;
+                if (e != 0) {
+                    held = rec_need(u8at(base + pos + 6));
+                }
+                if (rec - held >= need) {
+                    if (e == 0) {
+                        put_entry(base + pos, i, rec, nm, k);
+                    } else {
+                        put16(base + pos + 4, held);
+                        put_entry(base + pos + held, i, rec - held, nm, k);
+                    }
+                    dir_written(d);
+                    return 0;
+                }
+                pos += rec;
+            }
+        }
+    }
+    I64 pb = map_alloc(d, nb);
+    if (pb <= 0) {
+        return 0 - ENOSPC;
+    }
+    put_entry(pb * bs, i, bs, nm, k);
+    set_size(d, (nb + 1) * bs);
+    dir_written(d);
+    return 0;
+}
+
+// The byte offset of the entry nm[0..k) in directory d, with the offset of the entry before it in the same
+// block in prev_at (-1 for the first of a block); -1 if there is none.
+I64 prev_at = -1;
+
+I64 find_entry[m](I64 d, in U8[m] nm, I64 k) {
+    I64 nb = file_size(d) / bs;
+    for lb in 0..nb {
+        I64 pb = map_block(d, lb);
+        if (pb > 0) {
+            I64 base = pb * bs;
+            I64 pos = 0;
+            I64 prev = -1;
+            while (pos < bs) {
+                I64 rec = u16at(base + pos + 4);
+                if (rec < 8 || pos + rec > bs) {
+                    bad = true;
+                    return -1;
+                }
+                if (u32at(base + pos) != 0 && entry_is(base + pos, nm, k)) {
+                    prev_at = -1;
+                    if (prev >= 0) {
+                        prev_at = base + prev;
+                    }
+                    return base + pos;
+                }
+                prev = pos;
+                pos += rec;
+            }
+        }
+    }
+    return -1;
+}
+
+// Takes the entry nm[0..k) out of directory d (the entry before it in its block takes its bytes); the inode
+// it named, or 0.
+I64 remove_entry[m](I64 d, in U8[m] nm, I64 k) {
+    I64 e = find_entry(d, nm, k);
+    if (e < 0) {
+        return 0;
+    }
+    I64 i = u32at(e);
+    if (prev_at >= 0) {
+        put16(prev_at + 4, e - prev_at + u16at(e + 4));
+    } else {
+        put32(e, 0);
+    }
+    dir_written(d);
+    return i;
+}
+
+// Directory d holds nothing but "." and "..".
+export Bool dir_empty(I64 d) {
+    I64 p = dirent(d, 0);
+    while (p >= 0) {
+        Bool dots = (de_k == 1 && de_nm[0] == 46) || (de_k == 2 && de_nm[0] == 46 && de_nm[1] == 46);
+        if (!dots) {
+            return false;
+        }
+        p = dirent(d, p);
+    }
+    return true;
+}
+
+// A new inode for directory d: mode m, its three times now, owner 0:0; 0 if the volume has none free.
+I64 new_inode(I64 d, I64 m, I64 now) {
+    I64 i = alloc_inode((d - 1) / ipg, (m & S_IFMT) == S_IFDIR);
+    if (i != 0) {
+        iset16(i, 0, m);
+        iset32(i, 8, now);
+        iset32(i, 12, now);
+        iset32(i, 16, now);
+    }
+    return i;
+}
+
+// Frees inode i (no link left, nobody holding it): its blocks, its bitmap bit, its bytes.
+export void release(I64 i) {
+    if (!fast_link(i)) {
+        free_from(i, 0, (file_size(i) + bs - 1) / bs);
+    }
+    free_inode(i, is_dir(i));
+}
+
+// A regular file nm[0..k) in directory d with permission bits perm: its inode, or -errno. The new name sets the
+// directory's mtime and ctime.
+export I64 create[m](I64 d, in U8[m] nm, I64 k, I64 perm, I64 now) {
+    if (!writable) {
+        return 0 - EROFS;
+    }
+    I64 i = new_inode(d, S_IFREG | (perm & 0xFFF), now);
+    if (i == 0) {
+        return 0 - ENOSPC;
+    }
+    set_links(i, 1);
+    I64 r = add_entry(d, nm, k, i);
+    if (r < 0) {
+        free_inode(i, false);
+        return r;
+    }
+    written(d, now);
+    return i;
+}
+
+// A directory nm[0..k) in directory d: its inode, or -errno. The new name sets d's mtime and ctime.
+export I64 mkdir[m](I64 d, in U8[m] nm, I64 k, I64 perm, I64 now) {
+    if (!writable) {
+        return 0 - EROFS;
+    }
+    if (links(d) >= 32000) {
+        return 0 - EMLINK;
+    }
+    I64 i = new_inode(d, S_IFDIR | (perm & 0xFFF), now);
+    if (i == 0) {
+        return 0 - ENOSPC;
+    }
+    set_links(i, 2);
+    I64 pb = map_alloc(i, 0);
+    if (pb <= 0) {
+        release(i);
+        return 0 - ENOSPC;
+    }
+    put_entry(pb * bs, i, 12, ".", 1);
+    put_entry(pb * bs + 12, d, bs - 12, "..", 2);
+    set_size(i, bs);
+    I64 r = add_entry(d, nm, k, i);
+    if (r < 0) {
+        release(i);
+        return r;
+    }
+    set_links(d, links(d) + 1);
+    written(d, now);
+    return i;
+}
+
+// Takes the name nm[0..k) of a file out of directory d: the inode, one link less, or -errno. The caller frees
+// it (release) once it has no link and nobody holds it. The directory's mtime and ctime and the file's ctime
+// become now.
+export I64 unlink[m](I64 d, in U8[m] nm, I64 k, I64 now) {
+    if (!writable) {
+        return 0 - EROFS;
+    }
+    I64 i = lookup(d, nm, k);
+    if (i == 0) {
+        return 0 - ENOENT;
+    }
+    if (is_dir(i)) {
+        return 0 - EISDIR;
+    }
+    _ = remove_entry(d, nm, k);
+    set_links(i, links(i) - 1);
+    changed(i, now);
+    written(d, now);
+    return i;
+}
+
+// Takes the empty directory nm[0..k) out of directory d: its inode, its links 0, or -errno. d's mtime and ctime
+// become now.
+export I64 rmdir[m](I64 d, in U8[m] nm, I64 k, I64 now) {
+    if (!writable) {
+        return 0 - EROFS;
+    }
+    I64 i = lookup(d, nm, k);
+    if (i == 0) {
+        return 0 - ENOENT;
+    }
+    if (!is_dir(i)) {
+        return 0 - ENOTDIR;
+    }
+    if (!dir_empty(i)) {
+        return 0 - ENOTEMPTY;
+    }
+    _ = remove_entry(d, nm, k);
+    set_links(i, 0);
+    set_links(d, links(d) - 1);
+    written(d, now);
+    return i;
+}
+
+// Directory a is d or below it.
+Bool below(I64 a, I64 d) {
+    I64 x = a;
+    for hop in 0..n_inodes {
+        if (x == d) {
+            return true;
+        }
+        if (x == ROOT_INO || x == 0) {
+            return false;
+        }
+        x = lookup(x, "..", 2);
+    }
+    return false;
+}
+
+// Moves the entry on[0..ok) of directory od to nn[0..nk) in directory nd; what held the new name goes (a
+// file, or an empty directory in place of a directory). 0, the inode that lost its name there (one link less
+// for a file, 0 for a directory; the caller frees it), or -errno. Both directories' mtime and ctime, the moved
+// inode's ctime and the ctime of a file that lost its name become now.
+export I64 rename[m, q](I64 od, in U8[m] on, I64 ok, I64 nd, in U8[q] nn, I64 nk, I64 now) {
+    if (!writable) {
+        return 0 - EROFS;
+    }
+    I64 i = lookup(od, on, ok);
+    if (i == 0) {
+        return 0 - ENOENT;
+    }
+    I64 t = lookup(nd, nn, nk);
+    if (t == i) {
+        return 0;
+    }
+    Bool dir = is_dir(i);
+    if (dir) {
+        if (below(nd, i)) {
+            return 0 - EINVAL;
+        }
+        if (t != 0 && !is_dir(t)) {
+            return 0 - ENOTDIR;
+        }
+        if (t != 0 && !dir_empty(t)) {
+            return 0 - ENOTEMPTY;
+        }
+    } else if (t != 0 && is_dir(t)) {
+        return 0 - EISDIR;
+    }
+    if (t != 0) {
+        I64 e = find_entry(nd, nn, nk);
+        put32(e, i);
+        U8[1] ty;
+        ty[0] = ftype(i) as U8;
+        vwrite(e + 7, ty, 0, 1);
+        dir_written(nd);
+        if (is_dir(t)) {
+            set_links(t, 0);
+            set_links(nd, links(nd) - 1);
+        } else {
+            set_links(t, links(t) - 1);
+            changed(t, now);
+        }
+    } else {
+        I64 r = add_entry(nd, nn, nk, i);
+        if (r < 0) {
+            return r;
+        }
+    }
+    _ = remove_entry(od, on, ok);
+    if (dir) {
+        set_links(od, links(od) - 1);
+        set_links(nd, links(nd) + 1);
+        if (od != nd) {
+            I64 e = find_entry(i, "..", 2);
+            if (e >= 0) {
+                put32(e, nd);
+                dir_written(i);
+            }
+        }
+    }
+    changed(i, now);
+    written(od, now);
+    written(nd, now);
+    return t;
+}
+
+// --- BU-2: metadata (docs/specs/2026-11-07-bu2-meta.md section 4.4). Each call sets i_ctime to now (FS-4). ---
+
+// The permission bits of inode i become perm (07777).
+export void set_perm(I64 i, I64 perm, I64 now) {
+    iset16(i, 0, (mode(i) & S_IFMT) | (perm & 0xFFF));
+    changed(i, now);
+}
+
+// The owner becomes u and the group g, a value below 0 leaving its field. A change clears set-user-ID, and
+// set-group-ID with group execute, on a file that is not a directory, as Linux does for every caller.
+export void set_owner(I64 i, I64 u, I64 g, I64 now) {
+    if (u >= 0) {
+        iset16(i, 2, u & 0xFFFF);
+        iset16(i, 120, (u >> 16) & 0xFFFF);
+    }
+    if (g >= 0) {
+        iset16(i, 24, g & 0xFFFF);
+        iset16(i, 122, (g >> 16) & 0xFFFF);
+    }
+    I64 m = mode(i);
+    if ((u >= 0 || g >= 0) && (m & S_IFMT) != S_IFDIR) {
+        I64 kill = 0x800;
+        if ((m & 0x8) != 0) {
+            kill = 0xC00;
+        }
+        iset16(i, 0, m & ~kill);
+    }
+    changed(i, now);
+}
+
+// atime a and mtime m in seconds, a value below 0 leaving its field.
+export void set_times(I64 i, I64 a, I64 m, I64 now) {
+    if (a >= 0) {
+        iset32(i, 8, a);
+    }
+    if (m >= 0) {
+        iset32(i, 16, m);
+    }
+    changed(i, now);
+}
+
+// A second name nm[0..k) in directory d for inode i: 0, or -errno (-EPERM for a directory). The inode's ctime
+// and d's mtime and ctime become now.
+export I64 link[m](I64 d, in U8[m] nm, I64 k, I64 i, I64 now) {
+    if (!writable) {
+        return 0 - EROFS;
+    }
+    if (is_dir(i)) {
+        return 0 - EPERM;
+    }
+    if (links(i) >= 32000) {
+        return 0 - EMLINK;
+    }
+    if (lookup(d, nm, k) != 0) {
+        return 0 - EEXIST;
+    }
+    I64 r = add_entry(d, nm, k, i);
+    if (r < 0) {
+        return r;
+    }
+    set_links(i, links(i) + 1);
+    changed(i, now);
+    written(d, now);
+    return 0;
+}
+
+// A symbolic link nm[0..k) in directory d to t[0..tl): 0120777, owner 0:0, its times now; its target in i_block
+// under 60 bytes, else in one block. Its inode, or -errno. The new name sets d's mtime and ctime.
+export I64 symlink[m, q](I64 d, in U8[m] nm, I64 k, in U8[q] t, I64 tl, I64 now) {
+    if (!writable) {
+        return 0 - EROFS;
+    }
+    if (lookup(d, nm, k) != 0) {
+        return 0 - EEXIST;
+    }
+    I64 i = new_inode(d, S_IFLNK | 0x1FF, now);
+    if (i == 0) {
+        return 0 - ENOSPC;
+    }
+    set_links(i, 1);
+    if (tl < 60) {
+        vwrite(at_inode(i) + 40, t, 0, tl);
+        set_size(i, tl);
+    } else if (write_at(i, 0, t, 0, tl, now) != tl) {
+        release(i);
+        return 0 - ENOSPC;
+    }
+    I64 r = add_entry(d, nm, k, i);
+    if (r < 0) {
+        release(i);
+        return r;
+    }
+    written(d, now);
+    return i;
+}
+// SPDX-License-Identifier: Apache-2.0

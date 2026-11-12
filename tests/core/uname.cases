@@ -1,0 +1,10 @@
+# tests/core/uname.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-07-bu2-meta.md section 6, BU-2b). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md, - when busybox must agree, H for host bytes, T for
+# times and links in the tree. The tree is compared after each case.
+-m | - | -
+| - | H
+-s -m | - | H
+-snrvm | - | H
+-a | - | D-61 H
+-x | - | D-1
+extra | - | D-3

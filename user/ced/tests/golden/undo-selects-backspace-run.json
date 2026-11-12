@@ -1,0 +1,29 @@
+{
+  "id": "undo-selects-backspace-run",
+  "rules": [
+    "UNDO-3",
+    "UNDO-2"
+  ],
+  "text": "abcd",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    4,
+    4
+  ],
+  "chunks": [
+    "7f",
+    "7f",
+    "7f",
+    "1a"
+  ],
+  "expect": {
+    "text": "abcd",
+    "sel": [
+      1,
+      4
+    ]
+  }
+}

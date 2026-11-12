@@ -1,0 +1,132 @@
+// src/fsidx.ci: /dev/fsidx, the ring of the volume's changes (FF-1, docs/specs/2026-11-07-ff-super-plane.md
+// section 4). src/fs.ci posts each change of the mounted volume here: a create (a file, a directory, a link, a
+// symlink), an unlink or rmdir, a rename (two entries, from and to), and a change of a file's bytes or metadata
+// (an open for writing, the last close of a written description, a truncate, chmod, chown, utimensat). One
+// description holds the ring at a time (the desk opens it first at boot); while none does, nothing is kept and
+// nothing is posted, so no other flavor pays for it.
+//
+// An entry is 64 bytes, little endian: the sequence number (u64, the ring's tick: 1 for the first change posted
+// since the ring was taken), the op (u8), the name's length (u8), six zero bytes, the inode (u64), the parent
+// directory's inode (u64; 0 when the change came through a descriptor and names no directory) and the name (32
+// bytes, zero padded; names on the volume are at most 31 bytes, src/fs.ci's walk). A read returns whole entries,
+// oldest first; 0 when none is waiting. RING entries are kept: past that the oldest is dropped, and the next read
+// returns one LOST entry and the ring is empty: the reader rebuilds by the walk.
+
+import src.phys;
+import src.frames;
+
+export const I64 ENTRY = 64;
+export const I64 RING = 4096;
+const I64 RING_FRAMES = 64;          // RING * ENTRY bytes
+export const I64 LOST = 0;
+export const I64 CREATE = 1;
+export const I64 UNLINK = 2;
+export const I64 FROM = 3;             // a rename: the old name, then TO with the new one
+export const I64 TO = 4;
+export const I64 CHANGE = 5;
+
+I64 frame = -1;     // the ring's first pool frame; -1 while no description holds it
+I64 posted = 0;     // entries posted since the ring was taken: the last sequence number
+I64 taken = 0;      // entries read
+Bool lost = false;
+
+// Takes the ring for a new description: 0, or -16 (-EBUSY) while one is held, -12 (-ENOMEM) without frames.
+export I64 open() {
+    if (frame >= 0) {
+        return -16;
+    }
+    I64 f = frames.alloc(RING_FRAMES);
+    if (f < 0) {
+        return -12;
+    }
+    frame = f;
+    posted = 0;
+    taken = 0;
+    lost = false;
+    return 0;
+}
+
+export void close() {
+    if (frame >= 0) {
+        _ = frames.release(frame, RING_FRAMES);
+    }
+    frame = -1;
+}
+
+export Bool held() {
+    return frame >= 0;
+}
+
+export I64 posted_count() {
+    return posted;
+}
+
+export I64 waiting() {
+    return posted - taken;
+}
+
+export Bool lost_flag() {
+    return lost;
+}
+
+void put_u64(inout U8[64] e, I64 at, U64 v) {
+    for k in 0..8 {
+        e[at + k] = ((v >> ((8 * k) as U64)) & 0xFF) as U8;
+    }
+}
+
+// Posts one change: op, the inode i, its directory d (0: none named) and the name nm[0..k].
+export void post[n](I64 op, I64 i, I64 d, in U8[n] nm, I64 k) {
+    if (frame < 0) {
+        return;
+    }
+    if (posted - taken == RING) {
+        taken += 1;
+        lost = true;
+    }
+    posted += 1;
+    U8[64] e;
+    for t in 0..ENTRY {
+        e[t] = 0;
+    }
+    put_u64(e, 0, posted as U64);
+    e[8] = op as U8;
+    I64 m = k;
+    if (m > 31) {
+        m = 31;
+    }
+    e[9] = m as U8;
+    put_u64(e, 16, i as U64);
+    put_u64(e, 24, d as U64);
+    for t in 0..m {
+        e[32 + t] = nm[t];
+    }
+    I64 at = frames.frame_addr(frame) + ((posted - 1) % RING) * ENTRY;
+    phys.phys_write8(at as U64, e);
+}
+
+// The next entry into e: true, or false when none is waiting. After a loss the LOST entry comes alone and the
+// ring is empty.
+export Bool next(inout U8[64] e) {
+    if (frame < 0) {
+        return false;
+    }
+    if (lost) {
+        lost = false;
+        taken = posted;
+        for t in 0..ENTRY {
+            e[t] = 0;
+        }
+        put_u64(e, 0, posted as U64);
+        e[8] = LOST as U8;
+        return true;
+    }
+    if (taken == posted) {
+        return false;
+    }
+    I64 at = frames.frame_addr(frame) + (taken % RING) * ENTRY;
+    phys.phys_read8(at as U64, e);
+    taken += 1;
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

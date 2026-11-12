@@ -1,0 +1,32 @@
+// user/ci/dirname.ci: dirname STRING (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C; XCU dirname): STRING less
+// its last component and the slashes around it; `.` when it holds no slash, `/` when only slashes are left.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+void main(in U8[_] a) {
+    msg.name(b"dirname");
+    args.parse(a, b"", b"");
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    if (n > 1) { msg.usage(b"extra operand"); }
+    I64 s = args.op_start(0);
+    I64 e = args.op_stop(a, 0);
+    while (e > s + 1 && a[e - 1] == '/') { e = e - 1; }
+    if (e == s + 1 && a[s] == '/') {
+        put.byte('/');
+    } else {
+        while (e > s && a[e - 1] != '/') { e = e - 1; }
+        if (e == s) {
+            put.byte('.');
+        } else {
+            while (e > s + 1 && a[e - 1] == '/') { e = e - 1; }
+            put.bytes(a[s..e]);
+        }
+    }
+    put.byte('\n');
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

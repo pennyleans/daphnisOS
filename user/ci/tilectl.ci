@@ -1,0 +1,15 @@
+// user/ci/tilectl.ci: the tiler's requests and its clients (user/ci/host.c), stages W-2 and W-3.
+//   tile_ctl(req, arg): ioctl(req) on /dev/fb0 with arg as its buffer (src/tile.ci); 0, or -errno
+//   spawn(path): fork and run path in the child; the child's pid, or -errno
+//   reap(pid, nohang): waits for the child pid; its wait status, -EAGAIN with nohang while it runs, or -errno
+//   stop(pid, sig): kill(pid, sig); 0, or -errno
+//   fb_span(y, x, px): px (a word a pixel, D-ROW) into row y of the framebuffer mapping from column x, clipped to the surface; 0, or -1
+//     before fb_open (W-3: the focus frame drawn again)
+export extern unrestricted I64 tile_ctl(I64 req, in U8[_] arg);
+// tile_big(req, arg): tile_ctl for an argument of up to 9,236 bytes (FBIO_TILE_BUSY's sprite, DN-37); 0, or -errno
+export extern unrestricted I64 tile_big(I64 req, in U8[_] arg);
+export extern unrestricted I64 spawn(in U8[_] path);
+export extern unrestricted I64 reap(I64 pid, Bool nohang);
+export extern unrestricted I64 stop(I64 pid, I64 sig);
+export extern unrestricted I64 fb_span(I64 y, I64 x, in U32[_] px);
+// SPDX-License-Identifier: Apache-2.0

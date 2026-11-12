@@ -1,0 +1,156 @@
+// src/main_doom.ci: R-2d, the sealed run (docs/specs/2026-11-05-r-desync.md section 7). The user flavor's
+// kernel with another main: `doom --sealed` alone on a fresh pool; then busybox sh runs the Track 2 script
+// of the serial input (tests/image/churn.txt: mchurn's forks, kills, pipes, files and descriptors, the
+// shell's own, three descriptors left open) and, last, `./doom --sealed` as its child; then
+// `doom --sealed --canary`; then `doom` unsealed, whose lines are the reference tool's (R-2a to R-2c). Each
+// doom run's chain is in the transcript and the surface digest follows it; tools/check-doom.py checks the
+// chains against tests/expected/doom.tics, the unsealed run against tests/expected/doomref.txt, and the
+// surfaces against the blit of the Linux run's last frame.
+// P-3: with a volume attached it is mounted on /home before the runs and the churn writes there through
+// `./grant disk`; the volume's digest is printed at boot and at the end, and the chains must not move.
+// N-4: virtio-net is attached and this flavor does not drive it: driving it holds 38 pool frames, and the
+// churned run (the shell and its files still held) then could not allocate its state, so its headroom in the
+// gates' 16,384-frame pool was under 38 frames with busybox sh. cish holds 554 frames to busybox sh's 61, so this
+// flavor's pool is 1,024 frames larger (pool.past_blob, PR 356's batch P1): headroom 531 to 568 frames. The
+// churn's `./fetch` has no net grant and opens no socket (-EACCES), which needs no device; the chains must not move.
+
+import src.serial;
+import src.serialrx;
+import src.trap;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.bootarg;
+import src.pool;
+import src.acpi;
+import src.xhci;
+import src.surface;
+import src.input;
+import src.blk;
+import src.ext2;
+
+void main() {
+    serialrx.serial_init_rx();   // not serial_init: its FIFO clear would drop the first byte of the input
+    serial.serial_write("Daphnis R: the sealed run\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    if (!pool.init()) {       // M-3: the pool from the memory map under daphnis.pool=max; otherwise the gates' pool
+        _ = pool.past_blob(1024);   // and 1,024 frames past the run blob's MiB, for the churned run under cish
+    }
+    acpi.init();              // HW-2: the firmware's tables, read only; S5 for daphnis.poweroff=1
+    _ = xhci.init();          // HW-4: a USB keyboard and mouse, when there is an xHCI (prints only then)
+    user.user_init();
+    fs.init();
+    if (user.fb_init() > 0) {
+        fs.set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        serial.serial_write("daphnis: framebuffer ");
+        proc.put_dec(user.fb_word(0) as I64);
+        serial.serial_write("x");
+        proc.put_dec(user.fb_word(1) as I64);
+        serial.serial_write(" stride ");
+        proc.put_dec(user.fb_word(2) as I64);
+        serial.serial_write("\n");
+    } else {
+        serial.serial_write("daphnis: no framebuffer\n");
+    }
+    pit.pic_remap();
+    pit.pit_start(11932);
+    if (input.devices_on()) {
+        serial.serial_write("daphnis: keyboard and mouse on\n");
+    } else {
+        serial.serial_write("daphnis: keyboard on, no mouse\n");
+    }
+    fs.set_input(true);
+    serial.serial_write("daphnis: image ");
+    proc.put_dec(user.initrd_size());
+    serial.serial_write(" bytes from the loader module\n");
+    // HW-8a: with the console on the screen (a board) there is no serial line to read the script from
+    Bool more = !bootarg.has_word("daphnis.console=screen");
+    I64 quiet = trap.timer_ticks();
+    while (more) {
+        I64 c = serialrx.serial_getc();
+        if (c == 4) {
+            more = false;
+        } else if (c >= 0) {
+            fs.stdin_push(c as U8);
+            quiet = trap.timer_ticks();
+        } else if (trap.timer_ticks() - quiet > 200) {
+            more = false;
+        }
+    }
+    serial.serial_write("daphnis: input ");
+    proc.put_dec(fs.stdin_len());
+    serial.serial_write(" bytes\n");
+    I64 n = blk.init();
+    if (n == 0) {
+        serial.serial_write("daphnis: no disk\n");
+    } else if (n < 0) {
+        serial.serial_write("daphnis: disk found, not set up\n");
+    } else {
+        if (blk.is_usb()) {
+            serial.serial_write("daphnis: disk usb-storage, ");   // HW-4m
+        } else {
+            serial.serial_write("daphnis: disk virtio-blk, ");
+        }
+        proc.put_dec(n);
+        serial.serial_write(" sectors, ");
+        proc.put_dec(blk.frames_held());
+        serial.serial_write(" frames held\n");
+        blk.print_digest();
+        if (fs.mount_disk()) {
+            serial.serial_write("daphnis: /home mounted, ext2, block ");
+            proc.put_dec(ext2.block_size());
+            serial.serial_write(", cache ");
+            proc.put_dec(ext2.cache_frames());
+            serial.serial_write(" frames, writes need the disk grant\n");
+        } else {
+            serial.serial_write("daphnis: /home not mounted: not an ext2 volume this kernel reads\n");
+        }
+    }
+    // unchurned: the first process on a fresh pool
+    proc.push_arg("--sealed");
+    proc.run_device(1, "doom");
+    surface.print();
+    proc.report_pool();
+    // churned (Track 2): the shell's script, then the sealed run as the shell's child
+    proc.run_device(2, "sh");
+    surface.print();
+    serial.serial_write("daphnis: desync surface pid 2 (churned) against pid 1: ");
+    if (surface.same_as_previous()) {
+        serial.serial_write("none\n");
+    } else {
+        serial.serial_write("DESYNC\n");
+    }
+    proc.report_pool();
+    // the canary: its chain must differ from tic 1 on
+    proc.push_arg("--sealed");
+    proc.push_arg("--canary");
+    proc.run_device(3, "doom");
+    surface.print();
+    // R-2a to R-2c, unsealed: the level's counts, H_0, the store digest and each tic's player words, random
+    // indexes, frame digest and chain, against the reference tool's record (tools/check-doom.py); the
+    // surface after it is the Linux run's last frame 2x
+    proc.run_device(4, "doom");
+    surface.print();
+    if (input.dropped() != 0) {
+        serial.serial_write("daphnis: input dropped ");
+        proc.put_dec(input.dropped());
+        serial.serial_write("\n");
+        input.say_dropped(0);
+    }
+    // the files the churn left hold frames until the image's view is back: then the pool is whole
+    serial.serial_write("daphnis: files left by the churn ");
+    proc.put_dec(fs.created_count());
+    serial.serial_write("\n");
+    proc.report_pool();
+    fs.reset();
+    serial.serial_write("daphnis: fs reset: the image's view again\n");
+    proc.report_pool();
+    if (n > 0) {
+        blk.print_digest();
+    }
+    serial.serial_write("daphnis: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

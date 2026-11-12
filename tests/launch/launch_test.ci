@@ -1,0 +1,196 @@
+// tests/launch/launch_test.ci: what the desk types into a terminal it opens (user/ci/kit/launch.ci, board
+// 20261111T170652Z), hosted. tests/launch/cish_pty.py types the same bytes into user/bin/cish on a Linux pty and
+// waits on the shell's pid as the desk does. RG-1 (PR 479): the room for another terminal and the bar's message when
+// there is none (user/ci/kit/winroom.ci), counted in the windows the person has. Run by check.sh.
+import user.ci.kit.launch;
+import user.ci.kit.apps;
+import user.ci.kit.winroom;
+
+Bool same(in U8[_] a, in U8[_] b) {
+    if (len(a) != len(b)) { return false; }
+    for k in 0..len(a) {
+        if (a[k] != b[k]) { return false; }
+    }
+    return true;
+}
+
+test "an app's bytes start with exec, so the app takes the shell's place" {
+    U8[262] o;
+    I64 n = launch.typed(b"finder /home/downloads", o);   // the tray's Downloads
+    assert(n > 0 && same(o[0..n], b"exec finder /home/downloads\n"));
+    n = launch.typed(b"finder", o);                      // Index from the plane
+    assert(n > 0 && same(o[0..n], b"exec finder\n"));
+    n = launch.typed(b"ced '/etc/motd'", o);             // a file opened from Index (FF-6c)
+    assert(n > 0 && same(o[0..n], b"exec ced '/etc/motd'\n"));
+    n = launch.typed(b"ced", o);                         // Edit, a terminal app
+    assert(n > 0 && same(o[0..n], b"exec ced\n"));
+    n = launch.typed(b"cview '/home/a.png'", o);         // View on a picture
+    assert(n > 0 && same(o[0..n], b"exec cview '/home/a.png'\n"));
+    assert(launch.replaces(b"finder") && launch.replaces(b"ced '/etc/motd'") && launch.replaces(b"calc"));
+}
+
+test "a command's bytes are typed as is, so it keeps its Console and what it prints (DN-60)" {
+    U8[262] o;
+    I64 n = launch.typed(b"fetch", o);                   // Fetch, marked a command in kit/apps.ci
+    assert(n > 0 && same(o[0..n], b"fetch\n"));
+    n = launch.typed(b"fetch http://example.test/", o);
+    assert(n > 0 && same(o[0..n], b"fetch http://example.test/\n"));
+    n = launch.typed(b"ls", o);                          // a bare /bin row of the query
+    assert(n > 0 && same(o[0..n], b"ls\n"));
+    n = launch.typed(b"df -h", o);
+    assert(n > 0 && same(o[0..n], b"df -h\n"));
+    assert(!launch.replaces(b"fetch") && !launch.replaces(b"ls") && !launch.replaces(b""));
+    assert(!launch.replaces(b"ccalc"));                  // HW-17: Calc opens calc; ccalc is a command again
+}
+
+// RG-1: the desk holds an app in its own window in a terminal it never shows (hdesk.ci new_term, lx_host). Only exec
+// ends that terminal with the app, so each such app of the list is typed with exec: a shell that stayed would be
+// one no one can see or close. tools/check-pixel-apps.py holds this list to the programs that ask a window.
+test "RG-1: every app in its own window is typed with exec, alone and with a file" {
+    I64 seen = 0;
+    for a in 0..apps.N {
+        if (apps.runs_in(a) == apps.WINDOW) {
+            U8[32] p;
+            I64 n = apps.field(a, 1, p);
+            assert(n > 5 && p[0] == '/' && p[4] == '/');      // a /bin program
+            assert(launch.replaces(p[5..n]) && !apps.is_command(a));
+            U8[262] o;
+            I64 m = launch.typed(p[5..n], o);
+            assert(m == n + 1 && same(o[0..5], b"exec ") && same(o[5..n], p[5..n]) && o[n] == 10);
+            U8[64] c;
+            for k in 5..n { c[k - 5] = p[k]; }
+            U8[8] f = b" '/home'";
+            for k in 0..8 { c[n - 5 + k] = f[k]; }
+            assert(launch.replaces(c[0..n + 3]));
+            seen = seen + 1;
+        }
+    }
+    assert(seen >= 3);                                   // Index, View, Monitor at least
+}
+
+test "Console's bytes are none: the shell itself" {
+    U8[262] o;
+    assert(launch.typed(b"", o) == 0);
+    assert(launch.typed(b"cish", o) == 0);               // Console's program alone, as a /bin row of the query
+}
+
+test "a typed line fits the pty's 255-byte edited line: an app's command 250 bytes, a command's 255" {
+    U8[300] c;
+    U8[7] f = b"finder ";
+    for k in 0..300 { c[k] = 'a'; }
+    for k in 0..7 { c[k] = f[k]; }
+    U8[262] o;
+    assert(launch.typed(c[0..250], o) == 256 && o[0] == 'e' && o[4] == ' ' && o[5] == 'f' && o[255] == 10);
+    assert(launch.typed(c[0..251], o) == -1);           // `exec ` and 251 bytes: the pty would drop its end
+    for k in 0..7 { c[k] = 'a'; }
+    assert(launch.typed(c[0..255], o) == 256 && o[0] == 'a' && o[255] == 10);
+    assert(launch.typed(c[0..256], o) == -1);
+    U8[10] small;
+    assert(launch.typed(b"finder", small) == -1);
+    assert(launch.TYPED == 256 && launch.LINE == 255 && launch.MAX == 255);
+}
+
+test "the program a command runs, and the name the bar gives it" {
+    U8[72] p;
+    I64 n = launch.program(b"finder /home/downloads", p);
+    assert(same(p[0..n], b"/bin/finder"));
+    assert(launch.program(b"", p) == 0 && launch.program(b" x", p) == 0);
+    U8[48] t;
+    n = launch.name(b"finder /home/downloads", t);
+    assert(same(t[0..n], b"Index"));
+    n = launch.name(b"ced '/etc/motd'", t);
+    assert(same(t[0..n], b"Edit"));
+    n = launch.name(b"ls -l", t);                        // not an app: the command word
+    assert(same(t[0..n], b"ls"));
+}
+
+test "the shell's 127 or 126 after exec is an app that could not start; any other end is the app's own" {
+    assert(launch.failed(127 << 8) && launch.failed(126 << 8));
+    assert(!launch.failed(0) && !launch.failed(7 << 8) && !launch.failed(1 << 8));
+    assert(!launch.failed(15) && !launch.failed(2));     // ended by SIGTERM (the desk's close) or SIGINT
+    assert(!launch.failed(-11));                         // -EAGAIN: still running
+}
+
+test "the bar's sentence" {
+    U8[64] o;
+    I64 n = launch.note(b"Index", o);
+    assert(same(o[0..n], b"Couldn't open Index."));
+    U8[60] w;
+    for k in 0..60 { w[k] = 'w'; }
+    n = launch.note(w[0..60], o);
+    assert(n == 64 && o[63] == '.');
+}
+
+// RG-1: the desk's table as hdesk.ci fills it, PLACES places (WINDOWS) and PTYS ptys (src/pty.ci): new_term takes the
+// first free place and a pty, a host for an app in its own window, whose window takes the next free place at its bind.
+const I64 PLACES = 15;
+const I64 PTYS = 8;
+I64[16] wk;                            // hdesk.ci kind: 0 free, 1 TERM, 2 PIXEL
+Bool[16] wh;                           // lx_host
+I64 ptys = 0;
+Bool table_full = false;               // which room ran out at the last open that failed, as new_term tells it
+
+void clear() {
+    for i in 0..16 {
+        wk[i] = 0;
+        wh[i] = false;
+    }
+    ptys = 0;
+    table_full = false;
+}
+
+I64 free_place() {
+    for i in 0..PLACES {
+        if (wk[i] == 0) { return i; }
+    }
+    return -1;
+}
+
+// A Console (app false) or an app in its own window opened from the plane; false when there is no room.
+Bool open(Bool app) {
+    I64 i = free_place();
+    if (i < 0 || ptys == PTYS) {
+        table_full = i < 0;
+        return false;
+    }
+    wk[i] = 1;
+    wh[i] = app;
+    ptys = ptys + 1;
+    if (app) {
+        I64 j = free_place();
+        if (j >= 0) { wk[j] = 2; }
+    }
+    return true;
+}
+
+// Whether the bar's message for the last failed open is want.
+Bool says(in U8[_] want) {
+    U8[48] t;
+    I64 n = winroom.full(table_full, winroom.seen(wk, wh, PLACES), t);
+    return same(t[0..n], want);
+}
+
+test "RG-1: the login Console and 7 apps in their own windows: no place left, and the message counts the 8 windows" {
+    clear();
+    assert(open(false));
+    for k in 0..7 { assert(open(true)); }
+    assert(free_place() < 0 && ptys == PTYS && winroom.seen(wk, wh, PLACES) == 8);
+    assert(!open(true) && says(b"No free window. 8 of 8 are open."));
+    assert(!open(false) && says(b"No free window. 8 of 8 are open."));
+}
+
+test "RG-1: 2 Consoles and 6 apps in their own windows: no pty left, and the message counts the 8 windows" {
+    clear();
+    assert(open(false) && open(false));
+    for k in 0..6 { assert(open(true)); }
+    assert(free_place() >= 0 && ptys == PTYS);
+    assert(!open(true) && says(b"No free Console. 8 of 8 are open."));
+    assert(!open(false) && says(b"No free Console. 8 of 8 are open."));
+}
+
+test "RG-1: 8 Consoles: frame 9's sentence (DN-28), as before" {
+    clear();
+    for k in 0..8 { assert(open(false)); }
+    assert(!open(false) && says(b"No free Console. 8 of 8 are open."));
+}
+// SPDX-License-Identifier: Apache-2.0

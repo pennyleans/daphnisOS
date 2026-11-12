@@ -1,0 +1,155 @@
+// tests/launch/shquote_test.ci: AC-Q (docs/specs/2026-11-11-ac-q-launch-quoting.md), hosted:
+// user/ci/kit/shquote.ci. A quoted word is plain, reads back as the bytes it was made from (`unquote` below is
+// cish's reading of a single-quoted run and `\'`), and is refused for a control byte, DEL, an empty word or a line
+// past its limit. tests/launch/quote_pty.py holds its twin to the same bytes and types its lines into the real cish.
+import user.ci.kit.shquote;
+
+U8[600] line;
+U8[600] back;
+
+// cish's reading of q as one word: inside quotes every byte as it is, `\'` outside a quote is a quote; -1 for any
+// other byte outside a quote (the quoted form has none).
+I64 unquote(in U8[_] q) {
+    Bool quoted = false;
+    I64 n = 0;
+    I64 i = 0;
+    while (i < len(q)) {
+        I64 b = q[i] as I64;
+        if (quoted) {
+            if (b == 39) { quoted = false; } else { back[n] = q[i]; n = n + 1; }
+        } else if (b == 39) {
+            quoted = true;
+        } else if (b == 92 && i + 1 < len(q) && q[i + 1] == 39) {
+            back[n] = 39;
+            n = n + 1;
+            i = i + 1;
+        } else {
+            return -1;
+        }
+        i = i + 1;
+    }
+    if (quoted) { return -1; }
+    return n;
+}
+
+// p quoted alone reads back as p (with ./ first when p starts with -) and is plain, alone and after `finder `.
+Bool round(in U8[_] p) {
+    I64 n = shquote.quote(p, line, 0, 600);
+    if (n < 2 || !shquote.plain(line[0..n])) { return false; }
+    I64 m = unquote(line[0..n]);
+    I64 lead = 0;
+    if (p[0] == 45) {
+        if (m != len(p) + 2 || back[0] != 46 || back[1] != 47) { return false; }
+        lead = 2;
+    } else if (m != len(p)) {
+        return false;
+    }
+    for k in 0..len(p) {
+        if (back[lead + k] != p[k]) { return false; }
+    }
+    U8[7] f = b"finder ";
+    for k in 0..7 { line[k] = f[k]; }
+    I64 fn = shquote.quote(p, line, 7, 600);
+    return fn == n + 7 && shquote.plain(line[0..fn]);
+}
+
+Bool same(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (line[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "the quoted form, byte for byte (tests/launch/quote_pty.py's twin writes the same)" {
+    assert(same(shquote.quote(b"/home/sam/a b", line, 0, 600), b"'/home/sam/a b'"));
+    assert(same(shquote.quote(b"it's", line, 0, 600), b"'it'\\''s'"));
+    assert(same(shquote.quote(b"-x", line, 0, 600), b"'./-x'"));
+    assert(same(shquote.quote(b"a;b|c&d$e`f\"g<h>i", line, 0, 600), b"'a;b|c&d$e`f\"g<h>i'"));
+    assert(same(shquote.quote(b"'", line, 0, 600), b"''\\'''"));
+}
+
+test "names that hold every shell byte read back as themselves and are plain" {
+    assert(round(b"/home/sam/a;exec /home/sam/evil"));
+    assert(round(b"/home/sam/a <nope;exec ced"));
+    assert(round(b"/home/sam/$(touch x)"));
+    assert(round(b"/home/sam/`touch x`"));
+    assert(round(b"/home/sam/a&&b||c|d&"));
+    assert(round(b"/home/sam/\"q\""));
+    assert(round(b"/home/sam/it's"));
+    assert(round(b"/home/sam/''''"));
+    assert(round(b"/home/sam/a\\b\\'c"));
+    assert(round(b"/home/sam/~ * ? [a] # ! = % ^ @ +"));
+    assert(round(b"/home/sam/ lead and trail "));
+    assert(round(b"-rf"));
+    assert(round(b"--help"));
+    assert(round(b"/home/sam/\xc3\xa9t\xc3\xa9"));
+}
+
+test "every byte, alone and in a name: a control byte and DEL refused, every other byte read back" {
+    U8[3] p = b"a?b";
+    for b in 0..256 {
+        p[1] = b as U8;
+        I64 n = shquote.quote(p, line, 0, 600);
+        if (b < 32 || b == 127) { assert(n == -1); } else { assert(round(p)); }
+    }
+}
+
+test "an empty word, a newline anywhere and a line past its limit are refused" {
+    assert(shquote.quote(b"", line, 0, 600) == -1);
+    assert(shquote.quote(b"/home/sam/a\nexec x", line, 0, 600) == -1);
+    assert(shquote.quote(b"\n", line, 0, 600) == -1);
+    assert(shquote.quote(b"/home/sam/a\rb", line, 0, 600) == -1);
+    assert(shquote.quote(b"abc", line, 0, 5) == 5);
+    assert(shquote.quote(b"abc", line, 0, 4) == -1);
+    assert(shquote.quote(b"a'b", line, 0, 7) == -1);   // 'a'\''b' is 8
+    assert(shquote.quote(b"a'b", line, 0, 8) == 8);
+    assert(shquote.quote(b"-a", line, 0, 6) == 6);       // './-a'
+    assert(shquote.quote(b"-a", line, 0, 5) == -1);
+    assert(shquote.quote(b"abc", line, 250, 255) == 255);
+    assert(shquote.quote(b"abcd", line, 250, 255) == -1);
+    U8[8] small;
+    assert(shquote.quote(b"abcdefgh", small, 0, 600) == -1);   // dst's end
+}
+
+test "200 bytes: quoted after `finder ` within launch.MAX, and refused once the line passes it" {
+    U8[200] p;
+    for k in 0..200 { p[k] = (97 + k % 26) as U8; }
+    I64 n = shquote.quote(p, line, 7, 255);
+    assert(n == 209 && round(p));
+    U8[247] q;
+    for k in 0..247 { q[k] = 97; }
+    assert(shquote.quote(q, line, 7, 255) == -1);         // 7 + 249 = 256
+    assert(shquote.quote(q[0..246], line, 7, 255) == 255);
+}
+
+test "plain refuses every form of a second command, and word takes a bare /bin name only" {
+    assert(!shquote.plain(b"finder /home/sam/a;x"));
+    assert(!shquote.plain(b"finder /home/sam/a\nx"));
+    assert(!shquote.plain(b"finder '/home/sam/a"));
+    assert(!shquote.plain(b"finder a\x7f"));
+    assert(!shquote.plain(b""));
+    assert(shquote.plain(b"finder /home/downloads"));
+    assert(shquote.word(b"ced"));
+    assert(shquote.word(b"c-less_2.x"));
+    assert(!shquote.word(b""));
+    assert(!shquote.word(b"-ced"));
+    assert(!shquote.word(b".hidden"));
+    assert(!shquote.word(b"ced x"));
+    assert(!shquote.word(b"../home/sam/evil"));
+    assert(!shquote.word(b"x/y"));
+    assert(!shquote.word(b"ced;x"));
+    assert(!shquote.word(b"ced'"));
+    assert(!shquote.word(b"ced\n"));
+}
+
+test "printable: a pin the desk may copy into its log line" {
+    assert(shquote.printable(b"/home/sam/a b;'c'"));
+    assert(shquote.printable(b""));
+    U8[3] p = b"a?b";
+    for b in 0..256 {
+        p[1] = b as U8;
+        assert(shquote.printable(p) == (b >= 32 && b != 127));
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

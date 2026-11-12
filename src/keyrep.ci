@@ -1,0 +1,132 @@
+// src/keyrep.ci: RS-KR (docs/specs/2026-11-11-rs-rel-s1-units.md section 2), key repeat. A PS/2 keyboard repeats by
+// itself and a USB keyboard does not; one behavior for both: the input path (src/inq.ci) gives every key event
+// here, drops the hardware's own repeats (a press of a key already down), and asks at each pull for a repeat made from
+// the kernel's timer tick, so the same presses at the same ticks repeat the same. A modifier or a lock key never
+// repeats, and pressing one neither starts nor stops the repeat of the key held. A repeat is a press, value 1, as the
+// PS/2 keyboard's own repeats always reached the desk. The delay and the period are Linux's (EVIOCSREP, EVIOCGREP on
+// /dev/input/event0), set by the desk alone (src/proc.ci sys_keyrep). Pure, so the hosted tests reach it.
+
+export const U64 EVIOCGREP = 0x80084503;     // _IOR('E', 0x03, unsigned int[2]): the delay, then the period, in ms
+export const U64 EVIOCSREP = 0x40084503;     // _IOW('E', 0x03, unsigned int[2])
+export const I64 DELAY_DEFAULT = 500;        // frame 37's knob (user/ci/kit/stkeys.ci DELAY_DEFAULT)
+export const I64 PERIOD_DEFAULT = 33;        // 30 a second, frame 37's RATE_DEFAULT
+export const I64 DELAY_MIN = 100;            // ms; the Keyboard page steps 250 to 1000
+export const I64 DELAY_MAX = 2000;
+export const I64 PERIOD_MIN = 10;            // ms, one tick: 100 a second at most; the page steps 25 (40 a second) to 200
+export const I64 PERIOD_MAX = 1000;
+const I64 TICK_NUM = 11932;                  // a timer tick is pit.USER_DIVISOR / pit.INPUT_HZ seconds (src/pit.ci)
+const I64 TICK_DEN = 1193182;
+
+I64 delay_ms = DELAY_DEFAULT;
+I64 period_ms = PERIOD_DEFAULT;
+U64[4] down;          // the keys down, a bit a code from 0 to 255
+I64 ndown = 0;        // how many: src/inq.ci keeps room in its queue for each one's release
+I64 held = 0;         // the key that repeats, 0 for none
+I64 held_at = 0;      // the tick of its press
+I64 sent = 0;         // the repeats it was given or skipped
+
+// Shifts, controls, alts, metas and the three locks (a held Caps Lock must not toggle on and off).
+export Bool modifier(I64 code) {
+    return code == 29 || code == 97 || code == 42 || code == 54 || code == 56 || code == 100 || code == 125
+        || code == 126 || code == 58 || code == 69 || code == 70;
+}
+
+// True when key code is down; false for a code past 255, which is not the keyboard's.
+export Bool is_down(I64 code) {
+    if (code < 0 || code > 255) {
+        return false;
+    }
+    return (down[code / 64] & ((1 as U64) << ((code % 64) as U64))) != 0;
+}
+
+// The keys down, each a release still to come.
+export I64 keys_down() {
+    return ndown;
+}
+
+void mark(I64 code, Bool on) {
+    U64 bit = (1 as U64) << ((code % 64) as U64);
+    if (on) {
+        down[code / 64] = down[code / 64] | bit;
+        ndown += 1;
+    } else {
+        down[code / 64] = down[code / 64] & ~bit;
+        ndown -= 1;
+    }
+}
+
+// A key event of the keyboard, value 1 a press and 0 a release, at tick now: true when it goes on to the reader.
+// False for a press of a key already down (the hardware's own repeat) and for a release of a key not down (a key held
+// since before the boot). A press of a key that is not a modifier makes it the key that repeats; its release ends it.
+// A code past 255 is not the keyboard's and goes on untouched.
+export Bool key(I64 code, I64 value, I64 now) {
+    if (code < 0 || code > 255) {
+        return true;
+    }
+    if (value != 0) {
+        if (is_down(code)) {
+            return false;
+        }
+        mark(code, true);
+        if (!modifier(code)) {
+            held = code;
+            held_at = now;
+            sent = 0;
+        }
+        return true;
+    }
+    if (!is_down(code)) {
+        return false;
+    }
+    mark(code, false);
+    if (code == held) {
+        held = 0;
+    }
+    return true;
+}
+
+// The code of a repeat due at tick now, or 0. The first comes delay ms after the press, then one each period; at most
+// one a call, and those a late caller missed are skipped, as a keyboard's own repeat never queues.
+export I64 due(I64 now) {
+    if (held == 0 || now < held_at) {
+        return 0;
+    }
+    I64 ms = (now - held_at) * TICK_NUM * 1000 / TICK_DEN;
+    if (ms < delay_ms) {
+        return 0;
+    }
+    I64 n = 1 + (ms - delay_ms) / period_ms;
+    if (n <= sent) {
+        return 0;
+    }
+    sent = n;
+    return held;
+}
+
+// The keyboard is gone (a USB keyboard unplugged, src/xhci.ci): the repeat ends, so a key it held does not repeat
+// until the next press. The keys down stay as they are: the gone keyboard's last report, given as all keys up through
+// key(), releases its own, and a key held on the other keyboard keeps its release.
+export void reset() {
+    held = 0;
+    held_at = 0;
+    sent = 0;
+}
+
+// EVIOCSREP: false, and nothing changes, for a delay or a period out of range.
+export Bool set(I64 d, I64 p) {
+    if (d < DELAY_MIN || d > DELAY_MAX || p < PERIOD_MIN || p > PERIOD_MAX) {
+        return false;
+    }
+    delay_ms = d;
+    period_ms = p;
+    return true;
+}
+
+export I64 delay() {
+    return delay_ms;
+}
+
+export I64 period() {
+    return period_ms;
+}
+// SPDX-License-Identifier: Apache-2.0

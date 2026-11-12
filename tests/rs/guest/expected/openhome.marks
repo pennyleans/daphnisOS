@@ -1,0 +1,15 @@
+# RG-1: Index, run as ada, opens /home/ada/notes.txt in ada's 0700 home. The desk (uid 0, no ring 0) cannot stat it,
+# so a run as ada peeks it (user/ci/runas.h RUN_PEEK, finder --peek) and Edit opens it in a terminal of ada's session.
+hdesk: login ada uid 1000
+finder: filter |notes| items 1
+~hdesk: open \|/home/ada/notes\.txt\| window \d+
+=hdesk: ff peek as uid 1000
+=hdesk: run 5 (0)
+=hdesk: run 5 ended (0)
+=hdesk: ff peeked 2
+=hdesk: ff runs |ced '/home/ada/notes.txt'|
+~hdesk: bar desktop 1 \|[^|]+\| var \|notes\.txt\|.*
+daphnis: shut down
+!hdesk: ff gone
+!hdesk: ff path refused
+!hdesk: launch refused

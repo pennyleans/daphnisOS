@@ -1,0 +1,52 @@
+// tests/hw/usbhid_test.ci: hosted tests of src/usbhid.ci (HW-4), the boot keyboard report as key events.
+// cint test --root . tests/hw/usbhid_test.ci
+
+import src.usbhid;
+
+test "usages map to Linux key codes" {
+    assert(usbhid.keycode(0x04) == 30);        // a
+    assert(usbhid.keycode(0x1D) == 44);        // z
+    assert(usbhid.keycode(0x28) == 28);        // Enter
+    assert(usbhid.keycode(0x29) == 1);         // Esc
+    assert(usbhid.keycode(0x2C) == 57);        // Space
+    assert(usbhid.keycode(0x4F) == 106);       // Right
+    assert(usbhid.keycode(0x52) == 103);       // Up
+    assert(usbhid.keycode(0xE0) == 29);        // left Ctrl
+    assert(usbhid.keycode(0xE3) == 125);       // left GUI: the desk's Super
+    assert(usbhid.keycode(0xE7) == 126);
+    assert(usbhid.keycode(0) == 0 && usbhid.keycode(300) == 0);
+}
+
+test "a press, a held key, a release" {
+    U8[8] none = [0, 0, 0, 0, 0, 0, 0, 0];
+    U8[8] a = [0, 0, 4, 0, 0, 0, 0, 0];
+    U8[8] ab = [0, 0, 4, 5, 0, 0, 0, 0];
+    I64[16] k;
+    I64[16] v;
+    assert(usbhid.key_events(none, a, k, v) == 1 && k[0] == 30 && v[0] == 1);
+    assert(usbhid.key_events(a, ab, k, v) == 1 && k[0] == 48 && v[0] == 1);
+    assert(usbhid.key_events(ab, ab, k, v) == 0);
+    assert(usbhid.key_events(ab, none, k, v) == 2 && v[0] == 0 && v[1] == 0);
+}
+
+test "modifiers: Super and Shift, released before keys are pressed" {
+    U8[8] none = [0, 0, 0, 0, 0, 0, 0, 0];
+    U8[8] sup = [8, 0, 0, 0, 0, 0, 0, 0];
+    U8[8] shift_a = [2, 0, 4, 0, 0, 0, 0, 0];
+    I64[16] k;
+    I64[16] v;
+    assert(usbhid.key_events(none, sup, k, v) == 1 && k[0] == 125 && v[0] == 1);
+    I64 n = usbhid.key_events(sup, shift_a, k, v);
+    assert(n == 3);
+    assert(k[0] == 125 && v[0] == 0);          // Super up first
+    assert(k[1] == 42 && v[1] == 1);           // then Shift down
+    assert(k[2] == 30 && v[2] == 1);           // then a
+}
+
+test "a rollover report is known" {
+    U8[8] err = [0, 0, 1, 1, 1, 1, 1, 1];
+    U8[8] a = [0, 0, 4, 0, 0, 0, 0, 0];
+    assert(usbhid.rollover(err) && !usbhid.rollover(a));
+    assert(usbhid.signed8(255 as U8) == -1 && usbhid.signed8(5 as U8) == 5);
+}
+// SPDX-License-Identifier: Apache-2.0

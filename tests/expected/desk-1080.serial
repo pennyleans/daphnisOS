@@ -1,0 +1,54 @@
+Daphnis W: the desk
+daphnis: framebuffer 1920x1080 stride 7680
+daphnis: keyboard and mouse on
+daphnis: image 21327748 bytes from the loader module
+daphnis: desk
+daphnis: run tiler --cols 1 --rows 2 --desk pid 1 (device)
+tiler: tile 0,0 at 0,0 inside 1919x539
+tiler: tile 0,1 at 0,540 inside 1919x539
+tiler: surface 1920x1080 stride 7680 sha256 63e5d12a44ffc984f20c58d96a66037a6e09cd7da94c5e9798473018867e5f98
+tiler: desk terminal 239x32 in tile 0,0 at 2,21
+tiler: desk tile 1 at 799,719 inside 320x200 for the next client (0)
+tiler: desk shell first output
+daphnis: tile surface 320x200 at 799,719 sha256 6ac198568f4dfbb9440321c357fe61b2cd1a22b67bd074ea59e5c0b839b54c7a
+tiler: desk shell ended, status 0
+tiler: term bytes 31082 sha256 8d741c3b9d2674c2f9b873cd489b8f6c327bd2cb191e4c058916bfddfef8b6de
+tiler: term 00 |doom: tic 322 sha256 0ba4b7fba9130025cac1b0bcc696e41e4bca3eb580143d4cba9420770b04a57f|
+tiler: term 01 |doom: tic 323 sha256 425af8700bc5489124fa46120fb2af3396f3dcfde6af1961df909a17b073d850|
+tiler: term 02 |doom: tic 324 sha256 b974fbbe7592d82e127e00d1d6e88b35521498def647ebe2bf488136582edb71|
+tiler: term 03 |doom: tic 325 sha256 2d9232948ea23663830733cb95439705d4ab876c7f5611c8668ea3b34c6ddd33|
+tiler: term 04 |doom: tic 326 sha256 7baf41f6b8353dc43e426a0e66a2791c26dd9fb14bb76f482f1a5ed1a753f495|
+tiler: term 05 |doom: tic 327 sha256 50d7426a264754307ec87f459cb30ea8eb42bb3c517b8089e1b82430b33dd707|
+tiler: term 06 |doom: tic 328 sha256 298c05d3ab19d5ffdbc57a4f672b446d1806eeb76d4d8d847426bd42354f4e33|
+tiler: term 07 |doom: tic 329 sha256 6bf18df5d95c5efd3fa74405f30a3255da22b42cf313cec2c3835dcedf95e7a8|
+tiler: term 08 |doom: tic 330 sha256 6ae825d6f60d33b79c86534c28e5fa5545e92e01cf7f42a115c8392158a3fa6e|
+tiler: term 09 |doom: tic 331 sha256 6cbdec7bb570739e67e01f5c1bdb94446cb1f7df20eee6482fc17458d297e249|
+tiler: term 10 |doom: tic 332 sha256 65a36200854d855a775a404a36bbe512e38409df0fb4bc13187be3a761ac03c6|
+tiler: term 11 |doom: tic 333 sha256 4e519248ef4aae10324ad040b921685b69a9ef8baee9470caebb465e71f5e478|
+tiler: term 12 |doom: tic 334 sha256 42b2cd022f56522025c5ecb8f894cd1a608ff3f6f9a16be2dc40e859b96823cb|
+tiler: term 13 |doom: tic 335 sha256 f86b602bf4a92dc8418c39ff8fdd158d09ca536cc1bfffb7484cbf3f695d2245|
+tiler: term 14 |doom: tic 336 sha256 ebf7040897cff73b8e5ca333562986a8580e8e250e2fcbb3dd13a8dd5b27e8f4|
+tiler: term 15 |doom: tic 337 sha256 21378e1178dbb466589ea66181bfa13c93b4d00b0b35fca69d2808fbbd33386f|
+tiler: term 16 |doom: tic 338 sha256 50e0c73cd722d740de445472ba3112f4231c483f3ff85b053745dd45102455cb|
+tiler: term 17 |doom: tic 339 sha256 d1d062f9ec722c6e5f14202e47491380f921c732249ab2b7fb90a6eab09b4494|
+tiler: term 18 |doom: tic 340 sha256 b56c7e62457a2b18cde6ca414cb46527bdcf3d260f02b60a3ef46ef37e099a82|
+tiler: term 19 |doom: tic 341 sha256 97822c9612f6fa90824f92c2363f3fd9fc31b3614080ccb2a28d20ffd41e3303|
+tiler: term 20 |doom: tic 342 sha256 413dd60e9cb00d8664cd92247b72fe68bd0ea40c13d506c34abce1ccf1011071|
+tiler: term 21 |doom: tic 343 sha256 ee645d9b689b26784797a4fe8789785998d41790f2b2d7396bc0090a9f64e1ed|
+tiler: term 22 |doom: tic 344 sha256 11c9bbf4c1d1a3201a69f3e5518d65feaf141848d43801ba94e667658b475961|
+tiler: term 23 |doom: tic 345 sha256 ef674f04c44c08021892ac54b861a076ecf4ee281b7a63f01f4f8689915d169c|
+tiler: term 24 |doom: tic 346 sha256 21d7d32004276922bb80b0fe21fa48fd5209798ba3e20e50513cc2d9b6c5366f|
+tiler: term 25 |doom: tic 347 sha256 82da2c0f7773522ffb0c111b2b51cf1f3af57c83a72ea682fe059e91e5ec1c21|
+tiler: term 26 |doom: tic 348 sha256 6c16fcf437aeea988bfdcd692e12373a9319c2d15dec185c86c4b06e46bbfcc7|
+tiler: term 27 |doom: tic 349 sha256 3c07044a27313a878e6d647d853b9d65340ff5a59e786e558427e8cde8d86fec|
+tiler: term 28 |doom: tic 350 sha256 42cf14b2a5882df3750d3c434455d19879f4d496efdf74c15bd8739b01e68fa6|
+tiler: term 29 |doom: thinkers 396 of 1023 slots ever used|
+tiler: term 30 |doom: end tics 350|
+tiler: term 31 ||
+daphnis: state d0ef95dd397246f54f5ce1320e3277b7775d1d34603f975bbf95ad38ecd9f073
+daphnis: exit 0
+daphnis: pid 1 forked 1
+daphnis: surface 1920x1080 stride 7680 sha256 d8e7b837ef14e929a92e5b820a5f966864d9124bde55834f6cc5de441821f59c
+daphnis: fs tables 19 frames held
+daphnis: pool frames free 16364 of 16383
+daphnis: done

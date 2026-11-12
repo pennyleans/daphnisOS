@@ -1,0 +1,209 @@
+// user/ci/cvim/text.ci: lines, characters and columns over buf.ci's text (docs/specs/2026-11-07-cv-cvim.md section 5,
+// CV-2a). The text is Vim's list of lines: every line ends in a line feed, and a buffer of no bytes is Vim's empty
+// buffer, one empty line. A position is a byte offset; a line's line feed stands where Vim puts the cursor past the
+// line's last character (Vim's NUL), so Vim's inc() and dec() are steps over the bytes.
+import user.ci.cvim.buf;
+
+// tabstop and shiftwidth (cvim's default when the file says nothing, section 6).
+export const I64 TS = 4;
+
+export I64 nlines(in I64[_] x) {
+    if (buf.total(x) == 0) {
+        return 1;
+    }
+    return buf.lines(x) - 1;
+}
+
+// The byte at p; a line feed past either end, so the empty buffer reads as one empty line.
+export U8 ch(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    if (p < 0 || p >= buf.total(x)) {
+        return '\n';
+    }
+    return buf.byte_at(x, orig, add, p);
+}
+
+export Bool white(U8 c) {
+    return c == ' ' || c == '\t';
+}
+
+Bool cont(U8 b) {
+    return b >= 128 && b < 192;
+}
+
+// Where line l starts; the total past the last line.
+export I64 lstart(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    if (l <= 0 || buf.total(x) == 0) {
+        return 0;
+    }
+    return buf.line_start(x, orig, add, l);
+}
+
+// Line l's line feed (its NUL).
+export I64 lend(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    if (buf.total(x) == 0) {
+        return 0;
+    }
+    return buf.line_start(x, orig, add, l + 1) - 1;
+}
+
+// The line feeds before p: the line of p, or the line count for the total.
+export I64 lf_before(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    if (p <= 0) {
+        return 0;
+    }
+    return buf.line_of(x, orig, add, min(p, buf.total(x)));
+}
+
+export I64 lineof(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    return min(lf_before(x, orig, add, p), nlines(x) - 1);
+}
+
+export I64 col(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    return p - lstart(x, orig, add, lineof(x, orig, add, p));
+}
+
+// The next and the previous character's start (UTF-8).
+export I64 nextc(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 t = buf.total(x);
+    I64 q = p + 1;
+    while (q < t && cont(buf.byte_at(x, orig, add, q))) {
+        q += 1;
+    }
+    return q;
+}
+
+export I64 prevc(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 q = p - 1;
+    while (q > 0 && cont(buf.byte_at(x, orig, add, q))) {
+        q -= 1;
+    }
+    return max(q, 0);
+}
+
+// Whether p is past the start of its line.
+export Bool off_start(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    return p > 0 && ch(x, orig, add, p - 1) != '\n';
+}
+
+// Whether p is the start of an empty line.
+export Bool empty_at(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    return ch(x, orig, add, p) == '\n' && !off_start(x, orig, add, p);
+}
+
+// The first character of line l that is not a blank: on the line feed when the line is blank (Vim's BL_WHITE), or
+// with fix on its last character (BL_WHITE | BL_FIX).
+export I64 first_nonblank(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l, Bool fix) {
+    I64 p = lstart(x, orig, add, l);
+    I64 e = lend(x, orig, add, l);
+    while (p < e && white(ch(x, orig, add, p))) {
+        if (fix && p + 1 == e) {
+            return p;
+        }
+        p += 1;
+    }
+    return p;
+}
+
+// Whether only blanks stand before p on its line (Vim's inindent(0)).
+export Bool in_indent(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 q = lstart(x, orig, add, lineof(x, orig, add, p));
+    while (q < p) {
+        if (!white(ch(x, orig, add, q))) {
+            return false;
+        }
+        q += 1;
+    }
+    return true;
+}
+
+I64 width(U8 c, I64 vc) {
+    if (c == '\t') {
+        return TS - vc % TS;
+    }
+    return 1;
+}
+
+// The screen column where the character at p starts.
+export I64 vcol(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 q = lstart(x, orig, add, lineof(x, orig, add, p));
+    I64 vc = 0;
+    while (q < p) {
+        vc += width(ch(x, orig, add, q), vc);
+        q = nextc(x, orig, add, q);
+    }
+    return vc;
+}
+
+// The character of line l under screen column want (Vim's coladvance): in Normal mode never the line feed of a
+// line that has characters; in Insert mode (past) the line feed when want is past the end.
+export I64 at_vcol(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l, I64 want, Bool past) {
+    I64 q = lstart(x, orig, add, l);
+    I64 e = lend(x, orig, add, l);
+    I64 vc = 0;
+    while (q < e) {
+        I64 w = width(ch(x, orig, add, q), vc);
+        if (vc + w > want) {
+            return q;
+        }
+        vc += w;
+        q = nextc(x, orig, add, q);
+    }
+    if (!past && q > lstart(x, orig, add, l)) {
+        return prevc(x, orig, add, q);
+    }
+    return q;
+}
+
+// The width of line l's leading blanks.
+export I64 indent(in I64[_] x, in U8[_] orig, in U8[_] add, I64 l) {
+    return vcol(x, orig, add, first_nonblank(x, orig, add, l, false));
+}
+
+// The cursor of Normal mode: off the line feed of a line that has characters.
+export I64 normal_pos(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 t = buf.total(x);
+    I64 q = min(max(p, 0), max(t - 1, 0));
+    if (ch(x, orig, add, q) == '\n' && off_start(x, orig, add, q)) {
+        return prevc(x, orig, add, q);
+    }
+    return q;
+}
+
+// A code point as UTF-8 into s; the bytes written.
+export I64 encode_utf8(I64 cp, inout U8[_] s) {
+    if (cp < 128) {
+        s[0] = cp as U8;
+        return 1;
+    }
+    if (cp < 2048) {
+        s[0] = (192 + cp / 64) as U8;
+        s[1] = (128 + cp % 64) as U8;
+        return 2;
+    }
+    if (cp < 65536) {
+        s[0] = (224 + cp / 4096) as U8;
+        s[1] = (128 + cp / 64 % 64) as U8;
+        s[2] = (128 + cp % 64) as U8;
+        return 3;
+    }
+    s[0] = (240 + cp / 262144) as U8;
+    s[1] = (128 + cp / 4096 % 64) as U8;
+    s[2] = (128 + cp / 64 % 64) as U8;
+    s[3] = (128 + cp % 64) as U8;
+    return 4;
+}
+
+// The code point of the character at p.
+export I64 code_at(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 b = ch(x, orig, add, p) as I64;
+    I64 n = nextc(x, orig, add, p) - p;
+    if (n <= 1 || b < 192) {
+        return b;
+    }
+    I64 v = b % (128 >> n);
+    for j in 1..n {
+        v = v * 64 + (ch(x, orig, add, p + j) as I64) % 64;
+    }
+    return v;
+}
+// SPDX-License-Identifier: Apache-2.0

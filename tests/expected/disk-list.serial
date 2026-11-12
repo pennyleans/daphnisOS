@@ -1,0 +1,113 @@
+Daphnis P: the block device
+daphnis: input 235 bytes
+daphnis: disk virtio-blk, 8192 sectors, 5 frames held
+daphnis: disk 8192 sha256 12a082fc9b44abdc1001bfc41016e5334e10f4b188a20e81b338045144ed37ac
+daphnis: disk write probe: the pattern read back equal, the sectors restored
+daphnis: /home mounted, ext2, block 4096, cache 64 frames, writes need the disk grant
+daphnis: run hello pid 1
+hello from ring 3
+daphnis: state 5c6d6d6e0a037abbcfa5d73c0498412515e00277227de3571ad7b498c263099d
+daphnis: exit 0
+daphnis: run sh pid 2
+home:
+a
+big
+c100
+hello.txt
+lost+found
+m
+meta
+mexe
+mk
+msha
+sparse
+
+home/a:
+b.txt
+n
+
+home/a/n:
+
+home/lost+found:
+
+home/m:
+moved
+seq
+
+home/meta:
+d
+dang
+g
+hs
+l
+loop1
+loop2
+sd
+
+home/meta/d:
+x
+y
+
+home/meta/d/y:
+
+home/mk:
+Makefile
+a
+b
+bf171ac7e89dab424c00b5f64257908b  home/big
+874410694fa6ef97accb67ea8decd9ca  home/sparse
+aec04aba51c7aef476c6b7c1ee2948aa  home/hello.txt
+56a5b2640a52663e844df71af7b51dcb  home/c100
+d2d8564c6d588fb52e5a604b8237bd28  home/m/moved
+ea4d0a24dabcaa11f9aa979b872d162b  home/m/seq
+2094b601daac3d68f5aed51d3c20f7cd  home/a/b.txt
+    70000 home/sparse
+     5000 home/hello.txt
+       10 home/c100
+     8893 home/m/seq
+    83903 total
+stat home 2 41ed 7 0 0 4096 8 1 1 1
+stat home/a 12 41ed 3 0 0 4096 8 1 1 1
+stat home/a/b.txt 18 81a4 1 0 0 8 8 1 1 1
+stat home/a/n 27 41ed 2 0 0 4096 8 1 1 1
+stat home/big 14 81a4 1 0 0 1048576 2056 1 1 1
+stat home/c100 25 81a4 1 0 0 10 8 1 1 1
+stat home/hello.txt 15 81a4 1 0 0 5000 8 1 1 1
+stat home/lost+found 11 41c0 2 0 0 16384 32 1 1 1
+stat home/m 26 41ed 2 0 0 4096 8 1 1 1
+stat home/m/moved 29 81a4 1 0 0 102400 208 1 1 1
+stat home/m/seq 13 81a4 1 0 0 8893 24 1 1 1
+stat home/meta 16 41ed 3 0 0 4096 8 1 1 1
+stat home/meta/d 30 43e8 3 0 0 4096 8 1 1 1
+stat home/meta/d/x 34 81a4 1 0 0 4 8 1 1 1
+stat home/meta/d/y 35 41ed 2 0 0 4096 8 1 1 1
+stat home/meta/dang 36 a1ff 1 0 0 7 0 1 1 1
+stat home/meta/g 28 81c9 1 0 0 10 8 4000 3000 1
+stat home/meta/hs 31 a1ff 1 0 0 1 0 5000 6000 1
+stat home/meta/l 32 a1ff 1 0 0 71 8 1 1 1
+stat home/meta/loop1 37 a1ff 1 0 0 5 0 1 1 1
+stat home/meta/loop2 38 a1ff 1 0 0 5 0 1 1 1
+stat home/meta/sd 33 a1ff 1 0 0 1 0 1 1 1
+stat home/mexe 20 81ed 1 0 0 34232 72 1 1 1
+stat home/mk 21 41ed 2 0 0 4096 8 1 1 1
+stat home/mk/Makefile 22 81a4 1 0 0 34 8 1 1 1
+stat home/mk/a 23 81a4 1 0 0 2 8 1 1 1
+stat home/mk/b 24 81a4 1 0 0 2 8 1 1 1
+stat home/msha 19 81ed 1 0 0 100000 208 1 1 1
+stat home/sparse 17 81a4 1 0 0 70000 0 1 1 1
+daphnis: state 874709cc02f716d9cb333650438ed5c1b3905a10269dd60f5212e88fd07dfc0b
+daphnis: exit 0
+daphnis: pid 2 forked 6
+daphnis: run msha pid 3
+msha: 4 MiB sha256 04ac01bf62aafda524b0e948f4c2f2d7448e3f2c8cf9e73d0b50c57bb84dae52
+daphnis: state 04339ab55a50a1dd5fdbe62d0d7eaabc6ea2f307a6f1f36932e74ba7d466f1e3
+daphnis: exit 0
+daphnis: run /home/msha pid 4
+msha: 4 MiB sha256 04ac01bf62aafda524b0e948f4c2f2d7448e3f2c8cf9e73d0b50c57bb84dae52
+daphnis: state 04339ab55a50a1dd5fdbe62d0d7eaabc6ea2f307a6f1f36932e74ba7d466f1e3
+daphnis: exit 0
+daphnis: disk 8192 sha256 12a082fc9b44abdc1001bfc41016e5334e10f4b188a20e81b338045144ed37ac
+daphnis: disk requests 2410
+daphnis: fs tables 18 frames held
+daphnis: pool frames free 16296 of 16383
+daphnis: done

@@ -1,0 +1,5 @@
+# RS-R3 (PR 319), the homes leg's third session: ada removes eve, whose home is set aside as
+# /home/.removed.eve.1002; a second remove finds no eve; eve added again takes 1003, never 1002 again.
+k | remove ada eve | sevenhorsesrun | ok | 0
+k | remove ada eve | sevenhorsesrun | refused account | 3
+k | add ada eve child 14 | sevenhorsesrunfour | ok | 0

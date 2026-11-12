@@ -1,0 +1,39 @@
+# tests/core/cp.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree. The tree is
+# compared after each case (CT-2).
+text.txt t2 | - | -
+text.txt box | - | -
+text.txt nonl.txt box/in | - | -
+long.txt bin.dat empty box/ | - | -
+text.txt box/in/deep/c.txt | - | -
+text.txt nonl.txt empty | - | -
+text.txt text.txt | - | -
+text.txt ./text.txt | - | -
+box/a.txt box | - | -
+missing t2 | - | -
+text.txt nodir/t2 | - | -
+text.txt box/in/deep/c.txt/x | - | -
+box b2 | - | -
+-R box b2 | - | -
+-r box b2 | - | -
+-R box/ b2 | - | -
+-R box/in . | - | -
+-R box/in box/a.txt | - | -
+-R box text.txt box/in | - | D-20
+-RL box b2 | - | -
+-RH box b2 | - | -
+-RP box b2 | - | -
+-HLP text.txt t2 | - | -
+-i text.txt nonl.txt | yes.txt | -
+-i text.txt nonl.txt | empty | -
+-i text.txt t2 | empty | -
+-Ri box/in box | yes.txt | -
+-f text.txt nonl.txt | - | -
+-fi text.txt nonl.txt | empty | -
+-- text.txt t2 | - | -
+-R box box/in | - | D-20
+-R box box | - | D-20
+-p text.txt t2 | - | D-1
+-n text.txt t2 | - | D-1
+ | - | D-3
+text.txt | - | D-3

@@ -1,0 +1,11 @@
+// user/ci/tls.ci: a TLS 1.2 client session of a cint program in ring 3 (user/ci/host.c, CI_ROWS_TLS; BearSSL), A-4.
+//   tls_open(fd, host): seeds from getrandom, then the handshake over the connected fd with host as the server's
+//     name (anchors: user/tls/anchors.h); 0, or -errno, or -(1000 + BearSSL's error code)
+//   tls_read(buf): application data; the count, 0 after the server's close_notify, or a failure
+//   tls_write(bytes): writes and flushes; the count, or a failure
+//   tls_close(): sends close_notify without waiting for a reply; 0, or a failure (the fd stays open)
+export extern unrestricted I64 tls_open(I64 fd, in U8[_] host);
+export extern unrestricted I64 tls_read(out U8[_] buf);
+export extern unrestricted I64 tls_write(in U8[_] bytes);
+export extern unrestricted I64 tls_close();
+// SPDX-License-Identifier: Apache-2.0

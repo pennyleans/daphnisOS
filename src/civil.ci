@@ -1,0 +1,148 @@
+// src/civil.ci: A-3, the calendar arithmetic of src/rtc.ci and src/cmos.ci, pure so the hosted tests reach it.
+// Proleptic Gregorian, UTC, days from the civil date as Howard Hinnant's days_from_civil, and back (civil_from_days)
+// for the desk's clock and calendar (K-6, user/ci/hdesk.ci); the CMOS clock's registers both ways (RS-CLK).
+
+// The value of a packed BCD byte (0x59 is 59); -1 if a digit is over 9.
+export I64 bcd(U8 b) {
+    I64 hi = (b >> 4) as I64;
+    I64 lo = (b & 15) as I64;
+    if (hi > 9 || lo > 9) {
+        return -1;
+    }
+    return hi * 10 + lo;
+}
+
+// The days of month mo (1 to 12) of year y.
+export I64 month_days(I64 y, I64 mo) {
+    if (mo == 2) {
+        if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) {
+            return 29;
+        }
+        return 28;
+    }
+    if (mo == 4 || mo == 6 || mo == 9 || mo == 11) {
+        return 30;
+    }
+    return 31;
+}
+
+// Seconds from 1970-01-01T00:00:00Z to the time given; -1 if a field is out of range (years 1970 to 9999).
+export I64 epoch_seconds(I64 y, I64 mo, I64 d, I64 h, I64 mi, I64 s) {
+    if (y < 1970 || y > 9999 || mo < 1 || mo > 12 || d < 1 || d > month_days(y, mo) || h < 0 || h > 23
+        || mi < 0 || mi > 59 || s < 0 || s > 59) {
+        return -1;
+    }
+    I64 yy = y;
+    I64 m = mo + 9;
+    if (mo > 2) {
+        m = mo - 3;
+    } else {
+        yy = y - 1;
+    }
+    I64 era = yy / 400;
+    I64 yoe = yy - era * 400;
+    I64 doy = (153 * m + 2) / 5 + d - 1;
+    I64 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    I64 days = era * 146097 + doe - 719468;
+    return days * 86400 + h * 3600 + mi * 60 + s;
+}
+
+// K-6: the civil date of day `days` since 1970-01-01 (days >= 0) into ymd: year, month 1 to 12, day 1 to 31, and the
+// weekday, 0 Sunday (1970-01-01 was a Thursday).
+export void from_days(I64 days, inout I64[4] ymd) {
+    I64 z = days + 719468;
+    I64 era = z / 146097;
+    I64 doe = z - era * 146097;
+    I64 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    I64 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    I64 mp = (5 * doy + 2) / 153;
+    I64 d = doy - (153 * mp + 2) / 5 + 1;
+    I64 m = mp + 3;
+    if (mp >= 10) {
+        m = mp - 9;
+    }
+    I64 y = yoe + era * 400;
+    if (m <= 2) {
+        y = y + 1;
+    }
+    ymd[0] = y;
+    ymd[1] = m;
+    ymd[2] = d;
+    ymd[3] = (days + 4) % 7;
+}
+
+// The CMOS clock's seven registers r (second, minute, hour, day, month, year, century) as seconds since 1970; -1 if
+// they do not read as a date. sb is register B: bit 2 binary (else BCD), bit 1 a 24-hour clock (else 12 hours, the
+// afternoon in hour bit 7). A century outside 19 to 99 reads as 20 (a clock without the register). src/cmos.ci.
+export I64 cmos_seconds(in U8[7] r, U8 sb) {
+    Bool binary = (sb & 4) != 0;
+    Bool twelve = (sb & 2) == 0;
+    Bool pm = twelve && (r[2] & 0x80) != 0;
+    I64[7] v;
+    for i in 0..7 {
+        U8 b = r[i];
+        if (i == 2) {
+            b = b & 0x7F;
+        }
+        if (binary) {
+            v[i] = b as I64;
+        } else {
+            v[i] = bcd(b);
+        }
+    }
+    I64 hour = v[2];
+    if (pm && hour < 12) {
+        hour += 12;
+    } else if (twelve && !pm && hour == 12) {
+        hour = 0;
+    }
+    I64 century = 20;
+    if (v[6] >= 19 && v[6] <= 99) {
+        century = v[6];
+    }
+    if (v[5] < 0 || v[5] > 99) {
+        return -1;
+    }
+    return epoch_seconds(century * 100 + v[5], v[4], v[3], hour, v[1], v[0]);
+}
+
+U8 cmos_byte(I64 v, Bool binary) {
+    if (binary) {
+        return v as U8;
+    }
+    return (v / 10 * 16 + v % 10) as U8;
+}
+
+// RS-CLK: the seconds clock_settime takes, 0 to Linux's TIME_SETTOD_SEC_MAX less one (KTIME_SEC_MAX less 30 years
+// of uptime, 2232-04-18), from a caller (src/proc.ci) and from a replay's `clk S` line alike (src/rng.ci clock_take).
+export const I64 SETTOD_MAX = 8277292036;
+export Bool settable(I64 s) {
+    return s >= 0 && s < SETTOD_MAX;
+}
+
+// RS-CLK: the registers r that cmos_seconds reads back as s (0 to 9999-12-31T23:59:59Z), in register B's format sb.
+export void cmos_bytes(I64 s, U8 sb, inout U8[7] r) {
+    Bool binary = (sb & 4) != 0;
+    I64[4] ymd;
+    from_days(s / 86400, ymd);
+    I64 t = s % 86400;
+    I64 hour = t / 3600;
+    U8 pm = 0;
+    if ((sb & 2) == 0) {
+        if (hour >= 12) {
+            pm = 0x80;
+        }
+        hour = hour % 12;
+        if (hour == 0) {
+            hour = 12;
+        }
+    }
+    r[0] = cmos_byte(t % 60, binary);
+    r[1] = cmos_byte(t / 60 % 60, binary);
+    r[2] = cmos_byte(hour, binary) | pm;
+    r[3] = cmos_byte(ymd[2], binary);
+    r[4] = cmos_byte(ymd[1], binary);
+    r[5] = cmos_byte(ymd[0] % 100, binary);
+    r[6] = cmos_byte(ymd[0] / 100, binary);
+}
+// SPDX-License-Identifier: Apache-2.0

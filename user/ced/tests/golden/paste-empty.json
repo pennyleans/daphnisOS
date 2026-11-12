@@ -1,0 +1,27 @@
+{
+  "id": "paste-empty",
+  "rules": [
+    "KEY-1",
+    "UNDO-1"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b3230307e1b5b3230317e",
+    "5a"
+  ],
+  "expect": {
+    "text": "Zabc",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

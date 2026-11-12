@@ -1,0 +1,10 @@
+Daphnis N: the network device
+daphnis: net replay from net.journal, 167 bytes
+net mac 52:54:00:12:34:56
+net tx 42 sha256 6b5078c362cab743652a35c268e6ad781d8e2353ae1c240a49932b2ce537f029
+net rx 1 64 52540012345652550a0002020806000108000604000252550a0002020a0002025254001234560a00020f00000000000000000000000000000000000000000000
+daphnis: net gateway 10.0.2.2 is at 52:55:0a:00:02:02 (tick 1)
+daphnis: net tcp connections open 0, resets sent 0
+daphnis: net rx 1 tx 1 dropped 0
+daphnis: net datagrams dropped 0
+net: done

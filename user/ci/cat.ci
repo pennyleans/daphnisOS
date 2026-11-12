@@ -1,0 +1,50 @@
+// user/ci/cat.ci: cat [-u] [FILE...] (docs/specs/2026-11-06-c-core.md, CT-0): each FILE's bytes in order to
+// descriptor 1, `-` or no FILE meaning descriptor 0. Each block read is written before the next read, so -u (no
+// delay) is how it always runs. A FILE that cannot be opened or read is said and the rest go on; status 1.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+U8[4096] buf;
+
+void pour(I64 fd, in U8[_] name) {
+    Bool going = true;
+    while (going) {
+        I64 r = get.read(fd, buf);
+        if (r < 0) {
+            msg.file(name, 0 - r);
+            going = false;
+        } else if (r == 0) {
+            going = false;
+        } else {
+            put.bytes(buf[0..r]);
+            put.flush();
+            if (put.failed()) { going = false; }
+        }
+    }
+}
+
+void one(in U8[_] name) {
+    I64 fd = get.open(name);
+    if (fd >= 0) {
+        pour(fd, name);
+        get.close(fd);
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"cat");
+    args.parse(a, b"u", b"");
+    I64 n = args.operands();
+    if (n == 0) {
+        pour(0, b"-");
+    }
+    for i in 0..n {
+        if (!put.failed()) { one(a[args.op_start(i)..args.op_stop(a, i)]); }
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

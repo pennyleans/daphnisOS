@@ -1,0 +1,32 @@
+{
+  "id": "replace-does-not-rematch",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    2,
+    2
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "61610d",
+    "61"
+  ],
+  "expect": {
+    "text": "aa aa",
+    "screen": [
+      "aa aa",
+      "",
+      "",
+      "",
+      " x [+]  2 replaced                  1:3",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

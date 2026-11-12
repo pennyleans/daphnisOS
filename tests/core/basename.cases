@@ -1,0 +1,14 @@
+# tests/core/basename.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6, CT-5). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree.
+/a/b/c | - | -
+/a/b/c/ | - | -
+/// | - | -
+a | - | -
+"" | - | -
+/a/b.txt .txt | - | -
+b.txt b.txt | - | -
+/a//b// | - | -
+x/y .y | - | -
+-- -a | - | -
+ | - | D-3
+a b c | - | D-3

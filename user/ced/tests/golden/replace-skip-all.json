@@ -1,0 +1,32 @@
+{
+  "id": "replace-skip-all",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "620d",
+    "6e"
+  ],
+  "expect": {
+    "text": "a",
+    "screen": [
+      "a",
+      "",
+      "",
+      "",
+      " x  0 replaced                      1:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

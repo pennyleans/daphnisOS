@@ -1,0 +1,25 @@
+{
+  "id": "tab-to-next-stop",
+  "rules": [
+    "KEY-4"
+  ],
+  "text": "abcde",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    5,
+    5
+  ],
+  "chunks": [
+    "09"
+  ],
+  "expect": {
+    "text": "abcde   ",
+    "sel": [
+      8,
+      8
+    ]
+  }
+}

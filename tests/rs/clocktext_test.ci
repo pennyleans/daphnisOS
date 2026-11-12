@@ -1,0 +1,149 @@
+// tests/rs/clocktext_test.ci: hosted tests of RS-TZb's clock and date text (user/ci/kit/clocktext.ci): each text in
+// New York across the daylight change of 2026-03-08, on 12 and 24 hours, in UTC, at the ends of the calendar, the zone
+// file's line, clipping, and when the bar redraws. Expected values from the C library's localtime over the same
+// database. Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.clocktext;
+import user.ci.core.tz;
+import user.ci.core.cal;
+
+U8[64] got;
+
+Bool is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+I64 utc(I64 yy, I64 mm, I64 dd, I64 h, I64 m, I64 s) { return cal.days(yy, mm, dd) * 86400 + h * 3600 + m * 60 + s; }
+
+I64 ny() { return tz.find(b"America/New_York"); }
+
+test "zone_of reads the zone file's one line" {
+    assert(clocktext.zone_of(b"America/New_York") == ny());
+    assert(clocktext.zone_of(b"America/New_York\n") == ny());
+    assert(clocktext.zone_of(b"America/New_York\r\n") == ny());
+    assert(clocktext.zone_of(b"Asia/Kolkata \n") == tz.find(b"Asia/Kolkata"));
+    assert(clocktext.zone_of(b"") == -1);
+    assert(clocktext.zone_of(b"\n") == -1);
+    assert(clocktext.zone_of(b"Mars/Olympus\n") == -1);
+    assert(clocktext.zone_of(b"America/New_Yor\n") == -1);
+    U8[80] f;                                      // RS-TZc: a read of ZONE_READ bytes is a file larger than a line
+    for k in 0..len(f) { f[k] = ' '; }
+    for k in 0..16 { f[k] = b"America/New_York"[k]; }
+    assert(clocktext.zone_of(f[0..clocktext.ZONE_READ - 1]) == ny());
+    assert(clocktext.zone_of(f[0..clocktext.ZONE_READ]) == -1 && clocktext.zone_of(f) == -1);
+    for k in 0..len(f) { f[k] = 0xFF; }
+    assert(clocktext.zone_of(f[0..20]) == -1);     // bytes that are no name are data, never a fault
+}
+
+test "the clock on 24 and 12 hours, across the daylight change" {
+    I64 z = ny();
+    I64 t = utc(2026, 11, 9, 6, 59, 12);   // 01:59:12 EST
+    assert(is(clocktext.hm(got, 0, z, t, true), b"01:59"));
+    assert(is(clocktext.hm(got, 0, z, t, false), b"1:59 AM"));
+    assert(is(clocktext.hm(got, 0, z, utc(2026, 11, 9, 17, 5, 0), false), b"12:05 PM"));
+    assert(is(clocktext.hm(got, 0, z, utc(2026, 11, 9, 5, 0, 0), false), b"12:00 AM"));
+    assert(is(clocktext.hm(got, 0, z, utc(2026, 11, 9, 5, 0, 0), true), b"00:00"));
+    assert(is(clocktext.hm(got, 0, z, utc(2026, 3, 8, 6, 59, 59), true), b"01:59"));
+    assert(is(clocktext.hm(got, 0, z, utc(2026, 3, 8, 7, 0, 0), true), b"03:00"));
+    assert(is(clocktext.hm(got, 0, -1, t, true), b"06:59"));
+}
+
+test "the bar, the long date and the calendar's month" {
+    I64 z = ny();
+    I64 t = utc(2026, 11, 9, 6, 59, 12);
+    assert(is(clocktext.bar(got, 0, z, t, true), b"Mon Nov 9  01:59"));
+    assert(is(clocktext.bar(got, 0, z, t, false), b"Mon Nov 9  1:59 AM"));
+    assert(is(clocktext.bar(got, 0, -1, t, true), b"Mon Nov 9  06:59"));
+    assert(is(clocktext.bar(got, 0, z, utc(2026, 3, 8, 7, 0, 0), true), b"Sun Mar 8  03:00"));
+    assert(is(clocktext.long_date(got, 0, z, t, false), b"Monday, November 9"));
+    assert(is(clocktext.long_date(got, 0, z, t, true), b"Monday, November 9, 2026"));
+    assert(is(clocktext.long_date(got, 0, z, utc(2026, 11, 9, 4, 59, 59), false), b"Sunday, November 8"));
+    assert(is(clocktext.month_year(got, 0, 2026, 11), b"November 2026"));
+    assert(is(clocktext.month_year(got, 0, 1, 1), b"January 1"));
+    I64 e = clocktext.wday_name(got, 0, 3, true);
+    e = clocktext.month_name(got, e, 9, false);
+    assert(is(e, b"WednesdaySep"));
+}
+
+test "Index's stamp, ls -l's time and stat's line" {
+    I64 z = ny();
+    I64 now = utc(2026, 11, 9, 6, 59, 12);
+    I64 t = utc(2026, 11, 9, 6, 40, 30);   // 01:40:30 EST
+    assert(is(clocktext.stamp(got, 0, z, t, now, true), b"Nov 9, 01:40"));
+    assert(is(clocktext.stamp(got, 0, z, t, now, false), b"Nov 9, 1:40 AM"));
+    assert(is(clocktext.stamp(got, 0, z, utc(2025, 11, 9, 6, 59, 12), now, true), b"Nov 9, 2025"));
+    // New Year's in New York comes five hours after UTC's: still the old year there
+    I64 ny_eve = utc(2027, 1, 1, 3, 0, 0);
+    assert(is(clocktext.stamp(got, 0, z, utc(2026, 12, 31, 12, 0, 0), ny_eve, true), b"Dec 31, 07:00"));
+    assert(is(clocktext.stamp(got, 0, -1, utc(2026, 12, 31, 12, 0, 0), ny_eve, true), b"Dec 31, 2026"));
+    assert(is(clocktext.ls_time(got, 0, z, t, now), b"Nov  9 01:40"));
+    assert(is(clocktext.ls_time(got, 0, z, utc(2025, 11, 9, 6, 59, 12), now), b"Nov  9  2025"));
+    assert(is(clocktext.ls_time(got, 0, z, now + 899, now), b"Nov  9 02:14"));
+    assert(is(clocktext.ls_time(got, 0, z, now + 900, now), b"Nov  9  2026"));
+    assert(is(clocktext.ls_time(got, 0, z, utc(2026, 3, 8, 7, 0, 0), now), b"Mar  8  2026"));   // over half a year
+    assert(is(clocktext.ls_time(got, 0, z, utc(2026, 7, 4, 16, 0, 5), now), b"Jul  4 12:00"));   // daylight time
+    assert(is(clocktext.iso(got, 0, z, now), b"2026-11-09 01:59:12"));
+    assert(is(clocktext.iso(got, 0, z, utc(2026, 7, 4, 16, 0, 5)), b"2026-07-04 12:00:05"));
+    assert(is(clocktext.iso(got, 0, tz.find(b"Asia/Kolkata"), now), b"2026-11-09 12:29:12"));
+    assert(is(clocktext.iso(got, 0, -1, now), b"2026-11-09 06:59:12"));
+}
+
+test "the offset's text" {
+    I64 z = ny();
+    assert(is(clocktext.hhmm(got, 0, z, utc(2026, 11, 9, 6, 59, 12)), b"-0500"));
+    assert(is(clocktext.hhmm(got, 0, z, utc(2026, 7, 4, 16, 0, 0)), b"-0400"));
+    assert(is(clocktext.hhmm(got, 0, tz.find(b"Asia/Kolkata"), 0), b"+0530"));
+    assert(is(clocktext.hhmm(got, 0, -1, 0), b"+0000"));
+    assert(is(clocktext.utc(got, 0, z, utc(2026, 11, 9, 6, 59, 12)), b"UTC-05:00"));
+    assert(is(clocktext.utc(got, 0, z, utc(2026, 7, 4, 16, 0, 0)), b"UTC-04:00"));
+    assert(is(clocktext.utc(got, 0, tz.find(b"Asia/Kolkata"), 0), b"UTC+05:30"));
+    assert(is(clocktext.utc(got, 0, tz.find(b"Pacific/Chatham"), utc(2026, 7, 4, 0, 0, 0)), b"UTC+12:45"));
+    assert(is(clocktext.utc(got, 0, -1, 0), b"UTC+00:00"));
+}
+
+test "the ends of the calendar and any t" {
+    I64 z = ny();
+    assert(is(clocktext.iso(got, 0, z, tz.FIRST), b"1-01-01 00:00:00"));
+    assert(is(clocktext.hhmm(got, 0, z, tz.FIRST - 1), b"-0500"));
+    assert(is(clocktext.bar(got, 0, z, tz.FIRST - 1000, true), b"Mon Jan 1  00:00"));
+    assert(is(clocktext.ls_time(got, 0, z, tz.FIRST, 0), b"Jan  1     1"));
+    assert(is(clocktext.iso(got, 0, -1, tz.LAST + 1000), b"9999-12-31 23:59:59"));
+    assert(is(clocktext.stamp(got, 0, z, -9223372036854775807, 9223372036854775807, true), b"Jan 1, 1"));
+    assert(is(clocktext.ls_time(got, 0, z, 9223372036854775807, -9223372036854775807), b"Dec 31  9999"));
+    assert(clocktext.redraw(z, 9223372036854775807) == tz.LAST + 1);
+}
+
+test "local_s: the wall clock's seconds, so its day is the zone's day" {
+    assert(clocktext.local_s(-1, utc(2026, 11, 12, 10, 0, 0)) == utc(2026, 11, 12, 10, 0, 0));        // UTC
+    assert(clocktext.local_s(ny(), utc(2026, 11, 12, 10, 0, 0)) == utc(2026, 11, 12, 5, 0, 0));       // EST
+    assert(clocktext.local_s(ny(), utc(2026, 7, 1, 10, 0, 0)) == utc(2026, 7, 1, 6, 0, 0));           // EDT
+    assert(clocktext.local_s(ny(), utc(2026, 11, 12, 3, 0, 0)) / 86400 == cal.days(2026, 11, 11));   // still the 11th
+    I64 k = tz.find(b"Asia/Kolkata");
+    assert(clocktext.local_s(k, utc(2026, 11, 11, 20, 0, 0)) / 86400 == cal.days(2026, 11, 12));     // already the 12th
+}
+
+test "a text keeps what fits" {
+    U8[4] small;
+    assert(clocktext.bar(small, 0, ny(), 0, true) == 4);
+    assert(small[0] == 'W' && small[3] == ' ');   // 1969-12-31, a Wednesday, in New York
+    assert(clocktext.hm(small, 4, ny(), 0, true) == 4);
+    assert(clocktext.hm(got, 3, ny(), 0, true) == 8);
+    assert(got[3] == '1' && got[4] == '9');
+}
+
+test "the bar redraws at the next local minute or a change of offset" {
+    I64 z = ny();
+    assert(clocktext.redraw(z, utc(2026, 11, 9, 6, 59, 12)) == utc(2026, 11, 9, 7, 0, 0));
+    assert(clocktext.redraw(z, utc(2026, 11, 9, 7, 0, 0)) == utc(2026, 11, 9, 7, 1, 0));
+    assert(clocktext.redraw(z, utc(2026, 3, 8, 6, 59, 30)) == utc(2026, 3, 8, 7, 0, 0));
+    assert(clocktext.redraw(-1, -1) == 0);
+    I64 m = tz.find(b"Africa/Monrovia");   // -00:44:30 until 1972-01-07 00:44:30 UTC
+    assert(m >= 0);
+    assert(clocktext.redraw(m, 63586800) == 63586830);
+    assert(clocktext.redraw(m, 63593069) == 63593070);
+    assert(clocktext.redraw(m, 63593070) == 63593100);
+}
+// SPDX-License-Identifier: Apache-2.0

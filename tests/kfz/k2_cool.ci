@@ -1,0 +1,194 @@
+// tests/kfz/k2_cool.ci: AC-D4's cooldown, the kernel's (docs/specs/2026-11-08-ac-accounts.md, AC-D4; src/proc.ci
+// cool): the desk's no to a request of an account's process, or the prompt's timeout, refuses every ask of the asking
+// tree at once for 30 s, with no request made. The tree is the GV-1a window number, the child the desk forked and all
+// it started: what it forks later, a new session in it and an orphan of it are refused too. Another window's tree, a
+// window the desk forks after the no, and a uid 0 process (accounts off, R0-3) are asked.
+
+const U64 KC_NO = 0;
+const U64 KC_YES = 1;
+
+// p asks the desk for ring 0 with the command line `true`: the call's answer, fs.WOULD_BLOCK while it waits.
+I64 kc_ask(I64 p) {
+    kz_put(p, KZ_RW, "true");
+    return kz_call(p, NR_KERN, KZ_RW, 5, 0, 0, 0, 0);
+}
+
+// The desk's word on p's request (FBIO_TILE_KERN), as hdesk's kern_answer sends it: 0, or -ESRCH with none waiting.
+I64 kc_answer(I64 d, I64 p, U64 verb) {
+    kz_set_u32(d, KZ_RW, vpid[p] as U64);
+    kz_set_u32(d, KZ_RW + 4, verb);
+    return kz_call(d, 16, kz_fb_fd as U64, tile.FBIO_TILE_KERN, KZ_RW, 0, 0, 0);
+}
+
+// Whether a request of p waits for the desk.
+Bool kc_waits(I64 p) {
+    for k in 0..KQ {
+        if (kq_pid[k] == p && kq_state[k] == KQ_ASKED) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// p asks, the desk says no, and p takes the answer: -EPERM.
+void kc_refused(I64 d, I64 p) {
+    assert(kc_ask(p) == fs.WOULD_BLOCK && kc_waits(p));
+    assert(kc_answer(d, p, KC_NO) == 0);
+    assert(kc_ask(p) == E_PERM);
+}
+
+// p's ask is refused at once: -EPERM, no request made, the desk told of nothing.
+void kc_at_once(I64 p) {
+    I64 n = kq_asked;
+    assert(kc_ask(p) == E_PERM);
+    assert(kq_asked == n && !kc_waits(p));
+}
+
+// p's ask is put to the desk.
+void kc_put_up(I64 p) {
+    I64 n = kq_asked;
+    assert(kc_ask(p) == fs.WOULD_BLOCK && kc_waits(p));
+    assert(kq_asked == n + 1);
+}
+
+test "AC-D4: the desk's no cools the asking tree: each next `: | kern true` of the window is refused at once" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);             // the window's shell, an account's
+    I64 a = kz_fork(sh);                    // `kern true`
+    kc_refused(d, a);
+    assert(cool_end[a] > 0 && cool_end[sh] == cool_end[a]);
+    for i in 0..3 {
+        I64 b = kz_fork(sh);                // the loop's next kern: a new process of the tree each time
+        kc_at_once(b);
+        kz_reap(b);
+    }
+    kc_at_once(a);                          // the refused process asks again
+    kc_at_once(sh);                         // and the shell itself
+    kz_reap(a);
+    assert(cool_end[a] == 0);               // its end clears its slot's mark
+    kz_end(sh);
+    kz_end(d);
+}
+
+test "AC-D4: a cooled process cannot clear its mark: a new session, an orphan and what it starts are refused" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 a = kz_fork(sh);
+    I64 g = kz_fork(a);                     // a's child, alive at the no
+    kc_refused(d, g);
+    I64 e = cool_end[g];
+    assert(e > 0 && cool_end[a] == e && cool_end[sh] == e);
+    assert(kz_call(g, 112, 0, 0, 0, 0, 0, 0) == vpid[g]);     // setsid: a session of its own, the same tree
+    assert(job.session(g) == vpid[g] && job.session(g) != job.session(sh) && cool_end[g] == e);
+    kc_at_once(g);
+    kz_reap(a);                             // g's parent ends: g is an orphan
+    assert(parent[g] == -1 && window[g] == window[sh] && cool_end[g] == e);
+    kc_at_once(g);
+    I64 h = kz_fork(g);                     // what the orphan starts after
+    assert(cool_end[h] == e && window[h] == window[sh]);
+    kc_at_once(h);
+    kz_reap(h);
+    kz_end(g);
+    kz_end(sh);
+    kz_end(d);
+}
+
+test "AC-D4: another window's tree is asked, a window the desk forks after the no is asked, a no-window one alone" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 other = kz_child(d, 1000);          // another window of the same account
+    I64 lone = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 lone2 = kz_proc(1000, fs.GRANT_ALL, 0);
+    root[lone] = root[d];                   // two processes of the desk's family in no window
+    root[lone2] = root[d];
+    assert(window[lone] == 0 && window[lone2] == 0);
+    I64 a = kz_fork(sh);
+    kc_refused(d, a);
+    assert(cool_end[other] == 0 && cool_end[lone] == 0 && cool_end[d] == 0);
+    kc_put_up(other);
+    assert(kc_answer(d, other, KC_NO) == 0 && kc_ask(other) == E_PERM);
+    kc_refused(d, lone);                    // a process of no window marks itself alone
+    assert(cool_end[lone] > 0 && cool_end[lone2] == 0);
+    kc_at_once(lone);
+    kc_put_up(lone2);
+    assert(kc_answer(d, lone2, KC_YES) == 0 && kc_ask(lone2) == 0);
+    // the cooled tree ends; the desk forks a window: a number never given before, not the slot's, and asked
+    I64 w = window[sh];
+    kz_reap(a);
+    kz_end(sh);
+    I64 n = kz_fork(d);
+    fs.set_login(n, 1000, 1000, fs.GRANT_ALL);
+    assert(window[n] == windows && window[n] > w && window[n] > window[other] && cool_end[n] == 0);
+    kc_put_up(n);
+    kz_end(n);
+    kz_end(other);
+    kz_end(lone);
+    kz_end(lone2);
+    kz_end(d);
+}
+
+test "AC-D4: the cooldown is 30 s on the tick, never less: refused at once until then, put up from then" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 a = kz_fork(sh);
+    assert(cool_ticks() == 3000);           // 30 s at the scheduler's 100 Hz, rounded up
+    assert(kc_ask(a) == fs.WOULD_BLOCK);
+    I64 t0 = trap.timer_ticks();
+    assert(kc_answer(d, a, KC_NO) == 0);
+    I64 e = cool_end[a];
+    assert(e - t0 >= 3000 && e - t0 <= 3010);
+    assert(kc_ask(a) == E_PERM);
+    I64 t = trap.timer_ticks();
+    while (t < e - 20) {
+        t = trap.timer_ticks();
+    }
+    kc_at_once(a);
+    while (t < e) {
+        t = trap.timer_ticks();
+    }
+    kc_put_up(a);
+    kz_end(a);
+    kz_end(sh);
+    kz_end(d);
+}
+
+test "AC-D4: a uid 0 tree is never cooled (accounts off): R0-3's prompt is put up again after a no" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 0);
+    I64 a = kz_fork(sh);
+    kc_refused(d, a);
+    assert(cool_end[a] == 0 && cool_end[sh] == 0);
+    kc_put_up(a);
+    I64 b = kz_fork(sh);
+    kc_put_up(b);
+    kz_end(a);
+    kz_end(b);
+    kz_end(sh);
+    kz_end(d);
+}
+
+test "AC-D4: the tree's requests already waiting are refused with the no; another tree's waits on; a yes cools none" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 other = kz_child(d, 1000);
+    I64 a = kz_fork(sh);
+    I64 b = kz_fork(sh);
+    I64 c = kz_fork(other);                 // the other window's next process, before its yes
+    kc_put_up(a);
+    kc_put_up(b);
+    kc_put_up(other);
+    assert(kc_answer(d, a, KC_NO) == 0);
+    assert(!kc_waits(b) && kc_waits(other));
+    assert(kc_answer(d, b, KC_NO) == E_SRCH);              // nothing of b's waits for the desk's word
+    assert(kc_ask(b) == E_PERM && kc_ask(a) == E_PERM);
+    assert(kc_answer(d, other, KC_YES) == 0 && kc_ask(other) == 0);
+    assert(cool_end[other] == 0 && cool_end[c] == 0);
+    kc_put_up(c);                           // a yes holds the asker alone, and cools no one
+    kz_end(c);
+    kz_end(a);
+    kz_end(b);
+    kz_end(other);
+    kz_end(sh);
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

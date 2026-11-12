@@ -1,0 +1,182 @@
+run 0
+Daphnis K4.5: shepherd
+guard pages not present, of 12: 12
+stack pages present, of 6: 6
+net 0 q 0: turns 36 sched ba7081b07e618af508d20146928462a234ba7fed50fa20b899624b9ed52b5b1c root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+net 0 q 1: turns 237 sched 65a18510c8f28596a1789e4d62e2f32bdf44760d7714223b9e8d466f0313224f root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+net 0 q 250: turns 75 sched 61a115d13c28c4ed2db32cd2541e429a07ac22acac7d2e7eb727b01fb7ca385d root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+turn 0 5 931
+turn 1 5 931
+turn 2 4 14
+turn 0 5 1364
+turn 1 5 1364
+turn 2 4 23
+turn 0 5 1797
+turn 1 5 1797
+turn 2 4 32
+turn 0 5 2230
+turn 1 5 2230
+turn 2 4 41
+turn 0 5 2663
+turn 1 5 2663
+turn 2 4 50
+turn 0 5 3096
+turn 1 5 3096
+turn 2 4 59
+turn 0 5 3529
+turn 1 5 3529
+turn 2 4 68
+turn 0 5 4395
+turn 1 5 4395
+turn 2 4 86
+turn 0 5 4828
+turn 1 5 4828
+turn 2 4 95
+turn 0 5 5261
+turn 1 5 5261
+turn 2 4 104
+turn 0 5 5694
+turn 1 5 5694
+turn 2 4 113
+turn 0 5 6127
+turn 1 5 6127
+turn 2 4 122
+turn 0 5 6560
+turn 1 5 6560
+turn 2 4 131
+turn 0 5 7426
+turn 1 5 7426
+turn 2 4 149
+turn 0 5 7859
+turn 1 5 7859
+turn 2 4 158
+turn 0 5 8292
+turn 1 5 8292
+turn 2 4 167
+turn 0 5 8725
+turn 1 5 8725
+turn 2 4 176
+turn 0 5 9158
+turn 1 5 9158
+turn 2 4 185
+turn 0 5 9591
+turn 1 5 9591
+turn 2 4 194
+turn 0 5 10024
+turn 1 5 10024
+turn 2 4 203
+turn 0 1 10459
+turn 1 1 10459
+turn 2 1 219
+net 0 q 500: turns 63 sched 0fdd6a1492671866a0f120d76122af6626b76d583107f122bb57ef9489503ae0 root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+net 0 q 1000: turns 39 sched 4a540b3571ffc04cf9bff0892aa56fe13ed10de457629c938789751f7f2b4b8f root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+turn 0 4 1365
+turn 1 4 1365
+turn 2 4 23
+turn 0 5 2230
+turn 1 5 2230
+turn 2 4 41
+turn 0 4 3097
+turn 1 4 3097
+turn 2 4 59
+turn 0 4 3963
+turn 1 4 3963
+turn 2 4 77
+turn 0 5 4395
+turn 1 5 4395
+turn 2 4 86
+turn 0 4 5262
+turn 1 4 5262
+turn 2 4 104
+turn 0 5 6127
+turn 1 5 6127
+turn 2 4 122
+turn 0 4 6994
+turn 1 4 6994
+turn 2 4 140
+turn 0 4 7860
+turn 1 4 7860
+turn 2 4 158
+turn 0 5 8292
+turn 1 5 8292
+turn 2 4 167
+turn 0 4 9159
+turn 1 4 9159
+turn 2 4 185
+turn 0 5 10024
+turn 1 5 10024
+turn 2 4 203
+turn 0 1 10459
+turn 1 1 10459
+turn 2 1 219
+net 0 q 2000: turns 39 sched aad7602f6e07de7d916e7c3e383904014cf740bea451c76db52e9ff46f13fb83 root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+net 0 q 8000: turns 36 sched 0e429002ff4dc694887c3ca08a02ee10e76cc3a8bdbfb5c4873564935603d445 root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+net 1 q 0: turns 36 sched ba7081b07e618af508d20146928462a234ba7fed50fa20b899624b9ed52b5b1c root 4b96f68ffb1586388839062494f53508d7c9b06a007cc617deaeb140055b1f60
+net 1 q 1: turns 197 sched 325ed9d9ccb8c199b00da04c32a9a8484055d79a8ac79c13ed7dfe5c0f4fa892 root d9c68f9de4f133349c5d417ad24ca44c03f4d0e348e0e9a49c259d12af503859
+net 1 q 250: turns 75 sched 61a115d13c28c4ed2db32cd2541e429a07ac22acac7d2e7eb727b01fb7ca385d root 6359768015cb7e63bb670a771405a698df4e2567e23d103d298e785e82fb9b5b
+net 1 q 500: turns 63 sched 0fdd6a1492671866a0f120d76122af6626b76d583107f122bb57ef9489503ae0 root 24e5653ceaeb5f0db86922364376ac2491f57679d79d94a4dba24cdd7a0e60dc
+net 1 q 1000: turns 39 sched 4a540b3571ffc04cf9bff0892aa56fe13ed10de457629c938789751f7f2b4b8f root 445146d9fd5adce257c4598e52ef0c327e406f93e453acdcbe751c8eb71b4be0
+net 1 q 2000: turns 39 sched aad7602f6e07de7d916e7c3e383904014cf740bea451c76db52e9ff46f13fb83 root ed5d700571e8281d07666324e62e2df2c35f852fc177d260889d3dee983e0c63
+net 1 q 8000: turns 36 sched 0e429002ff4dc694887c3ca08a02ee10e76cc3a8bdbfb5c4873564935603d445 root 4b96f68ffb1586388839062494f53508d7c9b06a007cc617deaeb140055b1f60
+deadlock: waiting: task 1 task 2
+net 2 q 0: deadlock
+deadlock: waiting: task 1 task 2
+net 2 q 1: deadlock
+task 1 faulted
+fault: cint-core-1/fault/v2 132 bytes
+HEX
+task 2 faulted
+fault: cint-core-1/fault/v2 132 bytes
+HEX
+net 3 q 0: turns 3 sched 4cd0a7bea55b90c1a0188c2b4afc195d1a60164da61edcbc36eb5faf25f32a9c root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+task 1 faulted
+fault: cint-core-1/fault/v2 132 bytes
+HEX
+task 2 faulted
+fault: cint-core-1/fault/v2 132 bytes
+HEX
+net 3 q 1: turns 5 sched 58ad90527a0fbfb03f472c2f92da83e535755d1b8148a2da8f80a77717cf3f27 root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+net 4 q 0: turns 3 sched 437219f37ccc2264a32b8ae35966595033921be99eb5fda3165352705f9f5119 root 7f6181ef67ec8a1de1a5a1ab12953babc54f46e5df598eb0ef732bc884fbb441
+net 4 q 20: turns 9 sched f9bbd2e8da91417695c927972447ab9b832fd7a7c44134167e4807a10a370594 root 7f6181ef67ec8a1de1a5a1ab12953babc54f46e5df598eb0ef732bc884fbb441
+task 1 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+net 5 q 0: turns 3 sched 6e685030a94598f87cb945c9b680251db31db0ccae93172adf4debdc3942da48 root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+task 1 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+net 5 q 1: turns 3 sched 6e685030a94598f87cb945c9b680251db31db0ccae93172adf4debdc3942da48 root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+net 6 q 0: turns 3 sched b7225a5c422399d697c3f7e911116c15f65fa4b4075e782f2ba1b79c4373d447 root 08afccbc84a6a8eeae6523e29e939433592608c1f3cfd9cfa10d0ac13bbab393
+probe record: HEX
+net 6 q 1: turns 326 sched ebf3b837ba4fb5aae19712be89f592236951d9ddbcd259695f10c17dcb0ac845 root 08afccbc84a6a8eeae6523e29e939433592608c1f3cfd9cfa10d0ac13bbab393
+probe record: HEX
+task 1 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+task 2 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+task 3 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+net 7 q 0: turns 3 sched 562e66a710e99128da8e2250297626ee198e67791ffe7440e72116d342894b0d root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+task 1 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+task 2 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+task 3 faulted
+fault: cint-core-1/fault/v2 133 bytes
+HEX
+net 7 q 1: turns 3 sched 562e66a710e99128da8e2250297626ee198e67791ffe7440e72116d342894b0d root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+task 1 faulted
+fault: cint-core-1/fault/v2 135 bytes
+HEX
+net 8 q 0: turns 3 sched e755475b5aea23116b74a1acb3cfe65c8a5b06f8abd646dd2fa35b5dff780117 root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+task 1 faulted
+fault: cint-core-1/fault/v2 135 bytes
+HEX
+net 8 q 1: turns 4 sched b55351030b0f4c83666eb442b7477b1cb5b9797350376680db7d6bee2cea7b7d root e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+shep: done
+runs: 0 faulted, then one entry returned

@@ -1,0 +1,103 @@
+// tests/rs/stabout_test.ci: hosted tests of Settings' About page (user/ci/kit/stabout.ci, frame 31, DN-53). Run bty
+// check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+import user.ci.kit.stabout;
+
+U32[1600] row;
+
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for k in 0..n { if (a[k] != b[k]) { return false; } }
+    return true;
+}
+
+void frame31() {
+    stabout.clear();
+    stabout.set_row(stabout.R_VERSION, b"0.1.0", 5);
+    stabout.set_row(stabout.R_BUILD, b"7eb1c92, 2026-11-10", 19);
+    stabout.set_row(stabout.R_COMPILER, b"cint 0.2.18", 11);
+    stabout.set_processor(b"Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz\x00\x00\x00\x00\x00\x00\x00", 12);
+    stabout.set_memory(33285996544);
+    stabout.set_display(1920, 1080);
+    stabout.set_disk(67108864, 67108864 - 3355443);
+    stabout.set_copy_live(false);
+    stabout.set_licenses_live(true);
+    stabout.open();
+}
+
+test "frame 31: the processor's brand as the row shows it" {
+    U8[64] t;
+    assert(same(t, stabout.brand(b"Intel(R) Core(TM) i7-8700K CPU @ 3.70GHz", t), b"Intel Core i7-8700K"));
+    assert(same(t, stabout.brand(b"AMD Ryzen 7 5800X 8-Core Processor            ", t), b"AMD Ryzen 7 5800X 8-Core"));
+    assert(same(t, stabout.brand(b"       Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz", t), b"Intel Xeon CPU E5-2680 v4"));
+    assert(same(t, stabout.brand(b"QEMU Virtual CPU version 2.5+\x00\x00\x00", t), b"QEMU Virtual CPU version 2.5+"));
+    assert(stabout.brand(b"\x00\x00\x00\x00", t) == 0);
+}
+
+test "frame 31: every row from what the host told, in the frame's words" {
+    frame31();
+    U8[512] t;
+    I64 n = stabout.details(t);
+    assert(same(t, n, b"Version: 0.1.0\nBuild: 7eb1c92, 2026-11-10\nCompiler: cint 0.2.18\nProcessor: Intel Core i7-8700K, 12 threads\nMemory: 31 GiB\nDisplay: 1920 x 1080\nDisk: 3.2 GiB used of 64 GiB\n"));
+    stabout.set_processor(b"QEMU Virtual CPU version 2.5+", 1);             // one processor: no thread count
+    n = stabout.details(t);
+    assert(same(t, 82, b"Version: 0.1.0\nBuild: 7eb1c92, 2026-11-10\nCompiler: cint 0.2.18\nProcessor: QEMU Virtual CPU version 2.5+\n"[0..82]));
+}
+
+test "frame 31: a value not told is a row left out, a group with none is left out, the page shorter" {
+    frame31();
+    I64 h = stabout.tall();
+    assert(h == stpage.TOP + stabout.HEAD + stabout.GROUPS + stpage.LAB + 3 * 33 - 1 + stabout.GROUP_GAP + stpage.LAB + 4 * 33 - 1 + stpage.FOOT);
+    stabout.no_disk();
+    assert(stabout.tall() == h - 33);
+    assert(stabout.row_len(stabout.R_DISK) == 0);
+    stabout.set_memory(0);
+    stabout.set_display(0, 0);
+    stabout.set_row(stabout.R_PROCESSOR, b"", 0);
+    assert(stabout.tall() == stpage.TOP + stabout.HEAD + stabout.GROUPS + stpage.LAB + 3 * 33 - 1 + stpage.FOOT);
+    stabout.clear();
+    assert(stabout.tall() == stpage.TOP + stabout.HEAD + stpage.FOOT);
+}
+
+test "Copy Details at 40 percent takes no press and no stop; Licenses takes both" {
+    frame31();
+    assert(stabout.enter());
+    assert(stabout.focused() == stabout.F_LICENSES);                      // Copy Details passed over
+    assert(stabout.key(stpage.K_ENTER) == stabout.LICENSES);
+    assert(stabout.key(stpage.K_TAB) == stpage.BACK);
+    assert(stabout.enter_last());
+    assert(stabout.focused() == stabout.F_LICENSES);
+    I64 bty = Y0 + stpage.TOP + (stabout.HEAD - stpage.BTN) / 2;
+    I64 lw = stpage.bw(b"Licenses", 8, 2);
+    assert(stabout.click(CX, Y0, CR, YB, CR - lw - 30, bty + 10) == stpage.NONE);   // Copy Details: inert
+    assert(stabout.click(CX, Y0, CR, YB, CR - 4, bty + 10) == stabout.LICENSES);
+    assert(stabout.click(CX, Y0, CR, YB, CR - 4, bty + stpage.BTN) == stpage.NONE);
+    stabout.set_licenses_live(false);
+    assert(!stabout.enter());                                              // no stop: the sidebar keeps the keyboard
+    stabout.set_copy_live(true);
+    assert(stabout.enter());
+    assert(stabout.focused() == stabout.F_COPY);
+    assert(stabout.key(stpage.K_SPACE) == stabout.COPY);
+}
+
+test "every row of the page draws at both zooms in both themes" {
+    frame31();
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            for dy in 0..(YB - Y0) * z {
+                pen.at(0, 0, z, Y0 * z + dy);
+                stabout.row_at(row, CX, Y0, CR, YB, Y0 + dy / z);
+            }
+        }
+    }
+    tokens.set_theme(0);
+}
+// SPDX-License-Identifier: Apache-2.0

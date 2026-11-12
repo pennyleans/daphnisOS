@@ -1,0 +1,268 @@
+// user/ci/tr.ci: tr [-c|-C] [-s] SET1 SET2, tr [-c|-C] -d [-s] SET1 [SET2], tr [-c|-C] -s SET1
+// (docs/specs/2026-11-06-c-core.md, CT-3; POSIX XCU tr). Standard input to standard output. Sets take escapes (\\ \a
+// \b \f \n \r \t \v \ooo), ranges (a-z), [:class:], [=c=] and, in SET2, [c*n] and [c*] (star to SET1's length).
+// -c complements SET1 (bytes in ascending order); SET2 shorter than SET1 repeats its last byte. -s squeezes runs of
+// one byte of the last set given in the output; -d deletes SET1's bytes.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+const I64 SET_MAX = 4096;
+
+U8[4096] s1;
+I64 n1 = 0;
+U8[4096] s2;
+I64 n2 = 0;
+I64 star = -1;          // where [c*] sits in s2, -1 for none
+U8[256] map;
+Bool[256] del;
+Bool[256] sq;
+U8[4096] buf;
+
+Bool word(in U8[_] k, in U8[_] w) {
+    if (len(k) != len(w)) { return false; }
+    for i in 0..len(k) {
+        if (k[i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+Bool is_class(in U8[_] k, U8 c) {
+    Bool up = c >= 'A' && c <= 'Z';
+    Bool lo = c >= 'a' && c <= 'z';
+    Bool dg = c >= '0' && c <= '9';
+    if (word(k, b"alpha")) { return up || lo; }
+    if (word(k, b"upper")) { return up; }
+    if (word(k, b"lower")) { return lo; }
+    if (word(k, b"digit")) { return dg; }
+    if (word(k, b"alnum")) { return up || lo || dg; }
+    if (word(k, b"xdigit")) { return dg || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+    if (word(k, b"space")) { return c == ' ' || (c >= 9 && c <= 13); }
+    if (word(k, b"blank")) { return c == ' ' || c == '\t'; }
+    if (word(k, b"punct")) { return c > 32 && c < 127 && !(up || lo || dg); }
+    if (word(k, b"print")) { return c >= 32 && c < 127; }
+    if (word(k, b"graph")) { return c > 32 && c < 127; }
+    if (word(k, b"cntrl")) { return c < 32 || c == 127; }
+    msg.usage(b"invalid character class");
+    return false;
+}
+
+// One byte of a set at t[i], an escape or a plain byte; where the next one starts goes in nx[0].
+U8 one(in U8[_] t, I64 i, inout I64[_] nx) {
+    if (t[i] != '\\' || i + 1 == len(t)) {
+        nx[0] = i + 1;
+        return t[i];
+    }
+    U8 c = t[i + 1];
+    if (c >= '0' && c <= '7') {
+        I64 v = 0;
+        I64 j = i + 1;
+        while (j < len(t) && j < i + 4 && t[j] >= '0' && t[j] <= '7') {
+            v = v * 8 + (t[j] - '0') as I64;
+            j = j + 1;
+        }
+        nx[0] = j;
+        return (v & 255) as U8;
+    }
+    nx[0] = i + 2;
+    if (c == 'a') { return 7; }
+    if (c == 'b') { return 8; }
+    if (c == 'f') { return 12; }
+    if (c == 'n') { return 10; }
+    if (c == 'r') { return 13; }
+    if (c == 't') { return 9; }
+    if (c == 'v') { return 11; }
+    return c;
+}
+
+void push(Bool second, U8 c) {
+    if (second) {
+        if (n2 == SET_MAX) { msg.limit(b"SET_MAX"); }
+        s2[n2] = c;
+        n2 = n2 + 1;
+    } else {
+        if (n1 == SET_MAX) { msg.limit(b"SET_MAX"); }
+        s1[n1] = c;
+        n1 = n1 + 1;
+    }
+}
+
+// Where "]" closing a bracket form that opened at t[i] ("[:", "[=" or "[c*") is, or -1.
+I64 close_at(in U8[_] t, I64 i, U8 mark) {
+    I64 j = i + 2;
+    while (j + 1 < len(t)) {
+        if (t[j] == mark && t[j + 1] == ']') { return j; }
+        j = j + 1;
+    }
+    return -1;
+}
+
+void expand(in U8[_] t, Bool second) {
+    I64[1] nx;
+    I64 i = 0;
+    while (i < len(t)) {
+        if (t[i] == '[' && i + 1 < len(t) && (t[i + 1] == ':' || t[i + 1] == '=')) {
+            I64 e = close_at(t, i, t[i + 1]);
+            if (e > 0) {
+                if (t[i + 1] == ':') {
+                    for c in 0..256 {
+                        if (is_class(t[(i + 2)..e], c as U8)) { push(second, c as U8); }
+                    }
+                } else {
+                    if (e != i + 3) { msg.usage(b"invalid equivalence class"); }
+                    push(second, t[i + 2]);
+                }
+                i = e + 2;
+                continue;
+            }
+        }
+        if (t[i] == '[' && i + 2 < len(t)) {
+            I64 at = i + 1;
+            U8 c = one(t, at, nx);
+            I64 st = nx[0];
+            if (st < len(t) && t[st] == '*') {
+                I64 j = st + 1;
+                while (j < len(t) && t[j] >= '0' && t[j] <= '9') { j = j + 1; }
+                if (j < len(t) && t[j] == ']') {
+                    if (!second) { msg.usage(b"repetition in SET1"); }
+                    if (j == st + 1) {
+                        if (star >= 0) { msg.usage(b"only one [c*] repeat in SET2"); }
+                        star = n2;
+                        push(true, c);
+                    } else {
+                        I64 base = 10;
+                        if (t[st + 1] == '0') { base = 8; }
+                        I64 r = 0;
+                        for k in (st + 1)..j {
+                            I64 d = (t[k] - '0') as I64;
+                            if (d >= base) { msg.usage(b"invalid repeat count"); }
+                            r = r * base + d;
+                            if (r > SET_MAX) { msg.limit(b"SET_MAX"); }
+                        }
+                        if (r == 0) {
+                            if (star >= 0) { msg.usage(b"only one [c*] repeat in SET2"); }
+                            star = n2;
+                            push(true, c);
+                        }
+                        for k in 0..r { push(true, c); }
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        U8 a = one(t, i, nx);
+        I64 n = nx[0];
+        if (n + 1 < len(t) && t[n] == '-') {
+            U8 b = one(t, n + 1, nx);
+            if (b < a) { msg.usage(b"range-endpoints out of order"); }
+            for c in (a as I64)..(b as I64 + 1) { push(second, c as U8); }
+            i = nx[0];
+        } else {
+            push(second, a);
+            i = n;
+        }
+    }
+}
+
+// SET1 complemented: every byte not in it, ascending.
+void complement() {
+    Bool[256] in1;
+    for c in 0..256 { in1[c] = false; }
+    for k in 0..n1 { in1[s1[k] as I64] = true; }
+    n1 = 0;
+    for c in 0..256 {
+        if (!in1[c]) { push(false, c as U8); }
+    }
+}
+
+// [c*] fills s2 up to SET1's length.
+void grow() {
+    if (star < 0) { return; }
+    I64 extra = n1 - n2;
+    if (extra <= 0) {
+        // the repeat counts zero times; drop its one placeholder
+        for k in star..(n2 - 1) { s2[k] = s2[k + 1]; }
+        n2 = n2 - 1;
+        return;
+    }
+    if (n2 + extra > SET_MAX) { msg.limit(b"SET_MAX"); }
+    I64 k = n2 - 1;
+    while (k > star) {
+        s2[k + extra] = s2[k];
+        k = k - 1;
+    }
+    for j in 1..(extra + 1) { s2[star + j] = s2[star]; }
+    n2 = n2 + extra;
+}
+
+void main(in U8[_] a) {
+    msg.name(b"tr");
+    args.parse(a, b"cCds", b"");
+    Bool o_c = args.has('c') || args.has('C');
+    Bool o_d = args.has('d');
+    Bool o_s = args.has('s');
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    if (n > 2) { msg.usage(b"too many operands"); }
+    if (!o_d && !o_s && n != 2) { msg.usage(b"missing operand after SET1"); }
+    if (o_d && !o_s && n != 1) { msg.usage(b"extra operand with -d"); }
+    if (o_d && o_s && n != 2) { msg.usage(b"-d -s needs two sets"); }
+    expand(a[args.op_start(0)..args.op_stop(a, 0)], false);
+    if (o_c) { complement(); }
+    if (n == 2) {
+        expand(a[args.op_start(1)..args.op_stop(a, 1)], true);
+        grow();
+    }
+    for c in 0..256 {
+        map[c] = c as U8;
+        del[c] = false;
+        sq[c] = false;
+    }
+    Bool tl = !o_d && n == 2;
+    if (tl) {
+        if (n2 == 0) { msg.usage(b"SET2 is empty"); }
+        for k in 0..n1 {
+            I64 j = k;
+            if (j >= n2) { j = n2 - 1; }
+            map[s1[k] as I64] = s2[j];
+        }
+    }
+    if (o_d) {
+        for k in 0..n1 { del[s1[k] as I64] = true; }
+    }
+    if (o_s) {
+        if (n == 2) {
+            for k in 0..n2 { sq[s2[k] as I64] = true; }
+        } else {
+            for k in 0..n1 { sq[s1[k] as I64] = true; }
+        }
+    }
+    I64 last = -1;
+    I64 got = get.read(0, buf);
+    while (got > 0) {
+        for i in 0..got {
+            I64 c = buf[i] as I64;
+            if (!del[c]) {
+                I64 m = map[c] as I64;
+                if (!(sq[m] && m == last)) {
+                    put.byte(m as U8);
+                }
+                last = m;
+            }
+        }
+        got = get.read(0, buf);
+    }
+    if (got < 0) {
+        msg.begin();
+        msg.text(b"read error: ");
+        msg.reason(0 - got);
+        msg.send();
+        msg.status_one();
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

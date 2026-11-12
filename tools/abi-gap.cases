@@ -1,0 +1,53 @@
+# tools/abi-gap.cases: the cases of tools/abi-gap.sh (unit BU-0, docs/specs/2026-11-06-sw-bundle.md section 7), one
+# `ROW | CASE | COMMAND` a line. Each runs a program's own gate input where it has one: the core set's
+# tests/core/*.cases through tools/check-core.py, its session under cish, ced's keys of tools/check-editor.py, the
+# tiler's TERM_CASE of tools/check-tiler.py. $X holds the candidates built outside the tree, static musl.
+cish | core session | mkdir bin && for t in $(sed -n 's/^CORE_TOOLS := //p' $D/Makefile) cish; do cp $B/$t bin/; done && cp -R $D/tests/core/tree t && cp -R $D/tests/core/search s && env -i PATH=$PWD/bin TZ=UTC0 $T $B/cish < $D/tests/core/session.sh
+core C-1 | cat | python3 $D/tools/check-core.py cases $D/tests/core/cat.cases $D/tests/core/tree out $T $B/cat && cat out
+core C-1 | wc | python3 $D/tools/check-core.py cases $D/tests/core/wc.cases $D/tests/core/tree out $T $B/wc && cat out
+core C-1 | ls | python3 $D/tools/check-core.py cases $D/tests/core/ls.cases $D/tests/core/tree out $T $B/ls && cat out
+core C-1 | head | python3 $D/tools/check-core.py cases $D/tests/core/head.cases $D/tests/core/tree out $T $B/head && cat out
+core C-1 | tail | python3 $D/tools/check-core.py cases $D/tests/core/tail.cases $D/tests/core/tree out $T $B/tail && cat out
+core C-1 | stat | python3 $D/tools/check-core.py cases $D/tests/core/stat.cases $D/tests/core/tree out $T $B/stat && cat out
+core C-1 | du | python3 $D/tools/check-core.py cases $D/tests/core/du.cases $D/tests/core/tree out $T $B/du && cat out
+core C-1 | tee | python3 $D/tools/check-core.py cases $D/tests/core/tee.cases $D/tests/core/tree out $T $B/tee && cat out
+core C-1 | mktemp | python3 $D/tools/check-core.py cases $D/tests/core/mktemp.cases $D/tests/core/tree out $T $B/mktemp && cat out
+core C-1 | mkdir | python3 $D/tools/check-core.py cases $D/tests/core/mkdir.cases $D/tests/core/tree out $T $B/mkdir && cat out
+core C-1 | rmdir | python3 $D/tools/check-core.py cases $D/tests/core/rmdir.cases $D/tests/core/tree out $T $B/rmdir && cat out
+core C-1 | rm | python3 $D/tools/check-core.py cases $D/tests/core/rm.cases $D/tests/core/tree out $T $B/rm && cat out
+core C-1 | cp | python3 $D/tools/check-core.py cases $D/tests/core/cp.cases $D/tests/core/tree out $T $B/cp && cat out
+core C-1 | mv | python3 $D/tools/check-core.py cases $D/tests/core/mv.cases $D/tests/core/tree out $T $B/mv && cat out
+core C-1 | find | python3 $D/tools/check-core.py cases $D/tests/core/find.cases $D/tests/core/tree out $T $B/find && cat out
+core C-1 | xargs | python3 $D/tools/check-core.py cases $D/tests/core/xargs.cases $D/tests/core/tree out $T $B/xargs && cat out
+core C-1 | env | python3 $D/tools/check-core.py cases $D/tests/core/env.cases $D/tests/core/tree out $T $B/env && cat out
+core C-1 | echo | python3 $D/tools/check-core.py cases $D/tests/core/echo.cases $D/tests/core/tree out $T $B/echo && cat out
+core C-1 | sleep | python3 $D/tools/check-core.py cases $D/tests/core/sleep.cases $D/tests/core/tree out $T $B/sleep && cat out
+core C-1 | date | python3 $D/tools/check-core.py cases $D/tests/core/date.cases $D/tests/core/tree out $T $B/date && cat out
+core C-1 | grep | python3 $D/tools/check-core.py cases $D/tests/core/grep.cases $D/tests/core/search out $T $B/grep && cat out
+core C-1 | sort | python3 $D/tools/check-core.py cases $D/tests/core/sort.cases $D/tests/core/search out $T $B/sort && cat out
+core C-1 | uniq | python3 $D/tools/check-core.py cases $D/tests/core/uniq.cases $D/tests/core/search out $T $B/uniq && cat out
+core C-1 | cut | python3 $D/tools/check-core.py cases $D/tests/core/cut.cases $D/tests/core/search out $T $B/cut && cat out
+core C-1 | tr | python3 $D/tools/check-core.py cases $D/tests/core/tr.cases $D/tests/core/search out $T $B/tr && cat out
+core C-1 | cmp | python3 $D/tools/check-core.py cases $D/tests/core/cmp.cases $D/tests/core/search out $T $B/cmp && cat out
+core C-1 | sha256sum | python3 $D/tools/check-core.py cases $D/tests/core/sha256sum.cases $D/tests/core/search out $T $B/sha256sum && cat out
+ced | editor keys | python3 $D/tools/abi-pty.py $T $B/ced notes.txt && cat notes.txt
+tiler, terminal, desk | term-only | python3 -c 'import importlib.util as u, sys; s = u.spec_from_file_location("t", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m); sys.stdout.buffer.write(m.TERM_CASE)' $D/tools/check-tiler.py > case && $T $B/tiler --term-only < case > shown
+cintc | emit-c msha | w=$PWD && cd $D && $T $X/cint emit-c --toolchain $X/cint.toolchain --root . --out $w/o src/sha256.ci user/ci/msha.ci && cd $w && find o -type f | sort | xargs sha256sum
+cintc | emit-c mci | w=$PWD && cd $D && $T $X/cint emit-c --toolchain $X/cint.toolchain --root . --out $w/o user/ci/dev.ci user/ci/mci.ci && cd $w && find o -type f | sort | xargs sha256sum
+QBE | hello.ssa | printf 'data $s = { b "hi", b 10, b 0 }\nexport function w $main() {\n@start\n  %%r =w call $puts(l $s)\n  ret 0\n}\n' > h.ssa && $T $X/qbe -o h.s h.ssa && cat h.s
+pdpmake | two builds | printf 'all: b\n\techo done\nb: a\n\tcat a > b\n' > Makefile && echo x > a && $T $X/make && $T $X/make
+# BU-4 (docs/specs/2026-11-07-bu4-toolchain.md section 3): the SW-2 toolchain. $X also holds as and ld (the QBE-built
+# cint-as and cint ld), cpu-qbe.toolchain, musl/ (crt1.o crti.o crtn.o libc.a), cint_rt.o, shim/ (the runner shim)
+# and q/ (a cint whose compiler is QBE-built, with its own toolchain files and lib/).
+cintc | emit-qbe msha | w=$PWD && cd $D && $T $X/cint emit-qbe --toolchain $X/cpu-qbe.toolchain --root . --out $w/o src/sha256.ci user/ci/msha.ci && cd $w && find o -type f | sort | xargs sha256sum
+cint as | assemble sha256 | w=$PWD && cd $D && $X/cint emit-qbe --toolchain $X/cpu-qbe.toolchain --root . --out $w/e src/sha256.ci user/ci/msha.ci && cd $w && $X/qbe -t amd64_sysv -o s.s $(find . -name sha256.ssa) && $T $X/as --frame-arena 67108864 -- s.s o.o && sha256sum o.o
+cint ld | link msha | w=$PWD && cd $D && $X/cint emit-qbe --toolchain $X/cpu-qbe.toolchain --root . --out $w/e src/sha256.ci user/ci/msha.ci && cd $w && mkdir o && for f in $(find . -name '*.ssa' | sort); do b=$(basename $f .ssa); sed 's/call \$cint_program_run_args(/call $ci_program_run_args(/' $f > $b.ssa && $X/qbe -t amd64_sysv -o $b.s $b.ssa && $X/as --frame-arena 67108864 -- $b.s o/$b.o; done && $T $X/ld --frame-arena 67108864 -- m $X/musl/crt1.o $X/musl/crti.o o/cint-program.o o/msha.o o/sha256.o $X/shim/trampoline.o $X/shim/main.o $X/shim/host.o $X/cint_rt.o $X/musl/libc.a $X/musl/crtn.o && sha256sum m
+QBE-built cint | emit-qbe msha | w=$PWD && cd $D && $T $X/q/cint emit-qbe --toolchain $X/q/cpu-qbe.toolchain --root . --out $w/o src/sha256.ci user/ci/msha.ci && cd $w && find o -type f | sort | xargs sha256sum
+# BU-4d (docs/specs/2026-11-07-bu4-toolchain.md section 5): survey 3a item 4's rows, measured on Arch. $X also holds
+# dbclient and dropbear (dropbear 2026.94, static musl) with hostkey (ed25519), the server answering the client on
+# loopback for the case only, and games/ (bsd-games 2.17's worm, robots and hangman, static musl with ncurses 6.5),
+# each run on a pty by tools/abi-tty.py.
+dropbear | dbclient | $X/dropbear -r $X/hostkey -p 127.0.0.1:2299 -F -s > /dev/null 2>&1 & s=$!; sleep 1; env -i HOME=$PWD $T $X/dbclient -y -y -T -p 2299 nobody@127.0.0.1 true; echo "exit $?"; kill $s
+bsd games | worm | python3 $D/tools/abi-tty.py 'LLLLLLLL' $T $X/games/worm
+bsd games | robots | : > robots.scores && python3 $D/tools/abi-tty.py 'qy' $T $X/games/robots
+bsd games | hangman | for i in $(seq 1 200); do echo abcdef; done > words && python3 $D/tools/abi-tty.py 'abcdefn' $T $X/games/hangman

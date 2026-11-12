@@ -1,0 +1,1177 @@
+// user/ci/agent.ci: the native agent, A-1 (docs/specs/2026-11-06-a-agent.md section 3): a conversation with the
+// Messages API over plain HTTP/1.1. `agent A.B.C.D PORT` reads a line at each "> ", sends the whole conversation
+// as `POST /v1/messages` with `stream: true` on a new connection, prints each text delta of the server-sent
+// events as it arrives, and keeps the reply for the next turn. The response may be chunked. The output names
+// neither address, so the same program against the same server on Linux prints the same (DU-1). A-1 sends no key
+// and the model id `mock` (tools/apihost.py); A-4 adds TLS and A-6 the key file. Status 0 at the end of input,
+// 1 on a failure, 2 for a usage error. An app the person starts (section 2a): nothing else runs or knows it.
+// A-4: -t speaks TLS 1.2 on each connection (BearSSL, user/ci/tls.ci), HOST the server's name.
+// A-5: -x offers the model four tools, sh, read_file, write_file and edit_file. Each call is shown in full and
+// runs only when the person types y; any other answer goes back to the model as a refusal (ruling AG-4 A). sh is
+// `sh -c` with stdout and stderr through a pipe, 16 KiB kept; the files are read and written whole, 64 KiB at most.
+import user.ci.tcp;
+import user.ci.tls;
+import user.ci.shctl;   // A-5: fork, exec, pipe, dup2, open, wait (cish's rows)
+import user.ci.dev;
+import user.ci.udp;   // before dns, which imports it
+import user.ci.dns;
+import user.ci.http;   // BU-5b: the response framing, A-1's reader as a kit
+
+const I64 HIST = 65536;    // the conversation as JSON message objects, comma separated (65,536: one array's most)
+const I64 REPLY = 16384;   // one reply's text, UTF-8, kept for the next turn
+
+U8[64] word;
+U8[4096] inbuf;            // descriptor 0, not yet taken
+U8[4096] chunk;
+U8[65536] hist;
+U8[16384] reply;
+U8[1024] head;             // the request line and headers
+U8[16384] sline;           // one SSE (or header) line being assembled
+U8[16384] text;            // one decoded JSON string
+I64 in_n = 0;
+I64 hist_n = 0;
+I64 reply_n = 0;
+I64 head_n = 0;
+I64 sline_n = 0;
+I64 text_n = 0;
+
+// The response: its framing is the kit's (user/ci/http.ci, BU-5b); the body bytes of each read land in bodybuf.
+I64 status = 0;
+Bool failed = false;
+U8[4096] bodybuf;
+
+// The connection: TLS or not, and HOST as given (the server's name for TLS).
+Bool secure = false;
+U8[256] host;
+I64 host_n = 0;
+
+// A-6: -k KEYFILE: the key (line 1, never printed) and the model id (line 2, else the default below); then the
+// request names HOST in its host header, sends the key and asks for 4,096 tokens. Without -k the request is the
+// mock's (host api, key none, model mock, 1,024 tokens), byte for byte what A-1 to A-5 recorded.
+Bool keyed = false;
+U8[256] apikey;
+I64 apikey_n = 0;
+U8[128] model;
+I64 model_n = 0;
+U8[256] pre;               // the body up to "messages":[
+I64 pre_n = 0;
+
+// A-5: the tools. tdef is the request's "tools" member; a reply's calls (at most CALLS) keep their ids and names
+// in tmeta and their raw JSON input in tin.
+const I64 CALLS = 8;
+Bool tools_on = false;
+U8[2048] tdef;
+I64 tdef_n = 0;
+U8[65536] tin;
+I64 tin_n = 0;
+U8[1024] tmeta;
+I64 tmeta_n = 0;
+I64[8] c_id;
+I64[8] c_id_n;
+I64[8] c_name;
+I64[8] c_name_n;
+I64[8] c_from;
+I64[8] c_to;
+I64 calls = 0;
+Bool in_call = false;
+U8[16384] res;             // one call's result
+I64 res_n = 0;
+U8[16384] path;
+I64 path_n = 0;
+U8[16384] old;             // edit_file's old_string
+I64 old_n = 0;
+U8[65536] fbuf;            // a file, whole
+I64 fbuf_n = 0;
+U8[16400] xargv;           // sh's argv block
+
+void usage() {
+    "agent: usage: agent [-d A.B.C.D[:PORT]] [-t] [-x] [-k KEYFILE] HOST PORT\n";
+    dev.exit_now(2);
+}
+
+// Argument k (from 0) into `word`: its length, or -1 past the last.
+I64 arg(in U8[_] args, I64 k) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(args)) { return -1; }
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return -1; }
+    I64 n = 0;
+    while (args[at + n] != 0) {
+        if (n == len(word)) { usage(); }
+        word[n] = args[at + n];
+        n = n + 1;
+    }
+    return n;
+}
+
+// The decimal in word[from..to], at most `most`; -1 if not one.
+I64 decimal(I64 from, I64 to, I64 most) {
+    if (to <= from || to - from > 5) { return -1; }
+    I64 v = 0;
+    for i in from..to {
+        if (word[i] < '0' || word[i] > '9') { return -1; }
+        v = 10 * v + (word[i] - '0') as I64;
+    }
+    if (v > most) { return -1; }
+    return v;
+}
+
+// word[0..n] as a dotted quad: the address as a word, or -1.
+I64 quad(I64 n) {
+    I64 v = 0;
+    I64 from = 0;
+    I64 parts = 0;
+    for i in 0..n + 1 {
+        if (i == n || word[i] == '.') {
+            I64 b = decimal(from, i, 255);
+            if (b < 0) { return -1; }
+            v = 256 * v + b;
+            parts = parts + 1;
+            from = i + 1;
+        }
+    }
+    if (parts != 4) { return -1; }
+    return v;
+}
+
+void put(in U8[_] bytes) {
+    I64 w = tcp.fd_write(1, bytes);
+    if (w < 0) { dev.exit_now(1); }
+}
+
+// The conversation.
+void hist_byte(U8 b) {
+    if (hist_n == HIST) {
+        "\nagent: the conversation is over 64 KiB\n";
+        dev.exit_now(1);
+    }
+    hist[hist_n] = b;
+    hist_n = hist_n + 1;
+}
+
+void hist_str[m](in U8[m] s) {
+    for i in 0..m { hist_byte(s[i]); }
+}
+
+U8 hex_digit(I64 v) {
+    if (v < 10) { return ('0' as I64 + v) as U8; }
+    return ('a' as I64 + v - 10) as U8;
+}
+
+// b into the conversation as it goes inside a JSON string.
+void hist_escaped(U8 b) {
+    I64 v = b as I64;
+    if (v == '"' as I64 || v == '\\' as I64) {
+        hist_byte('\\');
+        hist_byte(b);
+    } else if (v == 10) {
+        hist_byte('\\');
+        hist_byte('n');
+    } else if (v < 32) {
+        hist_str("\\u00");
+        hist_byte(hex_digit(v / 16));
+        hist_byte(hex_digit(v % 16));
+    } else {
+        hist_byte(b);
+    }
+}
+
+// Opens a message of role (user or assistant) in the conversation; close_message ends it.
+void open_message(Bool user) {
+    if (hist_n > 0) { hist_byte(','); }
+    if (user) {
+        hist_str("{{\"role\":\"user\",\"content\":\"");
+    } else {
+        hist_str("{{\"role\":\"assistant\",\"content\":\"");
+    }
+}
+
+void close_message() {
+    hist_str("\"}}");
+}
+
+// The request.
+void head_str[m](in U8[m] s) {
+    for i in 0..m {
+        head[head_n] = s[i];
+        head_n = head_n + 1;
+    }
+}
+
+void head_byte(U8 b) {
+    head[head_n] = b;
+    head_n = head_n + 1;
+}
+
+void head_dec(I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 x = v;
+    if (x == 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (x > 0) {
+        d[n] = ('0' as I64 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    while (n > 0) {
+        n = n - 1;
+        head[head_n] = d[n];
+        head_n = head_n + 1;
+    }
+}
+
+void send_all(I64 c, in U8[_] bytes) {
+    I64 at = 0;
+    while (at < len(bytes)) {
+        I64 e = at + 4096;
+        if (e > len(bytes)) { e = len(bytes); }
+        I64 w = 0;
+        if (secure) { w = tls.tls_write(bytes[at..e]); } else { w = tcp.fd_write(c, bytes[at..e]); }
+        if (w != e - at) {
+            "\nagent: write: error {0 - w}\n";
+            dev.exit_now(1);
+        }
+        at = e;
+    }
+}
+
+const I64 MSGS_N = 12;     // "messages":[
+const I64 POST_N = 2;
+
+void pre_str[m](in U8[m] s) {
+    for i in 0..m {
+        pre[pre_n] = s[i];
+        pre_n = pre_n + 1;
+    }
+}
+
+// The body's prefix: {"model":"M","max_tokens":N,"stream":true,
+void pre_make() {
+    pre_n = 0;
+    pre_str("{{\"model\":\"");
+    if (keyed) {
+        for i in 0..model_n {
+            pre[pre_n] = model[i];
+            pre_n = pre_n + 1;
+        }
+        pre_str("\",\"max_tokens\":4096,\"stream\":true,");
+    } else {
+        pre_str("mock\",\"max_tokens\":1024,\"stream\":true,");
+    }
+}
+
+void send_request(I64 c) {
+    // {"model":"mock","max_tokens":1024,"stream":true,"messages":[ ... ]}
+    I64 body = pre_n + MSGS_N + tdef_n + hist_n + POST_N;
+    head_n = 0;
+    head_str("POST /v1/messages HTTP/1.1\r\nhost: ");
+    if (keyed) {
+        for i in 0..host_n { head_byte(host[i]); }
+    } else {
+        head_str("api");
+    }
+    head_str("\r\ncontent-type: application/json\r\nanthropic-version: 2023-06-01\r\nx-api-key: ");
+    if (keyed) {
+        for i in 0..apikey_n { head_byte(apikey[i]); }
+    } else {
+        head_str("none");
+    }
+    head_str("\r\nconnection: close\r\ncontent-length: ");
+    head_dec(body);
+    head_str("\r\n\r\n");
+    send_all(c, head[0..head_n]);
+    if (tdef_n == 0) {
+        // one write, as A-1 to A-4 recorded
+        I64 keep = pre_n;
+        pre_str("\"messages\":[");
+        send_all(c, pre[0..pre_n]);
+        pre_n = keep;
+    } else {
+        // A-5: the tools member between (a write of its own, so a session without -x sends the bytes it did)
+        send_all(c, pre[0..pre_n]);
+        send_all(c, tdef[0..tdef_n]);
+        send_all(c, "\"messages\":[");
+    }
+    send_all(c, hist[0..hist_n]);
+    send_all(c, "]}}");
+}
+
+// The response: JSON strings.
+I64 hexval(U8 b) {
+    I64 v = b as I64;
+    if (v >= '0' as I64 && v <= '9' as I64) { return v - '0' as I64; }
+    if (v >= 'a' as I64 && v <= 'f' as I64) { return v - 'a' as I64 + 10; }
+    if (v >= 'A' as I64 && v <= 'F' as I64) { return v - 'A' as I64 + 10; }
+    return -1;
+}
+
+void text_byte(I64 v) {
+    if (text_n < len(text)) {
+        text[text_n] = v as U8;
+        text_n = text_n + 1;
+    }
+}
+
+void text_utf8(I64 cp) {
+    if (cp < 0x80) {
+        text_byte(cp);
+    } else if (cp < 0x800) {
+        text_byte(0xC0 + cp / 64);
+        text_byte(0x80 + cp % 64);
+    } else if (cp < 0x10000) {
+        text_byte(0xE0 + cp / 4096);
+        text_byte(0x80 + (cp / 64) % 64);
+        text_byte(0x80 + cp % 64);
+    } else {
+        text_byte(0xF0 + cp / 262144);
+        text_byte(0x80 + (cp / 4096) % 64);
+        text_byte(0x80 + (cp / 64) % 64);
+        text_byte(0x80 + cp % 64);
+    }
+}
+
+// Four hex digits of src from at: the value, or -1.
+I64 hex4(in U8[_] src, I64 at) {
+    if (at + 4 > len(src)) { return -1; }
+    I64 v = 0;
+    for i in at..at + 4 {
+        I64 h = hexval(src[i]);
+        if (h < 0) { return -1; }
+        v = 16 * v + h;
+    }
+    return v;
+}
+
+// The JSON string of sline whose first character is sline[at], decoded into text.
+I64 decode_string(I64 at) {
+    return decode_in(sline[0..sline_n], at);
+}
+
+// The JSON string whose first character is src[at], decoded into text; the index after its closing quote,
+// or -1 when it does not end in src.
+I64 decode_in(in U8[_] src, I64 at) {
+    I64 n = len(src);
+    text_n = 0;
+    I64 i = at;
+    while (i < n) {
+        I64 v = src[i] as I64;
+        if (v == '"' as I64) { return i + 1; }
+        if (v != '\\' as I64) {
+            text_byte(v);
+            i = i + 1;
+        } else {
+            if (i + 1 >= n) { return -1; }
+            I64 e = src[i + 1] as I64;
+            i = i + 2;
+            if (e == 'n' as I64) {
+                text_byte(10);
+            } else if (e == 't' as I64) {
+                text_byte(9);
+            } else if (e == 'r' as I64) {
+                text_byte(13);
+            } else if (e == 'b' as I64) {
+                text_byte(8);
+            } else if (e == 'f' as I64) {
+                text_byte(12);
+            } else if (e == 'u' as I64) {
+                I64 cp = hex4(src, i);
+                if (cp < 0) { return -1; }
+                i = i + 4;
+                if (cp >= 0xD800 && cp < 0xDC00 && i + 6 <= n && src[i] == '\\' && src[i + 1] == 'u') {
+                    I64 lo = hex4(src, i + 2);
+                    if (lo >= 0xDC00 && lo < 0xE000) {
+                        cp = 0x10000 + (cp - 0xD800) * 1024 + (lo - 0xDC00);
+                        i = i + 6;
+                    }
+                }
+                text_utf8(cp);
+            } else {
+                text_byte(e);   // \" \\ \/
+            }
+        }
+    }
+    return -1;
+}
+
+// The index in sline after the first occurrence of pat from at, or -1.
+I64 find[m](in U8[m] pat, I64 at) {
+    I64 i = at;
+    while (i + m <= sline_n) {
+        Bool same = true;
+        for k in 0..m {
+            if (sline[i + k] != pat[k]) { same = false; }
+        }
+        if (same) { return i + m; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// A-5: text into tmeta; its start.
+I64 meta_text() {
+    I64 from = tmeta_n;
+    for i in 0..text_n {
+        if (tmeta_n == len(tmeta)) {
+            failed = true;
+            return from;
+        }
+        tmeta[tmeta_n] = text[i];
+        tmeta_n = tmeta_n + 1;
+    }
+    return from;
+}
+
+// A-5: a tool call's events (content_block_start of a tool_use, its input_json_delta pieces, its
+// content_block_stop); true when the line was one.
+Bool call_event() {
+    I64 at = find("\"content_block\":{{\"type\":\"tool_use\"", 6);
+    if (at >= 0) {
+        I64 d = find("\"id\":\"", at);
+        if (calls == CALLS || d < 0 || decode_string(d) < 0) {
+            "\nagent: a tool call it cannot take\n";
+            failed = true;
+            return true;
+        }
+        c_id[calls] = meta_text();
+        c_id_n[calls] = text_n;
+        I64 m = find("\"name\":\"", at);
+        if (m < 0 || decode_string(m) < 0) {
+            "\nagent: a tool call without a name\n";
+            failed = true;
+            return true;
+        }
+        c_name[calls] = meta_text();
+        c_name_n[calls] = text_n;
+        c_from[calls] = tin_n;
+        in_call = true;
+        return true;
+    }
+    at = find("\"delta\":{{\"type\":\"input_json_delta\"", 6);
+    if (at >= 0) {
+        I64 p = find("\"partial_json\":\"", at);
+        if (!in_call || p < 0 || decode_string(p) < 0 || tin_n + text_n > len(tin)) {
+            "\nagent: a tool input it cannot read\n";
+            failed = true;
+            return true;
+        }
+        for i in 0..text_n { tin[tin_n + i] = text[i]; }
+        tin_n = tin_n + text_n;
+        return true;
+    }
+    if (in_call && find("\"type\":\"content_block_stop\"", 6) >= 0) {
+        c_to[calls] = tin_n;
+        calls = calls + 1;
+        in_call = false;
+        return true;
+    }
+    return false;
+}
+
+// One event-stream line in sline (its CR taken off).
+void event_line() {
+    if (status != 200) {
+        "agent: ";
+        put(sline[0..sline_n]);
+        "\n";
+        return;
+    }
+    if (find("data: ", 0) != 6) { return; }
+    if (tools_on && call_event()) { return; }
+    I64 at = find("\"text_delta\"", 6);
+    if (at >= 0) {
+        I64 t = find("\"text\":\"", at);
+        if (t < 0 || decode_string(t) < 0) {
+            "\nagent: a text delta it cannot read\n";
+            failed = true;
+            return;
+        }
+        put(text[0..text_n]);
+        for i in 0..text_n {
+            if (reply_n < REPLY) {
+                reply[reply_n] = text[i];
+                reply_n = reply_n + 1;
+            }
+        }
+        return;
+    }
+    if (find("\"type\":\"error\"", 6) >= 0) {
+        I64 m = find("\"message\":\"", 6);
+        "\nagent: the API says: ";
+        if (m >= 0 && decode_string(m) >= 0) {
+            put(text[0..text_n]);
+        }
+        "\n";
+        failed = true;
+    }
+}
+
+// One body byte, after any chunk framing: into the event-stream line.
+void body_byte(U8 b) {
+    if (b == 10) {
+        if (sline_n > 0 && sline[sline_n - 1] == 13) { sline_n = sline_n - 1; }
+        event_line();
+        sline_n = 0;
+    } else if (sline_n < len(sline)) {
+        sline[sline_n] = b;
+        sline_n = sline_n + 1;
+    }
+}
+
+// A TLS failure, named when it is one a person can act on.
+void tls_says(I64 e) {
+    "agent: tls: error {0 - e}";
+    if (e == -38) { ", no entropy (getrandom has no source)"; }
+    if (e == -1054) { ", the certificate is out of its dates"; }
+    if (e == -1056) { ", the certificate is not for this name"; }
+    if (e == -1062) { ", the certificate chains to no root agent holds"; }
+    "\n";
+}
+
+// One read of the connection into chunk.
+I64 net_read(I64 c) {
+    if (secure) { return tls.tls_read(chunk); }
+    return tcp.fd_read(c, chunk);
+}
+
+// One turn: the request, then the response streamed until the server closes.
+Bool turn(U64 ip, I64 port) {
+    I64 c = tcp.tcp_connect(ip, port);
+    if (c < 0) {
+        "agent: connect: error {0 - c}\n";
+        return false;
+    }
+    if (secure) {
+        I64 h = tls.tls_open(c, host[0..host_n]);
+        if (h < 0) {
+            tls_says(h);
+            I64 k0 = tcp.fd_close(c);
+            return false;
+        }
+    }
+    send_request(c);
+    http.start();
+    status = 0;
+    sline_n = 0;
+    reply_n = 0;
+    failed = false;
+    calls = 0;
+    in_call = false;
+    tin_n = 0;
+    tmeta_n = 0;
+    I64 r = net_read(c);
+    while (r > 0) {
+        I64 n = http.take(chunk[0..r], bodybuf);
+        if (status == 0 && http.status() != 0) {
+            status = http.status();
+            if (status != 200) { "agent: HTTP {status}\n"; }
+        }
+        for i in 0..n { body_byte(bodybuf[i]); }
+        r = net_read(c);
+    }
+    if (sline_n > 0 && http.headed() && !http.is_chunked()) { body_byte(10); }
+    if (secure && r == 0) { r = tls.tls_close(); }
+    I64 k = tcp.fd_close(c);
+    if (r < 0) {
+        "\nagent: read: error {0 - r}\n";
+        return false;
+    }
+    return status == 200 && !failed;
+}
+
+// Reads descriptor 0 until inbuf holds a whole line: the index of its newline, or -1 at the end of input.
+I64 read_line() {
+    I64 at = -1;
+    for i in 0..in_n {
+        if (at < 0 && inbuf[i] == 10) { at = i; }
+    }
+    while (at < 0) {
+        if (in_n == len(inbuf)) {
+            "agent: a line of 4096 bytes or more\n";
+            dev.exit_now(1);
+        }
+        I64 r = tcp.fd_read(0, chunk[0..len(inbuf) - in_n]);
+        if (r <= 0) {
+            if (in_n == 0) { return -1; }
+            inbuf[in_n] = 10;
+            in_n = in_n + 1;
+        } else {
+            for i in 0..r { inbuf[in_n + i] = chunk[i]; }
+            in_n = in_n + r;
+        }
+        for i in 0..in_n {
+            if (at < 0 && inbuf[i] == 10) { at = i; }
+        }
+    }
+    return at;
+}
+
+// A-5: the tools. The request's "tools" member.
+void tdef_str[m](in U8[m] s) {
+    for i in 0..m {
+        tdef[tdef_n] = s[i];
+        tdef_n = tdef_n + 1;
+    }
+}
+
+void tools_define() {
+    tdef_str("\"tools\":[{{\"name\":\"sh\",\"description\":\"Runs a command with sh -c inside Daphnis and retu");
+    tdef_str("rns its stdout and stderr (16 KiB at most) and its exit status. The person sees the command and ");
+    tdef_str("allows or refuses it.\",\"input_schema\":{{\"type\":\"object\",\"properties\":{{\"command\":{{\"");
+    tdef_str("type\":\"string\",\"description\":\"the command line\"}}}},\"required\":[\"command\"]}}}},{{\"na");
+    tdef_str("me\":\"read_file\",\"description\":\"Returns a file's text (16 KiB at most).\",\"input_schema\":");
+    tdef_str("{{\"type\":\"object\",\"properties\":{{\"path\":{{\"type\":\"string\"}}}},\"required\":[\"path\"");
+    tdef_str("]}}}},{{\"name\":\"write_file\",\"description\":\"Creates or replaces a file with the content (1");
+    tdef_str("6 KiB at most).\",\"input_schema\":{{\"type\":\"object\",\"properties\":{{\"path\":{{\"type\":\"");
+    tdef_str("string\"}},\"content\":{{\"type\":\"string\"}}}},\"required\":[\"path\",\"content\"]}}}},{{\"nam");
+    tdef_str("e\":\"edit_file\",\"description\":\"Replaces old_string, which must occur exactly once in the fi");
+    tdef_str("le (64 KiB at most), with new_string.\",\"input_schema\":{{\"type\":\"object\",\"properties\":{{");
+    tdef_str("\"path\":{{\"type\":\"string\"}},\"old_string\":{{\"type\":\"string\"}},\"new_string\":{{\"type\"");
+    tdef_str(":\"string\"}}}},\"required\":[\"path\",\"old_string\",\"new_string\"]}}}}],");
+}
+
+Bool input_ended = false;
+
+// The person's answer to a call: true only for a line that is y.
+Bool allowed() {
+    "agent: run it? (y/n) ";
+    I64 at = read_line();
+    if (at < 0) {
+        input_ended = true;
+        "\n";
+        return false;
+    }
+    Bool yes = at == 1 && inbuf[0] == 'y';
+    for i in at + 1..in_n { inbuf[i - at - 1] = inbuf[i]; }
+    in_n = in_n - at - 1;
+    return yes;
+}
+
+void res_byte(U8 b) {
+    if (res_n < len(res)) {
+        res[res_n] = b;
+        res_n = res_n + 1;
+    }
+}
+
+void res_str[m](in U8[m] s) {
+    for i in 0..m { res_byte(s[i]); }
+}
+
+void res_dec(I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 x = v;
+    if (x < 0) {
+        res_byte('-');
+        x = 0 - x;
+    }
+    if (x == 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (x > 0) {
+        d[n] = ('0' as I64 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    while (n > 0) {
+        n = n - 1;
+        res_byte(d[n]);
+    }
+}
+
+void res_path() {
+    for i in 0..path_n { res_byte(path[i]); }
+}
+
+// The string member key of call k's input, decoded into text: its length, or -1 (absent, not a string, or over
+// text's 16 KiB).
+I64 field[m](I64 k, in U8[m] key) {
+    I64 from = c_from[k];
+    I64 to = c_to[k];
+    I64 i = from;
+    while (i + m + 2 <= to) {
+        Bool same = tin[i] == '"' && tin[i + m + 1] == '"';
+        for j in 0..m {
+            if (tin[i + 1 + j] != key[j]) { same = false; }
+        }
+        if (same) {
+            I64 at = i + m + 2;
+            Bool skip = true;
+            while (skip && at < to) {
+                U8 b = tin[at];
+                if (b == ' ' || b == ':' || b == 9 || b == 10 || b == 13) { at = at + 1; } else { skip = false; }
+            }
+            if (at >= to || tin[at] != '"') { return -1; }
+            if (decode_in(tin[from..to], at + 1 - from) < 0 || text_n == len(text)) { return -1; }
+            return text_n;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+Bool name_is[m](I64 k, in U8[m] s) {
+    if (c_name_n[k] != m) { return false; }
+    for i in 0..m {
+        if (tmeta[c_name[k] + i] != s[i]) { return false; }
+    }
+    return true;
+}
+
+// Writes bytes to fd whole, 4,096 at a time (the fd_write row's most): 0, or -errno.
+I64 write_all(I64 fd, in U8[_] bytes) {
+    I64 at = 0;
+    while (at < len(bytes)) {
+        I64 e = at + 4096;
+        if (e > len(bytes)) { e = len(bytes); }
+        I64 w = shctl.fd_write(fd, bytes[at..e]);
+        if (w < 0) { return w; }
+        at = e;
+    }
+    return 0;
+}
+
+// The file at path, whole, into fbuf: its size, or -errno (-27, EFBIG, over 64 KiB).
+I64 load() {
+    I64 fd = shctl.sh_open(path[0..path_n], 0, 0);
+    if (fd < 0) { return fd; }
+    fbuf_n = 0;
+    I64 r = 1;
+    while (r > 0 && fbuf_n < len(fbuf)) {
+        r = shctl.fd_read(fd, chunk);
+        if (r > 0) {
+            if (fbuf_n + r > len(fbuf)) {
+                r = 0 - 27;
+            } else {
+                for i in 0..r { fbuf[fbuf_n + i] = chunk[i]; }
+                fbuf_n = fbuf_n + r;
+            }
+        }
+    }
+    I64 c = shctl.fd_close(fd);
+    if (r < 0) { return r; }
+    return fbuf_n;
+}
+
+// Creates or truncates path (0644): the descriptor, or -errno.
+I64 create() {
+    return shctl.sh_open(path[0..path_n], 577, 420);   // O_WRONLY | O_CREAT | O_TRUNC
+}
+
+// sh -c text[0..n]: the output into res, then its exit status.
+void run_sh(I64 n) {
+    U8[1] none;
+    I64 x = 0;
+    xargv[0] = 's';
+    xargv[1] = 'h';
+    xargv[2] = 0;
+    xargv[3] = '-';
+    xargv[4] = 'c';
+    xargv[5] = 0;
+    for i in 0..n { xargv[6 + i] = text[i]; }
+    xargv[6 + n] = 0;
+    x = 7 + n;
+    I64 p = shctl.sh_pipe();
+    if (p < 0) {
+        res_str("pipe failed: error ");
+        res_dec(0 - p);
+        return;
+    }
+    I64 rd = p / 4294967296;
+    I64 wr = p % 4294967296;
+    I64 pid = shctl.sh_fork();
+    if (pid == 0) {
+        I64 a = shctl.sh_dup2(wr, 1);
+        I64 b = shctl.sh_dup2(wr, 2);
+        I64 c0 = shctl.fd_close(0);
+        I64 c1 = shctl.fd_close(rd);
+        I64 c2 = shctl.fd_close(wr);
+        I64 e = shctl.sh_exec("/bin/sh", xargv[0..x], none[0..0]);
+        e = shctl.sh_exec("/sh", xargv[0..x], none[0..0]);
+        dev.exit_now(127);
+    }
+    I64 cw = shctl.fd_close(wr);
+    if (pid < 0) {
+        I64 cr = shctl.fd_close(rd);
+        res_str("fork failed: error ");
+        res_dec(0 - pid);
+        return;
+    }
+    I64 total = 0;
+    I64 r = shctl.fd_read(rd, chunk);
+    while (r > 0) {
+        for i in 0..r { res_byte(chunk[i]); }
+        total = total + r;
+        r = shctl.fd_read(rd, chunk);
+    }
+    I64 cr = shctl.fd_close(rd);
+    I64 st = shctl.sh_wait(pid, 0);
+    if (total > res_n) {
+        res_str("\n[output cut at 16 KiB of ");
+        res_dec(total);
+        res_str(" bytes]");
+    }
+    if (res_n > 0 && res[res_n - 1] != 10) { res_byte(10); }
+    if (st < 0) {
+        res_str("[wait failed: error ");
+        res_dec(0 - st);
+        res_str("]");
+    } else if (st % 128 == 0) {
+        res_str("[exit status ");
+        res_dec((st / 256) % 256);
+        res_str("]");
+    } else {
+        res_str("[killed by signal ");
+        res_dec(st % 128);
+        res_str("]");
+    }
+    "agent: sh: {total} bytes of output, status {st}\n";
+}
+
+// A call the person did not allow: the refusal the model reads.
+Bool refused() {
+    "agent: refused\n";
+    res_str("The person refused this call.");
+    return true;
+}
+
+// Shows call k in full, asks, and runs it on y: its result in res; true for an error or a refusal.
+Bool call(I64 k) {
+    res_n = 0;
+    "\nagent: the model asks for ";
+    put(tmeta[c_name[k]..c_name[k] + c_name_n[k]]);
+    ":\n";
+    if (name_is(k, "sh")) {
+        I64 n = field(k, "command");
+        if (n < 0) {
+            res_str("no command");
+            return true;
+        }
+        "  $ ";
+        put(text[0..n]);
+        "\n";
+        if (!allowed()) { return refused(); }
+        run_sh(n);
+        return false;
+    }
+    I64 pn = field(k, "path");
+    if (pn < 0 || pn == 0) {
+        res_str("no path");
+        return true;
+    }
+    for i in 0..pn { path[i] = text[i]; }
+    path_n = pn;
+    "  path: ";
+    put(path[0..path_n]);
+    "\n";
+    if (name_is(k, "read_file")) {
+        if (!allowed()) { return refused(); }
+        I64 got = load();
+        if (got < 0) {
+            res_str("cannot read ");
+            res_path();
+            res_str(": error ");
+            res_dec(0 - got);
+            return true;
+        }
+        for i in 0..fbuf_n { res_byte(fbuf[i]); }
+        if (fbuf_n > len(res)) {
+            res_str("\n[cut at 16 KiB of ");
+            res_dec(fbuf_n);
+            res_str(" bytes]");
+        }
+        "agent: read {fbuf_n} bytes\n";
+        return false;
+    }
+    if (name_is(k, "write_file")) {
+        I64 n = field(k, "content");
+        if (n < 0) {
+            res_str("no content, or over 16 KiB");
+            return true;
+        }
+        "  content, {n} bytes:\n";
+        put(text[0..n]);
+        if (n > 0 && text[n - 1] != 10) { "\n"; }
+        if (!allowed()) { return refused(); }
+        I64 fd = create();
+        I64 w = fd;
+        if (fd >= 0) {
+            w = write_all(fd, text[0..n]);
+            I64 c = shctl.fd_close(fd);
+        }
+        if (w < 0) {
+            res_str("cannot write ");
+            res_path();
+            res_str(": error ");
+            res_dec(0 - w);
+            return true;
+        }
+        res_str("wrote ");
+        res_dec(n);
+        res_str(" bytes to ");
+        res_path();
+        "agent: wrote {n} bytes\n";
+        return false;
+    }
+    if (name_is(k, "edit_file")) {
+        I64 on = field(k, "old_string");
+        if (on < 1) {
+            res_str("no old_string, or over 16 KiB");
+            return true;
+        }
+        for i in 0..on { old[i] = text[i]; }
+        old_n = on;
+        I64 nn = field(k, "new_string");
+        if (nn < 0) {
+            res_str("no new_string, or over 16 KiB");
+            return true;
+        }
+        "  old_string:\n";
+        put(old[0..old_n]);
+        "\n  new_string:\n";
+        put(text[0..nn]);
+        "\n";
+        if (!allowed()) { return refused(); }
+        I64 got = load();
+        if (got < 0) {
+            res_str("cannot read ");
+            res_path();
+            res_str(": error ");
+            res_dec(0 - got);
+            return true;
+        }
+        I64 found = 0;
+        I64 spot = 0;
+        for i in 0..fbuf_n - old_n + 1 {
+            Bool same = true;
+            for j in 0..old_n {
+                if (fbuf[i + j] != old[j]) { same = false; }
+            }
+            if (same) {
+                found = found + 1;
+                spot = i;
+            }
+        }
+        if (found != 1) {
+            res_str("old_string occurs ");
+            res_dec(found);
+            res_str(" times in ");
+            res_path();
+            res_str("; nothing changed");
+            "agent: not changed, {found} matches\n";
+            return true;
+        }
+        I64 fd = create();
+        I64 w = fd;
+        if (fd >= 0) {
+            w = write_all(fd, fbuf[0..spot]);
+            if (w >= 0) { w = write_all(fd, text[0..nn]); }
+            if (w >= 0) { w = write_all(fd, fbuf[spot + old_n..fbuf_n]); }
+            I64 c = shctl.fd_close(fd);
+        }
+        if (w < 0) {
+            res_str("cannot write ");
+            res_path();
+            res_str(": error ");
+            res_dec(0 - w);
+            return true;
+        }
+        res_str("replaced the one occurrence in ");
+        res_path();
+        "agent: edited\n";
+        return false;
+    }
+    res_str("no such tool");
+    return true;
+}
+
+// The reply's text and calls into the conversation, then each call's result as one user message.
+void run_calls() {
+    if (hist_n > 0) { hist_byte(','); }
+    hist_str("{{\"role\":\"assistant\",\"content\":[");
+    if (reply_n > 0) {
+        hist_str("{{\"type\":\"text\",\"text\":\"");
+        for i in 0..reply_n { hist_escaped(reply[i]); }
+        hist_str("\"}},");
+    }
+    for k in 0..calls {
+        if (k > 0) { hist_byte(','); }
+        hist_str("{{\"type\":\"tool_use\",\"id\":\"");
+        for i in c_id[k]..c_id[k] + c_id_n[k] { hist_escaped(tmeta[i]); }
+        hist_str("\",\"name\":\"");
+        for i in c_name[k]..c_name[k] + c_name_n[k] { hist_escaped(tmeta[i]); }
+        hist_str("\",\"input\":");
+        if (c_to[k] == c_from[k]) { hist_str("{{}}"); }
+        for i in c_from[k]..c_to[k] { hist_byte(tin[i]); }
+        hist_str("}}");
+    }
+    hist_str("]}},{{\"role\":\"user\",\"content\":[");
+    for k in 0..calls {
+        Bool err = true;
+        if (!input_ended) { err = call(k); } else { res_n = 0; res_str("The person refused this call."); }
+        if (k > 0) { hist_byte(','); }
+        hist_str("{{\"type\":\"tool_result\",\"tool_use_id\":\"");
+        for i in c_id[k]..c_id[k] + c_id_n[k] { hist_escaped(tmeta[i]); }
+        hist_str("\",\"content\":\"");
+        for i in 0..res_n { hist_escaped(res[i]); }
+        if (err) { hist_str("\",\"is_error\":true}}"); } else { hist_str("\"}}"); }
+    }
+    hist_str("]}}");
+}
+
+void model_str[m](in U8[m] s) {
+    for i in 0..m { model[i] = s[i]; }
+    model_n = m;
+}
+
+// A-6: the key file named by word[0..n]: line 1 the key, line 2 (optional) the model id. The key is never printed.
+void key_file(I64 n) {
+    for i in 0..n { path[i] = word[i]; }
+    path_n = n;
+    I64 got = load();
+    if (got < 0) {
+        "agent: cannot read the key file ";
+        put(path[0..path_n]);
+        ": error {0 - got}\n";
+        dev.exit_now(1);
+    }
+    I64 line = 0;
+    apikey_n = 0;
+    model_n = 0;
+    for i in 0..fbuf_n {
+        U8 b = fbuf[i];
+        if (b == 10) {
+            line = line + 1;
+        } else if (b > 32 && b < 127) {
+            if (line == 0 && apikey_n < len(apikey)) {
+                apikey[apikey_n] = b;
+                apikey_n = apikey_n + 1;
+            } else if (line == 1 && model_n < len(model)) {
+                model[model_n] = b;
+                model_n = model_n + 1;
+            }
+        }
+    }
+    if (apikey_n == 0) {
+        "agent: the key file's first line holds no key\n";
+        dev.exit_now(1);
+    }
+    if (model_n == 0) { model_str("claude-sonnet-5-5"); }   // the default model id
+    keyed = true;
+    "agent: key file read, model ";
+    put(model[0..model_n]);
+    "\n";
+}
+
+void main(in U8[_] args) {
+    // A-2: -d A.B.C.D[:PORT] names the DNS server (QEMU's user network's 10.0.2.3:53 by default); HOST is a dotted
+    // quad or a name, resolved once at the start.
+    U64 dns_ip = 0x0A000203;
+    I64 dns_port = 53;
+    I64 k = 0;
+    I64 n = arg(args, 0);
+    while (n == 2 && word[0] == '-') {
+        U8 o = word[1];
+        if (o == 'd') {
+            n = arg(args, k + 1);
+            if (n < 0) { usage(); }
+            I64 colon = n;
+            for i in 0..n {
+                if (word[i] == ':') { colon = i; }
+            }
+            if (colon < n) {
+                dns_port = decimal(colon + 1, n, 65535);
+                if (dns_port < 1) { usage(); }
+            }
+            I64 d = quad(colon);
+            if (d < 0) { usage(); }
+            dns_ip = d as U64;
+            k = k + 2;
+        } else if (o == 't') {
+            secure = true;
+            k = k + 1;
+        } else if (o == 'x') {
+            if (!tools_on) { tools_define(); }
+            tools_on = true;
+            k = k + 1;
+        } else if (o == 'k') {
+            n = arg(args, k + 1);
+            if (n < 1) { usage(); }
+            key_file(n);
+            k = k + 2;
+        } else {
+            usage();
+        }
+        n = arg(args, k);
+    }
+    pre_make();
+    if (n < 0 || arg(args, k + 1) < 0 || arg(args, k + 2) >= 0) { usage(); }
+    n = arg(args, k);
+    for i in 0..n { host[i] = word[i]; }
+    host_n = n;
+    I64 ip = quad(n);
+    if (ip < 0) {
+        U8[256] name;
+        if (n > 253) { usage(); }
+        for i in 0..n { name[i] = word[i]; }
+        ip = dns.resolve(name[0..n], dns_ip, dns_port);
+        if (ip < 0) {
+            "agent: cannot resolve ";
+            put(name[0..n]);
+            " ({ip})\n";
+            dev.exit_now(1);
+        }
+        "agent: ";
+        put(name[0..n]);
+        " is {ip / 16777216}.{(ip / 65536) % 256}.{(ip / 256) % 256}.{ip % 256}\n";
+    }
+    n = arg(args, k + 1);
+    I64 port = decimal(0, n, 65535);
+    if (port < 1) { usage(); }
+    I64 turns = 0;
+    while (true) {
+        "> ";
+        I64 at = read_line();
+        if (at < 0) {
+            "\nagent: {turns} turns, the input ended\n";
+            return;
+        }
+        I64 mark = hist_n;
+        open_message(true);
+        for i in 0..at { hist_escaped(inbuf[i]); }
+        close_message();
+        for i in at + 1..in_n { inbuf[i - at - 1] = inbuf[i]; }
+        in_n = in_n - at - 1;
+        Bool more = true;
+        while (more) {
+            if (!turn(ip as U64, port)) {
+                hist_n = mark;   // the turn did not happen; the line is dropped
+                "\nagent: the turn failed\n";
+                dev.exit_now(1);
+            }
+            if (calls == 0) {
+                open_message(false);
+                for i in 0..reply_n { hist_escaped(reply[i]); }
+                close_message();
+                more = false;
+            } else {
+                run_calls();   // A-5: then the next request carries the results
+                if (input_ended) {
+                    "agent: the input ended with a call unanswered\n";
+                    return;
+                }
+            }
+        }
+        turns = turns + 1;
+        "\n";
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

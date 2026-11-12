@@ -1,0 +1,23 @@
+$ -m
+x86_64
+status 0
+$ 
+-- host: 1 lines
+status 0
+$ -s -m
+-- host: 1 lines
+status 0
+$ -snrvm
+-- host: 1 lines
+status 0
+$ -a
+-- host: 1 lines
+status 0
+$ -x
+-- stderr
+uname: not supported: -x
+status 2
+$ extra
+-- stderr
+uname: extra operand
+status 2

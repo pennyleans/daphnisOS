@@ -1,0 +1,194 @@
+// user/ci/authd.ci: `authd`, one passphrase check or enrollment, then exit. AC-1b, AC-D8 and AC-D9
+// (docs/specs/2026-11-08-ac-accounts.md sections 3 and 4). The desk forks it with no grants for each attempt, writes
+// one request to its standard input and closes it, and reads one answer, so Argon2id's memory and the passphrase end
+// with the process and the desk never stalls. The request, lines ended by LF, then the passphrase to the end:
+//   verify   M T SALT VERIFIER   answer `ok` (status 0) or `no` (status 1)
+//   enroll   M T                 answer `salt HEX` and `verifier HEX` (status 0); the salt is 16 bytes of getrandom
+//   derive   M T SALT            answer `verifier HEX` (status 0); for the gates, which compare tools/ac-vectors.py
+// RS-ROLE (docs/specs/2026-11-11-rs-role.md): three operations on the account store, each approved by a parent's own
+// passphrase, which authd checks against the store it reads itself (user/ci/authreq.ci has the words,
+// user/ci/authop.ci the order):
+//   role     BY NAME parent|child   answer `ok` (status 0), `no` (status 1: not BY's passphrase),
+//   ceil     BY NAME WORD           `refused WHAT` (status 3: a rule, as the last parent) or `error WHAT` (status 2)
+//   remove   BY NAME
+// RS-R4 (docs/specs/2026-11-11-rs-accounts-ops.md): two more, each with two passphrases, BY's N bytes and then the
+// new one to the end; the new one is enrolled here at DS-6's parameters with 16 bytes of getrandom for its salt:
+//   add      BY NAME parent|child N
+//   passwd   BY NAME N              BY a parent, or NAME itself with its current passphrase
+// M is KiB (8 to 65,536), T passes (1 to 16), SALT 32 and VERIFIER 64 lowercase hex digits; one lane (DS-6). The
+// passphrase is 1 to 256 bytes; a request is 640 bytes at most. Anything else is `error WHAT`, status 2. The
+// verifier is BLAKE2b-256(key = Argon2id tag, "daphnis-verify"), never the tag itself (AC-D9), compared over all 32
+// bytes.
+
+import user.ci.authver;
+import user.ci.authop;
+import user.ci.authreq;
+import user.ci.authctl;
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;                // user/ci/acctput.ci's rows: user/ci/build.sh reads this file's imports
+import user.ci.grantcall;
+
+const I64 REQ_MAX = 640;             // authreq.REQ_MAX is 593: `add` with two passphrases of 256
+const I64 DS6_M = 65536;             // DS-6: Argon2id, 64 MiB, 3 passes, for every passphrase set here
+const I64 DS6_T = 3;
+const I64 PASS_MAX = 256;
+const I64 M_MAX = 65536;
+const I64 WORDS_MAX = 8388608;   // 65,536 blocks of 128 words: DS-6's 64 MiB
+
+U8[640] req;
+I64 req_len = 0;
+I64 at = 0;
+
+void fail(in U8[_] what) {
+    "error ";
+    _ = shctl.fd_write(1, what);
+    "\n";
+    dev.exit_now(2);
+}
+
+void read_request() {
+    U8[512] buf;
+    while (true) {
+        I64 n = shctl.fd_read(0, buf);
+        if (n < 0) { fail("read"); }
+        if (n == 0) { return; }
+        if (req_len + n > REQ_MAX) { fail("request too long"); }
+        for i in 0..n {
+            req[req_len + i] = buf[i];
+        }
+        req_len += n;
+    }
+}
+
+// The next field: bytes up to a space or LF, which is consumed. Its bounds go to f.
+void field(inout I64[_] f) {
+    f[0] = at;
+    while (at < req_len && req[at] != 32 && req[at] != 10) {
+        at += 1;
+    }
+    f[1] = at;
+    if (at >= req_len) { fail("short request"); }
+    at += 1;
+}
+
+Bool is_word(in I64[_] f, in U8[_] w) {
+    if (f[1] - f[0] != len(w)) { return false; }
+    for i in 0..len(w) {
+        if (req[f[0] + i] != w[i]) { return false; }
+    }
+    return true;
+}
+
+I64 number(in I64[_] f, I64 lo, I64 hi) {
+    if (f[1] == f[0] || f[1] - f[0] > 6) { fail("number"); }
+    I64 v = 0;
+    for i in f[0]..f[1] {
+        U8 c = req[i];
+        if (c < 48 || c > 57) { fail("number"); }
+        v = v * 10 + (c - 48) as I64;
+    }
+    if (v < lo || v > hi) { fail("out of range"); }
+    return v;
+}
+
+I64 nib(U8 c) {
+    if (c >= 48 && c <= 57) { return (c - 48) as I64; }
+    if (c >= 97 && c <= 102) { return (c - 87) as I64; }
+    fail("hex");
+    return 0;
+}
+
+void hex_field(in I64[_] f, inout U8[_] dst, I64 n) {
+    if (f[1] - f[0] != 2 * n) { fail("hex length"); }
+    for i in 0..n {
+        dst[i] = (nib(req[f[0] + 2 * i]) * 16 + nib(req[f[0] + 2 * i + 1])) as U8;
+    }
+}
+
+void put_hex(in U8[_] b, I64 n) {
+    for i in 0..n {
+        "{b[i]:02x}";
+    }
+}
+
+// The verifier of AC-D9 for the passphrase at req[at..req_len).
+void verifier(I64 m, I64 t, in U8[_] salt, inout U64[_] mem, inout U8[_] ver) {
+    I64 plen = req_len - at;
+    if (plen < 1 || plen > PASS_MAX) { fail("passphrase length"); }
+    U8[256] pass;
+    for i in 0..plen {
+        pass[i] = req[at + i];
+    }
+    authver.verifier(pass, plen, m, t, salt, mem, ver);
+    for i in 0..PASS_MAX { pass[i] = 0; }
+    for i in 0..req_len { req[i] = 0; }
+}
+
+void main() {
+    U64[8388608] mem;
+    I64[2] f;
+    U8[16] salt;
+    U8[32] want;
+    U8[32] ver;
+    read_request();
+    if (authop.is_op(req, req_len)) {
+        // The store is under /home, written only with the disk grant (GR-1). The desk starts authd with no grant
+        // (AC-D8), so uid 0 takes that one here, for these operations alone; ring 0 holds every grant already.
+        if (shctl.sh_geteuid() == 0) {
+            I64 g = grantcall.grant_set(1);
+            if (g < 0 && g != -38) { fail("grant"); }
+        }
+        U8[20] ans;
+        U8[16] fresh;                  // the salt of a passphrase set here; without 16 bytes: `error random`
+        I64 fn = 0;
+        if (authop.wants_salt(req, req_len)) { fn = authctl.rand_fill(fresh); }
+        I64 code = authop.run(req, req_len, mem, fresh, fn, DS6_M, DS6_T);
+        I64 an = authreq.line(code, ans);
+        _ = shctl.fd_write(1, ans[0..an]);
+        "\n";
+        dev.exit_now(authreq.status(code));
+    }
+    field(f);
+    I64 mode = 0;
+    if (is_word(f, "verify")) { mode = 1; }
+    if (is_word(f, "enroll")) { mode = 2; }
+    if (is_word(f, "derive")) { mode = 3; }
+    if (mode == 0) { fail("mode"); }
+    field(f);
+    I64 m = number(f, 8, M_MAX);
+    field(f);
+    I64 t = number(f, 1, 16);
+    if (mode == 2) {
+        if (authctl.rand_fill(salt) != 16) { fail("getrandom"); }
+    } else {
+        field(f);
+        hex_field(f, salt, 16);
+    }
+    if (mode == 1) {
+        field(f);
+        hex_field(f, want, 32);
+    }
+    verifier(m, t, salt, mem, ver);
+    if (mode == 1) {
+        U8 diff = 0;
+        for i in 0..32 {
+            diff = diff | (ver[i] ^ want[i]);
+        }
+        if (diff == 0) {
+            "ok\n";
+            dev.exit_now(0);
+        }
+        "no\n";
+        dev.exit_now(1);
+    }
+    if (mode == 2) {
+        "salt ";
+        put_hex(salt, 16);
+        "\n";
+    }
+    "verifier ";
+    put_hex(ver, 32);
+    "\n";
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,40 @@
+// src/seat.ci: whose the desk's seat is (LO-1, the call from AC-D10; docs/user.md section 19),
+// pure so the hosted test runs it (tests/seat/seat_test.ci). Two rules of the desk's log out:
+//   the tile the desk offers (src/tile.ci, H-3a: the next pixel client's) goes only to a process of the account the
+//   desk names at login (seat, call 1009); between a log out and the next login, when the desk names none, to no
+//   process. A desk that never names one (the desk flavor's tiler, a desk built before LO-1) keeps the rule before
+//   it: any process takes the offered tile. With accounts off the desk names uid 0.
+//   the sweep (call 1010) ends every live process of the desk's family whose uid is the logged out account's, with
+//   SIGKILL, whatever its session and whatever it ignores; uid 0, the desk's own, is never swept. The sweep runs
+//   inside one system call while no process runs, and fork copies the uid, so no fork can land outside it.
+
+const I64 EINVAL = 22;
+export const I64 OPEN = -2;   // no desk has named a seat: any process takes the offered tile
+export const I64 NONE = -1;   // the desk named none: no process takes it
+
+I64 named = OPEN;
+
+// The desk names the seat's account: uid 0 to 65535, or NONE. 0, or -EINVAL.
+export I64 name(I64 uid) {
+    if (uid < NONE || uid > 65535) {
+        return 0 - EINVAL;
+    }
+    named = uid;
+    return 0;
+}
+
+// The account named: a uid, NONE, or OPEN before the desk named one.
+export I64 account() {
+    return named;
+}
+
+// True when a process of uid may take the tile the desk offers.
+export Bool binds(I64 uid) {
+    return named == OPEN || (named >= 0 && uid == named);
+}
+
+// True when the sweep of target ends a slot: a live process of the desk's family whose uid is target, 1 or more.
+export Bool ends(I64 target, I64 slot_uid, Bool live, Bool family) {
+    return target >= 1 && target <= 65535 && live && family && slot_uid == target;
+}
+// SPDX-License-Identifier: Apache-2.0

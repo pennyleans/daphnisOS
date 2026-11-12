@@ -1,0 +1,28 @@
+{
+  "id": "esc-split-end",
+  "rules": [
+    "KEY-2",
+    "OPEN-3"
+  ],
+  "text": "abc\nd",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b",
+    "5b46",
+    "58"
+  ],
+  "expect": {
+    "text": "abcX\nd",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

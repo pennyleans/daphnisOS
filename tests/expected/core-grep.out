@@ -1,0 +1,457 @@
+$ apple words.txt
+apple 3
+apple 3
+apple 3
+status 0
+$ apple < words.txt
+apple 3
+apple 3
+apple 3
+status 0
+$ -c apple words.txt
+3
+status 0
+$ -v apple words.txt
+Banana 10
+cherry 2
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -n fig words.txt
+9:fig 0.5
+10:fig -4
+status 0
+$ -i banana words.txt
+Banana 10
+banana 1
+status 0
+$ -x aaa words.txt
+aaa
+status 0
+$ -w ab words.txt
+ab
+status 0
+$ -w '' words.txt
+  elder 12
+fig -4
+
+Hello, world.
+foo(bar) = [baz]
+end$ ^start
+status 0
+$ -x '' words.txt
+
+status 0
+$ -l apple words.txt cols.txt text.txt
+words.txt
+status 0
+$ -L apple words.txt cols.txt
+-- stderr
+grep: not supported: -L
+status 2
+$ -q apple words.txt
+status 0
+$ -q nothing words.txt
+status 1
+$ -s apple missing words.txt
+words.txt:apple 3
+words.txt:apple 3
+words.txt:apple 3
+status 2
+$ apple missing words.txt
+words.txt:apple 3
+words.txt:apple 3
+words.txt:apple 3
+-- stderr
+grep: missing: No such file or directory
+status 2
+$ -h apple words.txt text.txt
+apple 3
+apple 3
+apple 3
+status 0
+$ -H apple words.txt
+words.txt:apple 3
+words.txt:apple 3
+words.txt:apple 3
+status 0
+$ -e apple -e cherry words.txt
+apple 3
+cherry 2
+apple 3
+apple 3
+status 0
+$ -F 'x*y+z?' words.txt
+x*y+z?
+status 0
+$ -F -x 'x*y+z?' words.txt
+x*y+z?
+status 0
+$ -f words.txt cols.txt
+root:x:0:0:root:/root:/bin/sh
+daemon:x:1:1::/usr/sbin:/bin/false
+l:x:1000:1000:l:/home/l:/bin/cish
+nobody:x:65534:65534::/:/bin/false
+short:line
+nodelim
+::empty:fields::
+status 0
+$ -c '' empty
+0
+status 1
+$ '^a' words.txt
+apple 3
+apple 3
+apple 3
+aaa
+ab
+abab
+status 0
+$ '3$' words.txt
+apple 3
+apple 3
+apple 3
+grape 3
+status 0
+$ '^$' words.txt
+
+status 0
+$ 'a.a' words.txt
+Banana 10
+banana 1
+aaa
+abab
+status 0
+$ 'a*' words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ '*y' words.txt
+x*y+z?
+status 0
+$ 'ab*' words.txt
+apple 3
+Banana 10
+apple 3
+apple 3
+banana 1
+Date 7
+grape 3
+foo(bar) = [baz]
+end$ ^start
+aaa
+ab
+abab
+tab	here
+status 0
+$ '\(ab\)*$' words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ 'a\{2\}' words.txt
+aaa
+status 0
+$ 'a\{2,\}' words.txt
+aaa
+status 0
+$ 'a\{1,2\}b' words.txt
+ab
+abab
+tab	here
+status 0
+$ '[[:upper:]]' words.txt
+Banana 10
+Date 7
+Hello, world.
+status 0
+$ '[^a-z ]' words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+123-456-7890
+tab	here
+status 0
+$ '[]x]' words.txt
+foo(bar) = [baz]
+x*y+z?
+status 0
+$ '[a-c][^a-c]' words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+grape 3
+foo(bar) = [baz]
+end$ ^start
+color colour
+tab	here
+status 0
+$ '[[:digit:]]\{3\}-' words.txt
+123-456-7890
+status 0
+$ '[[:space:]]' words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+Hello, world.
+foo(bar) = [baz]
+end$ ^start
+color colour
+tab	here
+status 0
+$ '[[.-.]]' words.txt
+fig -4
+123-456-7890
+status 0
+$ '[[=a=]]pp' words.txt
+apple 3
+apple 3
+apple 3
+status 0
+$ '\.' words.txt
+fig 0.5
+Hello, world.
+status 0
+$ '\$' words.txt
+end$ ^start
+status 0
+$ '(bar)' words.txt
+foo(bar) = [baz]
+status 0
+$ 'colou\?r' words.txt
+color colour
+status 0
+$ 'ap\+le' words.txt
+apple 3
+apple 3
+apple 3
+status 0
+$ 'fig\|date' words.txt
+fig 0.5
+fig -4
+status 0
+$ -E 'fig|Date' words.txt
+Date 7
+fig 0.5
+fig -4
+status 0
+$ -E '(ab)+$' words.txt
+ab
+abab
+status 0
+$ -E '^(a|b)+$' words.txt
+aaa
+ab
+abab
+status 0
+$ -E 'colou?r' words.txt
+color colour
+status 0
+$ -E 'a{2}' words.txt
+aaa
+status 0
+$ -E '[0-9]{3}-[0-9]{4}' words.txt
+123-456-7890
+status 0
+$ -E '\(bar\)' words.txt
+foo(bar) = [baz]
+status 0
+$ -E 'x\*y\+z\?' words.txt
+x*y+z?
+status 0
+$ -E '^ +' words.txt
+  elder 12
+status 0
+$ -E '()' words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -E 'a|' words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab	here
+status 0
+$ -iE 'APPLE|banana' words.txt
+apple 3
+Banana 10
+apple 3
+apple 3
+banana 1
+status 0
+$ -r apple dir
+dir/a.txt:apple pie
+dir/sub/c.txt:crab apple
+status 0
+$ -rl apple dir
+dir/a.txt
+dir/sub/c.txt
+status 0
+$ -rh -i apple dir
+apple pie
+crab apple
+APPLE
+status 0
+$ '\(a\)\1' words.txt
+-- stderr
+grep: not supported: back-reference
+grep: usage error
+status 2
+$ -E '(a)\1' words.txt
+-- stderr
+grep: not supported: back-reference
+grep: usage error
+status 2
+$ 'a\{2' words.txt
+-- stderr
+grep: bad regex 'a\{2': Invalid interval
+grep: usage error
+status 2
+$ -E '*a' words.txt
+-- stderr
+grep: bad regex '*a': Repetition not preceded by valid expression
+grep: usage error
+status 2
+$ '[a' words.txt
+-- stderr
+grep: bad regex '[a': Missing ']'
+grep: usage error
+status 2
+$ '[[:nope:]]' words.txt
+-- stderr
+grep: bad regex '[[:nope:]]': Invalid character class name
+grep: usage error
+status 2
+$ -E 'a{3,1}' words.txt
+-- stderr
+grep: bad regex 'a{3,1}': Invalid interval
+grep: usage error
+status 2
+$ -e
+-- stderr
+grep: option requires an argument: -e
+status 2
+$ 
+-- stderr
+grep: no pattern
+status 2
+$ -P apple words.txt
+-- stderr
+grep: not supported: -P
+status 2

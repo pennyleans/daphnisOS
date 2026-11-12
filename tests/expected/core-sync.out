@@ -1,0 +1,10 @@
+$ 
+status 0
+$ x
+-- stderr
+sync: extra operand
+status 2
+$ -d
+-- stderr
+sync: not supported: -d
+status 2

@@ -1,0 +1,33 @@
+{
+  "id": "wrap-scrolls-by-rows",
+  "rules": [
+    "VIEW-2"
+  ],
+  "text": "aaa bbb ccc ddd eee",
+  "size": [
+    4,
+    8
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "17",
+    "1b5b42",
+    "1b5b42"
+  ],
+  "expect": {
+    "text": "aaa bbb ccc ddd eee",
+    "sel": [
+      16,
+      16
+    ],
+    "screen": [
+      "ccc ddd",
+      "eee",
+      " x  1:17",
+      "^S save"
+    ]
+  }
+}

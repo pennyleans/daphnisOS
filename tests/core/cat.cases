@@ -1,0 +1,19 @@
+# tests/core/cat.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree.
+text.txt | - | -
+text.txt nonl.txt text.txt | - | -
+ | text.txt | -
+- | text.txt | -
+text.txt - nonl.txt | long.txt | -
+empty | - | -
+bin.dat | - | -
+long.txt | - | -
+utf8.txt ws.txt | - | -
+-u text.txt | - | -
+-- text.txt | - | -
+missing | - | -
+text.txt missing nonl.txt | - | -
+. | - | -
+-v text.txt | - | D-1
+-n text.txt | - | D-1
+-un text.txt | - | D-1

@@ -1,0 +1,29 @@
+{
+  "id": "esc-tail-then-next-key-in-one-chunk",
+  "rules": [
+    "KEY-2",
+    "KEY-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "5b461b5b44",
+    "58"
+  ],
+  "expect": {
+    "text": "abXc",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

@@ -1,0 +1,440 @@
+// Code-point tokenizer. CR and CRLF become LF. Surrogates remain code points
+// with input errors, as in HTML preprocessing. Values above U+10FFFF become
+// U+FFFD with one input error. Null handling follows each tokenizer state.
+// Limits: names 1024, token data / identifiers 65536, 128 attributes and
+// 65536 combined attribute code points. Refusal is terminal until reset.
+import user.ci.web.reference;
+I64 pos = 0;
+I64 mode_now = 0;
+I64 script_state = 0;
+Bool cdata_ok = false;
+I64 fault_reason = 0;
+I64 parse_errors = 0;
+I64 kind = 0;
+U32[1024] nm;
+I64 nn = 0;
+U32[65536] dt;
+I64 dn = 0;
+U32[65536] pub;
+I64 pn = 0;
+U32[65536] sys;
+I64 sn = 0;
+Bool pp = false;
+Bool sp = false;
+Bool quirks = false;
+Bool closed = false;
+U32[1024] last;
+I64 ln = 0;
+U32[65536] arena;
+I64 an = 0;
+I64 ac = 0;
+I64[128] astart;
+I64[128] alen;
+I64[128] vstart;
+I64[128] vlen;
+I64 current_attr = -1;
+I64 candidate_start = 0;
+I64 candidate_len = 0;
+Bool candidate_duplicate = false;
+I64 temp_len = 0;
+U32[1024] temp;
+Bool ended = false;
+
+Bool alpha(U32 c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122); }
+Bool digit(U32 c) { return c >= 48 && c <= 57; }
+Bool space(U32 c) { return c == 9 || c == 10 || c == 12 || c == 32; }
+U32 folded(U32 c) { if (c >= 65 && c <= 90) { return c + 32; } return c; }
+void bad() { parse_errors = parse_errors + 1; }
+void refuse(I64 reason) { if (fault_reason == 0) { fault_reason = reason; } }
+I64 peek(in U32[_] input) {
+    if (pos >= len(input)) { return -1; }
+    U32 c = input[pos];
+    if (c == 13) { return 10; }
+    if (c > 1114111) { return 65533; }
+    return c as I64;
+}
+I64 take(in U32[_] input) {
+    I64 c = peek(input);
+    if (c < 0) { return c; }
+    U32 raw = input[pos];
+    pos = pos + 1;
+    if (raw == 13 && pos < len(input) && input[pos] == 10) { pos = pos + 1; }
+    if (raw > 1114111 || (raw >= 55296 && raw <= 57343)) { bad(); }
+    else if ((raw >= 64976 && raw <= 65007) || raw % 65536 == 65534 || raw % 65536 == 65535) { bad(); }
+    else if ((raw >= 1 && raw <= 8) || raw == 11 || (raw >= 14 && raw <= 31) || (raw >= 127 && raw <= 159)) { bad(); }
+    return c;
+}
+void advance(in U32[_] input) { I64 ignored = take(input); }
+U32 nonnull(I64 c) { if (c == 0) { bad(); return 65533; } return c as U32; }
+void add_name(U32 c) { if (nn == 1024) { refuse(2); } else { nm[nn] = c; nn = nn + 1; } }
+void add_data(U32 c) { if (dn == 65536) { refuse(3); } else { dt[dn] = c; dn = dn + 1; } }
+void add_arena(U32 c) { if (an == 65536) { refuse(5); } else { arena[an] = c; an = an + 1; } }
+void add_identifier(U32 c, Bool public_id) {
+    if (public_id) { if (pn == 65536) { refuse(6); } else { pub[pn] = c; pn = pn + 1; } }
+    else { if (sn == 65536) { refuse(6); } else { sys[sn] = c; sn = sn + 1; } }
+}
+Bool match(in U32[_] input, in U8[_] word, Bool fold) {
+    if (len(input) - pos < len(word)) { return false; }
+    for i in 0..len(word) {
+        U32 c = input[pos + i]; if (fold) { c = folded(c); }
+        if (c != word[i] as U32) { return false; }
+    }
+    return true;
+}
+void clear_token() { nn = 0; dn = 0; pn = 0; sn = 0; pp = false; sp = false; quirks = false; closed = false; ac = 0; an = 0; current_attr = -1; kind = 0; }
+export void reset(I64 mode, in U32[_] last_tag, Bool allow_cdata) {
+    pos = 0; mode_now = mode; script_state = 0; cdata_ok = allow_cdata;
+    fault_reason = 0; parse_errors = 0; ln = 0; temp_len = 0; ended = false; clear_token();
+    if (mode < 0 || mode > 5) { refuse(1); }
+    if (len(last_tag) > 1024) { refuse(2); return; }
+    for i in 0..len(last_tag) { last[i] = folded(last_tag[i]); ln = ln + 1; }
+}
+export Bool select_mode(I64 mode, Bool allow_cdata) {
+    if (ended || fault_reason != 0) { return false; }
+    if (mode < 0 || mode > 5) { refuse(1); return false; }
+    mode_now = mode; cdata_ok = allow_cdata; script_state = 0; temp_len = 0;
+    return true;
+}
+void reference_into(in U32[_] input, Bool attribute) {
+    reference.Reference resolved = reference.resolve(input, pos, attribute);
+    I64 bits = resolved.errors;
+    while (bits > 0) { if (bits % 2 == 1) { bad(); } bits = bits / 2; }
+    if (resolved.used == 0) { if (attribute) { add_arena(38); } else { add_data(38); } return; }
+    pos = pos + resolved.used;
+    if (attribute) {
+        add_arena(resolved.first); if (resolved.count == 2) { add_arena(resolved.second); }
+    } else { add_data(resolved.first); if (resolved.count == 2) { add_data(resolved.second); } }
+}
+void attr_begin() {
+    candidate_start = an; candidate_len = 0; candidate_duplicate = false; current_attr = -1;
+}
+void attr_finish_name() {
+    candidate_len = an - candidate_start;
+    for i in 0..ac {
+        if (alen[i] == candidate_len) {
+            Bool same = true;
+            for j in 0..candidate_len { if (arena[astart[i] + j] != arena[candidate_start + j]) { same = false; } }
+            if (same) { candidate_duplicate = true; }
+        }
+    }
+    if (candidate_duplicate) { bad(); return; }
+    if (ac == 128) { refuse(4); return; }
+    current_attr = ac; ac = ac + 1;
+    astart[current_attr] = candidate_start; alen[current_attr] = candidate_len;
+    vstart[current_attr] = an; vlen[current_attr] = 0;
+}
+void attr_finish_value() {
+    if (current_attr >= 0) { vlen[current_attr] = an - vstart[current_attr]; }
+    if (candidate_duplicate) { an = candidate_start; }
+}
+I64 tag(in U32[_] input, Bool end_tag) {
+    kind = 2; if (end_tag) { kind = 3; }
+    I64 st = 0;
+    while (fault_reason == 0) {
+        I64 c = peek(input);
+        if (c < 0) { bad(); return 0; }
+        if (st == 0) {
+            if (space(c as U32)) { advance(input); st = 1; }
+            else if (c == 47) { advance(input); st = 8; }
+            else if (c == 62) { advance(input); break; }
+            else { advance(input); add_name(folded(nonnull(c))); }
+        } else if (st == 1) {
+            if (space(c as U32)) { advance(input); }
+            else if (c == 47) { advance(input); st = 8; }
+            else if (c == 62) { advance(input); break; }
+            else { attr_begin(); st = 2; if (c == 61) { bad(); advance(input); add_arena(61); } }
+        } else if (st == 2) {
+            if (space(c as U32) || c == 47 || c == 62) { attr_finish_name(); st = 3; }
+            else if (c == 61) { advance(input); attr_finish_name(); st = 4; }
+            else { advance(input); if (c == 34 || c == 39 || c == 60) { bad(); } add_arena(folded(nonnull(c))); }
+        } else if (st == 3) {
+            if (space(c as U32)) { advance(input); }
+            else if (c == 61) { advance(input); st = 4; }
+            else { attr_finish_value(); st = 1; }
+        } else if (st == 4) {
+            if (space(c as U32)) { advance(input); }
+            else if (c == 34 || c == 39) { advance(input); st = 5; if (c == 39) { st = 6; } }
+            else if (c == 62) { bad(); attr_finish_value(); advance(input); break; }
+            else { st = 7; }
+        } else if (st == 5 || st == 6) {
+            if ((st == 5 && c == 34) || (st == 6 && c == 39)) { advance(input); attr_finish_value(); st = 9; }
+            else if (c == 38) { advance(input); reference_into(input, true); }
+            else { advance(input); add_arena(nonnull(c)); }
+        } else if (st == 7) {
+            if (space(c as U32)) { advance(input); attr_finish_value(); st = 1; }
+            else if (c == 62) { advance(input); attr_finish_value(); break; }
+            else if (c == 38) { advance(input); reference_into(input, true); }
+            else { advance(input); if (c == 34 || c == 39 || c == 60 || c == 61 || c == 96) { bad(); } add_arena(nonnull(c)); }
+        } else if (st == 8) {
+            if (c == 62) { advance(input); closed = true; break; }
+            bad(); st = 1;
+        } else {
+            if (space(c as U32)) { advance(input); st = 1; }
+            else if (c == 47) { advance(input); st = 8; }
+            else if (c == 62) { advance(input); break; }
+            else { bad(); st = 1; }
+        }
+    }
+    if (fault_reason != 0) { return -1; }
+    if (end_tag) { if (ac > 0) { bad(); } if (closed) { bad(); } }
+    else { ln = nn; for i in 0..nn { last[i] = nm[i]; } }
+    mode_now = 0; script_state = 0;
+    return kind;
+}
+I64 bogus_comment(in U32[_] input) {
+    while (fault_reason == 0) { I64 c = take(input); if (c < 0 || c == 62) { break; } add_data(nonnull(c)); }
+    if (fault_reason != 0) { return -1; } return 4;
+}
+I64 comment(in U32[_] input) {
+    I64 st = 0;
+    while (fault_reason == 0) {
+        I64 c = peek(input);
+        if (c < 0) { bad(); return 4; }
+        if (st == 0) {
+            if (c == 45) { advance(input); st = 1; }
+            else if (c == 62) { advance(input); bad(); return 4; }
+            else { st = 2; }
+        } else if (st == 1) {
+            if (c == 45) { advance(input); st = 4; }
+            else if (c == 62) { advance(input); bad(); return 4; }
+            else { add_data(45); st = 2; }
+        } else if (st == 2) {
+            advance(input);
+            if (c == 45) { st = 3; }
+            else { add_data(nonnull(c)); if (c == 60) { st = 6; } }
+        } else if (st == 3) {
+            if (c == 45) { advance(input); st = 4; }
+            else { add_data(45); st = 2; }
+        } else if (st == 4) {
+            if (c == 62) { advance(input); return 4; }
+            if (c == 33) { advance(input); st = 5; }
+            else if (c == 45) { advance(input); add_data(45); }
+            else { add_data(45); add_data(45); st = 2; }
+        } else if (st == 5) {
+            if (c == 45) { advance(input); add_data(45); add_data(45); add_data(33); st = 3; }
+            else if (c == 62) { advance(input); bad(); return 4; }
+            else { add_data(45); add_data(45); add_data(33); st = 2; }
+        } else if (st == 6) {
+            if (c == 33) { advance(input); add_data(33); st = 7; }
+            else if (c == 60) { advance(input); add_data(60); }
+            else { st = 2; }
+        } else if (st == 7) {
+            if (c == 45) { advance(input); st = 8; } else { st = 2; }
+        } else if (st == 8) {
+            if (c == 45) { advance(input); st = 9; } else { st = 3; }
+        } else { if (c != 62) { bad(); } st = 4; }
+    }
+    return -1;
+}
+I64 doctype(in U32[_] input) {
+    // States: before/name/after, keyword, identifier and bogus declaration.
+    I64 st = 0; Bool public_id = true; I64 quote = 0;
+    while (fault_reason == 0) {
+        I64 c = peek(input);
+        if (c < 0) { if (st != 12) { bad(); quirks = true; } return 5; }
+        if (st == 0) {
+            if (space(c as U32)) { advance(input); st = 1; }
+            else if (c == 62) { st = 1; }
+            else { bad(); st = 1; }
+        } else if (st == 1) {
+            if (space(c as U32)) { advance(input); }
+            else if (c == 62) { advance(input); bad(); quirks = true; return 5; }
+            else { st = 2; }
+        } else if (st == 2) {
+            if (space(c as U32)) { advance(input); st = 3; }
+            else if (c == 62) { advance(input); return 5; }
+            else { advance(input); add_name(folded(nonnull(c))); }
+        } else if (st == 3) {
+            if (space(c as U32)) { advance(input); }
+            else if (c == 62) { advance(input); return 5; }
+            else if (match(input, b"public", true)) { pos = pos + 6; public_id = true; st = 4; }
+            else if (match(input, b"system", true)) { pos = pos + 6; public_id = false; st = 4; }
+            else { bad(); quirks = true; st = 12; }
+        } else if (st == 4 || st == 5) {
+            if (space(c as U32)) { advance(input); st = 5; }
+            else if (c == 34 || c == 39) {
+                if (st == 4) { bad(); } advance(input); quote = c; st = 6;
+                if (public_id) { pp = true; } else { sp = true; }
+            } else if (c == 62) { advance(input); bad(); quirks = true; return 5; }
+            else { bad(); quirks = true; st = 12; }
+        } else if (st == 6) {
+            advance(input);
+            if (c == quote) { if (public_id) { st = 7; } else { st = 9; } }
+            else if (c == 62) { bad(); quirks = true; return 5; }
+            else { add_identifier(nonnull(c), public_id); }
+        } else if (st == 7 || st == 8) {
+            if (space(c as U32)) { advance(input); st = 8; }
+            else if (c == 62) { advance(input); return 5; }
+            else if (c == 34 || c == 39) { if (st == 7) { bad(); } advance(input); public_id = false; sp = true; quote = c; st = 6; }
+            else { bad(); quirks = true; st = 12; }
+        } else if (st == 9) {
+            if (space(c as U32)) { advance(input); }
+            else if (c == 62) { advance(input); return 5; }
+            else { bad(); st = 12; }
+        } else { advance(input); if (c == 62) { return 5; } if (c == 0) { bad(); } }
+    }
+    return -1;
+}
+Bool name_is(in U8[_] word) {
+    if (nn != len(word)) { return false; }
+    for i in 0..nn { if (folded(nm[i]) != word[i] as U32) { return false; } }
+    return true;
+}
+void pi_comment() { add_data(63); for i in 0..nn { add_data(nm[i]); } nn = 0; }
+I64 processing(in U32[_] input) {
+    I64 c = peek(input);
+    if (c < 0) { bad(); return 0; }
+    if (!alpha(c as U32) && c != 95) { bad(); pi_comment(); return bogus_comment(input); }
+    while (fault_reason == 0) {
+        c = peek(input);
+        if (c < 0) { bad(); return 0; }
+        if (space(c as U32) || c == 63 || c == 62) { break; }
+        if (!alpha(c as U32) && !digit(c as U32) && c != 45 && c != 95) { bad(); pi_comment(); return bogus_comment(input); }
+        advance(input); add_name(c as U32);
+    }
+    if (name_is(b"xml") || name_is(b"xml-stylesheet")) { bad(); pi_comment(); return bogus_comment(input); }
+    while (peek(input) >= 0 && space(peek(input) as U32)) { advance(input); }
+    while (fault_reason == 0) {
+        c = take(input);
+        if (c < 0) { bad(); return 0; }
+        if (c == 62) { return 6; }
+        if (c == 63) {
+            if (peek(input) == 62) { advance(input); return 6; }
+            if (peek(input) < 0) { bad(); return 0; }
+        }
+        add_data(c as U32);
+    }
+    return -1;
+}
+Bool raw_end(in U32[_] input) {
+    if (len(input) - pos < ln + 3 || input[pos] != 60 || input[pos + 1] != 47 || ln == 0) { return false; }
+    for i in 0..ln {
+        U32 c = input[pos + 2 + i];
+        if (!alpha(c) || folded(c) != last[i]) { return false; }
+    }
+    U32 c = input[pos + 2 + ln]; return space(c) || c == 13 || c == 47 || c == 62;
+}
+Bool temp_script() {
+    if (temp_len != 6) { return false; }
+    return temp[0] == 115 && temp[1] == 99 && temp[2] == 114 && temp[3] == 105 && temp[4] == 112 && temp[5] == 116;
+}
+void temp_add(U32 c) { if (temp_len < 7) { temp[temp_len] = folded(c); temp_len = temp_len + 1; } }
+I64 script(in U32[_] input) {
+    while (true) {
+        I64 c = peek(input);
+        if (c < 0) { if (script_state >= 3 && script_state != 11) { bad(); } return 0; }
+        if ((script_state == 0 || script_state == 3 || script_state == 4 || script_state == 5) && c == 60 && raw_end(input)) {
+            pos = pos + 2; return tag(input, true);
+        }
+        if (script_state == 0) {
+            advance(input);
+            if (c == 60) { script_state = 1; add_data(60); }
+            else { add_data(nonnull(c)); }
+            return 1;
+        } else if (script_state == 1) {
+            script_state = 0;
+            if (c == 33) { advance(input); add_data(33); script_state = 2; return 1; }
+        } else if (script_state == 2 || script_state == 11) {
+            if (c == 45) { advance(input); add_data(45); if (script_state == 2) { script_state = 11; } else { script_state = 5; } return 1; }
+            script_state = 0;
+        } else if (script_state == 3 || script_state == 4 || script_state == 5) {
+            advance(input); add_data(nonnull(c));
+            if (c == 45) { if (script_state == 3) { script_state = 4; } else { script_state = 5; } }
+            else if (c == 60) { script_state = 6; }
+            else if (c == 62 && script_state == 5) { script_state = 0; }
+            else { script_state = 3; }
+            return 1;
+        } else if (script_state == 6) {
+            if (alpha(c as U32)) { temp_len = 0; script_state = 7; }
+            else { script_state = 3; }
+        } else if (script_state == 7 || script_state == 12) {
+            if (alpha(c as U32)) { advance(input); temp_add(c as U32); add_data(c as U32); return 1; }
+            if (space(c as U32) || c == 47 || c == 62) {
+                advance(input); add_data(c as U32);
+                Bool is_script = temp_script();
+                if ((script_state == 7 && is_script) || (script_state == 12 && !is_script)) { script_state = 8; } else { script_state = 3; }
+                return 1;
+            }
+            if (script_state == 7) { script_state = 3; } else { script_state = 8; }
+        } else if (script_state == 8 || script_state == 9 || script_state == 10) {
+            advance(input); add_data(nonnull(c));
+            if (c == 45) { if (script_state == 8) { script_state = 9; } else { script_state = 10; } }
+            else if (c == 60) { script_state = 13; }
+            else if (c == 62 && script_state == 10) { script_state = 0; }
+            else { script_state = 8; }
+            return 1;
+        } else {
+            if (c == 47) { advance(input); add_data(47); temp_len = 0; script_state = 12; return 1; }
+            script_state = 8;
+        }
+    }
+    return 0;
+}
+I64 next_token(in U32[_] input) {
+    if (fault_reason != 0) { return -1; }
+    clear_token();
+    while (true) {
+        I64 c = peek(input);
+        if (mode_now == 3) { return script(input); }
+        if (c < 0) { if (mode_now == 5) { bad(); } return 0; }
+        if (mode_now == 5) {
+            if (match(input, b"]]>", false)) { pos = pos + 3; mode_now = 0; }
+            else { advance(input); add_data(c as U32); return 1; }
+        } else if (mode_now != 0) {
+            if ((mode_now == 1 || mode_now == 2) && c == 60 && raw_end(input)) { pos = pos + 2; return tag(input, true); }
+            advance(input);
+            if (mode_now == 1 && c == 38) { reference_into(input, false); }
+            else { add_data(nonnull(c)); }
+            if (fault_reason != 0) { return -1; } return 1;
+        } else if (c == 38) { advance(input); reference_into(input, false); if (fault_reason != 0) { return -1; } return 1; }
+        else if (c != 60) { advance(input); if (c == 0) { bad(); } add_data(c as U32); return 1; }
+        else {
+            advance(input); c = peek(input);
+            if (c < 0) { bad(); add_data(60); return 1; }
+            if (alpha(c as U32)) { return tag(input, false); }
+            if (c == 63) { advance(input); return processing(input); }
+            if (c == 47) {
+                advance(input); c = peek(input);
+                if (c < 0) { bad(); add_data(60); add_data(47); return 1; }
+                if (alpha(c as U32)) { return tag(input, true); }
+                bad(); if (c == 62) { advance(input); } else { return bogus_comment(input); }
+            } else if (c == 33) {
+                advance(input);
+                if (match(input, b"--", false)) { pos = pos + 2; return comment(input); }
+                if (match(input, b"doctype", true)) { pos = pos + 7; return doctype(input); }
+                if (match(input, b"[CDATA[", false)) {
+                    if (cdata_ok) { pos = pos + 7; mode_now = 5; }
+                    else { bad(); return bogus_comment(input); }
+                } else { bad(); return bogus_comment(input); }
+            } else { bad(); add_data(60); return 1; }
+        }
+    }
+    return 0;
+}
+export I64 next(in U32[_] input) {
+    if (fault_reason != 0) { return -1; }
+    if (ended) { return 0; }
+    I64 result = next_token(input);
+    if (result == 0) { ended = true; }
+    return result;
+}
+export I64 name_len() { return nn; }
+export U32 name_cp(I64 i) { if (i < 0 || i >= nn) { return 0; } return nm[i]; }
+export I64 data_len() { return dn; }
+export U32 data_cp(I64 i) { if (i < 0 || i >= dn) { return 0; } return dt[i]; }
+export I64 attr_count() { return ac; }
+export I64 attr_name_len(I64 i) { if (i < 0 || i >= ac) { return 0; } return alen[i]; }
+export U32 attr_name_cp(I64 i, I64 j) { if (i < 0 || i >= ac || j < 0 || j >= alen[i]) { return 0; } return arena[astart[i] + j]; }
+export I64 attr_value_len(I64 i) { if (i < 0 || i >= ac) { return 0; } return vlen[i]; }
+export U32 attr_value_cp(I64 i, I64 j) { if (i < 0 || i >= ac || j < 0 || j >= vlen[i]) { return 0; } return arena[vstart[i] + j]; }
+export Bool self_closing() { return closed; }
+export Bool force_quirks() { return quirks; }
+export Bool public_present() { return pp; }
+export I64 public_len() { return pn; }
+export U32 public_cp(I64 i) { if (i < 0 || i >= pn) { return 0; } return pub[i]; }
+export Bool system_present() { return sp; }
+export I64 system_len() { return sn; }
+export U32 system_cp(I64 i) { if (i < 0 || i >= sn) { return 0; } return sys[i]; }
+export I64 errors() { return parse_errors; }
+export I64 limit_reason() { return fault_reason; }
+// SPDX-License-Identifier: Apache-2.0

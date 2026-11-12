@@ -1,0 +1,33 @@
+# tests/core/test.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6, CT-5). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree. The tool is cish's own test (user/ci/cish/cond.ci).
+ | - | -
+x | - | -
+"" | - | -
+-n x | - | -
+-n "" | - | -
+-z "" | - | -
+-z x | - | -
+a = a | - | -
+a = b | - | -
+a != b | - | -
+3 -eq 3 | - | -
+3 -lt 2 | - | -
+-2 -le 5 | - | -
+10 -gt 9 | - | -
+-f text.txt | - | -
+-f look | - | -
+-d look | - | -
+-e missing | - | -
+-s empty | - | -
+-s text.txt | - | -
+-x look/run.sh | - | -
+-r text.txt | - | -
+! -f text.txt | - | -
+-f text.txt -a -d look | - | -
+-f missing -o -d look | - | -
+( -n x ) | - | D-50
+"(" a = a ")" | - | -
+! "" | - | -
+a -eq 3 | - | -
+3 -eq | - | -
+a b c | - | -

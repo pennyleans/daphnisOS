@@ -1,0 +1,17 @@
+./grant disk ./sh <<'EOF'
+cd home/src
+/home/opt/cint/cib ../out/msha user/ci/msha.ci
+echo cib msha: $?
+/home/opt/cint/cib ../out/mci user/ci/mci.ci
+echo cib mci: $?
+cd ../out
+for p in msha mci; do
+    for f in $p $p.cib/e/MANIFEST.ref $p.cib/e.stage-0/MANIFEST $p.cib/e.stage-0/*.s* $p.cib/e.stage-0/*/*.s* $p.cib/e.stage-0/*/*/*.s* $p.cib/p.ssa $p.cib/*.s $p.cib/*.o $p.cib/m.a; do
+        if [ -f $f ]; then /sha256sum $f; fi
+    done
+done
+sync
+EOF
+echo grant: $?
+exit 0
+

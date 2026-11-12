@@ -1,0 +1,22 @@
+# RS-ROLE (PR 308) and RS-R4 (PR 319) through authd, from ada's terminal: the - rows first, then `kern true` (one
+# approval, the window's hold, R0-R4 B), then the k rows. tests/ac/accounts.txt: ada a parent (passphrase
+# sevenhorsesrun), sam a child of ceiling 1 whose passphrase was set at a child's length. Each line: k (through kern)
+# or - (as the session) | the request's first line | the passphrases, joined | the answer | authd's status
+# (tests/rs/guest/guest.py, OPS).
+k | role ada sam parent | sevenhorsesrux | no | 1
+- | role ada sam parent | sevenhorsesrun | error store | 2
+k | role sam ada child | sam-pass | refused approver | 3
+k | role ada ada child | sevenhorsesrun | refused last parent | 3
+k | role ada sam parent | sevenhorsesrun | refused password | 3
+k | ceil ada ada 1 | sevenhorsesrun | refused parent | 3
+k | ceil ada sam 3 | sevenhorsesrun | ok | 0
+k | ceil ada sam 3 | sevenhorsesrun | ok | 0
+k | ceil ada nobody 1 | sevenhorsesrun | refused account | 3
+k | passwd sam sam 5 | wrongnew-passphrase | no | 1
+k | add ada sam child 14 | sevenhorsesrunivy-pass | refused taken | 3
+k | add ada ivy parent 14 | sevenhorsesrunshort | refused password | 3
+k | add ada ivy child 14 | sevenhorsesrunivy-pass | ok | 0
+k | passwd ada sam 14 | sevenhorsesrunsam-long-passphrase | ok | 0
+k | role ada sam parent | sevenhorsesrun | ok | 0
+k | remove ada ivy | sevenhorsesrun | ok | 0
+k | remove ada ivy | sevenhorsesrun | refused account | 3

@@ -1,0 +1,21 @@
+# tests/core/ln.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-07-bu2-meta.md section 6, BU-2b). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md, - when busybox must agree, H for host bytes, T for
+# times and links in the tree. The tree is compared after each case.
+text.txt hard | - | T
+-s text.txt soft | - | -
+-s missing dang | - | -
+-s look/a.txt look/b.txt box | - | -
+text.txt nonl.txt look | - | T
+text.txt nonl.txt | - | T
+-f text.txt nonl.txt | - | T
+-sf look/a.txt nonl.txt | - | -
+look/a.txt | - | T
+-s look/sub | - | -
+text.txt nonl.txt empty | - | -
+look hard | - | -
+missing x | - | -
+-L text.txt hard | - | D-62 T
+-P text.txt hard | - | D-62 T
+text.txt box/ | - | T
+-x text.txt hard | - | D-1
+| - | D-3

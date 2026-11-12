@@ -1,0 +1,13 @@
+# The cint toolchain this tree was built and checked against. check.sh refuses a different one.
+# cint_rt_h_sha256: rt/cint_rt.h, the header the emitted C and rt/ compile against.
+# cint_rt_lean_h_sha256: rt/cint_rt_lean.h, which cint_rt.h includes from cint-v0.2.12 (recorded, not checked).
+# compiler_source_identity: SHA-256 of the compiler sources of the build (what `cint --version` reports as
+# its "compiler source identity").
+# cint_tag: v0.2.18 of the public cint (https://github.com/pennyleans/cint-public-build, commit a14a03f3), built with
+# its tools/cint_bootstrap.py --leg gcc (ruling GR-1 A); rt/cint_rt.h differs from cint-v0.2.17 in comments only.
+cint_repo=https://github.com/pennyleans/cint-public-build
+cint_tag=v0.2.18
+cint_commit=a14a03f3
+cint_rt_h_sha256=a62924c6159302e33e7d87b75b7b8b9312e389f3a32b41988dc866c1df63ddce
+cint_rt_lean_h_sha256=9628408f2cb0fffdc2d8d623d37766dec37bfe0098943aaaf0fc2d28cb497f11
+compiler_source_identity=baa6d80a6614ba2872e763cb45e5f80a45995578cd3288fc369b0525bb2f661f

@@ -1,0 +1,14 @@
+# FF 3h, review on PR 287: on a volume (no accounts, HOME=/home), `ln -s notes/a.txt link` in /home/rs, then Index's
+# Move to Trash from the keyed menu (Shift+F10; Up to the strip, Right to its last slot, Trash). `finder --trash`
+# lists the link: in the trash it points nowhere, and a link to nothing is listed as itself. The check line typed
+# last ends the session with status 0: the link is in .trash/items with its record, and gone from /home/rs.
+hdesk: screen 1920x1080 plane 1920x
+~hdesk: bar desktop 1 \|Index\| var \|/home/rs\|.*
+finder: filter |link| items 1
+finder: menu FILE at 
+=finder: menu chose |Trash|
+=finder: trash |/home/rs/link| (0)
+=hdesk: pixel 1 ended
+=finder: dir |/home/.trash/items| items 1 folders 0 files 1
+=hdesk: pixel 1 ended
+=hdesk: shell ended, status 0

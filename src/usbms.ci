@@ -1,0 +1,467 @@
+// src/usbms.ci: HW-4m (docs/specs/2026-11-06-hw-hardware.md section 5, row HW-4m; ruling HW-9 A), a USB disk: the
+// bulk-only transport and the SCSI commands of src/usbscsi.ci over the two bulk endpoints src/xhci.ci configured.
+// Synchronous and polled, as src/blk.ci's virtio requests are: a command is its 31-byte CBW out, the data stage, the
+// 13-byte CSW in, each one transfer whose event src/xhci.ci waits for. init: INQUIRY (a disk, and its model), TEST
+// UNIT READY until the unit is (a stick answers "not ready" and "unit attention" for a while after power on),
+// READ CAPACITY (10). Then READ (10) and WRITE (10) of 8 sectors of 512 bytes. A command the device fails gets REQUEST
+// SENSE once and the error is printed. A stalled endpoint, a CSW that is not this command's, a phase error and a data
+// stage that is not what the CSW says (usbscsi.agrees) reset the transport; a transfer with no answer in 5 s drops
+// the disk.
+//
+// DMA: a TRB names only the two frames this module takes at init and never gives back, io (the wrappers and the short
+// answers) and data (a block). A read lands in data and is copied to the caller's frame after its CSW passed with
+// every byte moved; a write is copied from the caller's frame into data before its CBW. So a transfer that times out
+// and is answered late writes into a frame nothing else is ever given, never into a frame the pool handed on.
+//
+// The volume: a stick of tools/build-stick.sh carries a GUID partition table (src/gpt.ci), the ESP first and the ext2
+// volume second. When LBA 1 holds a sound table, the volume is its first Linux filesystem partition, and every read
+// and write is that partition's: sector s is the device's base + s, bounded by the partition's size, so nothing here
+// reaches the ESP or the table. A device with no table and no protective MBR is a raw volume, all of it (QEMU's legs).
+// A protective MBR with no sound table, a table whose entries do not agree with its CRC, an entry outside the usable
+// range, a Linux partition that shares a sector with another, or none at all: no volume.
+//
+// Writes: on a board the only disks may be the running system's, so a USB disk is read only unless the boot line
+// names it, read once at init (ruling HW-12). A disk with a GUID partition table is named by its volume partition's
+// unique GUID, `daphnis.disk.write=GUID` (src/gpt.ci): a release stick carries one fixed GUID on its volume and on its
+// boot line, so its home is writable on any board with no word typed. A raw device with no table (QEMU's legs) is
+// named by its model, `daphnis.disk.write=MODEL`, MODEL as init prints it (INQUIRY's product identification, `_` for a
+// space): any device that reports the named model is writable. A GUID never names a raw device, and a model never
+// names a disk with a table. A disk the line does not name stays read only, and one line says which name is missing.
+// The boot line is read up to 255 bytes: a word cut there names nothing. Nothing prints without a disk, so no golden
+// moves on a machine without one.
+
+import src.serial;
+import src.text;
+import src.phys;
+import src.frames;
+import src.bootarg;
+import src.usbscsi;
+import src.gpt;
+import src.xhci;
+
+const I64 SECTORS_PER_REQUEST = 8;
+const I64 READY_TRIES = 50;            // TEST UNIT READY, 100 ms apart: 5 s for a stick to spin up its controller
+const I64 SAID = 8;                    // the failures printed; a dead stick does not fill the transcript
+
+U64 io = 0;                            // one frame: the CBW at byte 0, the CSW at 64, a command's own answer at 128
+U64 data = 0;                          // one frame: a block's 4 KiB
+U64 tag = 0;
+I64 sectors = 0;                       // the volume's: the partition's, or the device's when it has no table
+I64 base = 0;                          // the volume's first sector on the device
+Bool parted = false;                   // the volume is a GUID table's partition, not the whole device
+U8[16] uid;                            // that partition's unique GUID, in its on-disk order
+Bool may_write = false;
+I64 residue = 0;                       // the last CSW's
+I64 moved = 0;                         // the last data stage's bytes, as the transfer events count them
+I64 said = 0;
+Bool unsynced = false;                 // a WRITE (10) went out since the device's cache was last written (flush)
+
+void put_dec(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+// One command: the CBW, the data stage (nbytes at addr, to the host when data_in; none when nbytes is 0), the CSW.
+// usbscsi.PASSED or usbscsi.FAILED as the device said; -1 when the transport broke, and it is reset. addr is io or
+// data, never a caller's frame. A PASSED command whose data stage moved other than its length less the residue broke
+// the transport (P2 of the kernel read: a short packet with residue 0 is not a full block).
+I64 run(in U8[16] cdb, I64 cdb_len, Bool data_in, U64 addr, I64 nbytes) {
+    return run_wait(cdb, cdb_len, data_in, addr, nbytes, xhci.BULK_MS);
+}
+
+// run, the CSW waited for csw_ms milliseconds (xhci.BULK_MS, or xhci.SYNC_MS for SYNCHRONIZE CACHE).
+I64 run_wait(in U8[16] cdb, I64 cdb_len, Bool data_in, U64 addr, I64 nbytes, I64 csw_ms) {
+    moved = 0;
+    tag += 1;
+    U8[31] c;
+    usbscsi.cbw(c, tag, nbytes, data_in, cdb, cdb_len);
+    phys.phys_write8(io, c);
+    if (xhci.bulk(0, io, usbscsi.CBW_BYTES) != usbscsi.CBW_BYTES) {
+        _ = xhci.bulk_recover(true);
+        return -1;
+    }
+    if (nbytes > 0) {
+        I64 e = 0;
+        if (data_in) { e = 1; }
+        I64 got = xhci.bulk(e, addr, nbytes);
+        if (got == -xhci.STALL) {
+            if (!xhci.bulk_recover(false)) {                 // the device ended the data stage; its CSW says why
+                return -1;
+            }
+        } else if (got < 0) {
+            _ = xhci.bulk_recover(true);
+            return -1;
+        } else {
+            moved = got;
+        }
+    }
+    I64 n = xhci.bulk_wait(1, io + 64, usbscsi.CSW_BYTES, csw_ms);
+    if (n == -xhci.STALL && xhci.bulk_recover(false)) {
+        n = xhci.bulk_wait(1, io + 64, usbscsi.CSW_BYTES, csw_ms);   // a stalled CSW is asked for once more
+    }
+    U8[13] s;
+    phys.phys_read8(io + 64, s);
+    I64 status = -1;
+    if (n == usbscsi.CSW_BYTES) {
+        status = usbscsi.csw_status(s, tag);
+    }
+    if (status != usbscsi.PASSED && status != usbscsi.FAILED) {
+        _ = xhci.bulk_recover(true);
+        return -1;
+    }
+    residue = usbscsi.csw_residue(s);
+    if (status == usbscsi.PASSED && !usbscsi.agrees(nbytes, moved, residue)) {
+        if (said < SAID) {
+            said += 1;
+            serial.serial_write("daphnis: usb: storage: ");     // a stick whose residue lies is refused here
+            put_dec(moved);
+            serial.serial_write(" of ");
+            put_dec(nbytes);
+            serial.serial_write(" bytes came and the CSW says ");
+            put_dec(residue);
+            serial.serial_write(" did not; the transport is reset\n");
+        }
+        _ = xhci.bulk_recover(true);
+        return -1;
+    }
+    return status;
+}
+
+// The short answers' bytes (io + 128 to + 192) zeroed, so a short answer reads zeros past what came, never an earlier
+// command's bytes.
+void clear_answer() {
+    U64[8] z;
+    for k in 0..8 { z[k] = 0; }
+    phys.phys_write64(io + 128, z);
+}
+
+// A block's 4 KiB from one frame to another, in 512-byte steps (this runs under a syscall: a small stack).
+void copy_block(U64 src, U64 dst) {
+    U64[64] b;
+    for k in 0..8 {
+        phys.phys_read64(src + (512 * k) as U64, b);
+        phys.phys_write64(dst + (512 * k) as U64, b);
+    }
+}
+
+// REQUEST SENSE: key * 65536 + code * 256 + qualifier, -1 when the device does not say.
+I64 sense() {
+    clear_answer();
+    U8[16] c;
+    I64 n = usbscsi.cdb_request_sense(c);
+    if (run(c, n, true, io + 128, usbscsi.SENSE_BYTES) != usbscsi.PASSED) {
+        return -1;
+    }
+    U8[18] b;
+    phys.phys_read8(io + 128, b);
+    return usbscsi.sense(b);
+}
+
+// `daphnis: usb: storage: WHAT failed`, with the sense of a command the device failed (r is run's answer).
+void failed(in U8[_] what, I64 r) {
+    I64 why = -1;
+    if (r == usbscsi.FAILED) {
+        why = sense();
+    }
+    if (said >= SAID) {
+        return;
+    }
+    said += 1;
+    serial.serial_write("daphnis: usb: storage: ");
+    serial.serial_write(what);
+    if (why >= 0) {
+        serial.serial_write(" failed, sense ");
+        put_dec(why / 65536);
+        serial.serial_write(" ");
+        put_dec((why / 256) % 256);
+        serial.serial_write(" ");
+        put_dec(why % 256);
+        serial.serial_write("\n");
+    } else if (r == usbscsi.FAILED) {
+        serial.serial_write(" failed, no sense\n");
+    } else if (r == usbscsi.PASSED) {
+        serial.serial_write(" failed, fewer bytes moved than asked\n");
+    } else if (!xhci.ms_on()) {
+        serial.serial_write(" failed, the disk was dropped\n");
+    } else {
+        serial.serial_write(" failed, the transport was reset\n");
+    }
+}
+
+// 8 sectors of the device from lba into data, for the table; true when all 4,096 bytes came.
+Bool raw_read(I64 lba, I64 total) {
+    if (lba < 0 || lba > total - SECTORS_PER_REQUEST) {
+        return false;
+    }
+    U8[16] c;
+    I64 n = usbscsi.cdb_rw(c, false, lba, SECTORS_PER_REQUEST);
+    return run(c, n, true, data, 512 * SECTORS_PER_REQUEST) == usbscsi.PASSED && moved == 512 * SECTORS_PER_REQUEST;
+}
+
+void say(in U8[_] what) {
+    serial.serial_write("daphnis: usb: storage: ");
+    serial.serial_write(what);
+    serial.serial_write("\n");
+}
+
+// The volume on a device of total sectors: base, parted and uid set, its size in sectors returned; -1, said, when
+// there is none.
+I64 volume(I64 total) {
+    base = 0;
+    parted = false;
+    for j in 0..16 {
+        uid[j] = 0;
+    }
+    if (!raw_read(0, total)) {
+        failed("READ (10) of the partition table", -1);
+        return -1;
+    }
+    U8[512] mbr;
+    U8[512] h;
+    phys.phys_read8(data, mbr);
+    phys.phys_read8(data + 512, h);
+    I64[5] g;
+    I64 t = gpt.header(h, total, g);
+    if (t == 0 && !gpt.protective(mbr)) {
+        return total;                                        // a raw volume
+    }
+    if (t <= 0) {
+        say("the GUID partition table is not sound; no volume");
+        return -1;
+    }
+    I64[256] ranges;                                         // every used entry's first and last LBA
+    I64 used = 0;
+    I64 pick = -1;                                           // the first Linux filesystem entry's place in ranges
+    I64 pick_n = 0;
+    Bool sound = true;
+    U64 crc = 0xFFFFFFFF;
+    I64 left = 128 * g[1];                                   // the array's bytes, at most 16 KiB
+    I64 s = 0;
+    while (left > 0 && sound) {
+        if (s % SECTORS_PER_REQUEST == 0 && !raw_read(g[0] + s, total)) {
+            failed("READ (10) of the partition entries", -1);
+            return -1;
+        }
+        U8[512] b;
+        phys.phys_read8(data + (512 * (s % SECTORS_PER_REQUEST)) as U64, b);
+        I64 take = 512;
+        if (left < take) { take = left; }
+        crc = gpt.crc_update(crc, b, 0, take);
+        for e in 0..take / 128 {
+            I64[2] r;
+            U8[16] u;
+            I64 k = gpt.entry(b, 128 * e, g[3], g[4], r, u);
+            if (k < 0) {
+                sound = false;
+            } else if (k > 0) {
+                ranges[2 * used] = r[0];
+                ranges[2 * used + 1] = r[1];
+                if (k == 1 && pick < 0) {
+                    pick = used;
+                    pick_n = 4 * s + e + 1;
+                    for j in 0..16 {
+                        uid[j] = u[j];
+                    }
+                }
+                used += 1;
+            }
+        }
+        left -= take;
+        s += 1;
+    }
+    if (!sound || gpt.crc_final(crc) != g[2] as U64) {
+        say("the partition entries are not sound; no volume");
+        return -1;
+    }
+    if (pick < 0) {
+        say("no Linux filesystem partition; no volume");
+        return -1;
+    }
+    I64 first = ranges[2 * pick];
+    I64 last = ranges[2 * pick + 1];
+    for i in 0..used {
+        if (i != pick && gpt.overlap(first, last, ranges[2 * i], ranges[2 * i + 1])) {
+            say("the Linux partition shares sectors with another; no volume");
+            return -1;
+        }
+    }
+    base = first;
+    parted = true;
+    serial.serial_write("daphnis: usb: storage: volume partition ");
+    put_dec(pick_n);
+    serial.serial_write(" at sector ");
+    put_dec(first);
+    serial.serial_write("\n");
+    return last - first + 1;
+}
+
+// The disk src/xhci.ci found, made ready: its size in sectors, 0 without one, -1 when one is there and cannot be
+// used (printed).
+export I64 init() {
+    sectors = 0;
+    may_write = false;
+    if (!xhci.ms_on()) {
+        return 0;
+    }
+    if (io == 0) {
+        I64 f = frames.alloc(2);                             // io and data, held for the boot: never released
+        if (f < 0) {
+            return -1;
+        }
+        io = frames.frame_addr(f) as U64;
+        data = frames.frame_addr(f + 1) as U64;
+    }
+    U8[16] c;
+    I64 n = usbscsi.cdb_inquiry(c);
+    clear_answer();
+    I64 r = run(c, n, true, io + 128, usbscsi.INQUIRY_BYTES);
+    if (r != usbscsi.PASSED || moved < 32) {                 // the type and the product: bytes 0 to 31
+        failed("INQUIRY", r);
+        return -1;
+    }
+    U8[36] inq;
+    phys.phys_read8(io + 128, inq);
+    if (!usbscsi.is_disk(inq)) {
+        serial.serial_write("daphnis: usb: storage: not a disk\n");
+        return -1;
+    }
+    U8[16] name;
+    I64 name_n = usbscsi.model(inq, name);
+    n = usbscsi.cdb_test_unit_ready(c);
+    r = run(c, n, false, 0, 0);
+    I64 tries = 1;
+    while (r == usbscsi.FAILED && tries < READY_TRIES) {
+        _ = sense();                                         // read, so the unit attention is spent
+        xhci.wait_ms(100);
+        r = run(c, n, false, 0, 0);
+        tries += 1;
+    }
+    if (r != usbscsi.PASSED) {
+        failed("TEST UNIT READY", r);
+        return -1;
+    }
+    n = usbscsi.cdb_read_capacity(c);
+    clear_answer();
+    r = run(c, n, true, io + 128, usbscsi.CAPACITY_BYTES);
+    if (r != usbscsi.PASSED || moved != usbscsi.CAPACITY_BYTES) {
+        failed("READ CAPACITY", r);
+        return -1;
+    }
+    U8[8] cap;
+    phys.phys_read8(io + 128, cap);
+    I64 total = usbscsi.capacity_sectors(cap);
+    if (total < SECTORS_PER_REQUEST) {
+        serial.serial_write("daphnis: usb: storage: not 512-byte sectors within READ (10)\n");
+        return -1;
+    }
+    I64 vol = volume(total);
+    if (vol < SECTORS_PER_REQUEST) {
+        return -1;
+    }
+    total = vol;
+    U8[256] line;
+    I64 line_n = bootarg.boot_cmdline(line);
+    if (parted) {
+        may_write = gpt.names(line, line_n, "daphnis.disk.write=", uid);
+    } else {
+        may_write = usbscsi.names(line, line_n, "daphnis.disk.write=", name, name_n);
+    }
+    sectors = total;
+    serial.serial_write("daphnis: usb: storage ");
+    for k in 0..name_n {
+        serial.serial_putc(name[k]);
+    }
+    serial.serial_write(", ");
+    put_dec(sectors);
+    if (may_write) {
+        serial.serial_write(" sectors, writes on\n");
+    } else {
+        serial.serial_write(" sectors, read only\n");
+        if (parted) {
+            say("read only: the boot line does not name the volume partition's GUID");
+        } else {
+            say("read only: the boot line does not name this disk's model");
+        }
+    }
+    return sectors;
+}
+
+// True when the boot line names this disk: write() moves bytes.
+export Bool writable() {
+    return may_write;
+}
+
+// 8 sectors through data: a write's bytes copied in from the caller's frame at addr first, a read's copied out to it
+// only when the CSW passed and all 4,096 bytes came. The caller's frame is never in a TRB.
+Bool move(Bool wr, I64 sector, U64 addr) {
+    if (!xhci.ms_on()) {
+        return false;                                        // dropped: src/xhci.ci said so once
+    }
+    if (sectors == 0 || sector < 0 || sector > sectors - SECTORS_PER_REQUEST) {
+        return false;
+    }
+    I64 nbytes = 512 * SECTORS_PER_REQUEST;
+    if (wr) {
+        copy_block(addr, data);
+        unsynced = true;                                     // set before the CBW: a write that failed may have landed
+    }
+    U8[16] c;
+    I64 n = usbscsi.cdb_rw(c, wr, base + sector, SECTORS_PER_REQUEST);
+    I64 r = run(c, n, !wr, data, nbytes);
+    if (r == usbscsi.PASSED && moved == nbytes) {
+        if (!wr) {
+            copy_block(data, addr);
+        }
+        return true;
+    }
+    if (wr) {
+        failed("WRITE (10)", r);
+    } else {
+        failed("READ (10)", r);
+    }
+    return false;
+}
+
+// The device's own write cache onto its medium before the machine ends (the read of PR 489: power is cut milliseconds
+// after the last WRITE (10), and a stick that caches writes would lose them): SYNCHRONIZE CACHE (10), its status
+// waited for up to xhci.SYNC_MS, 30 s (every other command: BULK_MS, 5 s). Sent only when a WRITE (10) went out
+// since the last one passed, so a read only session and a board without a disk send nothing and print nothing. True
+// when the device says done, or answers ILLEGAL REQUEST (sense key 5: it has no such command, so no cache to write);
+// false, and one line, otherwise.
+export Bool flush() {
+    if (!unsynced || !xhci.ms_on()) {
+        return true;
+    }
+    U8[16] c;
+    I64 n = usbscsi.cdb_sync_cache(c);
+    I64 r = run_wait(c, n, false, io, 0, xhci.SYNC_MS);   // the stick's whole cache onto flash: up to 30 s
+    I64 why = -1;
+    if (r == usbscsi.FAILED) {
+        why = sense();
+    }
+    if (r == usbscsi.PASSED || (why >= 0 && why / 65536 == 5)) {
+        unsynced = false;
+        return true;
+    }
+    serial.serial_write("daphnis: usb: storage: SYNCHRONIZE CACHE (10) failed: ");
+    serial.serial_write("the last writes may not be on the disk\n");
+    return false;
+}
+
+// Reads sectors sector..sector+8 into the frame at physical address addr.
+export Bool read(I64 sector, U64 addr) {
+    return move(false, sector, addr);
+}
+
+// Writes the frame at addr to sectors sector..sector+8; false, and nothing sent, on a disk the boot line does not
+// name.
+export Bool write(I64 sector, U64 addr) {
+    if (!may_write) {
+        return false;
+    }
+    return move(true, sector, addr);
+}
+// SPDX-License-Identifier: Apache-2.0

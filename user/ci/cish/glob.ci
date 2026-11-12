@@ -1,0 +1,201 @@
+// user/ci/cish/glob.ci: pathname expansion (CS-3, XCU 2.13.3). A pattern arrives escaped as expand writes it in
+// pattern mode: a backslash before every byte that was quoted. It is cut at `/`; each part with an unescaped `*`,
+// `?` or `[` is matched against the names of the directory so far (a leading `.` only by a literal `.`), the
+// others are taken as they are; the paths found are sorted by their bytes. No match leaves the word to the caller.
+import user.ci.shctl;
+import user.ci.cish.pattern;
+
+U8[65536] names;   // one directory's names, each NUL-ended
+U8[32768] cur;     // the paths found so far, each NUL-ended
+I64 ncur = 0;
+I64 curb = 0;
+U8[32768] nxt;
+I64 nnxt = 0;
+I64 nxtb = 0;
+U8[32768] outb;    // the result, sorted
+I64[256] ro;
+I64[256] rl;
+I64 nres = 0;
+Bool spilled = false;
+
+export I64 found() { return nres; }
+export I64 item_len(I64 i) { return rl[i]; }
+export U8 item_at(I64 i, I64 k) { return outb[ro[i] + k]; }
+export Bool overflowed() { return spilled; }
+
+// The part p has an unescaped *, ? or [.
+export Bool magic(in U8[_] p) {
+    I64 i = 0;
+    while (i < len(p)) {
+        U8 c = p[i];
+        if (c == '\\') {
+            i = i + 2;
+        } else {
+            if (c == '*' || c == '?' || c == '[') { return true; }
+            i = i + 1;
+        }
+    }
+    return false;
+}
+
+Bool add_next(in U8[_] a, in U8[_] b, Bool slash) {
+    I64 m = len(a) + len(b) + 1;
+    if (slash) { m = m + 1; }
+    if (nnxt == 256 || nxtb + m > 32768) {
+        spilled = true;
+        return false;
+    }
+    for i in 0..len(a) { nxt[nxtb + i] = a[i]; }
+    I64 k = nxtb + len(a);
+    for i in 0..len(b) { nxt[k + i] = b[i]; }
+    k = k + len(b);
+    if (slash) {
+        nxt[k] = '/';
+        k = k + 1;
+    }
+    nxt[k] = 0;
+    nxtb = k + 1;
+    nnxt = nnxt + 1;
+    return true;
+}
+
+// The next list becomes the current one.
+void turn() {
+    for i in 0..nxtb { cur[i] = nxt[i]; }
+    curb = nxtb;
+    ncur = nnxt;
+    nxtb = 0;
+    nnxt = 0;
+}
+
+I64 strend(in U8[_] s, I64 a) {
+    I64 e = a;
+    while (e < len(s) && s[e] != 0) { e = e + 1; }
+    return e;
+}
+
+// p without its escapes, into dst: its length.
+I64 unescape(in U8[_] p, inout U8[_] dst) {
+    I64 k = 0;
+    I64 i = 0;
+    while (i < len(p)) {
+        if (p[i] == '\\' && i + 1 < len(p)) { i = i + 1; }
+        dst[k] = p[i];
+        k = k + 1;
+        i = i + 1;
+    }
+    return k;
+}
+
+Bool less(I64 a, I64 b) {
+    I64 la = rl[a];
+    I64 lb = rl[b];
+    I64 m = la;
+    if (lb < m) { m = lb; }
+    for i in 0..m {
+        U8 x = outb[ro[a] + i];
+        U8 y = outb[ro[b] + i];
+        if (x != y) { return x < y; }
+    }
+    return la < lb;
+}
+
+// Expands pattern p: the count of paths found (0: none, or past 256 paths or 32,768 bytes: overflowed()).
+export I64 expand(in U8[_] p) {
+    nres = 0;
+    spilled = false;
+    ncur = 1;
+    cur[0] = 0;
+    curb = 1;
+    nnxt = 0;
+    nxtb = 0;
+    I64 i = 0;
+    if (len(p) > 0 && p[0] == '/') {
+        cur[0] = '/';
+        cur[1] = 0;
+        curb = 2;
+        i = 1;
+    }
+    Bool globbed = false;
+    Bool last_literal = false;
+    while (i <= len(p) && ncur > 0) {
+        I64 j = i;
+        while (j < len(p) && p[j] != '/') {
+            if (p[j] == '\\') { j = j + 1; }
+            j = j + 1;
+        }
+        if (j > len(p)) { j = len(p); }
+        Bool more = j < len(p);
+        I64 at = 0;
+        for c in 0..ncur {
+            I64 e = strend(cur, at);
+            if (magic(p[i..j])) {
+                U8[4096] dir;
+                I64 dn = e - at;
+                for k in 0..dn { dir[k] = cur[at + k]; }
+                if (dn == 0) {
+                    dir[0] = '.';
+                    dn = 1;
+                }
+                I64 got = shctl.sh_dirents(dir[0..dn], names);
+                I64 s = 0;
+                while (got > 0 && s < got) {
+                    I64 t = strend(names, s);
+                    Bool hidden = names[s] == '.' && p[i] != '.';
+                    if (!hidden && pattern.match(p[i..j], names[s..t])) {
+                        if (!add_next(cur[at..e], names[s..t], more)) { return 0; }
+                    }
+                    s = t + 1;
+                }
+            } else {
+                U8[4096] lit;
+                I64 ln = unescape(p[i..j], lit);
+                if (!add_next(cur[at..e], lit[0..ln], more)) { return 0; }
+            }
+            at = e + 1;
+        }
+        if (magic(p[i..j])) {
+            globbed = true;
+            last_literal = false;
+        } else {
+            last_literal = true;
+        }
+        turn();
+        i = j + 1;
+    }
+    if (!globbed) { return 0; }
+    // the paths into the result, each kept only if it exists when the last part was literal
+    I64 at = 0;
+    I64 ob = 0;
+    for c in 0..ncur {
+        I64 e = strend(cur, at);
+        Bool keep = true;
+        if (last_literal) {
+            U8[12] st;
+            keep = shctl.sh_stat(cur[at..e], 0, st) == 0;
+        }
+        if (keep) {
+            ro[nres] = ob;
+            rl[nres] = e - at;
+            for k in at..e { outb[ob + k - at] = cur[k]; }
+            ob = ob + (e - at);
+            nres = nres + 1;
+        }
+        at = e + 1;
+    }
+    // insertion sort by bytes
+    for a in 1..nres {
+        I64 b = a;
+        while (b > 0 && less(b, b - 1)) {
+            I64 to = ro[b];
+            I64 tl = rl[b];
+            ro[b] = ro[b - 1];
+            rl[b] = rl[b - 1];
+            ro[b - 1] = to;
+            rl[b - 1] = tl;
+            b = b - 1;
+        }
+    }
+    return nres;
+}
+// SPDX-License-Identifier: Apache-2.0

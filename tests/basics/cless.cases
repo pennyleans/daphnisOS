@@ -1,0 +1,9 @@
+# tests/basics/cless.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-07-bp-basics.md section 5, BP-2). Descriptor 1 is
+# a pipe here, so cless copies its input; the screen is the pty leg's (tools/check-basics.py pty).
+lines.txt | - | -
+ | lines.txt | -
+- | odd.txt | -
+odd.txt | - | -
+calc.txt | - | -
+missing.txt | - | -
+lines.txt odd.txt | - | -

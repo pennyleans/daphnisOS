@@ -1,0 +1,23 @@
+// src/main_nullptr.ci: K3 hardening. The null page is not mapped: a write near address 0 and a
+// read of address 0 are #PF records, not silent accesses.
+
+import src.serial;
+import src.trap;
+import src.cpu;
+import src.report;
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("Daphnis K3: null page\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    trap.trap_probe_pf(0 as U64);
+    report.print_record("null write");
+    U64 v = trap.vm_load64(0 as U64);
+    report.print_record("null read");
+    if (v != 0) {
+        serial.serial_write("a faulting load returned a value\n");
+    }
+    serial.serial_write("nullptr: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

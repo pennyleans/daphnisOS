@@ -1,0 +1,206 @@
+// tests/png/png_test.ci: U-PNG (docs/specs/2026-11-11-u-png.md), hosted. deflate.ci's zlib streams inflate back
+// through inflate.ci, every block form and the window's far end among them; png.ci's files decode back through
+// img.ci, pixel for pixel, RGB and RGBA, odd sizes, every filter; the refusals. tools/check-png.py reads the same
+// writers' output with an independent decoder (tests/png/png_twin.ci). Run by check.sh:
+// cint test --root . tests/png/png_test.ci
+import user.ci.core.deflate;
+import user.ci.core.inflate;
+import user.ci.core.png;
+import user.ci.core.img;
+
+I64 seed = 1;
+
+I64 rnd() {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed >> 16;
+}
+
+// n bytes of one kind: 0 zeros, 1 noise, 2 a phrase over and over, 3 a ramp, 4 noise in short runs.
+void make(inout U8[_] b, I64 n, I64 kind) {
+    seed = 7 + kind;
+    I64 run = 0;
+    I64 v = 0;
+    for i in 0..n {
+        if (kind == 1) { v = rnd() & 255; }
+        else if (kind == 2) { v = b"the desk draws one plate over the strip; "[i % 41] as I64; }
+        else if (kind == 3) { v = (i / 3) % 256; }
+        else if (kind == 4) {
+            if (run == 0) {
+                v = rnd() & 255;
+                run = 1 + rnd() % 9;
+            }
+            run = run - 1;
+        }
+        b[i] = v as U8;
+    }
+}
+
+// src[0 .. n) through zlib and back; the stream's length.
+I64 trip(in U8[_] src, I64 n) {
+    U8[400000] z;
+    U8[400000] back;
+    I64 e = deflate.zlib(src, 0, n, z, 0);
+    assert(e > 0 && e <= deflate.bound(n));
+    I64 r = inflate.unzlib(z, 0, e, back);
+    assert(r == n);
+    for i in 0..n { assert(back[i] == src[i]); }
+    return e;
+}
+
+test "zlib: empty, one byte, two, three" {
+    U8[4] b = [65, 66, 67, 68];
+    assert(trip(b, 0) == 8);
+    _ = trip(b, 1);
+    _ = trip(b, 2);
+    _ = trip(b, 3);
+}
+
+test "zlib: every kind at sizes across blocks and stored pieces" {
+    U8[300000] b;
+    I64[9] sizes = [4, 100, 1000, 16384, 65535, 65536, 70001, 140000, 300000];
+    for kind in 0..5 {
+        for s in 0..9 {
+            make(b, sizes[s], kind);
+            I64 e = trip(b, sizes[s]);
+            if ((kind == 0 || kind == 2) && sizes[s] >= 1000) { assert(e < sizes[s] / 20 + 40); }
+        }
+    }
+}
+
+test "zlib: noise is stored, no larger than its bound" {
+    U8[300000] b;
+    make(b, 300000, 1);
+    I64 e = trip(b, 300000);
+    assert(e > 300000 && e <= deflate.bound(300000));
+}
+
+test "zlib: a match at the window's far end, 32768 back, and one past it" {
+    U8[200000] b;
+    for gap in 32767..32770 {
+        make(b, gap, 1);
+        for i in gap..2 * gap + 5000 { b[i] = b[i - gap]; }
+        I64 e = trip(b, 2 * gap + 5000);
+        if (gap <= 32768) { assert(e < gap + gap / 8); }
+    }
+}
+
+test "zlib: dst too short is E_ROOM, nothing written past it" {
+    U8[70000] b;
+    make(b, 70000, 1);
+    U8[1000] z;
+    for i in 0..1000 { z[i] = 0xAA; }
+    assert(deflate.zlib(b, 0, 70000, z[0..500], 0) == deflate.E_ROOM);
+    for i in 500..1000 { assert(z[i] == 0xAA); }
+}
+
+test "zlib: a stream written at an offset, from an offset" {
+    U8[5000] b;
+    make(b, 5000, 4);
+    U8[8000] z;
+    U8[5000] back;
+    I64 e = deflate.zlib(b, 1000, 4000, z, 77);
+    assert(e > 77);
+    assert(inflate.unzlib(z, 77, e, back) == 3000);
+    for i in 0..3000 { assert(back[i] == b[1000 + i]); }
+}
+
+// An image of w x h, ch bytes a pixel, of one kind: 0 flat, 1 noise, 2 gradients, 3 stripes and a checker, 4 noise
+// in runs with alpha steps.
+void picture(inout U8[_] px, I64 w, I64 h, I64 ch, I64 kind) {
+    seed = 11 + kind;
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..ch {
+                I64 v = 0;
+                if (kind == 0) { v = 40 + 30 * c; }
+                else if (kind == 1) { v = rnd() & 255; }
+                else if (kind == 2) { v = (x * 7 + y * 3 + c * 50) % 256; }
+                else if (kind == 3) { v = ((x / 3 + y / 2 + c) % 2) * 200 + 20; }
+                else {
+                    v = (rnd() % 4) * 60;
+                    if (c == 3) { v = (x * 255) / w; }
+                }
+                px[(y * w + x) * ch + c] = v as U8;
+            }
+        }
+    }
+}
+
+// px through png.encode and img.decode; the file's length.
+I64 round(in U8[_] px, I64 w, I64 h, I64 ch) {
+    U8[200000] raw;
+    U8[250000] f;
+    U8[200000] back;
+    I64 n = png.encode(px, w, h, ch, raw, f);
+    assert(n > 57 && n <= png.bound(w, h, ch));
+    // the frame: signature, IHDR, IEND with its known CRC
+    U8[8] sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    for i in 0..8 { assert(f[i] == sig[i]); }
+    assert(f[11] == 13 && f[12] == 'I' && f[15] == 'R' && f[24] == 8 && f[28] == 0);
+    if (ch == 3) { assert(f[25] == 2); } else { assert(f[25] == 6); }
+    U8[12] iend = [0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xAE, 0x42, 0x60, 0x82];
+    for i in 0..12 { assert(f[n - 12 + i] == iend[i]); }
+    U8[200000] raw2;
+    assert(img.decode(f, n, raw2, back) == 0);
+    assert(img.width() == w && img.height() == h);
+    for p in 0..w * h {
+        for c in 0..3 { assert(back[4 * p + c] == px[ch * p + c]); }
+        if (ch == 4) { assert(back[4 * p + 3] == px[ch * p + 3]); } else { assert(back[4 * p + 3] == 255); }
+    }
+    return n;
+}
+
+test "png: RGB and RGBA of every kind and odd sizes decode back through img.ci" {
+    U8[200000] px;
+    I64[16] dims = [1, 1, 2, 3, 17, 13, 64, 5, 5, 64, 255, 7, 300, 40, 97, 101];
+    for d in 0..8 {
+        for ch in 3..5 {
+            for kind in 0..5 {
+                picture(px, dims[2 * d], dims[2 * d + 1], ch, kind);
+                _ = round(px, dims[2 * d], dims[2 * d + 1], ch);
+            }
+        }
+    }
+}
+
+test "png: a flat 300 x 160 RGBA picture is under 1 KiB" {
+    U8[200000] px;
+    picture(px, 300, 160, 4, 0);
+    assert(round(px, 300, 160, 4) < 1024);
+}
+
+test "png: every filter is chosen on some row" {
+    // rows made for each filter: flat (0 or 2 or 1), a ramp along x (1), a ramp along y (2), the mean (3), a plane (4)
+    U8[200000] px;
+    picture(px, 97, 101, 4, 2);
+    U8[200000] raw;
+    U8[250000] f;
+    I64 n = png.encode(px, 97, 101, 4, raw, f);
+    assert(n > 0);
+    Bool[5] seen;
+    for y in 0..101 { seen[raw[y * (97 * 4 + 1)] as I64] = true; }
+    I64 kinds = 0;
+    for i in 0..5 {
+        if (seen[i]) { kinds = kinds + 1; }
+    }
+    assert(kinds >= 2);
+    picture(px, 64, 64, 3, 1);
+    n = png.encode(px, 64, 64, 3, raw, f);
+    assert(n > 0);
+}
+
+test "png: refusals" {
+    U8[1000] px;
+    U8[2000] raw;
+    U8[2000] f;
+    assert(png.encode(px, 0, 4, 4, raw, f) == png.E_ARGS);
+    assert(png.encode(px, 4, 0, 4, raw, f) == png.E_ARGS);
+    assert(png.encode(px, 4, 4, 2, raw, f) == png.E_ARGS);
+    assert(png.encode(px, 16, 16, 4, raw, f) == png.E_ARGS);    // 1024 bytes of pixels, 1000 given
+    assert(png.encode(px, 10, 10, 4, raw[0..400], f) == png.E_ROOM);
+    assert(png.encode(px, 10, 10, 4, raw, f[0..40]) == png.E_ROOM);
+    picture(px, 10, 10, 4, 1);
+    assert(png.encode(px, 10, 10, 4, raw, f[0..200]) == png.E_ROOM);
+    assert(png.encode(px, 10, 10, 4, raw, f) > 400);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,188 @@
+// tests/rs/raise_test.ci: HX-1, "focusing a window raises it" (user/ci/kit/stack.ci over user/ci/kit/layout.ci), as
+// hdesk's raise() takes it on each way a window takes the focus: a press on the window or its bar, Alt+Tab and the
+// switcher, the plane's and the menu's window list, Super+Arrow, Super+z; and a window opens on top. Run by check.sh
+// with every tests/rs/*_test.ci.
+import user.ci.kit.layout;
+import user.ci.kit.stack;
+
+I64[16] md;
+I64[16] rk;
+I64[16] fr;          // x, y, w, h a float, 4 apart
+I64 top = 0;
+I64 n = 0;
+
+void reset() {
+    layout.screen(1920, 1080, 1);
+    n = 0;
+    top = 0;
+}
+
+// A new window, in mode m (a float's frame x, y, w, h); it opens on top, as hdesk's do.
+I64 open(I64 m, I64 x, I64 y, I64 w, I64 h) {
+    I64 i = n;
+    n = n + 1;
+    top = top + 1;
+    md[i] = m;
+    rk[i] = top;
+    if (i < 4) {
+        fr[4 * i] = x;
+        fr[4 * i + 1] = y;
+        fr[4 * i + 2] = w;
+        fr[4 * i + 3] = h;
+    }
+    return i;
+}
+
+// hdesk's raise(i): the rank stack.raised gives, then the focus.
+void focus(I64 i) {
+    I64 r = stack.raised(md[i], rk[i], top);
+    if (r > top) { top = r; }
+    rk[i] = r;
+    layout.focus(i);
+}
+
+void lay() {
+    for i in 0..n {
+        if (i < 4) {
+            layout.put(i, 1, md[i], rk[i], fr[4 * i], fr[4 * i + 1], fr[4 * i + 2], fr[4 * i + 3]);
+        } else {
+            layout.put(i, 1, md[i], rk[i], 0, 0, 0, 0);
+        }
+    }
+    layout.compute(1);
+}
+
+// The window seen at (x, y): the one whose visible rectangles hold it, or -1.
+I64 seen(I64 x, I64 y) {
+    lay();
+    I64 s = -1;
+    for i in 0..n {
+        for k in 0..layout.rects(i) {
+            I64 rx = layout.rect_x(i, k);
+            I64 ry = layout.rect_y(i, k);
+            if (x >= rx && x < rx + layout.rect_w(i, k) && y >= ry && y < ry + layout.rect_h(i, k)) { s = i; }
+        }
+    }
+    return s;
+}
+
+test "a press on a covered float, or on its bar, raises it over the floats that covered it" {
+    reset();
+    I64 set = open(layout.FLOAT, 400, 200, 720, 480);
+    I64 calc = open(layout.FLOAT, 600, 300, 320, 480);
+    I64 view = open(layout.FLOAT, 800, 400, 640, 480);
+    assert(seen(700, 350) == calc);
+    assert(seen(850, 450) == view);
+    focus(set);
+    assert(seen(700, 350) == set);
+    assert(seen(850, 450) == set);
+    assert(seen(1300, 800) == view);    // what the raised one does not cover stays as it was
+}
+
+test "Alt+Tab and the switcher: the chosen float comes to the top; the others keep their order" {
+    reset();
+    I64 a = open(layout.FLOAT, 100, 100, 800, 600);
+    I64 b = open(layout.FLOAT, 300, 200, 800, 600);
+    I64 c = open(layout.FLOAT, 500, 300, 800, 600);
+    focus(a);
+    assert(seen(600, 400) == a);
+    assert(seen(1200, 850) == c);       // c still over b
+    focus(b);
+    assert(seen(600, 400) == b);
+    focus(c);
+    assert(seen(600, 400) == c);
+}
+
+test "the window list (plane, menu, tray): the window chosen is shown on top" {
+    reset();
+    I64 a = open(layout.FLOAT, 100, 100, 800, 600);
+    I64 b = open(layout.FLOAT, 200, 150, 800, 600);
+    I64 c = open(layout.FLOAT, 250, 180, 800, 600);
+    md[a] = layout.MINIMIZED;
+    assert(seen(300, 300) == c);
+    md[a] = layout.FLOAT;               // brought back by the list
+    focus(a);
+    assert(seen(300, 300) == a);
+}
+
+test "Super+z and a maximized window focused cover the floats; a float focused after it covers it" {
+    reset();
+    I64 set = open(layout.FLOAT, 400, 200, 720, 480);
+    I64 calc = open(layout.FLOAT, 600, 300, 320, 480);
+    I64 view = open(layout.FLOAT, 800, 400, 640, 480);
+    md[set] = layout.MONOCLE;
+    focus(set);
+    assert(seen(700, 350) == set);
+    assert(seen(850, 450) == set);
+    assert(layout.rects(calc) == 0 && layout.rects(view) == 0);
+    focus(calc);
+    assert(seen(700, 350) == calc);
+    assert(seen(1300, 800) == set);
+}
+
+test "a tile focused keeps its cell and stays under the floats; focusing the top window twice gives no new rank" {
+    reset();
+    I64 t0 = open(layout.TILED, 0, 0, 0, 0);
+    I64 t1 = open(layout.TILED, 0, 0, 0, 0);
+    I64 f = open(layout.FLOAT, 200, 200, 600, 400);
+    lay();
+    I64 x0 = layout.frame_x(t0);
+    I64 x1 = layout.frame_x(t1);
+    focus(t0);
+    assert(rk[t0] == 1 && rk[t1] == 2);
+    lay();
+    assert(layout.frame_x(t0) == x0 && layout.frame_x(t1) == x1);
+    assert(seen(300, 300) == f);
+    I64 t = top;
+    focus(f);
+    focus(f);
+    assert(top == t && rk[f] == t);
+}
+test "a launch (the plane, the screenshot plate, Super+Enter, Settings): the window opened last is on top" {
+    reset();
+    I64 calc = open(layout.FLOAT, 495, 109, 290, 447);
+    I64 con = open(layout.FLOAT, 240, 108, 800, 600);
+    I64 view = open(layout.FLOAT, 272, 136, 290, 475);
+    assert(seen(500, 300) == view);
+    assert(seen(700, 300) == con);
+    assert(layout.rects(calc) == 0);    // under the console opened after it
+    focus(calc);
+    I64 set = open(layout.FLOAT, 100, 100, 1000, 700);
+    assert(seen(600, 400) == set);      // over a window raised before it opened
+}
+test "the overlay (prompts, the account and lock screens) stays over a float whose rank was pushed past 10^6" {
+    reset();
+    I64 f = open(layout.FLOAT, 200, 200, 800, 600);
+    I64 g = open(layout.FLOAT, 300, 300, 800, 600);
+    for k in 0..2000 { focus(f); focus(g); }    // a program opening and closing windows in a loop
+    rk[f] = 2000000;
+    rk[g] = layout.RANK_CAP * 4;
+    top = rk[g];
+    lay();
+    layout.put(layout.OVERLAY, 1, layout.FLOAT, 1000000, 400, 400, 400, 300);
+    layout.compute(1);
+    assert(layout.rects(layout.OVERLAY) == 1);
+    assert(layout.rect_w(layout.OVERLAY, 0) == 400 && layout.rect_h(layout.OVERLAY, 0) == 300);
+    assert(layout.layer_for(layout.OVERLAY, layout.FLOAT, 0) > layout.layer_for(g, layout.FLOAT, rk[g]));
+    assert(layout.layer_for(g, layout.MONOCLE, rk[g]) == layout.RANK_CAP + 1);
+}
+
+test "a fullscreen tile minimized, or made a tile again, takes its cell back" {
+    reset();
+    I64 t0 = open(layout.TILED, 0, 0, 0, 0);
+    I64 t1 = open(layout.TILED, 0, 0, 0, 0);
+    I64 t2 = open(layout.TILED, 0, 0, 0, 0);
+    lay();
+    I64 x0 = layout.frame_x(t0);
+    I64 cell = rk[t0];
+    md[t0] = layout.MONOCLE;            // Super+z: hdesk keeps the tile's rank, then raises it
+    focus(t0);
+    assert(rk[t0] != cell);
+    rk[t0] = stack.unfull(md[t0], layout.TILED, rk[t0], cell);   // minimized (or Super+z again)
+    md[t0] = layout.TILED;              // restored from the list
+    lay();
+    assert(rk[t0] == cell && layout.frame_x(t0) == x0);
+    assert(stack.unfull(layout.MONOCLE, layout.FLOAT, 9, 1) == 9);   // a fullscreen float keeps its top rank
+    assert(stack.unfull(layout.FLOAT, layout.TILED, 9, 1) == 9);
+}
+// SPDX-License-Identifier: Apache-2.0

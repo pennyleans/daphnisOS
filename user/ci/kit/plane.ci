@@ -1,0 +1,3376 @@
+// user/ci/kit/plane.ci: the Super plane (FF-5, docs/specs/2026-11-07-ff-super-plane.md sections 3 and 3d; the 0.1.0
+// polish of section 3g, edition 14, l 2026-11-10 02:32Z): its geometry, its model and its drawing. The desk feeds
+// it: the field's bytes, the sources (windows and programs), the apps of the grid (kit/apps.ci), the files of its
+// index (offer_file, then fill_file for the kept ones), the windows and grants of the lower band, the recent files
+// and the preview's lines. Nothing here reads a file, a device or a clock.
+//
+// Placement (section 3g), in 1x units, a 2x desk working in half its pixels: the plane is Wp x Hp, the screen under
+// the bar divided by the scale z. One column C = min(960, Wp - 64) wide, centered; the field 48 high, 20 under the
+// bar; the grid 20 under it, six columns while (C - 40) / 6 is at least 96, else four, cells 116 high and 8 apart,
+// as many rows as its apps take (twelve at most: two rows of six or three of four); the lower band 20 under the
+// grid, columns 608 and 320 with a gap of 32 at C = 960, each C * 608 / 960 and C * 32 / 960 (the right column the
+// rest) narrower, and stacked full width below C = 640;
+// the footer the plane's last 48. A cell's edges are x0 + k (C + 8) / cols and the next one's less 8. Anything that
+// would end past the band (or, a grid cell, past the footer's top) is not drawn: whole or nothing. With a query the
+// grid folds away and the band begins 24 under the field (frame 2).
+//
+// Drawing is scale native: paint(row, y) draws device row y of the plane at scale z, every size times z, the text
+// through kit/ctext.ci at z, the corners through kit/shape.ci. tools/check-hdesk.py's plane functions are the twin,
+// and tests/ff/plane_proof.ci prints frames to hold them equal.
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.icons3;     // DN-5: the app icons of draft 3
+import user.ci.kit.fileicons;  // DN-9: the file icons
+import user.ci.kit.match;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;
+import user.ci.kit.shade;     // DN-49: the plate's shadow High, the power menu's Mid
+import user.ci.kit.blend;     // DN-49: the scrim
+import user.ci.kit.apps;
+import user.ci.kit.anim;
+import user.ci.kit.ctxmenu;  // DN-46 (c): the Taskbar words, from the kit's one table
+import user.ci.kit.tooltip;  // DN-49: a 28 px pin's name, on hover
+import user.ci.kit.symbols;  // DN-47: the power menu's rows (the only menu outside the strip with symbols)
+import user.ci.kit.shquote;  // AC-R1: a path a program asks for is copied into the desk's log only when printable
+
+export const I64 FILE = 1;          // row kinds, as the list names them: file, dir, prog, win, app
+export const I64 DIR = 2;
+export const I64 PROG = 3;
+export const I64 WIN = 4;
+export const I64 APP = 5;
+export const I64 ROWS = 32;         // the list's rows (match.TOP)
+export const I64 SOURCES = 96;      // windows and programs offered besides the index
+export const I64 PINS = 28;          // DN-49: up to 28 pins, two rows that shrink as pins grow
+export const I64 RECENT = 12;
+export const I64 LINES = 40;        // the preview's lines
+export const I64 TEXT = 96;         // a label's bytes
+export const I64 SIDE = 24;         // a right column's bytes
+export const I64 CELLS = 31;         // DN-49: the pins, then the rail's three homes (Settings, Trash, All Apps)
+export const I64 FILE_ICON = 100;   // an icon code at FILE_ICON + k is fileicons' k; below it, icons3's        // the grid's apps
+export const I64 WINS = 16;         // the band's windows
+export const I64 GRANTS = 16;       // and grants held
+
+// What the resting selection is on (sel_kind).
+export const I64 ON_NONE = 0;
+export const I64 ON_CELL = 1;
+export const I64 ON_RECENT = 2;
+export const I64 ON_WINDOW = 3;
+export const I64 ON_ALLAPPS = 4;    // DN-5: the All Apps tile
+
+export const I64 HOLE = -1;         // a grid slot: empty, or the All Apps tile
+export const I64 ALL = -2;
+
+// Section 3g at 1x.
+export const I64 MARGIN = 32;
+export const I64 COL_MAX = 960;
+// DN-49 (frame 1, settled 20:34Z): a centered plate 720 x 424, 40 under the bar, radius 16, MANTLE, shadow High, over
+// a 45 percent scrim; 20 in at the sides and top, 16 between its parts; the search pill 44 high.
+export const I64 PL_W = 720;
+export const I64 PL_H = 424;
+export const I64 PL_TOP = 40;
+export const I64 PL_R = 16;
+export const I64 PL_PAD = 20;
+export const I64 PL_GAP = 16;
+export const I64 PL_SHADOW = 3;     // High
+export const I64 SCRIM = 115;       // 45 percent black, in 256ths
+export const I64 FIELD_TOP = 20;
+export const I64 FIELD_H = 44;
+export const I64 RAIL_W = 132;      // the fixed rail: Settings, Trash, All Apps, 52 px rows, a 32 px icon and the name
+export const I64 RAIL_ROW = 52;
+export const I64 RAIL_ICON = 32;
+export const I64 GAP = 20;          // field to grid, grid to band, band to footer, windows to grants
+export const I64 QGAP = 24;         // the field to the band with a query (frame 2)
+export const I64 CELL_H = 80;       // DN-49: a pin's cell, two rows of them, 4 apart
+export const I64 CELL_GAP = 4;
+export const I64 CELL_MIN = 96;     // a cell's narrowest at six columns
+export const I64 BAND_L = 608;
+export const I64 BAND_GAP = 32;
+export const I64 STACK_BELOW = 640;
+export const I64 FOOT_H = 44;       // DN-49: the footer, the power button alone (DN-47)
+export const I64 ROW_H = 28;        // DN-49: a list row, a pill
+export const I64 ROW_GAP = 0;
+export const I64 INSET = 0;         // a selected row's pill from the list's edges
+export const I64 R_KEY = 4;         // the radii: keycaps, controls and fields, panels and windows, app cells
+export const I64 R_CTRL = 6;
+export const I64 R_PANEL = 8;
+export const I64 R_CELL = 12;
+export const I64 ICON = 64;         // a cell's icon, hovered or selected, pressed
+export const I64 ICON_UP = 72;
+export const I64 ICON_DOWN = 56;
+export const I64 HOVER_MS = 120;    // MS-6 (MS spec section 4): hover, press and the selection pill, all on the curve out
+export const I64 PRESS_MS = 80;
+export const I64 PILL_MS = 120;
+const I64 LABEL_H = 11;             // a section label's line, then 12 to its content
+const I64 HEAD = 19;                // DN-49: the label, then 8 to its rows
+const I64 SECT_GAP = 20;            // between the query's sections (frame 2, DN-49)
+const I64 TOP_H = 52;               // DN-49: the top hit's pill (frame 2)
+const I64 KEY_H = 20;
+const I64 PANEL_H = 300;            // DN-49: the preview panel: 16, the 48 head, 16, five fields 26 apart, 16, two buttons, 16
+const I64 BASE = 13;                // FONT-1: txt's 16 px slot, its baseline 13 down (the FF-5 helpers)
+
+I64 gen = 1;        // bumped by every change the layout reads; lay_rest and lay_query keep their last result for it
+I64 lay_gen = 0;
+I64 lay_was = 0;    // 1 resting, 2 the query
+I64 Z = 1;          // the scale
+I64 W = 0;          // the plane in device pixels
+I64 H = 0;
+I64 WP = 0;         // and in 1x units
+I64 HP = 0;
+
+U8[32] q;
+I64 qn = 0;
+
+I64[96] s_kind;
+I64[96] s_ref;
+I64[96] s_icon;
+I64[96] s_tick;
+U8[9216] s_text;
+I64[96] s_len;
+U8[2304] s_side;
+I64[96] s_slen;
+I64 sn = 0;
+
+I64[32] r_kind;             // the list: what the query keeps, best first
+I64[32] r_ref;              // a window, a source, an index entry, an app
+I64[32] r_icon;
+U8[3072] r_text;
+I64[32] r_len;
+U8[3072] r_mark;            // 1 under a byte the query matched
+U8[768] r_side;
+I64[32] r_slen;
+I64 rn = 0;
+I64[32] ord;                // the rows as drawn: the top hit, then FILES, WINDOWS and PROGRAMS, each best first
+I64 qpos = 0;               // the selection's place in ord
+
+I64[31] g_app;              // the grid's slots (DN-5): pinned apps, then holes (HOLE), All Apps (ALL) in the last column
+I64 gn = 0;
+I64[16] av_app;             // the apps the desk has (search and the picker read them), apps.ci's order
+I64 avn = 0;
+I64[28] pn_app;             // the pinned apps, in pinning order (DN-5: the grid shows these)
+I64 ppn = 0;
+I64 rsel = 0;               // the resting selection: cells, then recent rows, then window rows
+I64 hv = -1;                // the cell under the pointer, and the one pressed
+I64 pr = -1;
+
+I64[16] w_ref;              // the band's windows, by desktop
+I64[16] w_icon;
+I64[16] w_desk;
+Bool[16] w_min;
+I64[16] w_app;              // DN-39 (e): the window's app (apps.ci), or apps.NONE
+U8[1536] w_title;
+I64[16] w_tlen;
+U8[1536] w_path;
+I64[16] w_plen;
+I64 wn = 0;
+
+I64[16] gr_ref;             // the grants held: the window and the grant (1 disk, 2 net)
+I64[16] gr_g;
+U8[1536] gr_title;
+I64[16] gr_tlen;
+I64 grn = 0;
+
+U8[2688] p_text;            // pinned: 12 entries, a name and a path (Super+P; the grid is not the pins in 0.1.0)
+I64[28] p_len;
+U8[2688] p_sub;
+I64[28] p_slen;
+I64[28] p_icon;
+I64 pn = 0;
+
+U8[1152] c_text;            // recent: 12 paths, newest first, and their sizes
+I64[12] c_len;
+U8[288] c_side;
+I64[12] c_slen;
+I64[12] c_icon;
+I64 cn = 0;
+
+U8[3840] l_text;            // the preview: a path, then up to LINES lines
+I64[40] l_len;
+I64 ln = 0;
+U8[96] l_path;
+I64 l_plen = 0;
+Bool previewing = false;
+I64 armed = -1;             // FF-R6 B: the power action a first chord press armed, 2 Restart or 3 Shut Down, or -1
+
+// --- geometry, in 1x units ---
+
+// The plane is w x h device pixels at scale z (the screen under the bar).
+export void place(I64 w, I64 h, I64 z) {
+    Z = z;
+    if (Z < 1) { Z = 1; }
+    W = w;
+    H = h;
+    WP = w / Z;
+    HP = h / Z;
+    gen = gen + 1;
+    regrid();
+}
+
+// The plane w x h at 1x (FF-5's call).
+export void resize(I64 w, I64 h) { place(w, h, 1); }
+
+export I64 scale() { return Z; }
+export Bool portrait() { return HP > WP; }
+
+// DN-49: the plate, 1x: centered, PL_TOP under the bar, narrower only on a screen narrower than it.
+export I64 plate_w() { return min(PL_W, WP); }
+export I64 plate_h() { return min(PL_H, max(HP - PL_TOP, 0)); }
+export I64 plate_x0() { return (WP - plate_w()) / 2; }
+export I64 plate_y0() { return PL_TOP; }
+export I64 col_w() { return max(plate_w() - 2 * PL_PAD, 0); }
+export I64 col_x0() { return plate_x0() + PL_PAD; }
+export I64 col_x1() { return col_x0() + col_w(); }
+export I64 field_y0() { return plate_y0() + PL_PAD; }
+export I64 field_y1() { return field_y0() + FIELD_H; }
+
+// DN-49's density (frame 1): with n pins, a row of 7 at 48 px up to 14, 9 at 40 to 18, 11 at 32 to 22, 14 at 28 to 28.
+export I64 pin_cols(I64 n) {
+    if (n <= 14) { return 7; }
+    if (n <= 18) { return 9; }
+    if (n <= 22) { return 11; }
+    return 14;
+}
+export I64 pin_icon(I64 n) {
+    if (n <= 14) { return 48; }
+    if (n <= 18) { return 40; }
+    if (n <= 22) { return 32; }
+    return 28;
+}
+// Whether the pins show their names (at 28 px a name shows only while its cell is hovered).
+export Bool pin_names(I64 n) { return pin_icon(n) > 28; }
+export I64 cols() { return pin_cols(ppn); }
+export I64 grid_rows() { return 2; }
+export I64 grid_y0() { return field_y1() + PL_GAP; }
+export I64 grid_y1() { return grid_y0() + 2 * CELL_H + CELL_GAP; }
+// The pins' area, the rule, the rail.
+export I64 pins_x1() { return col_x1() - RAIL_W - 2 * PL_GAP - 1; }
+export I64 rule_x() { return pins_x1() + PL_GAP; }
+export I64 rail_x0() { return col_x1() - RAIL_W; }
+export I64 foot_y0() { return plate_y0() + plate_h() - FOOT_H; }
+export I64 act_y0() { return foot_y0(); }
+export Bool stacked() { return false; }
+export I64 band_y0() {
+    if (qn > 0) { return field_y1() + PL_GAP; }
+    return grid_y1() + PL_GAP;
+}
+export I64 band_y1() { return foot_y0(); }
+// The lists: two columns 20 apart at rest; with a query the list, then the preview 280 wide (frame 2).
+export I64 left_x0() { return col_x0(); }
+export I64 left_x1() {
+    if (qn > 0) { return col_x1() - 280 - 20; }
+    return col_x0() + (col_w() - 20) / 2;
+}
+export I64 right_x0() {
+    if (qn > 0) { return col_x1() - 280; }
+    return left_x1() + 20;
+}
+export I64 right_x1() { return col_x1(); }
+
+// Cell k's box into b: x0, y0, x1, y1. Pins first, by the density's columns over the pins' area (a cell's edges at
+// whole pixels: column i spans [i, i + 1) of (width + gap) / columns, less the gap); then the rail's three homes.
+export void cell_box(I64 k, inout I64[4] b) {
+    if (k >= ppn) {
+        I64 j = k - ppn;
+        b[0] = rail_x0();
+        b[2] = col_x1();
+        b[1] = grid_y0() + j * (RAIL_ROW + CELL_GAP);
+        b[3] = b[1] + RAIL_ROW;
+        return;
+    }
+    I64 c = cols();
+    I64 i = k % c;
+    I64 w = pins_x1() - col_x0();
+    b[0] = col_x0() + i * (w + CELL_GAP) / c;
+    b[2] = col_x0() + (i + 1) * (w + CELL_GAP) / c - CELL_GAP;
+    b[1] = grid_y0() + (k / c) * (CELL_H + CELL_GAP);
+    b[3] = b[1] + CELL_H;
+}
+
+// The cells drawn: every pin and the three homes.
+export I64 cells_shown() { return gn; }
+
+// FF-5's machine region is gone (section 3g); hdesk's body of it finds an empty box.
+export void machine_box(inout I64[4] b) {
+    b[0] = 0;
+    b[1] = 0;
+    b[2] = 0;
+    b[3] = 0;
+}
+
+// The body's top: a region's box y0 plus FF-5's header.
+export I64 body_y(I64 y0) { return y0 + 25; }
+
+// --- text ---
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// d / 2 toward zero.
+I64 half(I64 d) {
+    if (d >= 0) { return d / 2; }
+    return 0 - (0 - d) / 2;
+}
+
+// The baseline, in device rows, of role f centered in the box from 1x row top, h high.
+export I64 base_of(I64 top, I64 h, I64 f) {
+    I64 a = ctext.ascent(f, Z);
+    return top * Z + half(h * Z - a - ctext.descent(f, Z)) + a;
+}
+
+// The width of s[0..n] in role f at the plane's scale, in device pixels.
+export I64 tw(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, Z); }
+
+// s[0..n] in role f and color c, from device x, centered in the 1x box (top, h), none past device x1.
+void say(inout U32[_] row, I64 y, I64 x, I64 top, I64 h, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    I64 b = base_of(top, h, f);
+    if (y < b - ctext.ascent(f, Z) - 4 * Z || y >= b + ctext.descent(f, Z) + 4 * Z) { return; }
+    I64 e = ctext.text(row, y, x, b, x1, s, n, c, f, Z);
+}
+
+// FF-5's helpers at 1x: s[0..n] in role f on row y, its 16 px slot's top y0, from x0, none past x1; the pen.
+export I64 txt(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return ctext.text(row, y, x0, y0 + BASE, x1, s, n, c, f, 1);
+}
+export I64 txt_w(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+
+// --- the field and the sources ---
+
+export void clear() {
+    am_on = false;                       // DN-39 (d): the pin menu goes with what it was over
+    gen = gen + 1;
+    qn = 0;
+    sn = 0;
+    rn = 0;
+    qpos = 0;
+    pn = 0;
+    cn = 0;
+    ln = 0;
+    gn = 0;
+    wn = 0;
+    grn = 0;
+    rsel = 0;
+    hv = -1;
+    pr = -1;
+    previewing = false;
+    armed = -1;
+    avn = 0;
+    ppn = 0;
+    pk_on = false;
+    regrid();
+}
+
+// The plane opened again: the field, the sources, the list, the band, recent and the preview emptied; the pins and
+// the grid kept.
+export void reset() {
+    gen = gen + 1;
+    qn = 0;
+    sn = 0;
+    rn = 0;
+    qpos = 0;
+    cn = 0;
+    ln = 0;
+    wn = 0;
+    grn = 0;
+    rsel = 0;
+    hv = -1;
+    pr = -1;
+    l_plen = 0;
+    previewing = false;
+    armed = -1;
+    pm_open = false;                   // DN-47: the power menu shut, its button at rest
+    pm_sel = -1;
+    pb_hot = false;
+    pb_focus = false;
+    pk_on = false;
+    settle();
+}
+
+// FF-R6 B: action a (2 or 3) armed by its chord's first press, its chord slot reading `again to ...`; -1 none.
+export void arm(I64 a) {
+    armed = a;
+    if (a < 0) { return; }
+    for k in 0..PM_N {
+        if (pm_act[k] == a) { pm_sel = k; }   // DN-47: an armed chord shows the menu on its row
+    }
+}
+export I64 armed_action() { return armed; }
+
+export I64 query(inout U8[_] dst) {
+    for k in 0..qn { dst[k] = q[k]; }
+    return qn;
+}
+
+export I64 query_len() { return qn; }
+
+// A byte typed into the field (printable only); false when the field is full.
+export Bool typed(U8 c) {
+    gen = gen + 1;
+    if (qn == match.QMAX || c < 32 || c > 126) { return false; }
+    q[qn] = c;
+    qn = qn + 1;
+    qpos = 0;
+    return true;
+}
+
+export Bool erase() {
+    gen = gen + 1;
+    if (qn == 0) { return false; }
+    qn = qn - 1;
+    qpos = 0;
+    return true;
+}
+
+// A window or a program the list may show: kind, the desk's reference, the icon, its label, the right column,
+// a tick (later is better on ties).
+export void source(I64 kind, I64 ref, I64 icon, in U8[_] text, I64 n, in U8[_] side, I64 sl, I64 tick) {
+    if (sn == SOURCES) { return; }
+    I64 m = n;
+    if (m > TEXT) { m = TEXT; }
+    for k in 0..m { s_text[TEXT * sn + k] = text[k]; }
+    I64 t = sl;
+    if (t > SIDE) { t = SIDE; }
+    for k in 0..t { s_side[SIDE * sn + k] = side[k]; }
+    s_kind[sn] = kind;
+    s_ref[sn] = ref;
+    s_icon[sn] = icon;
+    s_len[sn] = m;
+    s_slen[sn] = t;
+    s_tick[sn] = tick;
+    sn = sn + 1;
+}
+
+// App i of kit/apps.ci on this desk: the search finds it by its friendly name and aliases, and the All Apps picker
+// lists it (DN-5). The grid shows the pinned ones (pin_app).
+export void app(I64 i) {
+    if (avn == 16 || i < 0 || i >= apps.N || is_avail(i)) { return; }
+    gen = gen + 1;
+    av_app[avn] = i;
+    avn = avn + 1;
+    if (pk_on) { pk_refilter(); }
+}
+
+export Bool is_avail(I64 i) {
+    for k in 0..avn {
+        if (av_app[k] == i) { return true; }
+    }
+    return false;
+}
+
+export Bool is_pinned(I64 i) {
+    for k in 0..ppn {
+        if (pn_app[k] == i) { return true; }
+    }
+    return false;
+}
+
+export I64 pinned_count() { return ppn; }
+
+// Settings' Desk page (frame 33): the Taskbar's slot j in its order, an app's number or PIN_FILE + k for pin k; -1
+// past the pinned. Its icon (as the plane codes it) and its name.
+export I64 pinned_at(I64 j) {
+    if (j < 0 || j >= ppn) { return -1; }
+    return pn_app[j];
+}
+export I64 slot_icon(I64 a) { return slot_of(a); }
+export I64 slot_name(I64 a, inout U8[_] t) { return name_of(a, t); }
+
+// Frame 33's drag: the Taskbar's slot from moved to to, the slots between shifted; false, nothing moved, for a slot
+// past the pinned.
+export Bool pin_move(I64 from, I64 to) {
+    if (from < 0 || from >= ppn || to < 0 || to >= ppn) { return false; }
+    I64 a = pn_app[from];
+    if (from < to) {
+        for j in from..to { pn_app[j] = pn_app[j + 1]; }
+    } else {
+        I64 j = from;
+        while (j > to) {
+            pn_app[j] = pn_app[j - 1];
+            j = j - 1;
+        }
+    }
+    pn_app[to] = a;
+    regrid();
+    return true;
+}
+
+// DN-5: app i pinned to the grid (an app the desk has, at most CELLS - 1: the last slot is All Apps); true if it is.
+export Bool pin_app(I64 i) {
+    if (is_pinned(i)) { return true; }
+    if (!is_avail(i) || is_home(i) || ppn == PINS) { return false; }   // DN-49: Settings is a home, never a pin
+    pn_app[ppn] = i;
+    ppn = ppn + 1;
+    regrid();
+    return true;
+}
+
+// DN-41 (e): the permanent homes, outside the pinned rows: Settings, Trash and All Apps. They are never unpinned or
+// moved; they keep their drawing places until the rail's values are released (Trash has none drawn yet).
+export const I64 TRASH = -3;          // Trash's home (no app of apps.ci; ALL is All Apps')
+// DN-46 (c): a Taskbar slot from PIN_FILE is a pinned file or folder, pin k (pin(), pin_sub its path) at PIN_FILE + k.
+export const I64 PIN_FILE = 1000;
+
+Bool trash_full = false;                  // DN-46 (d): the desk says when the Trash holds something
+
+export void set_trash_full(Bool on) {
+    trash_full = on;
+    gen = gen + 1;
+}
+
+// The Trash home's icon (icons3.TRASH or TRASH_FULL): the rail draws it where its value is released.
+export I64 trash_icon() { return slot_of(TRASH); }
+
+export Bool is_home(I64 a) {
+    if (a == ALL || a == TRASH) { return true; }
+    return a >= 0 && a < apps.N && apps.runs_in(a) == apps.DESK;   // Settings
+}
+
+// App i taken off the grid; the later pins move up. False, and nothing changed, for a home (DN-41 (e)) or an app
+// not pinned.
+export Bool unpin_app(I64 i) {
+    if (is_home(i)) { return false; }
+    I64 at = -1;
+    for k in 0..ppn {
+        if (pn_app[k] == i) { at = k; }
+    }
+    if (at < 0) { return false; }
+    for k in at..ppn - 1 { pn_app[k] = pn_app[k + 1]; }
+    ppn = ppn - 1;
+    regrid();
+    return true;
+}
+
+// DN-41 (e): pinned app a moved to pin place to (0 to the pins less one). False, and nothing changed, when a is a
+// home or not pinned, or the move would take a home's place or pass one (homes do not move).
+export Bool move_app(I64 a, I64 to) {
+    if (is_home(a) || to < 0 || to >= ppn) { return false; }
+    I64 at = -1;
+    for k in 0..ppn {
+        if (pn_app[k] == a) { at = k; }
+    }
+    if (at < 0) { return false; }
+    I64 lo = at;
+    I64 hi = to;
+    if (to < at) {
+        lo = to;
+        hi = at;
+    }
+    for k in lo..hi + 1 {
+        if (is_home(pn_app[k])) { return false; }
+    }
+    if (to > at) {
+        for k in at..to { pn_app[k] = pn_app[k + 1]; }
+    } else {
+        I64 k = at;
+        while (k > to) {
+            pn_app[k] = pn_app[k - 1];
+            k = k - 1;
+        }
+    }
+    pn_app[to] = a;
+    regrid();
+    return true;
+}
+
+// Super+P (DN-5): app i pinned, or unpinned if it was; whether it is pinned now.
+export Bool toggle_pin(I64 i) {
+    if (is_pinned(i)) {
+        return !unpin_app(i);              // DN-41 (e): a home stays pinned
+    }
+    return pin_app(i);
+}
+
+// The grid's slots again from the pins: each pin in order, then holes, then All Apps in the last column of the
+// last row (frame 1: four pins, a hole, All Apps).
+void regrid() {
+    gen = gen + 1;
+    for k in 0..ppn { g_app[k] = pn_app[k]; }
+    g_app[ppn] = settings_app();       // DN-49: the rail's homes after the pins, never moved, never pins
+    g_app[ppn + 1] = TRASH;
+    g_app[ppn + 2] = ALL;
+    gn = ppn + 3;
+    rsel = 0;                          // the pins changed: the selection on the first pin, or Settings with none
+    settle();
+}
+
+// The app the desk's Settings is (apps.ci's one DESK app).
+export I64 settings_app() {
+    for a in 0..apps.N {
+        if (apps.runs_in(a) == apps.DESK) { return a; }
+    }
+    return HOLE;
+}
+
+// Whether the pins are full (DN-49: Pin to Taskbar dims at 28).
+export Bool pins_full() { return ppn >= PINS; }
+
+// The nearest slot to k that is not a hole, toward d (then the other way).
+I64 solid(I64 k, I64 d) {
+    I64 j = k;
+    while (j >= 0 && j < gn && g_app[j] == HOLE) { j = j + d; }
+    if (j >= 0 && j < gn) { return j; }
+    j = k;
+    while (j >= 0 && j < gn && g_app[j] == HOLE) { j = j - d; }
+    if (j < 0) { return 0; }
+    return j;
+}
+
+export I64 cells() { return gn; }
+export I64 cell_app(I64 k) { return g_app[k]; }
+
+// A window of the band's WINDOWS: its desk reference, icon, title, working path, desktop and whether minimized.
+export void window(I64 ref, I64 icon, in U8[_] title, I64 tn, in U8[_] path, I64 pl, I64 desk, Bool minimized) {
+    if (wn == WINS) { return; }
+    I64 a = tn;
+    if (a > TEXT) { a = TEXT; }
+    I64 b = pl;
+    if (b > TEXT) { b = TEXT; }
+    for k in 0..a { w_title[TEXT * wn + k] = title[k]; }
+    for k in 0..b { w_path[TEXT * wn + k] = path[k]; }
+    gen = gen + 1;
+    w_ref[wn] = ref;
+    w_icon[wn] = icon;
+    w_tlen[wn] = a;
+    w_plen[wn] = b;
+    w_desk[wn] = desk;
+    w_min[wn] = minimized;
+    w_app[wn] = apps.NONE;
+    wn = wn + 1;
+    repill();
+}
+
+export I64 windows() { return wn; }
+
+// DN-41 (c): the band's lower-right list is the minimized windows only: how many, and the k-th as a window index.
+export I64 mn_count() {
+    I64 n = 0;
+    for j in 0..wn {
+        if (w_min[j]) { n = n + 1; }
+    }
+    return n;
+}
+
+export I64 mn_at(I64 k) {
+    I64 n = 0;
+    for j in 0..wn {
+        if (w_min[j]) {
+            if (n == k) { return j; }
+            n = n + 1;
+        }
+    }
+    return -1;
+}
+
+// DN-39 (e): the app of the window window() added last (apps.ci's index), so the plane can tell an app with open
+// windows: the dot beside an app's name means it has one, not that it is pinned.
+export void window_app(I64 a) {
+    if (wn > 0) {
+        w_app[wn - 1] = a;
+        gen = gen + 1;
+    }
+}
+
+// DN-39 (e): app a has an open window (on any desktop, minimized or not).
+export Bool has_windows(I64 a) {
+    for j in 0..wn {
+        if (w_app[j] == a) { return true; }
+    }
+    return false;
+}
+
+// DN-39 (d), the model of an app's right-click menu (not drawn yet): app a's open windows into js (their indexes in
+// the band's list, in its order); how many. Each one's desktop and minimized state are window_desk and
+// window_minimized, its desk reference window_ref.
+export I64 app_windows(I64 a, inout I64[_] js) {
+    I64 n = 0;
+    for j in 0..wn {
+        if (w_app[j] == a && n < len(js)) {
+            js[n] = j;
+            n = n + 1;
+        }
+    }
+    return n;
+}
+
+export I64 window_ref(I64 j) { return w_ref[j]; }
+export I64 window_desk(I64 j) { return w_desk[j]; }
+export Bool window_minimized(I64 j) { return w_min[j]; }
+
+// DN-39 (d): the two actions on a window of the list, as the desk will take them: GO_WINDOW goes to window j on its
+// own desktop (focused there, restored there when minimized); RESTORE_HERE brings a minimized window j onto the
+// current desktop cur. act_kind, act_ref and act_desk read the action; NO_ACT when none.
+export const I64 NO_ACT = 0;
+export const I64 GO_WINDOW = 1;
+export const I64 RESTORE_HERE = 2;
+I64 act_k = 0;
+I64 act_r = -1;
+I64 act_d = -1;
+
+export void go_window(I64 j) {
+    act_k = NO_ACT;
+    if (j < 0 || j >= wn) { return; }
+    act_k = GO_WINDOW;
+    act_r = w_ref[j];
+    act_d = w_desk[j];
+}
+
+// False, and no action, when window j is not minimized (there is nothing to restore).
+export Bool restore_here(I64 j, I64 cur) {
+    act_k = NO_ACT;
+    if (j < 0 || j >= wn || !w_min[j]) { return false; }
+    act_k = RESTORE_HERE;
+    act_r = w_ref[j];
+    act_d = cur;
+    return true;
+}
+
+export I64 act_kind() { return act_k; }
+export I64 act_ref() { return act_r; }
+export I64 act_desk() { return act_d; }
+
+// A grant held (KD-1 A): the window, the grant (1 disk, 2 net) and the window's title.
+export void grant(I64 ref, I64 g, in U8[_] title, I64 tn) {
+    if (grn == GRANTS) { return; }
+    I64 a = tn;
+    if (a > TEXT) { a = TEXT; }
+    for k in 0..a { gr_title[TEXT * grn + k] = title[k]; }
+    gen = gen + 1;
+    gr_ref[grn] = ref;
+    gr_g[grn] = g;
+    gr_tlen[grn] = a;
+    grn = grn + 1;
+    repill();
+}
+
+I64 size_text(inout U8[_] dst, I64 bytes) {
+    I64 v = bytes;
+    I64 n = 0;
+    U8[24] t;
+    I64 unit = 0;           // B, KiB, MiB
+    while (v >= 10240 && unit < 2) {
+        v = v / 1024;
+        unit = unit + 1;
+    }
+    if (v == 0) {
+        t[0] = '0';
+        n = 1;
+    }
+    while (v > 0) {
+        t[n] = (48 + v % 10) as U8;
+        v = v / 10;
+        n = n + 1;
+    }
+    for k in 0..n { dst[k] = t[n - 1 - k]; }
+    dst[n] = ' ';
+    if (unit == 0) {
+        dst[n + 1] = 'B';
+        return n + 2;
+    }
+    if (unit == 1) { dst[n + 1] = 'K'; } else { dst[n + 1] = 'M'; }
+    dst[n + 2] = 'i';
+    dst[n + 3] = 'B';
+    return n + 4;
+}
+
+// The icon of a file by its name.
+I64 file_icon(in U8[_] p, I64 n, Bool dir) { return FILE_ICON + fileicons.kind(p, n, dir); }
+
+void set_row(I64 r, I64 kind, I64 ref, I64 icon, in U8[_] text, I64 n, in U8[_] side, I64 sl) {
+    I64 m = n;
+    if (m > TEXT) { m = TEXT; }
+    for k in 0..m {
+        r_text[TEXT * r + k] = text[k];
+        r_mark[TEXT * r + k] = 0;
+    }
+    U8[512] mk;
+    I64 got = match.marks(text[0..n], mk);
+    if (got > 0) {
+        for k in 0..m { r_mark[TEXT * r + k] = mk[k]; }
+    }
+    I64 t = sl;
+    if (t > SIDE) { t = SIDE; }
+    for k in 0..t { r_side[SIDE * r + k] = side[k]; }
+    r_kind[r] = kind;
+    r_ref[r] = ref;
+    r_icon[r] = icon;
+    r_len[r] = m;
+    r_slen[r] = t;
+}
+
+U8[96] ab;          // an app's field
+
+// ASCII a and b equal, letters folded.
+Bool same_folded(in U8[_] a, I64 an, in U8[_] b, I64 bn) {
+    if (an != bn) { return false; }
+    for k in 0..an {
+        U8 x = a[k];
+        U8 y = b[k];
+        if (x >= 'A' && x <= 'Z') { x = x + 32; }
+        if (y >= 'A' && y <= 'Z') { y = y + 32; }
+        if (x != y) { return false; }
+    }
+    return true;
+}
+
+// The app a program row names: its program is text, or it has none and its name is text (Settings), or NONE.
+I64 app_named(in U8[_] text, I64 n) {
+    for i in 0..apps.N {
+        I64 pl = apps.field(i, 1, ab);
+        if (pl > 0 && same_folded(ab, pl, text, n)) { return i; }
+        if (pl == 0) {
+            I64 nl = apps.field(i, 0, ab);
+            if (same_folded(ab, nl, text, n)) { return i; }
+        }
+    }
+    return apps.NONE;
+}
+
+// Whether app i is on the desk (its program row folds into the app's).
+Bool in_grid(I64 i) { return is_avail(i); }
+
+U8[64] wd;          // the best word of an app
+
+// App i offered to the matcher as id -1 - k by its best word, the friendly name or an alias, ranked on ties as long
+// as its friendly name (so `sh` keeps a window `sh - /` ahead of Terminal's `shell`).
+void offer_app(I64 k, I64 i) {
+    I64 best = match.NONE;
+    I64 bl = 0;
+    U8[64] cand;
+    for f in 0..3 {
+        if (f != 1) {
+            I64 n = apps.field(i, f, ab);
+            I64 w = 0;
+            while (w <= n) {
+                I64 v = w;
+                while (v < n && ab[v] != ' ') { v = v + 1; }
+                if (v > w && v - w <= 64) {
+                    for j in 0..v - w { cand[j] = ab[w + j]; }
+                    I64 s = match.score(cand[0..v - w]);
+                    if (s != match.NONE && (best == match.NONE || s > best)) {
+                        best = s;
+                        bl = v - w;
+                        for j in 0..bl { wd[j] = cand[j]; }
+                    }
+                }
+                w = v + 1;
+            }
+        }
+    }
+    I64 nl = apps.field(i, 0, ab);
+    if (best != match.NONE) { I64 a = match.offer_as(-1 - k, wd[0..bl], nl, 0); }
+}
+
+// The list again from the field, in three steps: filter_begin offers every source and every app of the grid to
+// the matcher (a program that is an app of the grid is offered as the app); the desk offers each file of its
+// index (offer_file: its slot, its path, its tick); filter_end keeps the best 32 (ties: the shorter, then the
+// later), a file's row waiting for fill_file. A source's id is its number; a file's SOURCES + slot; an app's -1 - k.
+export void filter_begin() {
+    gen = gen + 1;
+    rn = 0;
+    match.begin(q[0..qn]);
+    for s in 0..sn {
+        Bool dup = false;
+        if (s_kind[s] == PROG && avn > 0) {
+            I64 a = app_named(s_text[TEXT * s..TEXT * s + s_len[s]], s_len[s]);
+            dup = a != apps.NONE && in_grid(a);
+        }
+        if (!dup) { I64 got = match.offer(s, s_text[TEXT * s..TEXT * s + s_len[s]], s_tick[s]); }
+    }
+    for k in 0..avn { offer_app(k, av_app[k]); }
+}
+
+export void offer_file(I64 slot, in U8[_] p, I64 tick) {
+    if (len(p) > 0 && len(p) <= match.CMAX) {
+        I64 a = match.offer(SOURCES + slot, p, tick);
+    }
+}
+
+// The drawn order: row 0 (the top hit), then the file and folder rows, the window rows and the program rows, each
+// in the list's order.
+void order() {
+    I64 n = 0;
+    if (rn > 0) {
+        ord[0] = 0;
+        n = 1;
+    }
+    for pass in 0..3 {
+        for k in 1..rn {
+            I64 d = r_kind[k];
+            Bool take = false;
+            if (pass == 0) { take = d == FILE || d == DIR; }
+            if (pass == 1) { take = d == WIN; }
+            if (pass == 2) { take = d == PROG || d == APP; }
+            if (take) {
+                ord[n] = k;
+                n = n + 1;
+            }
+        }
+    }
+}
+
+// The rows kept; a file row's kind is FILE and its text empty until fill_file.
+export I64 filter_end() {
+    gen = gen + 1;
+    rn = 0;
+    if (qn > 0) {
+        for k in 0..match.kept() {
+            I64 id = match.kept_id(k);
+            if (id < 0) {
+                I64 i = av_app[-1 - id];
+                U8[96] t;
+                I64 n = apps.field(i, 1, t);
+                if (n == 0) {
+                    n = apps.field(i, 0, t);
+                    for j in 0..n {
+                        if (t[j] >= 'A' && t[j] <= 'Z') { t[j] = t[j] + 32; }
+                    }
+                }
+                U8[24] sd;                       // the right column as FF-5's sources had it
+                I64 sl = put(sd, 0, b"/bin");
+                if (apps.field(i, 1, ab) == 0) { sl = put(sd, 0, b"Super+,"); }
+                set_row(rn, APP, i, apps.icon(i), t, n, sd, sl);
+            } else if (id < SOURCES) {
+                set_row(rn, s_kind[id], s_ref[id], s_icon[id], s_text[TEXT * id..TEXT * id + s_len[id]], s_len[id],
+                        s_side[SIDE * id..SIDE * id + s_slen[id]], s_slen[id]);
+            } else {
+                r_kind[rn] = FILE;
+                r_ref[rn] = id - SOURCES;
+                r_len[rn] = 0;
+                r_slen[rn] = 0;
+                r_icon[rn] = FILE_ICON + fileicons.TEXT;
+            }
+            rn = rn + 1;
+        }
+    }
+    order();
+    if (qpos >= rn) { qpos = rn - 1; }
+    if (qpos < 0) { qpos = 0; }
+    pill_to();
+    return rn;
+}
+
+// File row k's path, its size in bytes and whether it is a directory.
+export void fill_file(I64 k, in U8[_] p, I64 n, I64 bytes, Bool dir) {
+    gen = gen + 1;
+    U8[24] sd;
+    I64 sl = 3;
+    if (dir) {
+        sd[0] = 'd';
+        sd[1] = 'i';
+        sd[2] = 'r';
+    } else {
+        sl = size_text(sd, bytes);
+    }
+    I64 kd = FILE;
+    if (dir) { kd = DIR; }
+    I64 ref = r_ref[k];
+    I64 ic = file_icon(p, n, dir);
+    set_row(k, kd, ref, ic, p, n, sd, sl);
+}
+
+export I64 rows() { return rn; }
+export I64 row_kind(I64 k) { return r_kind[k]; }
+export I64 row_ref(I64 k) { return r_ref[k]; }
+export I64 row_icon(I64 k) { return r_icon[k]; }
+export I64 drawn(I64 p) { return ord[p]; }
+
+// The selected row, by its number in the list (the row Enter opens).
+export I64 selected() {
+    if (rn == 0) { return 0; }
+    return ord[qpos];
+}
+
+export I64 row_text(I64 k, inout U8[_] dst) {
+    for i in 0..r_len[k] { dst[i] = r_text[TEXT * k + i]; }
+    return r_len[k];
+}
+
+export I64 row_side(I64 k, inout U8[_] dst) {
+    for i in 0..r_slen[k] { dst[i] = r_side[SIDE * k + i]; }
+    return r_slen[k];
+}
+
+// Arrows with a query: the selection moves in the drawn order, within the list; the number moved.
+export I64 move(I64 d) {
+    I64 o = qpos;
+    qpos = qpos + d;
+    if (qpos >= rn) { qpos = rn - 1; }
+    if (qpos < 0) { qpos = 0; }
+    pill_to();
+    return qpos - o;
+}
+
+// --- pinned, recent, the preview ---
+
+// A pin: its icon, name[0..n] and path sub[0..sl]; refused when the pins are full or either is past its TEXT slot
+// (P1, guest legs lane: a 97 to 255 byte path wrote over the next pin's slot and, from the last, past p_sub's end).
+// Whether it stored the pin (a review's P3: the Taskbar adds a cell only for a stored pin).
+export Bool pin(I64 icon, in U8[_] name, I64 n, in U8[_] sub, I64 sl) {
+    if (pn == PINS || n < 0 || sl < 1 || n > TEXT || sl > TEXT || n > len(name) || sl > len(sub)) { return false; }
+    for k in 0..n { p_text[TEXT * pn + k] = name[k]; }
+    for k in 0..sl { p_sub[TEXT * pn + k] = sub[k]; }
+    p_len[pn] = n;
+    p_slen[pn] = sl;
+    p_icon[pn] = icon;
+    pn = pn + 1;
+    return true;
+}
+
+// AC-R1 (the AC-Q class, a review's P3): whether path p, which a program asked the desk to open, pin or unpin
+// (FBIO_TILE_SYNC 10), may be used and copied into the desk's log: not empty, no control byte and no DEL
+// (shquote.printable), so a newline in it cannot forge a line a gate reads. UTF-8's bytes pass.
+export Bool asked_path_ok(in U8[_] p) { return len(p) > 0 && shquote.printable(p); }
+
+export I64 pins() { return pn; }
+export I64 recents() { return cn; }
+
+// BG-1, desk.recent-files 0: the plane keeps no Recent Files; those it held are gone.
+export void recents_clear() { cn = 0; }
+
+// The pin whose path is sub, or -1.
+export I64 pin_find(in U8[_] sub) {
+    if (len(sub) > TEXT) { return -1; }   // no stored path is longer, and a read never leaves its slot
+    for k in 0..pn {
+        if (p_slen[k] == len(sub)) {
+            Bool same = true;
+            for i in 0..len(sub) {
+                if (p_sub[TEXT * k + i] != sub[i]) { same = false; }
+            }
+            if (same) { return k; }
+        }
+    }
+    return -1;
+}
+
+// Pin k taken off; the later ones move up (and so do their Taskbar cells, DN-46 (c)).
+export void unpin(I64 k) {
+    if (k < 0 || k >= pn) { return; }
+    I64 at = -1;
+    for j in 0..ppn {
+        if (pn_app[j] == PIN_FILE + k) { at = j; }
+    }
+    if (at >= 0) {
+        for j in at..ppn - 1 { pn_app[j] = pn_app[j + 1]; }
+        ppn = ppn - 1;
+    }
+    for j in 0..ppn {
+        if (pn_app[j] > PIN_FILE + k) { pn_app[j] = pn_app[j] - 1; }
+    }
+    for j in k..pn - 1 {
+        for i in 0..TEXT {
+            p_text[TEXT * j + i] = p_text[TEXT * (j + 1) + i];
+            p_sub[TEXT * j + i] = p_sub[TEXT * (j + 1) + i];
+        }
+        p_len[j] = p_len[j + 1];
+        p_slen[j] = p_slen[j + 1];
+        p_icon[j] = p_icon[j + 1];
+    }
+    pn = pn - 1;
+    regrid();
+}
+
+// DN-46 (c): the file or folder at path p pinned to the Taskbar (a cell with its file icon, named by its last part),
+// or unpinned when it is; whether it is pinned now. False, and nothing changed, when the Taskbar or the pins are full,
+// or p is empty or longer than a pin's TEXT bytes (P1: such a path is never stored).
+export Bool taskbar_toggle(in U8[_] p, Bool dir) {
+    if (len(p) < 1 || len(p) > TEXT) { return false; }
+    I64 k = pin_find(p);
+    if (k >= 0) {
+        unpin(k);
+        return false;
+    }
+    if (pn == PINS || ppn >= PINS) { return false; }
+    I64 b = len(p);
+    while (b > 0 && p[b - 1] == '/' && b > 1) { b = b - 1; }
+    I64 a = b;
+    while (a > 0 && p[a - 1] != '/') { a = a - 1; }
+    if (a == b) { a = 0; }
+    if (!pin(file_icon(p, len(p), dir), p[a..b], b - a, p, len(p))) { return false; }
+    pn_app[ppn] = PIN_FILE + pn - 1;
+    ppn = ppn + 1;
+    regrid();
+    return true;
+}
+
+// Whether the file or folder at p is on the Taskbar.
+export Bool on_taskbar(in U8[_] p) { return pin_find(p) >= 0; }
+
+// Pin k's name, or its path, into dst: at most len(dst) bytes (a caller's buffer may be shorter than TEXT); the length.
+export I64 pin_name(I64 k, inout U8[_] dst) {
+    if (k < 0 || k >= pn) { return 0; }
+    I64 n = min(p_len[k], len(dst));
+    for i in 0..n { dst[i] = p_text[TEXT * k + i]; }
+    return n;
+}
+
+export I64 pin_sub(I64 k, inout U8[_] dst) {
+    if (k < 0 || k >= pn) { return 0; }
+    I64 n = min(p_slen[k], len(dst));
+    for i in 0..n { dst[i] = p_sub[TEXT * k + i]; }
+    return n;
+}
+
+export void recent(in U8[_] p, I64 n, I64 bytes, Bool dir) {
+    if (cn == RECENT) { return; }
+    I64 m = n;
+    if (m > TEXT) { m = TEXT; }
+    for k in 0..m { c_text[TEXT * cn + k] = p[k]; }
+    gen = gen + 1;
+    c_len[cn] = m;
+    U8[24] sd;
+    I64 sl = 3;
+    if (dir) {
+        sd[0] = 'd';
+        sd[1] = 'i';
+        sd[2] = 'r';
+    } else {
+        sl = size_text(sd, bytes);
+    }
+    for k in 0..sl { c_side[SIDE * cn + k] = sd[k]; }
+    c_slen[cn] = sl;
+    c_icon[cn] = file_icon(p, n, dir);
+    cn = cn + 1;
+    repill();
+}
+
+export void preview_begin(in U8[_] p, I64 n) {
+    gen = gen + 1;
+    ln = 0;
+    l_plen = n;
+    if (l_plen > TEXT) { l_plen = TEXT; }
+    for k in 0..l_plen { l_path[k] = p[k]; }
+}
+
+export void preview_line(in U8[_] t, I64 n) {
+    gen = gen + 1;
+    if (ln == LINES) { return; }
+    I64 m = n;
+    if (m > TEXT) { m = TEXT; }
+    for k in 0..m { l_text[TEXT * ln + k] = t[k]; }
+    l_len[ln] = m;
+    ln = ln + 1;
+}
+
+// Tab: the preview's lines shown or hidden; the new state.
+export Bool toggle_preview() {
+    gen = gen + 1;
+    previewing = !previewing;
+    return previewing;
+}
+
+export Bool preview_on() { return previewing; }
+
+// --- the band's layout (section 3g), 1x ---
+
+I64 lay_rec_n = 0;      // recent rows drawn
+I64 lay_rec_h = 0;      // the left column's height below its label's top
+I64 lay_ry0 = 0;        // the right column's top
+I64 lay_win_n = 0;      // window rows drawn
+I64 lay_gr_y = 0;       // GRANTS' label top
+I64 lay_gr_n = 0;       // grant rows drawn
+I64 lay_gr_lines = 0;   // the grants panel's sub lines
+I64 lay_vc = 0;         // cells drawn
+
+const I64 PANEL_EMPTY_H = 86;   // `No recent files`: 20 + 16 + 10 + 20 + 20
+
+// The rows that fit from 1x row top to the band's end, at most n.
+I64 fit_rows(I64 top, I64 n) {
+    I64 room = band_y1() - top + ROW_GAP;
+    if (room < 0) { return 0; }
+    I64 k = room / (ROW_H + ROW_GAP);
+    if (k > n) { k = n; }
+    return k;
+}
+
+// A block of label and k rows (or, none, a body of h0).
+I64 block_h(I64 k, I64 h0) {
+    if (k > 0) { return HEAD + k * (ROW_H + ROW_GAP) - ROW_GAP; }
+    return HEAD + h0;
+}
+
+// The lines s takes wrapped at spaces into device width w in role f (greedy; a word wider than w alone on its line).
+export I64 wrap_lines(in U8[_] s, I64 n, I64 f, I64 w) {
+    I64 lines = 0;
+    I64 at = 0;
+    while (at < n) {
+        I64 e = wrap_end(s, n, at, f, w);
+        lines = lines + 1;
+        at = e;
+        while (at < n && s[at] == ' ') { at = at + 1; }
+    }
+    return lines;
+}
+
+// The end of the line of s from at that fits device width w.
+I64 wrap_end(in U8[_] s, I64 n, I64 at, I64 f, I64 w) {
+    I64 e = at;
+    I64 good = -1;
+    while (e <= n) {
+        if (e == n || s[e] == ' ') {
+            if (ctext.width(s[at..e], e - at, f, Z) <= w || good < 0) { good = e; } else { return good; }
+            if (e == n) { return good; }
+        }
+        e = e + 1;
+    }
+    return good;
+}
+
+// The grants panel's words.
+
+I64 grants_panel_h() {
+    return 16 + 13 + 8 + 20 * lay_gr_lines + 16;
+}
+
+// The resting band laid out. A section's label is drawn only when its first row (or its panel, or its `none`
+// line) is; DN-39 (a): no GRANTS block, the windows take the band.
+Bool lay_rec_lab = false;
+Bool lay_win_lab = false;
+Bool lay_gr_lab = false;
+
+void lay_rest() {
+    if (lay_gen == gen && lay_was == 1) { return; }
+    lay_gen = gen;
+    lay_was = 1;
+    lay_vc = cells_shown();
+    I64 bandy = band_y0();
+    I64 end = band_y1();
+    lay_rec_n = fit_rows(bandy + HEAD, cn);
+    if (stacked() && lay_rec_n > 3) { lay_rec_n = 3; }
+    lay_rec_lab = lay_rec_n > 0 || (cn == 0 && bandy + HEAD + PANEL_EMPTY_H <= end);
+    lay_rec_h = 0;
+    if (lay_rec_lab) { lay_rec_h = block_h(lay_rec_n, PANEL_EMPTY_H); }
+    lay_ry0 = bandy;
+    if (stacked() && lay_rec_lab) { lay_ry0 = bandy + lay_rec_h + GAP; }
+    lay_gr_lines = 0;                  // DN-46: the panel names no caption
+    // DN-39 (a): no GRANTS block in the plane (grants live on Settings' Grants page, the panel's pill opens it):
+    // the windows take the band.
+    I64 room = end - (lay_ry0 + HEAD) + ROW_GAP;
+    lay_win_n = 0;
+    if (room > 0) { lay_win_n = room / (ROW_H + ROW_GAP); }
+    I64 mn = mn_count();               // DN-41 (c): the minimized windows only
+    if (lay_win_n > mn) { lay_win_n = mn; }
+    if (lay_win_n == 0) { lay_win_n = fit_rows(lay_ry0 + HEAD, mn); }
+    lay_win_lab = lay_win_n > 0 || (mn == 0 && lay_ry0 + HEAD + 13 <= end);
+    lay_gr_y = lay_ry0;
+    if (lay_win_lab) { lay_gr_y = lay_ry0 + block_h(lay_win_n, 13) + GAP; }
+    lay_gr_n = 0;                      // DN-39 (a)
+    lay_gr_lab = false;
+}
+
+// The resting items: cells, then recent rows, then window rows.
+I64 items() { return lay_vc + lay_rec_n + lay_win_n; }
+
+// --- the resting selection ---
+
+// Arrows with the field empty (section 3g): over the cells, Left and Right by one, Up and Down by a row; Down from
+// the last row to the first recent row (or window row); over the rows, Up and Down by one, Up from the first back
+// to the last cell, Right from a recent row to the first window row and Left back. The new item.
+export I64 nav(I64 dx, I64 dy) {
+    lay_rest();
+    I64 n = items();
+    if (n == 0) { return 0; }
+    I64 vc = lay_vc;
+    I64 k = rsel;
+    I64 c = cols();
+    I64 np = ppn;                        // DN-49: pins 0 to np - 1, then the rail's three homes
+    if (k < np) {
+        I64 i = k % c;
+        I64 r = k / c;
+        if (dx > 0) {
+            if (i == c - 1 || k == np - 1) { k = np + r; } else { k = k + 1; }   // off a row's end: the rail
+        }
+        if (dx < 0 && i > 0) { k = k - 1; }
+        if (dy < 0 && r > 0) { k = k - c; }
+        if (dy > 0) {
+            if (r == 0 && k + c < np) {
+                k = k + c;
+            } else if (r == 0 && np > c) {
+                k = np - 1;
+            } else if (n > vc) {
+                k = vc;                  // down from the pins: the first list row
+            }
+        }
+    } else if (k < vc) {
+        I64 j = k - np;
+        if (dx < 0 && np > 0) {
+            I64 r = min(j, (np - 1) / c);
+            k = min(r * c + c - 1, np - 1);   // back to the end of the pins' row beside it
+        }
+        if (dy < 0 && j > 0) { k = k - 1; }
+        if (dy > 0) {
+            if (j < 2) { k = k + 1; } else if (n > vc) { k = vc + lay_rec_n; if (lay_win_n == 0) { k = vc; } }
+        }
+    } else {
+        I64 w0 = vc + lay_rec_n;
+        if (dy != 0) {
+            k = k + dy;
+            if (k < vc) { k = vc - 1; }
+        }
+        if (dx > 0 && rsel < w0 && lay_win_n > 0) { k = w0; }
+        if (dx < 0 && rsel >= w0 && lay_rec_n > 0) { k = vc; }
+    }
+    if (k >= n) { k = n - 1; }
+    if (k < 0) { k = 0; }
+    rsel = k;
+    sizes_to();
+    pill_to();
+    return rsel;
+}
+
+export I64 rest_item() { return rsel; }
+
+// What the resting selection is on, and its reference: an app, a recent row, a window's desk reference.
+export I64 sel_kind() {
+    lay_rest();
+    if (rsel < lay_vc && g_app[rsel] == ALL) { return ON_ALLAPPS; }
+    if (rsel < lay_vc) { return ON_CELL; }
+    if (rsel < lay_vc + lay_rec_n) { return ON_RECENT; }
+    if (rsel < items()) { return ON_WINDOW; }
+    return ON_NONE;
+}
+
+export I64 sel_ref() {
+    I64 k = sel_kind();
+    if (k == ON_CELL || k == ON_ALLAPPS) { return g_app[rsel]; }
+    if (k == ON_RECENT) { return rsel - lay_vc; }
+    if (k == ON_WINDOW) { return w_ref[mn_at(rsel - lay_vc - lay_rec_n)]; }
+    return -1;
+}
+
+// The pointer over the plane at 1x (x, y): the cell under it, or -1, hovered.
+export I64 hover(I64 x, I64 y) {
+    if (pk_on) {
+        pk_hv = pk_cell_at(x, y);
+        if (pk_pr >= 0 && pk_pr != pk_hv) { pk_pr = -1; }
+        sizes_to();
+        return pk_hv;
+    }
+    hv = cell_at(x, y);
+    if (pr >= 0 && pr != hv) { pr = -1; }
+    sizes_to();
+    return hv;
+}
+
+// The button down (true) on the hovered cell, or up.
+export void press(Bool down) {
+    if (pk_on) {
+        if (down) { pk_pr = pk_hv; } else { pk_pr = -1; }
+        sizes_to();
+        return;
+    }
+    if (down) { pr = hv; } else { pr = -1; }
+    sizes_to();
+}
+
+// --- motion (MS-6 on MS-2's kit/anim.ci; section 3g and the MS spec's section 4) ---
+// Each cell's icon size and the selection pill's top left are animations in device pixels. The desk passes the
+// time (set_time: CLOCK_BOOTTIME, or anim.steps(n) on the gates' stepped clock) and the animations setting (SP-R5 A;
+// off, every change is at its end at once). A new motion starts from where the old one stands (anim.toward).
+// The pill slides within the grid, within one column of the band's rows, or within the query's rows; anywhere else
+// it is where the selection is at once.
+
+I64 now = 0;
+Bool moving_on = true;
+// The animations, one a slot: cell k's icon size at slot k, the pill's x and y at PX and PY (a module holds no
+// array of records, so each field is an array).
+const I64 PX = 31;                  // the animation slots: the cells' icons 0 to CELLS - 1, the pill, the picker's
+const I64 PY = 32;
+const I64 PK = 33;          // the picker's cells' icon sizes at PK + k
+I64[64] a_t0;
+I64[64] a_dur;
+I64[64] a_from;
+I64[64] a_to;
+I64[64] a_curve;
+
+anim.Anim an_of(I64 i) {
+    anim.Anim a = anim.rest(0);
+    a.t0 = a_t0[i];
+    a.dur = a_dur[i];
+    a.from = a_from[i];
+    a.to = a_to[i];
+    a.curve = a_curve[i];
+    return a;
+}
+
+void an_put(I64 i, anim.Anim a) {
+    a_t0[i] = a.t0;
+    a_dur[i] = a.dur;
+    a_from[i] = a.from;
+    a_to[i] = a.to;
+    a_curve[i] = a.curve;
+}
+I64 pill_dom = 0;           // where it is: 0 nowhere it slides, 1 the grid, 2 the band's rows, 3 the query's rows
+I64 pill_col = 0;           // the band's column (0 left, 1 right)
+
+export void set_time(I64 t) { now = t; }
+export I64 time_now() { return now; }
+
+// The animations setting (SP-R5 A): off, every motion is at its end.
+export void motion(Bool on) {
+    moving_on = on;
+    if (!on) { settle(); }
+}
+
+// True while anything moves (the desk asks for a frame a tick, MS section 4).
+export Bool moving() {
+    for k in 0..gn {
+        if (anim.running(an_of(k), now)) { return true; }
+    }
+    for k in 0..pkn {
+        if (anim.running(an_of(PK + k), now)) { return true; }
+    }
+    return anim.running(an_of(PX), now) || anim.running(an_of(PY), now);
+}
+
+// Cell k's icon size now, device pixels.
+export I64 size_now(I64 k) {
+    I64 v = anim.value(an_of(k), now);
+    if (v <= 0) { v = icon_size(k) * Z; }
+    return v;
+}
+
+// The pill's target into t: its domain, column, and device x and y.
+void pill_target(inout I64[4] t) {
+    t[0] = 0;
+    t[1] = 0;
+    t[2] = 0;
+    t[3] = 0;
+    if (pk_on) {
+        if (pk_sel < pk_shown()) {
+            I64[4] b;
+            pk_box(pk_sel, b);
+            t[0] = 4;
+            t[2] = b[0] * Z;
+            t[3] = b[1] * Z;
+        }
+        return;
+    }
+    if (qn == 0) {
+        lay_rest();
+        if (rsel < lay_vc) {
+            I64[4] b;
+            cell_box(rsel, b);
+            t[0] = 1;
+            t[2] = b[0] * Z;
+            t[3] = b[1] * Z;
+        } else if (rsel < lay_vc + lay_rec_n) {
+            t[0] = 2;
+            t[2] = (left_x0() + INSET) * Z;
+            t[3] = (band_y0() + HEAD + (rsel - lay_vc) * (ROW_H + ROW_GAP)) * Z;
+        } else if (rsel < items()) {
+            t[0] = 2;
+            t[1] = 1;
+            t[2] = (right_x0() + INSET) * Z;
+            t[3] = (lay_ry0 + HEAD + (rsel - lay_vc - lay_rec_n) * (ROW_H + ROW_GAP)) * Z;
+        }
+        return;
+    }
+    lay_query();
+    if (qpos >= 1 && qpos < rn && q_y[qpos] >= 0) {
+        t[0] = 3;
+        t[2] = (left_x0() + INSET) * Z;
+        t[3] = q_y[qpos] * Z;
+    }
+}
+
+// The pill toward the selection: a slide within its domain, else there at once.
+void pill_to() {
+    I64[4] t;
+    pill_target(t);
+    if (t[0] != 0 && t[0] == pill_dom && t[1] == pill_col) {
+        an_put(PX, anim.toward(an_of(PX), now, t[2], anim.ms(PILL_MS), anim.OUT, moving_on));
+        an_put(PY, anim.toward(an_of(PY), now, t[3], anim.ms(PILL_MS), anim.OUT, moving_on));
+    } else {
+        an_put(PX, anim.rest(t[2]));
+        an_put(PY, anim.rest(t[3]));
+    }
+    pill_dom = t[0];
+    pill_col = t[1];
+}
+
+// Each cell's icon toward its size: a press in 80 ms, the rest in 120.
+void sizes_to() {
+    for k in 0..pkn {
+        I64 to = pk_size(k) * Z;
+        if (a_to[PK + k] != to) {
+            I64 d = HOVER_MS;
+            if (k == pk_pr) { d = PRESS_MS; }
+            an_put(PK + k, anim.toward(an_of(PK + k), now, to, anim.ms(d), anim.OUT, moving_on));
+        }
+    }
+    for k in 0..gn {
+        I64 to = icon_size(k) * Z;
+        if (a_to[k] != to) {
+            I64 d = HOVER_MS;
+            if (k == pr) { d = PRESS_MS; }
+            an_put(k, anim.toward(an_of(k), now, to, anim.ms(d), anim.OUT, moving_on));
+        }
+    }
+}
+
+// The pill where the selection is, at once (the band's rows moved under it).
+void repill() {
+    pill_dom = -1;
+    pill_to();
+}
+
+// Every motion at its end.
+void settle() {
+    for k in 0..gn { an_put(k, anim.rest(icon_size(k) * Z)); }
+    for k in 0..pkn { an_put(PK + k, anim.rest(pk_size(k) * Z)); }
+    pill_dom = -1;
+    pill_to();
+}
+
+// The pill's top left now.
+I64 pill_now_x() { return anim.value(an_of(PX), now); }
+I64 pill_now_y() { return anim.value(an_of(PY), now); }
+
+export I64 hovered() {
+    if (pk_on) { return pk_hv; }
+    return hv;
+}
+
+export I64 pressed() {
+    if (pk_on) { return pk_pr; }
+    return pr;
+}
+
+// --- pointer hits, 1x ---
+
+// The cell under (x, y), or -1 (the field empty).
+export I64 cell_at(I64 x, I64 y) {
+    if (qn != 0) { return -1; }
+    I64[4] b;
+    I64 vc = cells_shown();
+    for k in 0..vc {
+        cell_box(k, b);
+        if (g_app[k] != HOLE && x >= b[0] && x < b[2] && y >= b[1] && y < b[3]) { return k; }
+    }
+    return -1;
+}
+
+// The window row under (x, y): its desk reference, or -1.
+export I64 window_at(I64 x, I64 y) {
+    if (qn != 0) { return -1; }
+    lay_rest();
+    if (x < right_x0() || x >= right_x1()) { return -1; }
+    for j in 0..lay_win_n {
+        I64 ry = lay_ry0 + HEAD + j * (ROW_H + ROW_GAP);
+        if (y >= ry && y < ry + ROW_H) { return w_ref[mn_at(j)]; }
+    }
+    return -1;
+}
+
+// The list row under (x, y) with a query, by its number in the list, or -1.
+export I64 row_at(I64 x, I64 y) {
+    if (qn == 0 || x < left_x0() || x >= left_x1()) { return -1; }
+    lay_query();
+    for p in 0..rn {
+        I64 ry = q_y[p];
+        I64 h = ROW_H;
+        if (p == 0) { h = 64; }
+        if (ry >= 0 && y >= ry && y < ry + h) { return ord[p]; }
+    }
+    return -1;
+}
+
+// FF-5's pinned cells are gone from the plane (the grid is the app list, section 3g).
+export I64 pin_at(I64 x, I64 y) { return -1; }
+
+// Recent row k's path into dst; its length.
+export I64 recent_path(I64 k, inout U8[_] dst) {
+    for i in 0..c_len[k] { dst[i] = c_text[TEXT * k + i]; }
+    return c_len[k];
+}
+
+// --- the query's layout, 1x ---
+
+I64[32] q_y;            // each drawn place's row top, or -1 when it does not fit
+I64[4] q_sect;          // each section's label top (TOP HIT, FILES, WINDOWS, PROGRAMS), or -1
+I64[4] q_none;          // each section's `none` line top, or -1
+I64 q_pv_x0 = 0;        // the preview panel
+I64 q_pv_y0 = 0;
+I64 q_pv_x1 = 0;
+I64 q_pv_y1 = 0;
+
+// The section of drawn place p: 0 the top hit, 1 FILES, 2 WINDOWS, 3 PROGRAMS.
+I64 sect_of(I64 p) {
+    if (p == 0) { return 0; }
+    I64 d = r_kind[ord[p]];
+    if (d == FILE || d == DIR) { return 1; }
+    if (d == WIN) { return 2; }
+    return 3;
+}
+
+void lay_query() {
+    if (lay_gen == gen && lay_was == 2) { return; }
+    lay_gen = gen;
+    lay_was = 2;
+    I64 y = band_y0();
+    I64 end = band_y1();
+    for p in 0..32 { q_y[p] = -1; }
+    for s in 0..4 {
+        q_sect[s] = -1;
+        q_none[s] = -1;
+    }
+    if (rn > 0 && y + HEAD + TOP_H <= end) {
+        q_sect[0] = y;
+        q_y[0] = y + HEAD;
+    }
+    y = y + HEAD + TOP_H + SECT_GAP;
+    for s in 1..4 {
+        I64 k = 0;
+        for p in 1..rn {
+            if (sect_of(p) == s) { k = k + 1; }
+        }
+        if (s < 3 || k > 0) {
+            I64 ry = y + HEAD;
+            if ((k == 0 && ry + 13 <= end) || (k > 0 && ry + ROW_H <= end)) { q_sect[s] = y; }
+            if (k == 0) {
+                if (ry + 13 <= end) { q_none[s] = ry; }
+                y = ry + 13 + SECT_GAP;
+            } else {
+                for p in 1..rn {
+                    if (sect_of(p) == s) {
+                        if (ry + ROW_H <= end) { q_y[p] = ry; }
+                        ry = ry + ROW_H + ROW_GAP;
+                    }
+                }
+                y = ry - ROW_GAP + SECT_GAP;
+            }
+        }
+    }
+    q_pv_x0 = right_x0();
+    q_pv_x1 = right_x1();
+    q_pv_y0 = band_y0();
+    if (stacked()) { q_pv_y0 = y - SECT_GAP + GAP; }
+    q_pv_y1 = q_pv_y0 + PANEL_H;
+    if (previewing) { q_pv_y1 = end; }
+}
+
+// --- presentation: what a row shows ---
+
+U8[96] nm;      // a row's name, path, kind word
+I64 nml = 0;
+U8[96] pt;
+I64 ptl = 0;
+U8[24] kw;
+I64 kwl = 0;
+
+I64 put(inout U8[_] dst, I64 at, in U8[_] t) {
+    for k in 0..len(t) {
+        if (at + k < len(dst)) { dst[at + k] = t[k]; }
+    }
+    I64 e = at + len(t);
+    if (e > len(dst)) { e = len(dst); }
+    return e;
+}
+
+// v in decimal into dst at `at`; the end.
+I64 digits(inout U8[_] dst, I64 at, I64 v) {
+    U8[20] t;
+    I64 n = 0;
+    I64 x = v;
+    if (x == 0) {
+        t[0] = '0';
+        n = 1;
+    }
+    while (x > 0) {
+        t[n] = (48 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    for k in 0..n { dst[at + k] = t[n - 1 - k]; }
+    return at + n;
+}
+
+// The app row k names, or NONE: an app row's, or a program row's whose program is an app's.
+export I64 row_app(I64 k) {
+    if (r_kind[k] == APP) { return r_ref[k]; }
+    if (r_kind[k] == PROG) { return app_named(r_text[TEXT * k..TEXT * k + r_len[k]], r_len[k]); }
+    return apps.NONE;
+}
+
+// Row k as drawn: its name into nm, its path into pt, its kind word into kw.
+void present(I64 k) {
+    I64 n = r_len[k];
+    I64 a = row_app(k);
+    I64 d = r_kind[k];
+    nml = 0;
+    ptl = 0;
+    if (a != apps.NONE) {
+        nml = apps.field(a, 0, nm);
+        ptl = apps.field(a, 1, pt);
+        if (ptl == 0) { ptl = put(pt, 0, b"Super+,"); }
+        kwl = put(kw, 0, b"Program");
+        return;
+    }
+    if (d == WIN) {
+        I64 cut = -1;
+        for i in 0..n - 2 {
+            if (cut < 0 && r_text[TEXT * k + i] == ' ' && r_text[TEXT * k + i + 1] == '-'
+                && r_text[TEXT * k + i + 2] == ' ') {
+                cut = i;
+            }
+        }
+        if (cut < 0) {
+            for i in 0..n { nm[i] = r_text[TEXT * k + i]; }
+            nml = n;
+        } else {
+            for i in 0..cut { nm[i] = r_text[TEXT * k + i]; }
+            nml = cut;
+            for i in cut + 3..n { pt[i - cut - 3] = r_text[TEXT * k + i]; }
+            ptl = n - cut - 3;
+        }
+        kwl = put(kw, 0, b"Window");
+        return;
+    }
+    I64 b = n;
+    while (b > 0 && r_text[TEXT * k + b - 1] != '/') { b = b - 1; }
+    if (b == n) { b = 0; }
+    for i in b..n { nm[i - b] = r_text[TEXT * k + i]; }
+    nml = n - b;
+    if (d == PROG && (n == 0 || r_text[TEXT * k] != '/')) {
+        for i in 0..r_slen[k] { pt[i] = r_side[SIDE * k + i]; }
+        ptl = r_slen[k];
+    } else {
+        for i in 0..n { pt[i] = r_text[TEXT * k + i]; }
+        ptl = n;
+    }
+    if (d == PROG) { kwl = put(kw, 0, b"Program"); }
+    if (d == FILE) { kwl = put(kw, 0, b"File"); }
+    if (d == DIR) { kwl = put(kw, 0, b"Folder"); }
+}
+
+// The preview of the selected row: its title, what it is, five rows of label and value, the actions.
+U8[96] pv_name;
+I64 pv_nl = 0;
+U8[96] pv_what;
+I64 pv_wl = 0;
+I64 pv_icon = 0;
+U8[960] pv_val;         // five values, TEXT each
+I64[5] pv_vl;
+I64[5] pv_vf;           // their roles
+U8[80] pv_lab;          // five labels, 16 each
+I64[5] pv_ll;
+U8[16] pv_open;
+I64 pv_ol = 0;
+U8[24] pv_two;
+I64 pv_tl = 0;
+Bool pv_toff = false;   // DN-49: Pin to Taskbar dimmed, the Taskbar full
+
+void pv_set(I64 i, in U8[_] lab, in U8[_] v, I64 vn, I64 f) {
+    I64 a = len(lab);
+    if (a > 16) { a = 16; }
+    for k in 0..a { pv_lab[16 * i + k] = lab[k]; }
+    pv_ll[i] = a;
+    I64 b = vn;
+    if (b > TEXT) { b = TEXT; }
+    for k in 0..b { pv_val[TEXT * i + k] = v[k]; }
+    pv_vl[i] = b;
+    pv_vf[i] = f;
+}
+
+void preview_of(I64 k) {
+    present(k);
+    for i in 0..nml { pv_name[i] = nm[i]; }
+    pv_nl = nml;
+    pv_icon = r_icon[k];
+    I64 a = row_app(k);
+    I64 d = r_kind[k];
+    U8[96] t;
+    pv_ol = put(pv_open, 0, b"Open");
+    if (a != apps.NONE) {
+        pv_icon = apps.icon(a);
+        pv_wl = apps.field(a, 3, pv_what);
+        I64 n = apps.field(a, 1, t);
+        if (n == 0) { n = put(t, 0, b"Super+,"); }
+        pv_set(0, b"Program", t, n, faces.PATH);
+        n = apps.field(a, 4, t);
+        pv_set(1, b"Opens", t, n, faces.BODY);
+        I64 r = apps.runs_in(a);
+        if (r == apps.TERM) { n = put(t, 0, b"A new Console window"); }
+        if (r == apps.WINDOW) { n = put(t, 0, b"Its own window"); }
+        if (r == apps.DESK) { n = put(t, 0, b"The desk"); }
+        if (r == apps.LABEL) { n = put(t, 0, b"Not built yet"); }   // DN-31
+        pv_set(2, b"Runs in", t, n, faces.BODY);
+        U8[96] al;
+        I64 m = apps.field(a, 2, al);
+        n = 0;
+        for j in 0..m {
+            if (al[j] == ' ') { n = put(t, n, b", "); } else { n = put(t, n, al[j..j + 1]); }
+        }
+        pv_set(3, b"Found as", t, n, faces.BODY);
+        pv_set(4, b"Grants", b"None asked", 10, faces.BODY);
+    } else if (d == WIN) {
+        pv_wl = put(pv_what, 0, b"Window");
+        pv_set(0, b"Title", nm, nml, faces.BODY);
+        pv_set(1, b"Path", pt, ptl, faces.PATH);
+        pv_set(2, b"Process", r_side[SIDE * k..SIDE * k + r_slen[k]], r_slen[k], faces.PATH);
+        pv_set(3, b"Opens", b"Its desktop, focused", 20, faces.BODY);
+        pv_set(4, b"Grants", b"As the bar shows", 16, faces.BODY);
+        pv_ol = put(pv_open, 0, b"Switch to");
+    } else {
+        if (d == PROG) {
+            pv_wl = put(pv_what, 0, b"Program");
+            pv_set(0, b"Program", pt, ptl, faces.PATH);
+            pv_set(1, b"Opens", b"Its output", 10, faces.BODY);
+            pv_set(2, b"Runs in", b"A new Console window", 20, faces.BODY);
+            pv_set(3, b"Found as", nm, nml, faces.BODY);
+        } else {
+            if (d == DIR) { pv_wl = put(pv_what, 0, b"Folder"); } else { pv_wl = put(pv_what, 0, b"File"); }
+            pv_set(0, b"Path", pt, ptl, faces.PATH);
+            pv_set(1, b"Size", r_side[SIDE * k..SIDE * k + r_slen[k]], r_slen[k], faces.PATH);
+            if (d == DIR) {
+                pv_set(2, b"Opens", b"Its files, in the field", 23, faces.BODY);
+                pv_ol = put(pv_open, 0, b"Show files");
+            } else {
+                pv_set(2, b"Opens", b"In the program its kind names", 29, faces.BODY);
+            }
+            pv_set(3, b"Found as", b"Its path", 8, faces.BODY);
+        }
+        pv_set(4, b"Grants", b"None asked", 10, faces.BODY);
+    }
+    U8[96] key;
+    I64 kn = row_text(k, key);
+    I64 tbw = ctxmenu.PIN_TASKBAR;              // DN-46 (c): l's word for the pinned rows is Taskbar
+    if (pin_find(key[0..kn]) >= 0) { tbw = ctxmenu.UNPIN_TASKBAR; }
+    if (a != apps.NONE && is_pinned(a)) { tbw = ctxmenu.UNPIN_TASKBAR; }
+    pv_tl = ctxmenu.words(tbw, pv_two);
+    pv_toff = tbw == ctxmenu.PIN_TASKBAR && pins_full();
+}
+
+// --- painting, device pixels ---
+
+// DN-5: an app's icon slot (apps.icon, kit/icons3.ci), or ALL for the All Apps tile.
+I64 slot_of(I64 a) {
+    if (a == ALL) { return icons3.ALLAPPS; }
+    if (a == TRASH) {                          // DN-46 (d): the Trash home's icon, full (the lid tipped) or empty
+        if (trash_full) { return icons3.TRASH_FULL; }
+        return icons3.TRASH;
+    }
+    if (a >= PIN_FILE) { return p_icon[a - PIN_FILE]; }       // DN-46 (c): a pinned file or folder
+    return apps.icon(a);
+}
+
+// A grid slot's name: the app's friendly name, or `All Apps`.
+I64 name_of(I64 a, inout U8[_] t) {
+    if (a == TRASH) { return put(t, 0, b"Trash"); }
+    if (a >= PIN_FILE) { return pin_name(a - PIN_FILE, t); }
+    if (a == ALL) {
+        for k in 0..8 { t[k] = b"All Apps"[k]; }
+        return 8;
+    }
+    return apps.field(a, 0, t);
+}
+
+// Whether px is a size icons3 draws (DN-22: 88 too), or for a file icon one fileicons draws.
+Bool has_size(I64 px, Bool file) {
+    if (px == 16 || px == 28 || px == 32 || px == 40 || px == 48 || px == 64) { return true; }   // DN-49: 28, 40, 48
+    if (file) { return false; }
+    return px == 56 || px == 72 || px == 80 || px == 88;
+}
+
+// The smallest size icons3 draws whose device side is at least d (88 the largest).
+I64 above(I64 d) {
+    I64 s = 88;
+    I64[10] sz = [16, 28, 32, 40, 48, 56, 64, 72, 80, 88];
+    for i in 0..10 {
+        I64 c = sz[i];
+        if (c * Z >= d && c < s) { s = c; }
+    }
+    return s;
+}
+
+U32[176] sr0;       // DN-22: two rows of the larger drawing, laid over the ground
+U32[176] sr1;
+
+// One channel at bit sh of the bilinear mix of a, b (top) and c, e (bottom) at fx, fy in 256ths, rounded.
+I64 lerp2(U32 a, U32 b, U32 c, U32 e, I64 fx, I64 fy, I64 sh) {
+    I64 va = ((a >> (sh as U32)) & 255) as I64;
+    I64 vb = ((b >> (sh as U32)) & 255) as I64;
+    I64 vc = ((c >> (sh as U32)) & 255) as I64;
+    I64 ve = ((e >> (sh as U32)) & 255) as I64;
+    I64 top = va * (256 - fx) + vb * fx;
+    I64 bot = vc * (256 - fx) + ve * fx;
+    return (top * (256 - fy) + bot * fy + 32768) >> 16;
+}
+
+// The source coordinate of target pixel i of n, in 256ths, over a source of m pixels (centers aligned).
+I64 src256(I64 i, I64 n, I64 m) { return ((2 * i + 1) * m * 128) / n - 128; }
+
+// DN-22: icon k at d device pixels between two drawn sizes: the next larger drawing, laid over ground, scaled down
+// bilinearly (integers, 256ths), centered at (cx, cy) on row y.
+void icon_scaled(inout U32[_] row, I64 y, I64 cx, I64 cy, I64 k, I64 d, U32 ground) {
+    I64 px = above(d);
+    I64 m = px * Z;
+    I64 x0 = cx - d / 2;
+    I64 y0 = cy - d / 2;
+    if (y < y0 || y >= y0 + d || m > 176) { return; }
+    I64 sy = src256(y - y0, d, m);
+    if (sy < 0) { sy = 0; }
+    I64 ya = sy / 256;
+    I64 fy = sy % 256;
+    I64 yb = ya + 1;
+    if (yb > m - 1) { yb = m - 1; }
+    for i in 0..m {
+        sr0[i] = ground & 0xFFFFFF;
+        sr1[i] = ground & 0xFFFFFF;
+    }
+    icons3.icon_at(sr0, ya, 0, 0, k, px, Z, ground);
+    icons3.icon_at(sr1, yb, 0, 0, k, px, Z, ground);
+    for i in 0..d {
+        I64 sx = src256(i, d, m);
+        if (sx < 0) { sx = 0; }
+        I64 xa = sx / 256;
+        I64 fx = sx % 256;
+        I64 xb = xa + 1;
+        if (xb > m - 1) { xb = m - 1; }
+        I64 r = lerp2(sr0[xa], sr0[xb], sr1[xa], sr1[xb], fx, fy, 16);
+        I64 g = lerp2(sr0[xa], sr0[xb], sr1[xa], sr1[xb], fx, fy, 8);
+        I64 b = lerp2(sr0[xa], sr0[xb], sr1[xa], sr1[xb], fx, fy, 0);
+        draw.put(row, x0 + i, ((r << 16) | (g << 8) | b) as U32);
+    }
+}
+
+// The one icon call of the plane: code k (icons3's, or FILE_ICON + fileicons') d device pixels square, centered at
+// device (cx, cy), over ground (icons3 draws program_light on a light one). A drawn size is drawn exactly; a size
+// between two (hover, press, in motion) is the larger drawing scaled down (DN-22).
+void icon_d(inout U32[_] row, I64 y, I64 cx, I64 cy, I64 k, I64 d, U32 ground) {
+    Bool file = k >= FILE_ICON;
+    if (d % Z != 0 || !has_size(d / Z, file)) {
+        if (!file) { icon_scaled(row, y, cx, cy, k, d, ground); }
+        return;
+    }
+    I64 px = d / Z;
+    I64 s = px * Z;
+    if (y < cy - s / 2 || y >= cy - s / 2 + s) { return; }
+    if (file) {
+        fileicons.icon_at(row, y, cx - s / 2, cy - s / 2, k - FILE_ICON, px, Z);
+    } else {
+        icons3.icon_at(row, y, cx - s / 2, cy - s / 2, k, px, Z, ground);
+    }
+}
+
+// Icon k in a 1x slot of s, its center at device (cx, cy).
+void icon_c(inout U32[_] row, I64 y, I64 cx, I64 cy, I64 k, I64 s, U32 ground) {
+    icon_d(row, y, cx, cy, k, s * Z, ground);
+}
+
+// A keycap with t in it, its top at 1x row top, from device x; its device width. The border is c; text in tc.
+I64 keycap(inout U32[_] row, I64 y, I64 x, I64 top, in U8[_] t, I64 n, U32 c, U32 tc) {
+    I64 w = tw(t, n, faces.PATH) + 14 * Z;
+    shape.ring(row, y, x, top * Z, x + w, (top + KEY_H) * Z, R_KEY * Z, Z, c);
+    say(row, y, x + 7 * Z, top, KEY_H, x + w, t, n, tc, faces.PATH);
+    return w;
+}
+
+I64 key_w(in U8[_] t, I64 n) { return tw(t, n, faces.PATH) + 14 * Z; }
+
+// A section label at 1x (x, top).
+void label(inout U32[_] row, I64 y, I64 x, I64 top, I64 x1, in U8[_] t, I64 n) {
+    say(row, y, (x + 10) * Z, top, LABEL_H, x1 * Z, t, n, tok(tokens.INK_DIM), faces.LABEL);   // DN-49: 10 in
+}
+
+void field_row(inout U32[_] row, I64 y) {
+    I64 x0 = col_x0() * Z;
+    I64 x1 = col_x1() * Z;
+    I64 y0 = field_y0() * Z;
+    I64 y1 = field_y1() * Z;
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, x0, y0, x1, y1, FIELD_H / 2 * Z, tok(tokens.SURF2));       // DN-49: the pill, 44 high
+    shape.ring(row, y, x0, y0, x1, y1, FIELD_H / 2 * Z, 2 * Z, tok(tokens.ULTRAMARINE));
+    shape.lens(row, y, x0 + 18 * Z, (field_y0() + (FIELD_H - 16) / 2) * Z, Z, tok(tokens.INK));
+    I64 kx = x1 - 18 * Z;                // DN-46 (b): no Esc keycap: the key still closes
+    I64 tx1 = kx - 12 * Z;
+    if (qn > 0) {
+        U8[24] ct;
+        I64 cl = 0;
+        if (rn == 0) {
+            cl = put(ct, 0, b"No results");
+        } else {
+            cl = digits(ct, 0, rn);
+            if (rn == 1) { cl = put(ct, cl, b" result"); } else { cl = put(ct, cl, b" results"); }
+        }
+        I64 cw = tw(ct, cl, faces.BODY);
+        say(row, y, tx1 - cw, field_y0(), FIELD_H, tx1, ct, cl, tok(tokens.INK_DIM), faces.BODY);
+        tx1 = tx1 - cw - 12 * Z;
+    }
+    I64 tx = x0 + 46 * Z;
+    if (qn == 0) {
+        say(row, y, tx, field_y0(), FIELD_H, tx1, b"Search files, programs and windows", 34, tok(tokens.INK_DIM),
+            faces.SEARCH);
+    } else {
+        say(row, y, tx, field_y0(), FIELD_H, tx1, q, qn, tok(tokens.INK), faces.SEARCH);
+        I64 e = tx + tw(q, qn, faces.SEARCH);
+        if (e > tx1) { e = tx1; }
+        I64 b = base_of(field_y0(), FIELD_H, faces.SEARCH);
+        draw.rect(row, y, e + Z, b - ctext.ascent(faces.SEARCH, Z), e + 3 * Z, b + ctext.descent(faces.SEARCH, Z),
+                  tok(tokens.INK));   // the caret, the field face's line box
+    }
+}
+
+// The size of cell k's icon: a pin's by the density (DN-49), a home's 32.
+export I64 icon_size(I64 k) {
+    if (k >= ppn) { return RAIL_ICON; }  // DN-49: a home's 32; a pin's by the density, its ground marks hover
+    return pin_icon(ppn);
+}
+
+// DN-49: the pins and the rail. Each cell's ground: SURF2 hovered, FILL where the selection slides (DN-42: the FILL
+// tile, no ring); a pin's icon by the density, centered with its name (12 px, a 6 px OCHRE dot before it while the app
+// has a window, DN-39 (e)) under it, or alone at 28 px; the 1 px BAR_RULE between pins and rail; a home's 32 px icon
+// and its name, 10 in.
+void grid_row(inout U32[_] row, I64 y) {
+    if (y < grid_y0() * Z || y >= grid_y1() * Z) { return; }
+    I64[4] b;
+    if (hv >= 0 && hv < lay_vc && hv != rsel) {
+        cell_box(hv, b);
+        shape.rounded(row, y, b[0] * Z, b[1] * Z, b[2] * Z, b[3] * Z, R_CELL * Z, tok(tokens.SURF2));
+    }
+    if (rsel < lay_vc) {
+        cell_box(rsel, b);
+        I64 px0 = b[0] * Z;
+        I64 py0 = b[1] * Z;
+        if (pill_dom == 1) {
+            px0 = pill_now_x();
+            py0 = pill_now_y();
+        }
+        shape.rounded(row, y, px0, py0, px0 + (b[2] - b[0]) * Z, py0 + (b[3] - b[1]) * Z, R_CELL * Z, tok(tokens.FILL));
+    }
+    draw.rect(row, y, rule_x() * Z, grid_y0() * Z, (rule_x() + 1) * Z, grid_y1() * Z, tok(tokens.BAR_RULE));
+    Bool names = pin_names(ppn);
+    for k in 0..lay_vc {
+        cell_box(k, b);
+        I64 x0 = b[0] * Z;
+        I64 y0 = b[1] * Z;
+        I64 x1 = b[2] * Z;
+        I64 y1 = b[3] * Z;
+        if (y >= y0 && y < y1) {
+            U32 ink = tok(tokens.INK);
+            if (k == rsel) { ink = tok(tokens.ON_FILL); }
+            I64 a = g_app[k];
+            U32 gr = tok(tokens.MANTLE);
+            if (k == rsel) { gr = tok(tokens.FILL); } else if (k == hv) { gr = tok(tokens.SURF2); }
+            U8[64] t;
+            I64 n = name_of(a, t);
+            if (k >= ppn) {                // a home: icon then name, centered in its 52
+                icon_d(row, y, x0 + (10 + RAIL_ICON / 2) * Z, (b[1] + RAIL_ROW / 2) * Z, slot_of(a), RAIL_ICON * Z, gr);
+                say(row, y, x0 + (10 + RAIL_ICON + 12) * Z, b[1] + (RAIL_ROW - 16) / 2, 16, x1, t, n, ink, faces.NAME);
+            } else {
+                I64 sz = pin_icon(ppn);
+                I64 top = b[1] + (CELL_H - sz) / 2;
+                if (names) { top = b[1] + (CELL_H - (sz + 8 + 12)) / 2; }
+                icon_d(row, y, (x0 + x1) / 2, (top + sz / 2) * Z, slot_of(a), sz * Z, gr);
+                if (names) {
+                    Bool has_dot = a >= 0 && a < apps.N && has_windows(a);
+                    I64 dw = 0;
+                    if (has_dot) { dw = (DOT + 5) * Z; }
+                    U8[72] ft;
+                    I64 room = x1 - x0 - 2 * LABEL_PAD * Z - dw;
+                    I64 pf = pin_face(t, n, room);   // DN-52 (e): 12, 11, then 10 px to fit, then the clip
+                    n = fit_name(t, n, pf, room, ft);   // DN-49: kept in its cell
+                    for i in 0..n { t[i] = ft[i]; }
+                    I64 w = tw(t, n, pf);
+                    I64 nx = (x0 + x1) / 2 - (w + dw) / 2;
+                    I64 ny = top + sz + 8;
+                    if (has_dot) {
+                        I64 dy0 = (ny + 3) * Z;
+                        if (y >= dy0 && y < dy0 + DOT * Z) {
+                            shape.rounded(row, y, nx, dy0, nx + DOT * Z, dy0 + DOT * Z, DOT * Z / 2, tok(tokens.OCHRE));
+                        }
+                    }
+                    say(row, y, nx + dw, ny - 2, 16, x1, t, n, ink, pf);
+                }
+            }
+        }
+    }
+}
+
+// DN-49: a pin's name clipped to its cell, LABEL_PAD in from each side, its last whole code points and an ellipsis
+// (U+2026) where it does not fit; the hovered pin's full name in the tooltip then, as at 28 px.
+export const I64 LABEL_PAD = 4;
+
+// DN-52 (e), measured as note 49 allows: a pinned name's face, 12 px (SMALL), else 11, else 10, the first in which
+// the name fits room device pixels (its cell less LABEL_PAD each side and the open dot with its gap); fit_name clips
+// only what still does not fit at 10 px (shrink first, clip last; never a wrap). Sizes in one row may differ.
+export I64 pin_face(in U8[_] t, I64 n, I64 room) {
+    if (tw(t, n, faces.SMALL) <= room) { return faces.SMALL; }
+    if (tw(t, n, faces.PIN11) <= room) { return faces.PIN11; }
+    return faces.PIN10;
+}
+
+I64 fit_name(in U8[_] t, I64 n, I64 f, I64 wmax, inout U8[_] o) {
+    for i in 0..n { o[i] = t[i]; }
+    if (tw(t, n, f) <= wmax) { return n; }
+    U8[3] el = [226, 128, 166];
+    I64 ew = tw(el, 3, f);
+    I64 k = n;
+    Bool fits = false;
+    while (k > 0 && !fits) {
+        k = k - 1;
+        while (k > 0 && ((t[k] as I64) & 192) == 128) { k = k - 1; }   // back to a code point's first byte
+        if (tw(t, k, f) + ew <= wmax) { fits = true; }
+    }
+    while (k > 0 && t[k - 1] == ' ') { k = k - 1; }
+    o[k] = el[0];
+    o[k + 1] = el[1];
+    o[k + 2] = el[2];
+    return k + 3;
+}
+
+// Pin k's label as drawn into o (its length) and its box's device width, the dot's 11 px with it.
+export I64 pin_label(I64 k, inout U8[_] o) {
+    I64[4] b;
+    cell_box(k, b);
+    U8[64] t;
+    I64 n = name_of(g_app[k], t);
+    I64 a = g_app[k];
+    I64 dw = 0;
+    if (a >= 0 && a < apps.N && has_windows(a)) { dw = (DOT + 5) * Z; }
+    I64 room = (b[2] - b[0] - 2 * LABEL_PAD) * Z - dw;
+    return fit_name(t, n, pin_face(t, n, room), room, o);
+}
+
+export I64 pin_label_w(I64 k) {
+    U8[72] o;
+    I64 n = pin_label(k, o);
+    U8[64] t;
+    I64 tn = name_of(g_app[k], t);
+    I64 a = g_app[k];
+    I64 dw = 0;
+    if (a >= 0 && a < apps.N && has_windows(a)) { dw = (DOT + 5) * Z; }
+    I64[4] b;
+    cell_box(k, b);
+    return tw(o, n, pin_face(t, tn, (b[2] - b[0] - 2 * LABEL_PAD) * Z - dw)) + dw;
+}
+
+// Whether pin k's name is clipped where it is drawn (or not drawn, at 28 px).
+export Bool pin_clipped(I64 k) {
+    if (!pin_names(ppn)) { return true; }
+    U8[64] t;
+    I64 n = name_of(g_app[k], t);
+    U8[72] o;
+    if (pin_label(k, o) != n) { return true; }
+    for i in 0..n {                    // a clip can keep the length: "Cons" and the ellipsis's 3 bytes is "Console"'s 7
+        if (o[i] != t[i]) { return true; }
+    }
+    return false;
+}
+
+// DN-49: the hovered pin's full name in the desk's tooltip under its cell, at 28 px or where its label is clipped.
+void pin_tip_row(inout U32[_] row, I64 y) {
+    if (hv < 0 || hv >= ppn || qn != 0 || !pin_clipped(hv)) { return; }
+    I64[4] b;
+    cell_box(hv, b);
+    U8[64] t;
+    I64 n = name_of(g_app[hv], t);
+    I64 tipw = tooltip.width(t, n, Z);
+    tooltip.row_at(row, y, (b[0] + b[2]) * Z / 2 - tipw / 2, (b[3] + 6) * Z, tipw, t, n, Z);
+}
+
+// A list row's ground at 1x [x0, x1) from top: selected, a FILL pill inset 6; else SURF2, radius 8. True if selected.
+// The rows draw in two passes (ps): the grounds, then (after the pill) the contents, so a sliding pill lies over
+// every ground and under every row's text. The selected row has no ground of its own: the pill is its ground.
+I64 ps = 0;
+
+Bool row_ground(inout U32[_] row, I64 y, I64 x0, I64 top, I64 x1, Bool sel, Bool ground) {
+    if (sel || ps != 0) { return sel; }
+    if (ground) { shape.rounded(row, y, x0 * Z, top * Z, x1 * Z, (top + ROW_H) * Z, R_PANEL * Z, tok(tokens.SURF2)); }
+    return false;
+}
+
+// The selection pill over a list's rows, from 1x x0 to x1: at the selected row's top, or where it slides now.
+void row_pill(inout U32[_] row, I64 y, I64 x0, I64 x1, I64 top) {
+    I64 py = top * Z;
+    if (pill_dom == 2 || pill_dom == 3) { py = pill_now_y(); }
+    shape.rounded(row, y, (x0 + INSET) * Z, py, (x1 - INSET) * Z, py + ROW_H * Z, ROW_H * Z / 2, tok(tokens.FILL));
+}
+
+// A list row's content: the 16 px icon, the name in NAME, the path in PATH dim, the right text in BODY dim.
+void row_body(inout U32[_] row, I64 y, I64 x0, I64 top, I64 x1, I64 icon, in U8[_] name, I64 nn, I64 nf,
+              in U8[_] path, I64 pl, in U8[_] side, I64 sl, I64 sf, Bool sel, U32 sc0) {
+    if (ps != 1) { return; }
+    U32 sidec = sc0;
+    U32 ink = tok(tokens.INK);
+    U32 dim = tok(tokens.INK_DIM);
+    if (sel) {
+        ink = tok(tokens.ON_FILL);
+        dim = tok(tokens.ON_FILL);
+        sidec = dim;
+    }
+    I64 dx0 = x0 * Z;
+    I64 dx1 = x1 * Z;
+    U32 gr = tok(tokens.SURF2);
+    if (sel) { gr = tok(tokens.FILL); }
+    if (icon >= 0) { icon_c(row, y, dx0 + 18 * Z, (top + ROW_H / 2) * Z, icon, 16, gr); }   // DN-49: 10, 16, 10
+    I64 sw = tw(side, sl, sf);
+    I64 sx = dx1 - 10 * Z - sw;
+    say(row, y, sx, top, ROW_H, dx1, side, sl, sidec, sf);
+    I64 nx = dx0 + 36 * Z;
+    say(row, y, nx, top, ROW_H, sx - 10 * Z, name, nn, ink, nf);
+    I64 px = nx + tw(name, nn, nf) + 10 * Z;
+    if (pl > 0 && px < sx - 10 * Z) { say(row, y, px, top, ROW_H, sx - 10 * Z, path, pl, dim, faces.PATH); }
+}
+
+// The resting band: its grounds and panels, the pill on a selected row, then the rows' contents.
+void rest_band(inout U32[_] row, I64 y) {
+    ps = 0;
+    rest_pass(row, y);
+    lay_rest();
+    if (rsel >= lay_vc && rsel < lay_vc + lay_rec_n) {
+        row_pill(row, y, left_x0(), left_x1(), band_y0() + HEAD + (rsel - lay_vc) * (ROW_H + ROW_GAP));
+    } else if (rsel >= lay_vc + lay_rec_n && rsel < items()) {
+        row_pill(row, y, right_x0(), right_x1(), lay_ry0 + HEAD + (rsel - lay_vc - lay_rec_n) * (ROW_H + ROW_GAP));
+    }
+    ps = 1;
+    rest_pass(row, y);
+}
+
+void rest_pass(inout U32[_] row, I64 y) {
+    I64 bandy = band_y0();
+    I64 end = band_y1();
+    I64 lx0 = left_x0();
+    I64 lx1 = left_x1();
+    if (lay_rec_lab && ps == 0) { label(row, y, lx0, bandy, lx1, b"RECENT FILES", 12); }
+    I64 top = bandy + HEAD;
+    if (cn == 0 && ps == 0) {
+        if (top + PANEL_EMPTY_H <= end) {
+            I64 y0 = top * Z;
+            I64 y1 = (top + PANEL_EMPTY_H) * Z;
+            if (y >= y0 && y < y1) {
+                shape.rounded(row, y, lx0 * Z, y0, lx1 * Z, y1, R_PANEL * Z, tok(tokens.PAPER));
+                I64 bw = tw(b"Open Index", 10, faces.NAME) + 24 * Z;
+                I64 bx1 = (lx1 - 24) * Z;
+                I64 bx0 = bx1 - bw;
+                I64 bt = top + 26;
+                shape.rounded(row, y, bx0, bt * Z, bx1, (bt + 33) * Z, R_CTRL * Z, tok(tokens.SURF1));
+                say(row, y, bx0 + 12 * Z, bt, 33, bx1, b"Open Index", 10, tok(tokens.INK), faces.NAME);
+                I64 tx = (lx0 + 24) * Z;
+                say(row, y, tx, top + 20, 16, bx0 - 24 * Z, b"No recent files", 15, tok(tokens.INK), faces.SEARCH);
+            }
+        }
+    }
+    for k in 0..lay_rec_n {
+        I64 ry = top + k * (ROW_H + ROW_GAP);
+        if (y >= ry * Z && y < (ry + ROW_H) * Z) {
+            Bool s = row_ground(row, y, lx0, ry, lx1, rsel == lay_vc + k, false);   // DN-49: rows have no ground, the selection's pill alone
+            row_body(row, y, lx0, ry, lx1, c_icon[k], c_text[TEXT * k..TEXT * k + c_len[k]], c_len[k], faces.PATH,
+                     b"", 0, c_side[SIDE * k..SIDE * k + c_slen[k]], c_slen[k], faces.PATH, s, tok(tokens.INK_DIM));
+        }
+    }
+    I64 rx0 = right_x0();
+    I64 rx1 = right_x1();
+    I64 ry0 = lay_ry0;
+    // DN-41 (c): the list is titled Minimized and holds the minimized windows only
+    if (lay_win_lab && ps == 0) { label(row, y, rx0, ry0, rx1, b"MINIMIZED", 9); }
+    if (mn_count() == 0 && ry0 + HEAD + 13 <= end && ps == 0) {
+        say(row, y, (rx0 + 16) * Z, ry0 + HEAD, 13, rx1 * Z, b"No minimized windows.", 21, tok(tokens.INK_DIM),
+            faces.BODY);
+    }
+    for jj in 0..lay_win_n {
+        I64 j = mn_at(jj);
+        I64 ry = ry0 + HEAD + jj * (ROW_H + ROW_GAP);
+        if (y >= ry * Z && y < (ry + ROW_H) * Z) {
+            Bool s = row_ground(row, y, rx0, ry, rx1, rsel == lay_vc + lay_rec_n + jj, false);   // DN-49: rows have no ground, the selection's pill alone
+            U8[32] dk;
+            I64 dl = put(dk, 0, b"Desktop ");
+            dl = digits(dk, dl, w_desk[j]);
+            U32 dc = tok(tokens.INK_DIM);
+            if (w_min[j]) {
+                dl = put(dk, 0, b"Minimized");
+                dc = tok(tokens.OCHRE);
+            }
+            row_body(row, y, rx0, ry, rx1, w_icon[j], w_title[TEXT * j..TEXT * j + w_tlen[j]], w_tlen[j], faces.NAME,
+                     w_path[TEXT * j..TEXT * j + w_plen[j]], w_plen[j], dk, dl, faces.BODY, s, dc);
+        }
+    }
+    I64 gy = lay_gr_y;
+    if (lay_gr_lab && ps == 0) { label(row, y, rx0, gy, rx1, b"GRANTS", 6); }
+    I64 gt = gy + HEAD;
+    if (grn == 0 && ps == 0 && lay_gr_lab) {
+        I64 ph = grants_panel_h();
+        if (gt + ph <= end && y >= gt * Z && y < (gt + ph) * Z) {
+            shape.rounded(row, y, rx0 * Z, gt * Z, rx1 * Z, (gt + ph) * Z, R_PANEL * Z, tok(tokens.PAPER));
+            say(row, y, (rx0 + 16) * Z, gt + 16, 13, (rx1 - 16) * Z, b"None active", 11, tok(tokens.INK), faces.NAME);
+        }
+    }
+    for j in 0..lay_gr_n {
+        I64 ry = gt + j * (ROW_H + ROW_GAP);
+        if (y >= ry * Z && y < (ry + ROW_H) * Z) {
+            Bool s = row_ground(row, y, rx0, ry, rx1, false, false);   // DN-49: rows have no ground, the selection's pill alone
+            U32 gc = tok(tokens.SIENNA);
+            U8[8] gw;
+            I64 gl = put(gw, 0, b"Disk");
+            if (gr_g[j] == 2) {
+                gc = tok(tokens.OCHRE);
+                gl = put(gw, 0, b"Network");
+            }
+            row_body(row, y, rx0, ry, rx1, -1, gr_title[TEXT * j..TEXT * j + gr_tlen[j]], gr_tlen[j], faces.NAME,
+                     b"", 0,
+                     gw, gl, faces.BODY, false, gc);
+        }
+    }
+}
+
+void top_hit(inout U32[_] row, I64 y, I64 top) {
+    I64 x0 = left_x0() * Z;
+    I64 x1 = left_x1() * Z;
+    I64 y0 = top * Z;
+    I64 y1 = (top + TOP_H) * Z;
+    if (y < y0 || y >= y1) { return; }
+    I64 k = ord[0];
+    Bool sel = qpos == 0;
+    U32 ink = tok(tokens.INK);
+    if (sel) {                           // DN-49 (frame 2): a 52 px pill, 12 in, the 32 px icon, 12, the name and path
+        shape.rounded(row, y, x0, y0, x1, y1, TOP_H / 2 * Z, tok(tokens.FILL));
+        ink = tok(tokens.ON_FILL);
+    } else {
+        shape.rounded(row, y, x0, y0, x1, y1, TOP_H / 2 * Z, tok(tokens.SURF2));
+    }
+    present(k);
+    I64 ic = r_icon[k];
+    I64 a = row_app(k);
+    if (a != apps.NONE) { ic = apps.icon(a); }
+    U32 gr = tok(tokens.SURF2);
+    if (sel) { gr = tok(tokens.FILL); }
+    icon_c(row, y, x0 + 28 * Z, (top + TOP_H / 2) * Z, ic, 32, gr);
+    I64 kx = x1 - 16 * Z;                // DN-46 (b): no Enter keycap: the kind word alone, the key still opens
+    I64 ww = tw(kw, kwl, faces.BODY);
+    I64 wx = kx - ww;
+    say(row, y, wx, top, TOP_H, kx, kw, kwl, ink, faces.BODY);
+    I64 tx = x0 + 56 * Z;
+    say(row, y, tx, top + 9, 16, wx - 12 * Z, nm, nml, ink, faces.SEARCH);
+    say(row, y, tx, top + 30, 12, wx - 12 * Z, pt, ptl, ink, faces.PATH);
+}
+
+// The query's band: labels, the top hit, the `none` lines, the rows' grounds, the pill, the rows, the preview.
+void query_band(inout U32[_] row, I64 y) {
+    ps = 0;
+    query_pass(row, y);
+    if (qpos >= 1 && qpos < rn && q_y[qpos] >= 0) { row_pill(row, y, left_x0(), left_x1(), q_y[qpos]); }
+    ps = 1;
+    query_pass(row, y);
+    if (rn > 0) { preview_panel(row, y); }
+}
+
+void query_pass(inout U32[_] row, I64 y) {
+    I64 lx0 = left_x0();
+    I64 lx1 = left_x1();
+    if (q_sect[0] >= 0 && ps == 0) {
+        label(row, y, lx0, q_sect[0], lx1, b"TOP HIT", 7);
+        top_hit(row, y, q_y[0]);
+    }
+    U8[64] nt;
+    for s in 1..4 {
+        if (ps != 0) { break; }
+        if (q_sect[s] >= 0) {
+            if (s == 1) { label(row, y, lx0, q_sect[s], lx1, b"FILES", 5); }
+            if (s == 2) { label(row, y, lx0, q_sect[s], lx1, b"WINDOWS", 7); }
+            if (s == 3) { label(row, y, lx0, q_sect[s], lx1, b"PROGRAMS", 8); }
+        }
+        if (q_none[s] >= 0) {
+            I64 n = 0;
+            if (s == 1) {
+                n = put(nt, 0, b"No file names match \"");
+                for k in 0..qn { n = put(nt, n, q[k..k + 1]); }
+                n = put(nt, n, b"\".");
+            } else {
+                n = put(nt, 0, b"No open window matches.");
+            }
+            say(row, y, (lx0 + 10) * Z, q_none[s], 13, lx1 * Z, nt, n, tok(tokens.INK_DIM), faces.BODY);
+        }
+    }
+    for p in 1..rn {
+        I64 ry = q_y[p];
+        if (ry >= 0 && y >= ry * Z && y < (ry + ROW_H) * Z) {
+            I64 k = ord[p];
+            Bool s = row_ground(row, y, lx0, ry, lx1, p == qpos, false);   // DN-49: rows have no ground, the selection's pill alone
+            present(k);
+            I64 ic = r_icon[k];
+            I64 a = row_app(k);
+            if (a != apps.NONE) { ic = apps.icon(a); }
+            U8[24] sd;
+            I64 sl = row_side(k, sd);
+            if (r_kind[k] == WIN || a != apps.NONE) { sl = 0; }
+            row_body(row, y, lx0, ry, lx1, ic, nm, nml, faces.NAME, pt, ptl, sd, sl, faces.PATH, s,
+                     tok(tokens.INK_DIM));
+        }
+    }
+}
+
+// DN-22: the panel is dropped where the work area is under 880 px at the scale (or would not fit).
+export Bool preview_shown() { return WP >= 880 && (q_pv_y1 <= band_y1() || previewing); }
+
+void preview_panel(inout U32[_] row, I64 y) {
+    if (!preview_shown()) { return; }
+    I64 x0 = q_pv_x0 * Z;
+    I64 x1 = q_pv_x1 * Z;
+    I64 y0 = q_pv_y0 * Z;
+    I64 y1 = q_pv_y1 * Z;
+    if (y < y0 || y >= y1) { return; }
+    // DN-49 (frame 2): PAPER, radius 12, 16 in; the 48 px icon, 12, the name (TITLE) over what it is; the fields, a
+    // 72 px label column, 26 apart; two 32 px buttons 4 apart, SURF1, radius 6, the word 10 in.
+    shape.rounded(row, y, x0, y0, x1, y1, R_CELL * Z, tok(tokens.PAPER));
+    preview_of(selected());
+    I64 t = q_pv_y0;
+    I64 lx = x0 + 16 * Z;
+    I64 rx = x1 - 16 * Z;
+    icon_c(row, y, lx + 24 * Z, (t + 40) * Z, pv_icon, 48, tok(tokens.PAPER));
+    I64 tx = lx + 60 * Z;
+    say(row, y, tx, t + 20, 18, rx, pv_name, pv_nl, tok(tokens.INK), faces.TITLE);
+    say(row, y, tx, t + 46, 13, rx, pv_what, pv_wl, tok(tokens.INK_DIM), faces.BODY);
+    I64 fy = t + 80;
+    if (previewing) {
+        say(row, y, lx, fy, 16, rx, l_path, l_plen, tok(tokens.INK_DIM), faces.PATH);
+        for k in 0..ln {
+            I64 r = fy + 24 + 16 * k;
+            if (r + 16 <= q_pv_y1 - 16) {
+                say(row, y, lx, r, 16, rx, l_text[TEXT * k..TEXT * k + l_len[k]], l_len[k], tok(tokens.INK),
+                    faces.PATH);
+            }
+        }
+        return;
+    }
+    for i in 0..5 {
+        I64 r = fy + 26 * i;
+        say(row, y, lx, r, 16, lx + 72 * Z, pv_lab[16 * i..16 * i + pv_ll[i]], pv_ll[i], tok(tokens.INK_DIM),
+            faces.BODY);
+        say(row, y, lx + 72 * Z, r, 16, rx, pv_val[TEXT * i..TEXT * i + pv_vl[i]], pv_vl[i], tok(tokens.INK),
+            pv_vf[i]);
+    }
+    for i in 0..2 {
+        I64 bt = fy + 26 * 5 - 10 + 16 + 36 * i;
+        I64 by0 = bt * Z;
+        I64 by1 = (bt + 32) * Z;
+        if (y >= by0 && y < by1) {
+            shape.rounded(row, y, lx, by0, rx, by1, R_CTRL * Z, tok(tokens.SURF1));
+            if (i == 0) {
+                say(row, y, lx + 10 * Z, bt, 32, rx, pv_open, pv_ol, tok(tokens.INK), faces.NAME);
+            } else {
+                U32 ink = tok(tokens.INK);
+                if (pv_toff) { ink = blend.mix_px(tok(tokens.SURF1), ink, ctxmenu.DIM); }   // DN-49: 28 pins
+                say(row, y, lx + 10 * Z, bt, 32, rx, pv_two, pv_tl, ink, faces.NAME);
+            }
+        }
+    }
+}
+
+// --- DN-47: the power button and its menu (design note 47, l; provisional, frames 1 and 2) ---
+// The footer holds one power button at its right end, a PB_D circle with the power symbol at 16, no ground at rest,
+// PB_GROUND while its menu is open or the pointer is over it (or the keyboard's focus is on it). Its menu opens above
+// it, right edges aligned, PM_GAP between: PM_W wide, radius PM_R, SURF2 (#222426 dark), PM_PAD in, rows of PM_ROW
+// pills with PM_SIDE inside, a 16 px symbol, PM_SYM_GAP, then Inter 13. DN-52 (d): Lock, Switch User (users), Sleep
+// (moon), Shut Down, Restart; Switch User and Sleep are coming features, drawn at PM_DIM (40 percent, their mono
+// symbols) and never focused, hovered or taken until each ships. The keyboard's row is FILL with its symbol mono in
+// ON_FILL (DN-42). Shadow Mid (MS-3).
+export const I64 PB_D = 28;
+export const I64 PM_W = 168;
+export const I64 PM_R = 8;
+export const I64 PM_PAD = 6;
+export const I64 PM_ROW = 28;
+export const I64 PM_SIDE = 10;
+export const I64 PM_SYM_GAP = 10;
+export const I64 PM_GAP = 6;        // DN-49 as drawn on frame 1 (the menu's bottom 42 over the footer's): 6 above the button
+const U32 PB_GROUND = 0x0024272b as U32;     // dark; a light theme takes SURF1
+export const I64 ACT_RESTART = 2;
+export const I64 ACT_SHUTDOWN = 3;
+export const I64 ACT_LOCK = 4;
+export const I64 ACT_SLEEP = 5;
+export const I64 ACT_SWITCH = 6;
+export const I64 PM_DIM = 102;                 // DN-52 (d): a coming feature's row, 40 percent of 256
+const I64 PM_N = 5;
+I64[5] pm_act = [4, 6, 5, 3, 2];
+Bool pm_open = false;
+I64 pm_sel = -1;                               // the keyboard's or pointer's row (a pm_act slot), -1 none
+Bool pb_hot = false;                           // the pointer over the button
+Bool pb_focus = false;                         // the keyboard's focus on the button (after Esc in the menu)
+Bool can_lock = false;                         // a session is up: Lock and Switch User are rows (the desk says)
+
+export void set_lock(Bool on) { can_lock = on; }
+
+Bool pm_shown(I64 k) {
+    I64 a = pm_act[k];
+    if (a == ACT_LOCK || a == ACT_SWITCH) { return can_lock; }
+    return true;
+}
+
+// DN-52 (d): whether slot k acts: Switch User and Sleep are shown, dimmed, and never focused or taken.
+Bool pm_live(I64 k) {
+    I64 a = pm_act[k];
+    return pm_shown(k) && a != ACT_SWITCH && a != ACT_SLEEP;
+}
+
+I64 pm_rows() {
+    I64 n = 0;
+    for k in 0..PM_N {
+        if (pm_shown(k)) { n = n + 1; }
+    }
+    return n;
+}
+
+// The button's square, 1x: x0, y0 (its right edge the column's, centered in the footer).
+I64 pb_x0() { return col_x1() - PB_D; }
+I64 pb_y0() { return foot_y0() + (FOOT_H - PB_D) / 2; }
+I64 pm_x0() { return col_x1() - PM_W; }
+I64 pm_h() { return 2 * PM_PAD + PM_ROW * pm_rows(); }
+I64 pm_y0() { return pb_y0() - PM_GAP - pm_h(); }
+
+// Whether the menu shows: opened, or a power chord armed (FF-R6 B: its row is the selection until it lapses).
+export Bool power_open() { return pm_open || armed >= 0; }
+
+export void power_close() {
+    pm_open = false;
+    pm_sel = -1;
+}
+
+// The button pressed (pointer) or Enter on it (keyboard, the first row selected).
+export void power_toggle(Bool kbd) {
+    if (pm_open) {
+        power_close();
+        return;
+    }
+    pm_open = true;
+    pb_focus = false;
+    pm_sel = -1;
+    if (kbd) { pm_sel = pm_step(-1, 1); }
+}
+
+I64 pm_step(I64 from, I64 d) {
+    I64 k = from;
+    for i in 0..PM_N {
+        k = k + d;
+        if (k < 0) { k = PM_N - 1; }
+        if (k > PM_N - 1) { k = 0; }
+        if (pm_live(k)) { return k; }
+    }
+    return from;
+}
+
+export const I64 PK_ESC = 0;                  // power_key's keys, as the desk reads them
+export const I64 PK_UP = 1;
+export const I64 PK_DOWN = 2;
+export const I64 PK_ENTER = 3;
+
+// A key while the menu shows: Up and Down move, Enter takes the row (its action), Esc closes and the focus goes back
+// to the button. The action (ACT_*), 0 when the key stays in the menu, -1 when it closed it.
+export I64 power_key(I64 code) {
+    if (code == PK_ESC) {
+        power_close();
+        armed = -1;
+        pb_focus = true;
+        return -1;
+    }
+    if (code == PK_UP || code == PK_DOWN) {
+        I64 d = 1;
+        if (code == PK_UP) { d = -1; }
+        if (pm_sel < 0) { pm_sel = pm_step(-1, 1); } else { pm_sel = pm_step(pm_sel, d); }
+        return 0;
+    }
+    if (code == PK_ENTER && pm_sel >= 0) {
+        I64 a = pm_act[pm_sel];
+        power_close();
+        return a;
+    }
+    return 0;
+}
+
+// The button's focus (Esc out of the menu): Enter on it opens the menu again.
+export Bool power_focused() { return pb_focus; }
+export void power_unfocus() { pb_focus = false; }
+
+// What is under (x, y), 1x: a row's action when the menu shows, 1 the button, 0 nothing.
+export I64 power_at(I64 x, I64 y) {
+    if (power_open()) {
+        I64 n = 0;
+        for k in 0..PM_N {
+            if (pm_shown(k)) {
+                I64 ry = pm_y0() + PM_PAD + PM_ROW * n;
+                if (x >= pm_x0() + PM_PAD && x < pm_x0() + PM_W - PM_PAD && y >= ry && y < ry + PM_ROW) {
+                    if (pm_live(k)) { return pm_act[k]; }
+                    return 0;                  // DN-52 (d): a coming feature's row takes nothing
+                }
+                n = n + 1;
+            }
+        }
+    }
+    if (x >= pb_x0() && x < pb_x0() + PB_D && y >= pb_y0() && y < pb_y0() + PB_D) { return 1; }
+    return 0;
+}
+
+// The pointer over (x, y), 1x: the button's hover and the row under it; whether either changed.
+export Bool power_hover(I64 x, I64 y) {
+    Bool h = x >= pb_x0() && x < pb_x0() + PB_D && y >= pb_y0() && y < pb_y0() + PB_D;
+    I64 s = pm_sel;
+    if (power_open()) {
+        I64 n = 0;
+        for k in 0..PM_N {
+            if (pm_shown(k)) {
+                I64 ry = pm_y0() + PM_PAD + PM_ROW * n;
+                if (pm_live(k) && x >= pm_x0() + PM_PAD && x < pm_x0() + PM_W - PM_PAD && y >= ry && y < ry + PM_ROW) {
+                    s = k;
+                }
+                n = n + 1;
+            }
+        }
+    }
+    Bool changed = h != pb_hot || s != pm_sel;
+    pb_hot = h;
+    pm_sel = s;
+    return changed;
+}
+
+// Power action a's span, 1x, for the gates' clicks: the button (a 1), or the row of a (the menu open): x0, y0, x1, y1.
+export void power_span(I64 a, inout I64[4] b) {
+    b[0] = pb_x0();
+    b[1] = pb_y0();
+    b[2] = pb_x0() + PB_D;
+    b[3] = pb_y0() + PB_D;
+    I64 n = 0;
+    for k in 0..PM_N {
+        if (pm_shown(k)) {
+            if (pm_act[k] == a) {
+                b[0] = pm_x0() + PM_PAD;
+                b[1] = pm_y0() + PM_PAD + PM_ROW * n;
+                b[2] = pm_x0() + PM_W - PM_PAD;
+                b[3] = b[1] + PM_ROW;
+            }
+            n = n + 1;
+        }
+    }
+}
+
+I64 pm_sym(I64 a, Bool mono) {
+    I64 k = symbols.POWER;
+    if (a == ACT_LOCK) { k = symbols.LOCK; }
+    if (a == ACT_SWITCH) { k = symbols.USERS; }
+    if (a == ACT_SLEEP) { k = symbols.MOON; }
+    if (a == ACT_RESTART) { k = symbols.REFRESH; }
+    if (mono) { k = k + symbols.N / 2; }
+    return k;
+}
+
+I64 pm_word(I64 a, inout U8[_] t) {
+    if (a == ACT_LOCK) { return put(t, 0, b"Lock"); }
+    if (a == ACT_SWITCH) { return put(t, 0, b"Switch User"); }
+    if (a == ACT_SLEEP) { return put(t, 0, b"Sleep"); }
+    if (a == ACT_SHUTDOWN) { return put(t, 0, b"Shut Down"); }
+    return put(t, 0, b"Restart");
+}
+
+
+// The footer: a 1 px RULE line on top and the power button at its right end (DN-46 (b), DN-47: no key hints, no
+// words; the keys still work).
+void footer_row(inout U32[_] row, I64 y) {
+    I64 y0 = foot_y0() * Z;
+    if (y < y0 || y >= (plate_y0() + plate_h()) * Z) { return; }
+    I64 x0 = col_x0() * Z;
+    draw.rect(row, y, x0, y0, col_x1() * Z, y0 + Z, tok(tokens.BAR_RULE));   // DN-49: the footer's 1 px rule
+    I64 by0 = pb_y0() * Z;
+    if (y < by0 || y >= (pb_y0() + PB_D) * Z) { return; }
+    I64 bx0 = pb_x0() * Z;
+    if (power_open() || pb_hot || pb_focus) {
+        U32 g = PB_GROUND;
+        if (tokens.theme() == 1) { g = tok(tokens.SURF1); }
+        shape.rounded(row, y, bx0, by0, bx0 + PB_D * Z, by0 + PB_D * Z, PB_D * Z / 2, g);
+    }
+    symbols.row_at(row, y, bx0 + (PB_D - 16) * Z / 2, by0 + (PB_D - 16) * Z / 2, symbols.POWER, Z,
+                   tok(tokens.INK), tokens.theme(), 256);
+}
+
+// The power menu's row y over row (drawn last, over the footer and the band).
+void power_menu_row(inout U32[_] row, I64 y) {
+    if (!power_open()) { return; }
+    I64 mx0 = pm_x0() * Z;
+    I64 my0 = pm_y0() * Z;
+    I64 mx1 = (pm_x0() + PM_W) * Z;
+    I64 my1 = (pm_y0() + pm_h()) * Z;
+    I64 th = tokens.theme();
+    I64 sd = shade.reach_side(2, th, Z);           // DN-47: shadow Mid (MS-3 level 2)
+    if (y >= my0 - shade.reach_up(2, th, Z) && y < my1 + shade.reach_down(2, th, Z)) {
+        shade.shade_row(row, max(mx0 - sd, 0), min(mx1 + sd, W), y, mx0, my0, mx1, my1, PM_R, 2, th, Z);
+    }
+    if (y < my0 || y >= my1) { return; }
+    shape.rounded(row, y, mx0, my0, mx1, my1, PM_R * Z, tok(tokens.SURF2));
+    I64 sel = pm_sel;
+    if (armed >= 0) {
+        for k in 0..PM_N {
+            if (pm_act[k] == armed) { sel = k; }
+        }
+    }
+    I64 n = 0;
+    for k in 0..PM_N {
+        if (pm_shown(k)) {
+            I64 ry = pm_y0() + PM_PAD + PM_ROW * n;
+            n = n + 1;
+            if (y >= ry * Z && y < (ry + PM_ROW) * Z) {
+                I64 rx0 = (pm_x0() + PM_PAD) * Z;
+                I64 rx1 = (pm_x0() + PM_W - PM_PAD) * Z;
+                U32 ink = tok(tokens.INK);
+                Bool on = k == sel && pm_live(k);
+                Bool dim = !pm_live(k);
+                I64 sa = 256;
+                if (on) {
+                    shape.rounded(row, y, rx0, ry * Z, rx1, (ry + PM_ROW) * Z, PM_ROW * Z / 2, tok(tokens.FILL));
+                    ink = tok(tokens.ON_FILL);
+                }
+                if (dim) {                     // DN-52 (d): 40 percent over the menu's ground, the mono symbol
+                    ink = blend.mix_px(tok(tokens.SURF2), tok(tokens.INK), PM_DIM);
+                    sa = PM_DIM;
+                }
+                I64 sx = rx0 + PM_SIDE * Z;
+                U32 sk = tok(tokens.INK);
+                if (on) { sk = tok(tokens.ON_FILL); }
+                symbols.row_at(row, y, sx, (ry + (PM_ROW - 16) / 2) * Z, pm_sym(pm_act[k], on || dim), Z, sk,
+                               tokens.theme(), sa);
+                U8[16] t;
+                I64 tn = pm_word(pm_act[k], t);
+                say(row, y, sx + (16 + PM_SYM_GAP) * Z, ry, PM_ROW, rx1, t, tn, ink, faces.BODY);
+            }
+        }
+    }
+}
+
+// Device row y of the plane into row, x across the plane's device width: the ground in MANTLE, the field, the grid
+// and the band (empty) or the query's band, the footer.
+export void paint(inout U32[_] row, I64 y) {
+    if (pk_on) {
+        draw.paint(row, 0, W, tok(tokens.MANTLE));
+        picker_paint(row, y);
+        return;
+    }
+    plate_row(row, y);                   // DN-49: the scrim over the desk, the plate's shadow, the plate
+    field_row(row, y);
+    if (qn == 0) {
+        lay_rest();
+        grid_row(row, y);
+        if (y >= band_y0() * Z && y < band_y1() * Z) { rest_band(row, y); }
+    } else {
+        lay_query();
+        if (y >= band_y0() * Z && y < band_y1() * Z) { query_band(row, y); }
+    }
+    footer_row(row, y);
+    power_menu_row(row, y);
+    if (am_on) { pin_menu_row(row, y); } else { pin_tip_row(row, y); }
+}
+
+// DN-49: row y of the scrim (45 percent black over what the desk drew), the plate's shadow High and the plate itself,
+// MANTLE, radius 16.
+void plate_row(inout U32[_] row, I64 y) {
+    blend.mix(row, 0, min(W, len(row)), 0 as U32, SCRIM);
+    I64 x0 = plate_x0() * Z;
+    I64 y0 = plate_y0() * Z;
+    I64 x1 = x0 + plate_w() * Z;
+    I64 y1 = y0 + plate_h() * Z;
+    I64 th = tokens.theme();
+    I64 sd = shade.reach_side(PL_SHADOW, th, Z);
+    if (y >= y0 - shade.reach_up(PL_SHADOW, th, Z) && y < y1 + shade.reach_down(PL_SHADOW, th, Z)) {
+        shade.shade_row(row, max(x0 - sd, 0), min(x1 + sd, W), y, x0, y0, x1, y1, PL_R, PL_SHADOW, th, Z);
+    }
+    if (y >= y0 && y < y1) { shape.rounded(row, y, x0, y0, x1, y1, PL_R * Z, tok(tokens.MANTLE)); }
+}
+
+// --- DN-39 (d), DN-49: a pin's right-click menu, as frame 7 draws it (docs/design/frames/01-plane/AllApps) ---
+// A plate 248 wide, SURF2, radius 8, 6 in, shadow Mid; OPEN WINDOWS over the app's windows (each its title and,
+// at the right, its desktop or Minimized), a rule, New Window and Unpin from Taskbar, a rule, Close All Windows.
+// A file's pin has Unpin from Taskbar alone. Rows 28 high, the selection a FILL pill (radius 14); a rule 11 (5, 1,
+// 5), 8 in from the plate's padding. The plate's top left is 12 right of and 14 under where the pointer pressed.
+export const I64 AM_W = 248;
+export const I64 AM_PAD = 6;
+export const I64 AM_ROW = 28;
+export const I64 AM_HEAD = 24;
+export const I64 AM_DIV = 11;
+export const I64 AM_HEADING = 0;   // a row's kind
+export const I64 AM_WINDOW = 1;
+export const I64 AM_NEW = 2;
+export const I64 AM_UNPIN = 3;
+export const I64 AM_CLOSE_ALL = 4;
+export const I64 AM_RULE = 5;
+Bool am_on = false;
+I64 am_cell = -1;
+I64 am_x = 0;               // the plate's 1x top left
+I64 am_y = 0;
+I64 am_n = 0;
+I64[16] am_kind;
+I64[16] am_ref;             // a window row's index in the band's list
+I64 am_sel = -1;
+I64 am_out = -1;            // what was chosen: a window's desk reference, or the app
+
+export Bool pin_menu_on() { return am_on; }
+export I64 pin_menu_cell() { return am_cell; }
+export I64 pin_menu_rows() { return am_n; }
+export I64 pin_menu_kind(I64 r) { return am_kind[r]; }
+export I64 pin_menu_sel() { return am_sel; }
+export I64 pin_menu_x() { return am_x; }
+export I64 pin_menu_y() { return am_y; }
+
+I64 am_h_of(I64 r) {
+    if (am_kind[r] == AM_HEADING) { return AM_HEAD; }
+    if (am_kind[r] == AM_RULE) { return AM_DIV; }
+    return AM_ROW;
+}
+
+export I64 pin_menu_h() {
+    I64 hh = 2 * AM_PAD;
+    for r in 0..am_n { hh = hh + am_h_of(r); }
+    return hh;
+}
+
+// Row r's 1x top.
+export I64 pin_menu_top(I64 r) {
+    I64 t = am_y + AM_PAD;
+    for qq in 0..r { t = t + am_h_of(qq); }
+    return t;
+}
+
+void am_add(I64 k, I64 ref) {
+    if (am_n == 16) { return; }
+    am_kind[am_n] = k;
+    am_ref[am_n] = ref;
+    am_n = am_n + 1;
+}
+
+Bool am_takes(I64 r) { return am_kind[r] != AM_HEADING && am_kind[r] != AM_RULE; }
+
+// Pin k's menu opened by a press at 1x (x, y) on the plane; false (nothing open) off a pin.
+export Bool pin_menu_open(I64 k, I64 x, I64 y) {
+    am_on = false;
+    if (k < 0 || k >= ppn || qn > 0 || pk_on) { return false; }
+    am_cell = k;
+    am_n = 0;
+    am_sel = -1;
+    I64 a = g_app[k];
+    if (a >= 0 && a < apps.N) {
+        I64[12] js;
+        I64 n = app_windows(a, js);
+        if (n > 0) {
+            am_add(AM_HEADING, -1);
+            for qq in 0..n { am_add(AM_WINDOW, js[qq]); }
+            am_add(AM_RULE, -1);
+        }
+        am_add(AM_NEW, -1);
+        am_add(AM_UNPIN, -1);
+        if (n > 0) {
+            am_add(AM_RULE, -1);
+            am_add(AM_CLOSE_ALL, -1);
+        }
+    } else {
+        am_add(AM_UNPIN, -1);
+    }
+    am_x = min(x + 12, WP - AM_W);
+    am_y = min(y + 14, HP - pin_menu_h());
+    am_x = max(am_x, 0);
+    am_y = max(am_y, 0);
+    am_on = true;
+    gen = gen + 1;
+    return true;
+}
+
+export void pin_menu_close() {
+    am_on = false;
+    am_sel = -1;
+    gen = gen + 1;
+}
+
+// The row that takes a press at 1x (x, y), or -1; the pointer's row is selected.
+export I64 pin_menu_at(I64 x, I64 y) {
+    if (!am_on || x < am_x || x >= am_x + AM_W) { return -1; }
+    for r in 0..am_n {
+        I64 t = pin_menu_top(r);
+        if (am_takes(r) && y >= t && y < t + AM_ROW) { return r; }
+    }
+    return -1;
+}
+
+export Bool pin_menu_hover(I64 x, I64 y) {
+    if (!am_on) { return false; }
+    I64 r = pin_menu_at(x, y);
+    if (r == am_sel || r < 0) { return false; }
+    am_sel = r;
+    return true;
+}
+
+// The menu's keys (PK_UP, PK_DOWN, PK_ENTER, PK_ESC): the row Enter took, or -1.
+export I64 pin_menu_key(I64 code) {
+    if (!am_on) { return -1; }
+    if (code == PK_ESC) {
+        pin_menu_close();
+        return -1;
+    }
+    if (code == PK_ENTER) {
+        if (am_sel >= 0) { return am_sel; }
+        return -1;
+    }
+    I64 d = 1;
+    if (code == PK_UP) { d = -1; }
+    I64 r = am_sel;
+    if (r < 0 && d < 0) { r = am_n; }
+    for qq in 0..am_n {
+        r = r + d;
+        if (r < 0) { r = am_n - 1; }
+        if (r >= am_n) { r = 0; }
+        if (am_takes(r)) {
+            am_sel = r;
+            return -1;
+        }
+    }
+    return -1;
+}
+
+// Row r taken, the menu closed: its kind. A window row goes to the window on its desktop, or restores a minimized one
+// onto the current desktop cur (act_kind and act_ref say which); Unpin from Taskbar unpins here; New Window and Close
+// All Windows are the desk's, for the app pin_menu_app names.
+export I64 pin_menu_choose(I64 r, I64 cur) {
+    if (!am_on || r < 0 || r >= am_n || !am_takes(r)) { return -1; }
+    I64 k = am_kind[r];
+    I64 a = g_app[am_cell];
+    am_out = a;
+    if (k == AM_WINDOW) {
+        I64 j = am_ref[r];
+        if (!restore_here(j, cur)) { go_window(j); }
+    }
+    pin_menu_close();
+    if (k == AM_UNPIN) {
+        if (a >= PIN_FILE) {
+            U8[96] t;
+            I64 n = pin_sub(a - PIN_FILE, t);
+            Bool on = taskbar_toggle(t[0..n], false);
+        } else {
+            Bool off = unpin_app(a);
+        }
+    }
+    return k;
+}
+
+export I64 pin_menu_app() { return am_out; }
+
+// Row y of the menu over row.
+void pin_menu_row(inout U32[_] row, I64 y) {
+    if (!am_on) { return; }
+    I64 x0 = am_x * Z;
+    I64 y0 = am_y * Z;
+    I64 x1 = (am_x + AM_W) * Z;
+    I64 y1 = (am_y + pin_menu_h()) * Z;
+    I64 th = tokens.theme();
+    I64 sd = shade.reach_side(2, th, Z);           // shadow Mid (MS-3 level 2)
+    if (y >= y0 - shade.reach_up(2, th, Z) && y < y1 + shade.reach_down(2, th, Z)) {
+        shade.shade_row(row, max(x0 - sd, 0), min(x1 + sd, W), y, x0, y0, x1, y1, 8, 2, th, Z);
+    }
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, x0, y0, x1, y1, 8 * Z, tok(tokens.SURF2));
+    I64 rx0 = (am_x + AM_PAD) * Z;
+    I64 rx1 = (am_x + AM_W - AM_PAD) * Z;
+    for r in 0..am_n {
+        I64 t = pin_menu_top(r);
+        I64 rh = am_h_of(r);
+        if (y >= t * Z && y < (t + rh) * Z) {
+            I64 k = am_kind[r];
+            if (k == AM_RULE) {
+                draw.rect(row, y, rx0 + 8 * Z, (t + 5) * Z, rx1 - 8 * Z, (t + 6) * Z, tok(tokens.RULE));
+            } else if (k == AM_HEADING) {
+                say(row, y, rx0 + 10 * Z, t, AM_HEAD, rx1, b"OPEN WINDOWS", 12, tok(tokens.INK_DIM), faces.LABEL);
+            } else {
+                U32 ink = tok(tokens.INK);
+                U32 dim = tok(tokens.INK_DIM);
+                if (r == am_sel) {
+                    shape.rounded(row, y, rx0, t * Z, rx1, (t + AM_ROW) * Z, AM_ROW / 2 * Z, tok(tokens.FILL));
+                    ink = tok(tokens.ON_FILL);
+                    dim = ink;
+                }
+                U8[96] mw;
+                I64 mwl = 0;
+                U8[24] sd2;
+                I64 sl = 0;
+                if (k == AM_WINDOW) {
+                    I64 j = am_ref[r];
+                    mwl = w_tlen[j];
+                    for qq in 0..mwl { mw[qq] = w_title[TEXT * j + qq]; }
+                    if (w_min[j]) {
+                        sl = put(sd2, 0, b"Minimized");
+                    } else {
+                        sl = put(sd2, 0, b"Desktop ");
+                        sl = digits(sd2, sl, w_desk[j]);
+                    }
+                }
+                if (k == AM_NEW) { mwl = put(mw, 0, b"New Window"); }
+                if (k == AM_UNPIN) { mwl = ctxmenu.words(ctxmenu.UNPIN_TASKBAR, mw); }
+                if (k == AM_CLOSE_ALL) { mwl = put(mw, 0, b"Close All Windows"); }
+                I64 sw = tw(sd2, sl, faces.BODY);
+                I64 sx = rx1 - 10 * Z - sw;
+                if (sl > 0) { say(row, y, sx, t, AM_ROW, rx1, sd2, sl, dim, faces.BODY); }
+                say(row, y, rx0 + 10 * Z, t, AM_ROW, sx - 10 * Z, mw, mwl, ink, faces.BODY);
+            }
+        }
+    }
+}
+
+// --- the All Apps picker (DN-5, sheet frame 7) ---
+// A full-screen view on the plane: a 480 px search pill 40 under the bar, 40 above five columns of the desk's apps
+// (the grid 800 wide, cells 148 high and 16 apart, radius 16, the icon 80, 88 hovered or selected, 72 pressed), in
+// alphabetical order of their friendly names; a 6 px OCHRE dot under the name of an app with an open window (DN-39 (e);
+// it was a pinned app's); the footer's keys and
+// `Back` on Esc. Typing filters by name and alias, as the plane's search does.
+
+export const I64 PK_FIELD_W = 480;
+export const I64 PK_FIELD_H = 44;
+export const I64 PK_TOP = 40;
+export const I64 PK_GRID_W = 800;
+export const I64 PK_COLS = 5;
+export const I64 PK_CELL_H = 148;
+export const I64 PK_GAP = 16;
+export const I64 PK_ICON = 80;
+export const I64 PK_ICON_UP = 88;    // DN-22: 88 on hover and selected (the 88 px export)
+export const I64 PK_ICON_DOWN = 72;
+export const I64 DOT = 6;           // DN-22: the pinned dot, 6 px, round
+
+Bool pk_on = false;
+U8[32] pk_q;
+I64 pk_qn = 0;
+I64[16] pk_list;            // the apps shown, alphabetical
+I64 pkn = 0;
+I64 pk_sel = 0;
+I64 pk_hv = -1;
+I64 pk_pr = -1;
+
+// Whether app a's name sorts before app b's, letters folded.
+Bool before(I64 a, I64 b) {
+    U8[64] x;
+    U8[64] y;
+    I64 xn = apps.field(a, 0, x);
+    I64 yn = apps.field(b, 0, y);
+    I64 n = xn;
+    if (yn < n) { n = yn; }
+    for k in 0..n {
+        U8 u = x[k];
+        U8 v = y[k];
+        if (u >= 'A' && u <= 'Z') { u = u + 32; }
+        if (v >= 'A' && v <= 'Z') { v = v + 32; }
+        if (u != v) { return u < v; }
+    }
+    return xn < yn;
+}
+
+// The list again: the desk's apps the picker's query finds (all of them with none), alphabetical.
+void pk_refilter() {
+    gen = gen + 1;
+    pkn = 0;
+    match.begin(pk_q[0..pk_qn]);
+    for k in 0..avn {
+        I64 a = av_app[k];
+        if (pk_qn == 0 || apps.score(a) != match.NONE) {
+            I64 at = pkn;
+            while (at > 0 && before(a, pk_list[at - 1])) {
+                pk_list[at] = pk_list[at - 1];
+                at = at - 1;
+            }
+            pk_list[at] = a;
+            pkn = pkn + 1;
+        }
+    }
+    if (pk_sel >= pkn) { pk_sel = pkn - 1; }
+    if (pk_sel < 0) { pk_sel = 0; }
+    pk_hv = -1;
+    pk_pr = -1;
+    settle();
+}
+
+// The All Apps tile chosen: the picker opens, its query empty, the first app selected.
+export void open_picker() {
+    pk_on = true;
+    pk_qn = 0;
+    pk_sel = 0;
+    pk_refilter();
+}
+
+// Esc: back to the plane.
+export void close_picker() {
+    pk_on = false;
+    gen = gen + 1;
+    settle();
+}
+
+export Bool picker_on() { return pk_on; }
+export I64 picker_count() { return pkn; }
+export I64 picker_app(I64 k) { return pk_list[k]; }
+export I64 picker_item() { return pk_sel; }
+
+// The selected app, or apps.NONE.
+export I64 picker_selected() {
+    if (pk_sel >= pkn) { return apps.NONE; }
+    return pk_list[pk_sel];
+}
+
+export Bool picker_typed(U8 c) {
+    if (pk_qn == 32 || c < 32 || c > 126) { return false; }
+    pk_q[pk_qn] = c;
+    pk_qn = pk_qn + 1;
+    pk_sel = 0;
+    pk_refilter();
+    return true;
+}
+
+export Bool picker_erase() {
+    if (pk_qn == 0) { return false; }
+    pk_qn = pk_qn - 1;
+    pk_sel = 0;
+    pk_refilter();
+    return true;
+}
+
+export I64 picker_query(inout U8[_] dst) {
+    for k in 0..pk_qn { dst[k] = pk_q[k]; }
+    return pk_qn;
+}
+
+I64 pk_field_w() {
+    I64 w = WP - 2 * MARGIN;
+    if (w > PK_FIELD_W) { w = PK_FIELD_W; }
+    return w;
+}
+
+export I64 pk_grid_w() {
+    I64 w = WP - 2 * MARGIN;
+    if (w > PK_GRID_W) { w = PK_GRID_W; }
+    return w;
+}
+
+export I64 pk_grid_y0() { return PK_TOP + PK_FIELD_H + PK_TOP; }
+
+// Picker cell k's box, 1x: the grid centered, five columns, edges x0 + i (G + 16) / 5 and the next less 16.
+export void pk_box(I64 k, inout I64[4] b) {
+    I64 g = pk_grid_w();
+    I64 x0 = (WP - g) / 2;
+    I64 i = k % PK_COLS;
+    b[0] = x0 + i * (g + PK_GAP) / PK_COLS;
+    b[2] = x0 + (i + 1) * (g + PK_GAP) / PK_COLS - PK_GAP;
+    b[1] = pk_grid_y0() + (k / PK_COLS) * (PK_CELL_H + PK_GAP);
+    b[3] = b[1] + PK_CELL_H;
+}
+
+// The cells drawn: those that end at or above the footer.
+export I64 pk_shown() {
+    I64[4] b;
+    I64 n = 0;
+    for k in 0..pkn {
+        pk_box(k, b);
+        if (b[3] <= HP - 48) { n = k + 1; }   // the picker is full screen: its cells end 48 over the bottom
+    }
+    return n;
+}
+
+export I64 pk_cell_at(I64 x, I64 y) {
+    I64[4] b;
+    for k in 0..pk_shown() {
+        pk_box(k, b);
+        if (x >= b[0] && x < b[2] && y >= b[1] && y < b[3]) { return k; }
+    }
+    return -1;
+}
+
+// Picker cell k's icon at rest: pressed 72, hovered or selected 88, else 80.
+export I64 pk_size(I64 k) {
+    if (k == pk_pr) { return PK_ICON_DOWN; }
+    if (k == pk_hv || k == pk_sel) { return PK_ICON_UP; }
+    return PK_ICON;
+}
+
+export I64 pk_size_now(I64 k) {
+    I64 v = anim.value(an_of(PK + k), now);
+    if (v <= 0) { v = pk_size(k) * Z; }
+    return v;
+}
+
+// Arrows in the picker: Left and Right by one, Up and Down by a row, within the cells drawn. The new cell.
+export I64 picker_nav(I64 dx, I64 dy) {
+    I64 n = pk_shown();
+    if (n == 0) { return 0; }
+    I64 k = pk_sel + dx + PK_COLS * dy;
+    if (dy != 0 && (k < 0 || k >= n)) { k = pk_sel; }
+    if (k < 0) { k = 0; }
+    if (k >= n) { k = n - 1; }
+    pk_sel = k;
+    sizes_to();
+    pill_to();
+    return pk_sel;
+}
+
+// The picker on device row y.
+void picker_paint(inout U32[_] row, I64 y) {
+    I64 fw = pk_field_w();
+    I64 x0 = (WP - fw) / 2 * Z;
+    I64 x1 = x0 + fw * Z;
+    I64 y0 = PK_TOP * Z;
+    I64 y1 = (PK_TOP + PK_FIELD_H) * Z;
+    if (y >= y0 && y < y1) {
+        shape.rounded(row, y, x0, y0, x1, y1, PK_FIELD_H / 2 * Z, tok(tokens.SURF2));
+        shape.ring(row, y, x0, y0, x1, y1, PK_FIELD_H / 2 * Z, 2 * Z, tok(tokens.ULTRAMARINE));
+        shape.lens(row, y, x0 + 20 * Z, (PK_TOP + 14) * Z, Z, tok(tokens.INK));
+        I64 tx = x0 + 48 * Z;
+        if (pk_qn == 0) {
+            say(row, y, tx, PK_TOP, PK_FIELD_H, x1 - 20 * Z, b"Search apps", 11, tok(tokens.INK_DIM), faces.SEARCH);
+        } else {
+            say(row, y, tx, PK_TOP, PK_FIELD_H, x1 - 20 * Z, pk_q, pk_qn, tok(tokens.INK), faces.SEARCH);
+            I64 e = tx + tw(pk_q, pk_qn, faces.SEARCH);
+            I64 b = base_of(PK_TOP, PK_FIELD_H, faces.SEARCH);
+            draw.rect(row, y, e + Z, b - ctext.ascent(faces.SEARCH, Z), e + 3 * Z, b + ctext.descent(faces.SEARCH, Z),
+                      tok(tokens.INK));
+        }
+    }
+    I64 n = pk_shown();
+    I64[4] b;
+    if (pk_hv >= 0 && pk_hv < n && pk_hv != pk_sel) {
+        pk_box(pk_hv, b);
+        shape.rounded(row, y, b[0] * Z, b[1] * Z, b[2] * Z, b[3] * Z, 16 * Z, tok(tokens.SURF2));
+    }
+    if (pk_sel < n) {
+        pk_box(pk_sel, b);
+        I64 px0 = b[0] * Z;
+        I64 py0 = b[1] * Z;
+        if (pill_dom == 4) {
+            px0 = pill_now_x();
+            py0 = pill_now_y();
+        }
+        shape.rounded(row, y, px0, py0, px0 + (b[2] - b[0]) * Z, py0 + PK_CELL_H * Z, 16 * Z, tok(tokens.FILL));
+    }
+    for k in 0..n {
+        pk_box(k, b);
+        if (y >= b[1] * Z && y < b[3] * Z) {
+            I64 a = pk_list[k];
+            I64 cx = (b[0] + b[2]) * Z / 2;
+            U32 gr = tok(tokens.MANTLE);
+            if (k == pk_sel) { gr = tok(tokens.FILL); } else if (k == pk_hv) { gr = tok(tokens.SURF2); }
+            icon_d(row, y, cx, (b[1] + 59) * Z, slot_of(a), pk_size_now(k), gr);
+            U8[64] t;
+            I64 tn = apps.field(a, 0, t);
+            I64 w = tw(t, tn, faces.NAME);
+            I64 lx = cx - w / 2;
+            if (has_windows(a)) {            // DN-39 (e): open windows; DN-22: 6 px under the baseline, centered
+                I64 dy0 = base_of(b[1] + 115, 13, faces.NAME) + 6 * Z;
+                I64 dx0 = cx - DOT * Z / 2;
+                shape.rounded(row, y, dx0, dy0, dx0 + DOT * Z, dy0 + DOT * Z, DOT * Z / 2, tok(tokens.OCHRE));
+            }
+            U32 ink = tok(tokens.INK);
+            if (k == pk_sel) { ink = tok(tokens.ON_FILL); }
+            say(row, y, lx, b[1] + 115, 13, b[2] * Z, t, tn, ink, faces.NAME);
+        }
+    }
+}
+
+// --- the proof's state (tests/ff/plane_proof.ci prints it; tools/check-hdesk.py --plane-proof draws from it) ---
+
+void bar(in U8[_] s, I64 n) {
+    "|";
+    for k in 0..n {
+        U8 b = s[k];
+        "{b as I64:x} ";
+    }
+    "|";
+}
+
+// The model as the twin needs it: one line a thing, text as hex bytes between bars.
+export void dump() {
+    "plane {W} {H} {Z} theme {tokens.theme()} q ";
+    bar(q, qn);
+    " armed {armed} rsel {rsel} hv {hv} pr {pr} qpos {qpos} previewing {previewing as I64}";
+    " pm {pm_open as I64} psel {pm_sel} phot {pb_hot as I64} pfoc {pb_focus as I64} plock {can_lock as I64}\n";
+    for k in 0..gn {
+        U8[64] t;
+        I64 a = g_app[k];
+        I64 n = 0;
+        I64 ic = -1;
+        I64 win = 0;
+        if (a != HOLE) {
+            n = name_of(a, t);
+            ic = slot_of(a);
+        }
+        if (a >= 0 && a < apps.N && has_windows(a)) { win = 1; }
+        "cell {k} {a} {ic} {win} ";
+        bar(t, n);
+        "\n";
+        "size {a_t0[k]} {a_dur[k]} {a_from[k]} {a_to[k]} {a_curve[k]}\n";
+    }
+    if (pk_on) {
+        "picker ";
+        bar(pk_q, pk_qn);
+        " sel {pk_sel} hv {pk_hv} pr {pk_pr}\n";
+        for k in 0..pkn {
+            U8[64] t;
+            I64 a = pk_list[k];
+            I64 n = apps.field(a, 0, t);
+            "pick {k} {slot_of(a)} {has_windows(a) as I64} ";
+            bar(t, n);
+            "\n";
+            "size {a_t0[PK + k]} {a_dur[PK + k]} {a_from[PK + k]} {a_to[PK + k]} {a_curve[PK + k]}\n";
+        }
+    }
+    if (am_on) {
+        "pinmenu {am_x} {am_y} {am_sel} {am_n}\n";
+        for r in 0..am_n { "amrow {am_kind[r]} {am_ref[r]}\n"; }
+    }
+    "pill {now} {pill_dom} {a_t0[PX]} {a_dur[PX]} {a_from[PX]} {a_to[PX]} {a_curve[PX]} ";
+    "{a_t0[PY]} {a_dur[PY]} {a_from[PY]} {a_to[PY]} {a_curve[PY]}\n";
+    for k in 0..cn {
+        "recent {c_icon[k]} ";
+        bar(c_text[TEXT * k..TEXT * k + c_len[k]], c_len[k]);
+        " ";
+        bar(c_side[SIDE * k..SIDE * k + c_slen[k]], c_slen[k]);
+        "\n";
+    }
+    for j in 0..wn {
+        "window {w_icon[j]} {w_desk[j]} {w_min[j] as I64} ";
+        bar(w_title[TEXT * j..TEXT * j + w_tlen[j]], w_tlen[j]);
+        " ";
+        bar(w_path[TEXT * j..TEXT * j + w_plen[j]], w_plen[j]);
+        "\n";
+    }
+    for j in 0..grn {
+        "grant {gr_g[j]} ";
+        bar(gr_title[TEXT * j..TEXT * j + gr_tlen[j]], gr_tlen[j]);
+        "\n";
+    }
+    for p in 0..rn {
+        I64 k = ord[p];
+        present(k);
+        I64 ic = r_icon[k];
+        I64 a = row_app(k);
+        if (a != apps.NONE) { ic = apps.icon(a); }
+        U8[24] sd;
+        I64 sl = row_side(k, sd);
+        if (r_kind[k] == WIN || a != apps.NONE) { sl = 0; }
+        "row {p} {sect_of(p)} {ic} ";
+        bar(nm, nml);
+        " ";
+        bar(pt, ptl);
+        " ";
+        bar(sd, sl);
+        " ";
+        bar(kw, kwl);
+        "\n";
+    }
+    if (rn > 0) {
+        preview_of(selected());
+        "preview {pv_icon} ";
+        bar(pv_name, pv_nl);
+        " ";
+        bar(pv_what, pv_wl);
+        " ";
+        bar(pv_open, pv_ol);
+        " ";
+        bar(pv_two, pv_tl);
+        " {pv_toff as I64}\n";
+        for i in 0..5 {
+            "field {pv_vf[i]} ";
+            bar(pv_lab[16 * i..16 * i + pv_ll[i]], pv_ll[i]);
+            " ";
+            bar(pv_val[TEXT * i..TEXT * i + pv_vl[i]], pv_vl[i]);
+            "\n";
+        }
+        "path ";
+        bar(l_path, l_plen);
+        "\n";
+        for k in 0..ln {
+            "line ";
+            bar(l_text[TEXT * k..TEXT * k + l_len[k]], l_len[k]);
+            "\n";
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

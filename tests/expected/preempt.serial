@@ -1,0 +1,9 @@
+run 0
+Daphnis K4: preemptive tasks
+task 1 total 100561 read 7 raw -1
+task 2 total 100453 read -1 raw 0
+task 3 total 102685 read 7 raw 0
+a preempted task was resumed and finished: yes
+quantum respected: yes
+preempt: done
+runs: 0 faulted, then one entry returned

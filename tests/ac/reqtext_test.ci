@@ -1,0 +1,68 @@
+// tests/ac/reqtext_test.ci: the request text the approval prompts show, AC-V-R1
+// (docs/specs/2026-11-11-ac-v-prompt-words.md edition 2), hosted: user/ci/kit/reqtext.ci. Every byte value, alone
+// and inside a word, comes out as printable ASCII; the words of a real request come out as they went in.
+import user.ci.kit.reqtext;
+
+U8[64] got;
+
+Bool reads(in U8[_] raw, I64 n, in U8[_] want) {
+    for k in 0..64 { got[k] = 0; }
+    I64 m = reqtext.clean(raw, n, got);
+    if (m != len(want)) { return false; }
+    for k in 0..m {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "a request as /bin/grant and /bin/kern pass it reads as it went in, its NULs as spaces" {
+    U8[22] r = b"fetch\x00https://a.b/c\x00\x00\x00";
+    assert(reads(r, 22, "fetch https://a.b/c"));
+    U8[56] k;
+    U8[18] w = b"ls -la /home/sam ~";
+    for i in 0..18 { k[i] = w[i]; }
+    assert(reads(k, 56, "ls -la /home/sam ~"));
+}
+
+test "every byte outside 32 to 126 becomes one ?, a NUL a space, and nothing else changes" {
+    U8[3] r;
+    for v in 0..256 {
+        r[0] = 'a';
+        r[1] = v as U8;
+        r[2] = 'b';
+        for k in 0..64 { got[k] = 0; }
+        I64 m = reqtext.clean(r, 3, got);
+        assert(m == 3);
+        assert(got[0] == 'a' && got[2] == 'b');
+        if (v == 0) {
+            assert(got[1] == ' ');
+        } else if (v >= 32 && v <= 126) {
+            assert(got[1] as I64 == v);
+        } else {
+            assert(got[1] as I64 == reqtext.MARK);
+        }
+        assert(reqtext.printable(got[1] as I64));
+    }
+}
+
+test "escapes, line ends and UTF-8 never reach the prompt or the log line" {
+    U8[12] e = b"\x1b]2;Edit\x07\r\nx";
+    assert(reads(e, 12, "?]2;Edit???x"));
+    U8[5] u = b"caf\xc3\xa9";
+    assert(reads(u, 5, "caf??"));
+    U8[4] d = b"a\x7fb\t";
+    assert(reads(d, 4, "a?b?"));
+}
+
+test "the length is held to the bytes there are and to the field" {
+    U8[4] r = b"abcd";
+    assert(reads(r, -1, ""));
+    assert(reads(r, 0, ""));
+    assert(reads(r, 99, "abcd"));
+    U8[2] small;
+    assert(reqtext.clean(r, 4, small) == 2);
+    assert(small[0] == 'a' && small[1] == 'b');
+    U8[3] sp = b"   ";
+    assert(reads(sp, 3, ""));
+}
+// SPDX-License-Identifier: Apache-2.0

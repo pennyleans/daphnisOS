@@ -1,0 +1,6 @@
+// user/ci/viewctl.ci: the terminal's size, the one row of user/ci/host.c under CI_ROWS_VIEW (BP-2,
+// docs/specs/2026-11-07-bp-basics.md section 2); cless and cish (K-9, the
+// line editor's width) import it, and nothing else does.
+//   view_winsize(fd): TIOCGWINSZ; (rows << 16) | columns, or -errno
+export extern unrestricted I64 view_winsize(I64 fd);
+// SPDX-License-Identifier: Apache-2.0

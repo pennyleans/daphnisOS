@@ -1,0 +1,17 @@
+// user/ci/cish/limits.ci: every capacity of cish (docs/specs/2026-11-06-cish-shell.md section 5). Past one, cish says
+// `cish: limit: NAME N` and the command's status is 2.
+export const I64 LINE = 4096;      // one input line
+export const I64 SRC = 65536;      // the text of one complete command
+export const I64 TOKENS = 2048;    // tokens of one complete command
+export const I64 NODES = 4096;     // parse nodes of one complete command (and as many items)
+export const I64 FIELDS = 256;     // fields of one simple command after expansion
+export const I64 ARGBYTES = 32768; // the argv block of one execve
+export const I64 ENVBYTES = 32768; // the environment block of one execve
+export const I64 VARS = 256;       // variables, set or exported
+export const I64 VARBYTES = 65536; // the bytes of every name and value
+export const I64 FUNCS = 64;       // function definitions
+export const I64 DEPTH = 64;       // nesting of compound commands and function calls
+export const I64 POSITIONAL = 64;  // positional parameters
+export const I64 SUBST = 65536;    // output kept from one command substitution (and all of one word's)
+export const I64 HEREDOC = 4096;   // a here-document's body after expansion: one pipe's bytes under Daphnis
+// SPDX-License-Identifier: Apache-2.0

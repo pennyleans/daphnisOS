@@ -1,0 +1,302 @@
+// src/udp.ci: UDP and the socket table (N-2, docs/specs/2026-11-05-n-net.md section 2), and the pump
+// that moves frames from the device's ring into the stack at every network tick.
+//
+// A socket is a slot 0..SOCKS-1: its local address (0 any, or 10.0.2.15) and port, and a receive ring of
+// RING datagrams in four pool frames it holds while open (2,048 bytes a datagram: the source address and
+// port, the length, then up to 1,472 bytes). A datagram for a port no socket has, or for a full ring, is
+// dropped and counted. Ports a socket takes without bind come from 49152 up, the lowest free.
+
+import src.net;
+import src.eth;
+import src.ip;
+import src.phys;
+import src.frames;
+import src.tcp;
+import src.dhcp;
+import src.pit;
+import src.trap;
+
+export const I64 SOCKS = 8;
+const I64 SPIN_POLLS = 256;
+export const I64 DGRAM_MAX = 1472;
+export const I64 HDR = 42;             // the payload's offset in a frame: Ethernet, IPv4, UDP
+export const I64 WAIT = -1001;         // a send whose next hop is not known yet, or a receive with nothing queued
+const I64 RING = 8;
+const I64 SLOT = 2048;
+const I64 RING_FRAMES = 4;
+const I64 EPHEMERAL = 49152;
+const I64 EADDRINUSE = 98;
+const I64 EADDRNOTAVAIL = 99;
+const I64 EINVAL = 22;
+const I64 ENOMEM = 12;
+const I64 ENFILE = 23;
+const I64 EMSGSIZE = 90;
+
+Bool[8] open_;
+I64[8] laddr;
+I64[8] lport;
+I64[8] ring;           // the first of the ring's pool frames
+I64[8] head;
+I64[8] depth;
+I64 dropped_ = 0;
+I64 t_src = 0;          // the datagram take() returned last: its source address and port
+I64 t_port = 0;
+
+U64 slot_at(I64 s, I64 k) {
+    return frames.frame_addr(ring[s]) as U64 + (k * SLOT) as U64;
+}
+
+// A new socket, unbound; its slot, or -ENFILE, or -ENOMEM.
+export I64 open() {
+    for s in 0..SOCKS {
+        if (!open_[s]) {
+            I64 r = frames.alloc(RING_FRAMES);
+            if (r < 0) {
+                return 0 - ENOMEM;
+            }
+            open_[s] = true;
+            ring[s] = r;
+            laddr[s] = 0;
+            lport[s] = 0;
+            head[s] = 0;
+            depth[s] = 0;
+            return s;
+        }
+    }
+    return 0 - ENFILE;
+}
+
+// The last description of the socket is gone: its ring goes back to the pool.
+export void close(I64 s) {
+    if (open_[s]) {
+        I64 r = frames.release(ring[s], RING_FRAMES);
+        if (r < 0) {
+            dropped_ += 0;
+        }
+        open_[s] = false;
+    }
+}
+
+Bool port_used(I64 p) {
+    for s in 0..SOCKS {
+        if (open_[s] && lport[s] == p) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// bind: addr 0 or 10.0.2.15, port 0 for the lowest free ephemeral port.
+export I64 bind(I64 s, I64 addr, I64 port) {
+    if (lport[s] != 0) {
+        return 0 - EINVAL;
+    }
+    if (addr != 0 && (eth.our_ip() == 0 || addr != eth.our_ip())) {
+        return 0 - EADDRNOTAVAIL;
+    }
+    I64 p = port;
+    if (p == 0) {
+        p = EPHEMERAL;
+        while (p < 65536 && port_used(p)) {
+            p += 1;
+        }
+        if (p == 65536) {
+            return 0 - EADDRINUSE;
+        }
+    } else if (port_used(p)) {
+        return 0 - EADDRINUSE;
+    }
+    laddr[s] = addr;
+    lport[s] = p;
+    return 0;
+}
+
+export I64 local_addr(I64 s) {
+    return laddr[s];
+}
+
+export I64 local_port(I64 s) {
+    return lport[s];
+}
+
+export I64 queued(I64 s) {
+    return depth[s];
+}
+
+// Sends the n payload bytes at f[HDR..HDR + n) from socket s to dst:dport, binding s to an ephemeral
+// port first if it has none. n, or WAIT (the next hop's address was asked for), or -errno.
+export I64 send(I64 s, I64 dst, I64 dport, inout U8[1514] f, I64 n) {
+    if (n > DGRAM_MAX) {
+        return 0 - EMSGSIZE;
+    }
+    if (lport[s] == 0) {
+        I64 b = bind(s, 0, 0);
+        if (b < 0) {
+            return b;
+        }
+    }
+    eth.put16(f, ip.DATA, lport[s]);
+    eth.put16(f, ip.DATA + 2, dport);
+    eth.put16(f, ip.DATA + 4, 8 + n);
+    eth.put16(f, ip.DATA + 6, 0);
+    // the pseudo-header: source, destination, protocol, UDP length
+    I64 me = eth.our_ip();
+    I64 ps = ((me >> 16) & 0xFFFF) + (me & 0xFFFF) + ((dst >> 16) & 0xFFFF) + (dst & 0xFFFF) + ip.PROTO_UDP + 8 + n;
+    I64 c = 0xFFFF - ip.csum(f, ip.DATA, 8 + n, ps);
+    if (c == 0) {
+        c = 0xFFFF;
+    }
+    eth.put16(f, ip.DATA + 6, c);
+    if (!ip.output(dst, ip.PROTO_UDP, f, 8 + n)) {
+        return WAIT;
+    }
+    return n;
+}
+
+// The oldest datagram of socket s into f[HDR..): its length (took_src() and took_port() say whose), or
+// WAIT when none is queued.
+export I64 take(I64 s, inout U8[1514] f) {
+    if (depth[s] == 0) {
+        return WAIT;
+    }
+    U64 at = slot_at(s, head[s]);
+    U8[8] w;
+    phys.phys_read8(at, w);
+    t_src = ((w[0] as I64) << 24) | ((w[1] as I64) << 16) | ((w[2] as I64) << 8) | (w[3] as I64);
+    t_port = ((w[4] as I64) << 8) | (w[5] as I64);
+    I64 n = ((w[6] as I64) << 8) | (w[7] as I64);
+    if (n > 0) {
+        phys.phys_read8(at + 8, f[HDR..HDR + n]);
+    }
+    head[s] = (head[s] + 1) % RING;
+    depth[s] -= 1;
+    return n;
+}
+
+export I64 took_src() {
+    return t_src;
+}
+
+export I64 took_port() {
+    return t_port;
+}
+
+// A UDP packet at f[ip.DATA..) of ip.payload_len() bytes from ip.src(): checked and queued on the socket
+// bound to its port.
+void deliver(in U8[1514] f) {
+    I64 plen = ip.payload_len();
+    if (plen < 8 || eth.get16(f, ip.DATA + 4) != plen) {
+        dropped_ += 1;
+        return;
+    }
+    I64 src = ip.src();
+    I64 dst = ip.dst();
+    if (eth.get16(f, ip.DATA + 6) != 0) {
+        I64 ps = ((src >> 16) & 0xFFFF) + (src & 0xFFFF) + ((dst >> 16) & 0xFFFF) + (dst & 0xFFFF) + ip.PROTO_UDP + plen;
+        if (ip.csum(f, ip.DATA, plen, ps) != 0xFFFF) {
+            dropped_ += 1;
+            return;
+        }
+    }
+    I64 sport = eth.get16(f, ip.DATA);
+    I64 port = eth.get16(f, ip.DATA + 2);
+    if (port == 68 && sport == 67 && !port_used(68) && dhcp.wants_port68()) {
+        dhcp.input(f, plen - 8);
+        return;
+    }
+    if (eth.our_ip() == 0 || dst != eth.our_ip()) {
+        return;
+    }
+    I64 s = -1;
+    for k in 0..SOCKS {
+        if (s < 0 && open_[k] && lport[k] == port) {
+            s = k;
+        }
+    }
+    if (s < 0 || depth[s] == RING) {
+        dropped_ += 1;
+        return;
+    }
+    I64 n = plen - 8;
+    U64 at = slot_at(s, (head[s] + depth[s]) % RING);
+    U8[8] w;
+    w[0] = ((src >> 24) & 0xFF) as U8;
+    w[1] = ((src >> 16) & 0xFF) as U8;
+    w[2] = ((src >> 8) & 0xFF) as U8;
+    w[3] = (src & 0xFF) as U8;
+    w[4] = ((sport >> 8) & 0xFF) as U8;
+    w[5] = (sport & 0xFF) as U8;
+    w[6] = ((n >> 8) & 0xFF) as U8;
+    w[7] = (n & 0xFF) as U8;
+    phys.phys_write8(at, w);
+    if (n > 0) {
+        phys.phys_write8(at + 8, f[HDR..HDR + n]);
+    }
+    depth[s] += 1;
+}
+
+// NW-1: waits before a network tick. Live, with a connection open, polls the device up to SPIN_POLLS
+// times first; otherwise unmasks any routed NIC IRQ across cpu_wait_irq and counts PIT wakes. In replay,
+// advances the simulated timer count from the journal without halting. Returns true when time advanced.
+export Bool wait() {
+    if (net.is_replay()) {
+        return net.replay_step();
+    }
+    if (!net.is_live()) {
+        trap.cpu_wait_irq();
+        return true;
+    }
+    if (tcp.active()) {
+        for i in 0..SPIN_POLLS {
+            if (net.has_rx()) {
+                return false;
+            }
+        }
+    }
+    I64 irq = net.irq();
+    I64 t0 = trap.timer_ticks();
+    if (irq >= 0) {
+        pit.unmask_irq(irq);
+    }
+    trap.cpu_wait_irq();
+    if (irq >= 0) {
+        pit.mask_irq(irq);
+    }
+    if (trap.timer_ticks() > t0) {
+        net.count_timer();
+        return true;
+    }
+    return false;
+}
+
+// One network tick: the device's (or the journal's) new frames enter the record, then each goes to its
+// layer: ARP to the table, IPv4 to ICMP or to a socket.
+U8[1514] pf;   // pump's frame: module state, so a system call does not clear 1,514 bytes of stack
+
+export void pump() {
+    net.tick();
+    I64 n = net.poll(pf);
+    while (n >= 0) {
+        if (n >= eth.HDR) {
+            I64 t = eth.get16(pf, 12);
+            if (t == eth.TYPE_ARP) {
+                eth.arp_input(pf, n);
+            } else if (t == eth.TYPE_IPV4) {
+                I64 proto = ip.input(pf, n);
+                if (proto == ip.PROTO_UDP) {
+                    deliver(pf);
+                } else if (proto == tcp.PROTO_TCP && eth.our_ip() != 0 && ip.dst() == eth.our_ip()) {
+                    tcp.input(pf);
+                }
+            }
+        }
+        n = net.poll(pf);
+    }
+    dhcp.timers();
+    tcp.timers();
+}
+
+export I64 dropped() {
+    return dropped_ + ip.dropped();
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,12 @@
+// tests/hosted/dhcp/src/serial.ci: src/serial.ci for the hosted DHCP test; the console goes nowhere.
+
+export void serial_putc(U8 c) {
+    _ = c;
+}
+
+export void serial_write[n](in U8[n] s) {
+    for i in 0..n {
+        serial_putc(s[i]);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

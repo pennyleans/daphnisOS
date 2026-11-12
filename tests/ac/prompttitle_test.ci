@@ -1,0 +1,343 @@
+// tests/ac/prompttitle_test.ci: the approval prompt's title, AC-T (docs/specs/2026-11-11-ac-t-prompt-title.md),
+// hosted: user/ci/kit/prompttitle.ci over kit/apps.ci as it is. Each case is (the app the desk opened the window
+// for, AC-T2's record of the program its first process runs: FBIO_TILE_INFO kind 13, src/exepath.ci).
+import user.ci.kit.apps;
+import user.ci.kit.prompttitle;
+
+U8[64] ex;
+U8[40] got;
+U8[32] want;
+
+// ex, the record as the kernel writes it: vpid 7, source src (0 an image member, 1 a volume file), the path p, NUL after.
+void put(I64 src, in U8[_] p) {
+    for k in 0..64 { ex[k] = 0; }
+    ex[0] = 7;
+    ex[4] = src as U8;
+    ex[8] = len(p) as U8;
+    for k in 0..len(p) {
+        if (16 + k < 64) { ex[16 + k] = p[k]; }
+    }
+}
+
+void set(in U8[_] p) { put(0, p); }
+
+I64 app_of(in U8[_] program) { return apps.by_program(program); }
+
+Bool reads(I64 app, in U8[_] name) {
+    for k in 0..40 { got[k] = 0; }
+    I64 n = prompttitle.title(app, ex, got);
+    if (n != len(name)) { return false; }
+    for k in 0..n {
+        if (got[k] != name[k]) { return false; }
+    }
+    return true;
+}
+
+// Whether got[0..n) is app a's name in the table.
+Bool is_name(I64 a, I64 n) {
+    I64 wn = apps.field(a, 0, want);
+    if (wn != n) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "a window the desk opened for an app, running that app's image member, reads the app's name" {
+    set("/bin/finder"); assert(reads(app_of("/bin/finder"), "Index"));
+    set("/bin/ced"); assert(reads(app_of("/bin/ced"), "Edit"));
+    set("/bin/cview"); assert(reads(app_of("/bin/cview"), "View"));
+    set("/bin/cless"); assert(reads(app_of("/bin/cless"), "Read"));
+    set("/bin/calc"); assert(reads(app_of("/bin/calc"), "Calc"));
+    set("/bin/cvim"); assert(reads(app_of("/bin/cvim"), "CVim"));
+    set("/bin/cish"); assert(reads(app_of("/bin/cish"), "Console"));
+}
+
+test "a shell's window reads Console whatever its first process runs" {
+    set("/bin/cish"); assert(reads(apps.NONE, "Console"));
+    set("/sh"); assert(reads(apps.NONE, "Console"));
+    set("/"); assert(reads(apps.NONE, "Console"));
+    set("/bin/evil"); assert(reads(apps.NONE, "Console"));
+    for k in 0..64 { ex[k] = 0; }
+    assert(reads(apps.NONE, "Console"));                      // no record: the kernel gave none
+}
+
+test "an app's image, or a name like it, inside a Console still reads Console" {
+    set("/bin/ced"); assert(reads(apps.NONE, "Console"));     // the person ran `exec ced` by hand
+    set("/bin/finder"); assert(reads(apps.NONE, "Console"));
+    set("/bin/cvim"); assert(reads(app_of("/bin/cish"), "Console"));
+    put(1, "/home/sam/ced"); assert(reads(apps.NONE, "Console"));
+    set("Index"); assert(reads(apps.NONE, "Console"));        // an app's screen name
+    set("Settings"); assert(reads(apps.NONE, "Console"));
+}
+
+test "a desk-opened app whose first process does not run the app's image member reads Console" {
+    I64 edit = app_of("/bin/ced");
+    set("/bin/cish"); assert(reads(edit, "Console"));         // the shell, before its exec
+    set("/sh"); assert(reads(edit, "Console"));
+    set("/bin/evil"); assert(reads(edit, "Console"));
+    set("/bin/finder"); assert(reads(edit, "Console"));       // another app's program
+    set("/bin/Edit"); assert(reads(edit, "Console"));         // the screen name is not the program's
+    set("/bin/CED"); assert(reads(edit, "Console"));
+    set("/bin/ce"); assert(reads(edit, "Console"));
+    set("/bin/cedx"); assert(reads(edit, "Console"));
+    set("/bin/ced "); assert(reads(edit, "Console"));
+    set("bin/ced"); assert(reads(edit, "Console"));           // the comm's form on Daphnis, not a path
+    set("ced"); assert(reads(edit, "Console"));               // the comm's form on Linux
+    set(""); assert(reads(edit, "Console"));
+    put(1, "/bin/ced"); assert(reads(edit, "Console"));       // from the volume, whatever its path
+    put(1, "/home/sam/ced"); assert(reads(edit, "Console"));
+}
+
+test "a record that is not whole and plain is no image member's" {
+    I64 edit = app_of("/bin/ced");
+    set("/bin/ced"); assert(reads(edit, "Edit"));
+    set("/bin/ced"); ex[8] = 0; assert(reads(edit, "Console"));         // no length
+    set("/bin/ced"); ex[8] = 34; assert(reads(edit, "Console"));        // past 33
+    set("/bin/ced"); ex[9] = 1; assert(reads(edit, "Console"));         // a length in the thousands
+    set("/bin/ced"); ex[4] = 2; assert(reads(edit, "Console"));         // a source that is neither
+    set("/bin/ced"); ex[7] = 1; assert(reads(edit, "Console"));
+    set("/bin/ced"); ex[12] = 1; assert(reads(edit, "Console"));        // the word that is 0
+    set("/bin/ced"); ex[24] = 120; assert(reads(edit, "Console"));      // a byte past the path
+    set("/bin/ced"); ex[63] = 1; assert(reads(edit, "Console"));
+    set("/bin/ce\x1bd"); assert(reads(edit, "Console"));
+    set("/bin/ced"); ex[16] = 0; assert(reads(edit, "Console"));
+    set("/bin/ced"); ex[0] = 99; assert(reads(edit, "Edit"));           // the vpid is the desk's to check
+    U8[63] short;
+    for k in 0..63 { short[k] = ex[k]; }
+    assert(prompttitle.title(edit, short, got) == 7 && got[0] == 67);     // a record cut short
+    U8[0] none;
+    assert(prompttitle.title(edit, none, got) == 7 && got[0] == 67);
+    for k in 0..64 { ex[k] = 255; }
+    assert(reads(edit, "Console") && reads(apps.NONE, "Console"));
+}
+
+test "an app with no program, and a number that is no app, read Console" {
+    for a in 0..apps.N {
+        U8[64] p;
+        if (apps.field(a, 1, p) == 0) {                         // Settings, Web Browser
+            U8[32] nm;
+            I64 nn = apps.field(a, 0, nm);
+            U8[40] q;
+            q[0] = '/';
+            for k in 0..nn { q[1 + k] = nm[k]; }
+            set(q[0..1 + nn]); assert(reads(a, "Console"));
+            set("/bin/settings"); assert(reads(a, "Console"));
+            set(""); assert(reads(a, "Console"));
+        }
+    }
+    set("/bin/ced");
+    assert(reads(-1, "Console") && reads(-2, "Console") && reads(apps.N, "Console") && reads(99, "Console"));
+}
+
+test "every title is a name of the table: the app's own or Console's, and no byte of the record" {
+    I64 con = app_of("/bin/cish");
+    assert(con != apps.NONE);
+    I64 own = 0;
+    for a in -1..apps.N + 1 {
+        for b in 0..apps.N {
+            for src in 0..2 {
+                U8[64] p;
+                I64 pn = apps.field(b, 1, p);
+                put(src, p[0..pn]);                            // each app's program, from the image and the volume
+                for k in 0..40 { got[k] = 0; }
+                I64 n = prompttitle.title(a, ex, got);
+                Bool mine = a >= 0 && a < apps.N && a == b && pn > 0 && src == 0;
+                if (mine) {
+                    assert(is_name(a, n));
+                    own = own + 1;
+                } else {
+                    assert(is_name(con, n));
+                }
+            }
+        }
+    }
+    assert(own == 9);                                          // the nine apps that have a program (HW-17: no Doom)
+    U8[16] ctl = [47, 27, 91, 50, 74, 7, 8, 10, 13, 200, 201, 67, 111, 110, 115, 0];   // escapes, controls, high bytes
+    put(0, ctl[0..15]);
+    for a in -1..apps.N + 1 {
+        for k in 0..40 { got[k] = 0; }
+        I64 n = prompttitle.title(a, ex, got);
+        assert(is_name(con, n));
+    }
+}
+
+test "a short destination cuts the name and writes nothing past it" {
+    set("/bin/finder");
+    U8[8] small;
+    for k in 0..8 { small[k] = 46; }
+    assert(prompttitle.title(app_of("/bin/finder"), ex, small[0..3]) == 3);
+    assert(small[0] == 73 && small[1] == 110 && small[2] == 100 && small[3] == 46);
+    assert(prompttitle.title(apps.NONE, ex, small[0..4]) == 4 && small[3] == 115 && small[4] == 46);
+}
+// AC-Tw: the desk's record of the app, made from the line it types. In a line below ^ stands for a backslash and
+// @ for a double quote.
+U8[96] typed;
+
+I64 rec(in U8[_] t) {
+    for k in 0..len(t) {
+        typed[k] = t[k];
+        if (t[k] == '^') { typed[k] = 92; }
+        if (t[k] == '@') { typed[k] = 34; }
+    }
+    return prompttitle.record(typed[0..len(t)]);
+}
+
+Bool recs(in U8[_] t, in U8[_] program) { return rec(t) == app_of(program) + 1; }
+
+test "a line that is the app's program and plain words records the app" {
+    assert(recs("ced", "/bin/ced"));
+    assert(recs("cvim", "/bin/cvim"));
+    assert(recs("finder /home/downloads", "/bin/finder"));
+    assert(recs("ced /home/sam/notes-2.txt", "/bin/ced"));
+    assert(recs("cview /home/sam/Pictures/a_b.png", "/bin/cview"));
+    for a in 0..apps.N {                       // every app the desk types with exec, by its own program word
+        U8[64] p;
+        I64 pn = apps.field(a, 1, p);
+        if (pn > 5 && !apps.is_command(a)) { assert(prompttitle.record(p[5..pn]) == a + 1); }
+    }
+}
+
+test "a path the desk wrote as one single-quoted word records the app, whatever bytes it holds" {
+    assert(recs("ced '/home/sam/a b.txt'", "/bin/ced"));
+    assert(recs("ced '/home/sam/a;exec x <y >z | $(w) `v` & # ~ * ? [ = ^ @ !'", "/bin/ced"));
+    assert(recs("ced '/home/sam/it'^''s'", "/bin/ced"));
+    assert(recs("ced './-x'", "/bin/ced"));
+}
+
+test "a shell, a command and a program that is no app record no app but Console" {
+    assert(rec("") == 0);
+    assert(recs("cish", "/bin/cish"));          // the shell by name is Console's record, and reads Console as 0 does
+    assert(rec("fetch https://example.org/a") == 0);
+    assert(rec("fetch") == 0);
+    assert(rec("ls /home") == 0);
+    assert(rec("../home/sam/ced") == 0);
+    assert(rec(" ced") == 0);
+}
+
+test "a line the shell could read as more than the app's program records nothing" {
+    assert(rec("ced <nope;exec /home/sam/evil") == 0);       // the redirection fails and the shell goes on
+    assert(rec("finder /home/sam/a <nope;exec /home/sam/ced") == 0);
+    assert(rec("ced $x;exec /home/sam/evil") == 0);
+    assert(rec("ced;x") == 0);
+    assert(rec("ced a&&x") == 0);
+    assert(rec("ced a||x") == 0);
+    assert(rec("ced a|x") == 0);
+    assert(rec("ced a&") == 0);
+    assert(rec("ced >a") == 0);
+    assert(rec("ced 2>a") == 0);
+    assert(rec("ced $x") == 0);
+    assert(rec("ced `x`") == 0);
+    assert(rec("ced ~") == 0);
+    assert(rec("ced *") == 0);
+    assert(rec("ced a?") == 0);
+    assert(rec("ced [a]") == 0);
+    assert(rec("ced #a") == 0);
+    assert(rec("ced a=b") == 0);
+    assert(rec("ced (a)") == 0);
+    assert(rec("ced !a") == 0);
+    assert(rec("ced @a@") == 0);
+    assert(rec("ced a^ b") == 0);
+    assert(rec("ced a^") == 0);
+    assert(rec("ced 'a") == 0);                               // a quote left open
+    assert(rec("ced 'a'^''b") == 0);
+    assert(rec("ced a\nexec x") == 0);                        // a control byte, outside a quote
+    assert(rec("ced 'a\nexec x'") == 0);                      // and inside one
+    assert(rec("ced 'a\x03'") == 0);
+    assert(rec("ced 'a\x1b[0m'") == 0);
+    assert(rec("ced 'a\x7f'") == 0);
+    assert(rec("ced a\x00") == 0);
+}
+
+test "every byte: outside a quote only a letter, a digit, a space and _ . / - keep the record" {
+    U8[5] c = b"ced x";
+    I64 kept = 0;
+    for b in 0..256 {
+        c[4] = b as U8;
+        Bool word = (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57);
+        Bool safe = word || b == 32 || b == 95 || b == 46 || b == 47 || b == 45;
+        Bool got_it = prompttitle.record(c) != 0;
+        assert(got_it == safe);
+        if (got_it) { kept = kept + 1; }
+    }
+    assert(kept == 67);
+    U8[7] q = b"ced 'x'";
+    for b in 0..256 {                          // inside a quote, every byte but a control byte, DEL and the quote
+        q[5] = b as U8;
+        assert((prompttitle.record(q) != 0) == (b >= 32 && b != 127 && b != 39));
+    }
+}
+// AC-V (docs/specs/2026-11-11-ac-v-prompt-words.md): the prompt's icon is the icon of the app whose name the title
+// gives, so the icon says no more than the title: neither a program's name nor a volume path selects one.
+test "the icon follows the title: an app's only when its name is the title, else Console's" {
+    I64 con = apps.icon(app_of("/bin/cish"));
+    I64 edit = app_of("/bin/ced");
+    set("/bin/ced"); assert(prompttitle.icon(edit, ex) == apps.icon(edit) && apps.icon(edit) != con);
+    set("/bin/finder"); assert(prompttitle.icon(app_of("/bin/finder"), ex) == apps.icon(app_of("/bin/finder")));
+    set("/bin/ced"); assert(prompttitle.icon(apps.NONE, ex) == con);        // an app's image, in a Console
+    set("/Parent approved"); assert(prompttitle.icon(edit, ex) == con);      // a path that is a sentence
+    set("/Parent approved"); assert(prompttitle.icon(apps.NONE, ex) == con);
+    put(1, "/bin/ced"); assert(prompttitle.icon(edit, ex) == con);          // from the volume
+    set("/Parent approved"); assert(reads(edit, "Console"));
+    set("/bin/cish"); assert(prompttitle.icon(app_of("/bin/cish"), ex) == con);
+}
+// AC-V-R1 with AC-T2 (docs/specs/2026-11-11-ac-v-prompt-words.md edition 3): frame 17's subject is the asking
+// program's own image: an app's name, else its path; nothing for a program from the volume or no record.
+I64 subj() {
+    for k in 0..40 { got[k] = 0; }
+    return prompttitle.subject(ex, got);
+}
+
+Bool says(in U8[_] w) {
+    I64 n = subj();
+    if (n != len(w)) { return false; }
+    for k in 0..n {
+        if (got[k] != w[k]) { return false; }
+    }
+    return true;
+}
+
+test "the subject is the asking program's app name, or its image path" {
+    set("/bin/fetch"); assert(says("Fetch"));
+    set("/bin/ced"); assert(says("Edit"));
+    set("/bin/cish"); assert(says("Console"));
+    set("/bin/grant"); assert(says("/bin/grant"));
+    set("/bin/kern"); assert(says("/bin/kern"));
+    set("/sh"); assert(says("/sh"));
+    set("/bin/Settings"); assert(says("/bin/Settings"));       // a member named so still shows its path
+    for a in 0..apps.N {                                       // every app's program gives its name, no `/` in it
+        U8[64] p;
+        I64 pn = apps.field(a, 1, p);
+        if (pn > 0) {
+            set(p[0..pn]);
+            I64 n = subj();
+            assert(is_name(a, n));
+            for k in 0..n { assert(got[k] != '/'); }
+        }
+    }
+}
+
+test "the subject is nothing for a program from the volume, a record that is not whole and no record" {
+    put(1, "/home/sam/Settings"); assert(subj() == 0);
+    put(1, "/bin/fetch"); assert(subj() == 0);
+    set("Settings"); assert(subj() == 0);                      // not a path
+    set("bin/grant"); assert(subj() == 0);
+    set("/bin/gr\x07ant"); assert(subj() == 0);
+    set("/bin/grant"); ex[30] = 65; assert(subj() == 0);
+    set("/bin/grant"); ex[8] = 40; assert(subj() == 0);
+    for k in 0..64 { ex[k] = 0; }
+    assert(subj() == 0);
+}
+
+test "the subject is cut to its destination and writes nothing past it" {
+    set("/bin/grant");
+    U8[8] small;
+    for k in 0..8 { small[k] = 46; }
+    assert(prompttitle.subject(ex, small[0..4]) == 4);
+    assert(small[0] == 47 && small[3] == 110 && small[4] == 46);
+    U8[33] longest;
+    longest[0] = '/';
+    for k in 1..33 { longest[k] = 'a'; }
+    set(longest); assert(subj() == 33 && got[32] == 'a' && got[33] == 0);
+}
+// SPDX-License-Identifier: Apache-2.0

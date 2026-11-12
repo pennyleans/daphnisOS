@@ -1,0 +1,10 @@
+# tests/core/df.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-11-kf-facts.md section 2, KF-1). Every number is the
+# host file system's (H). The oracle build has no df, and busybox's prints a device and a mount point from the mount
+# table where the native df prints the kind and the FILE (D-64). No case runs df without a FILE: its rows depend on
+# whether the host's /home is another device; the Daphnis session is that leg.
+. | - | D-64 H
+-k . | - | D-64 H
+look look/sub | - | D-64 H
+missing | - | D-64
+. missing look | - | D-64 H
+-h . | - | D-1

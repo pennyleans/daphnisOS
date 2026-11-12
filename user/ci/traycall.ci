@@ -1,0 +1,6 @@
+// user/ci/traycall.ci: the extern of user/ci/tray.ci (SP-2), a row of user/ci/host.c built only into a program that
+// imports this module (user/ci/build.sh defines CI_ROWS_TRAY).
+//   tray_ask(on): Daphnis's call 1002, 1 to ask for the desk's tray (the window hides there until the person opens
+//   it), 0 to leave it; 0, else -errno (-ENOSYS on Linux)
+export extern unrestricted I64 tray_ask(I64 on);
+// SPDX-License-Identifier: Apache-2.0

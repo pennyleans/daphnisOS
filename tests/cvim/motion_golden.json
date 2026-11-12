@@ -1,0 +1,1394 @@
+{
+  "iDowngoal": {
+    "text": "abcdef\nx\nabXcdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "iDownundo": {
+    "text": "abcdef\nx\nabcdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "iDownredo": {
+    "text": "abcdef\nx\nabXcdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "iUpgoal": {
+    "text": "abXcdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "iUpundo": {
+    "text": "abcdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "iUpredo": {
+    "text": "abXcdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "ireset<Left>": {
+    "text": "abcdef\nx\nXabcdef\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "ireset<Right>": {
+    "text": "abcdef\nx\nabXcdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "ireset<Home>": {
+    "text": "abcdef\nx\nXabcdef\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "ireset<End>": {
+    "text": "abcdef\nx\nabcdefX\n",
+    "cursor": [
+      3,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "iresetZ": {
+    "text": "abcdef\nxZ\nabXcdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "ireset<BS>": {
+    "text": "abcdef\n\nXabcdef\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "ireset<Del>": {
+    "text": "abcdef\nxXabcdef\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "igroups": {
+    "text": "abQcdef\nx\nabcdef\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "igroups2": {
+    "text": "abcdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "RDowngoal": {
+    "text": "abcdef\nx\nabXdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "RDownundo": {
+    "text": "abcdef\nx\nabcdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "RDownredo": {
+    "text": "abcdef\nx\nabXdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "RUpgoal": {
+    "text": "abXdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "RUpundo": {
+    "text": "abcdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "RUpredo": {
+    "text": "abXdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rreset<Left>": {
+    "text": "abcdef\nx\nXbcdef\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rreset<Right>": {
+    "text": "abcdef\nx\nabXdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rreset<Home>": {
+    "text": "abcdef\nx\nXbcdef\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rreset<End>": {
+    "text": "abcdef\nx\nabcdefX\n",
+    "cursor": [
+      3,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "RresetZ": {
+    "text": "abcdef\nxZ\nabXdef\n",
+    "cursor": [
+      3,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rreset<BS>": {
+    "text": "abcdef\nx\nXbcdef\n",
+    "cursor": [
+      3,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rreset<Del>": {
+    "text": "abcdef\nxXbcdef\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rgroups": {
+    "text": "abQdef\nx\nabcdef\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "Rgroups2": {
+    "text": "abcdef\nx\nabcdef\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape1()%": {
+    "text": "a (b\\)c) z\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape1()d%": {
+    "text": " z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\)c)"
+    ]
+  },
+  "escape1()c%X<Esc>": {
+    "text": "X z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\)c)"
+    ]
+  },
+  "escape1()y%": {
+    "text": "a (b\\)c) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\)c)"
+    ]
+  },
+  "escape1()$%": {
+    "text": "a (b\\)c) z\n",
+    "cursor": [
+      1,
+      10
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape1[]%": {
+    "text": "a [b\\]c] z\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape1[]d%": {
+    "text": " z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\]c]"
+    ]
+  },
+  "escape1[]c%X<Esc>": {
+    "text": "X z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\]c]"
+    ]
+  },
+  "escape1[]y%": {
+    "text": "a [b\\]c] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\]c]"
+    ]
+  },
+  "escape1[]$%": {
+    "text": "a [b\\]c] z\n",
+    "cursor": [
+      1,
+      10
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape1{}%": {
+    "text": "a {b\\}c} z\n",
+    "cursor": [
+      1,
+      8
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape1{}d%": {
+    "text": " z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\}c}"
+    ]
+  },
+  "escape1{}c%X<Esc>": {
+    "text": "X z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\}c}"
+    ]
+  },
+  "escape1{}y%": {
+    "text": "a {b\\}c} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\}c}"
+    ]
+  },
+  "escape1{}$%": {
+    "text": "a {b\\}c} z\n",
+    "cursor": [
+      1,
+      10
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape2()%": {
+    "text": "a (b\\\\)c) z\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape2()d%": {
+    "text": "c) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\)"
+    ]
+  },
+  "escape2()c%X<Esc>": {
+    "text": "Xc) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\)"
+    ]
+  },
+  "escape2()y%": {
+    "text": "a (b\\\\)c) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\)"
+    ]
+  },
+  "escape2()$%": {
+    "text": "a (b\\\\)c) z\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape2[]%": {
+    "text": "a [b\\\\]c] z\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape2[]d%": {
+    "text": "c] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\]"
+    ]
+  },
+  "escape2[]c%X<Esc>": {
+    "text": "Xc] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\]"
+    ]
+  },
+  "escape2[]y%": {
+    "text": "a [b\\\\]c] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\]"
+    ]
+  },
+  "escape2[]$%": {
+    "text": "a [b\\\\]c] z\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape2{}%": {
+    "text": "a {b\\\\}c} z\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape2{}d%": {
+    "text": "c} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\}"
+    ]
+  },
+  "escape2{}c%X<Esc>": {
+    "text": "Xc} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\}"
+    ]
+  },
+  "escape2{}y%": {
+    "text": "a {b\\\\}c} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\}"
+    ]
+  },
+  "escape2{}$%": {
+    "text": "a {b\\\\}c} z\n",
+    "cursor": [
+      1,
+      11
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape3()%": {
+    "text": "a (b\\\\\\)c) z\n",
+    "cursor": [
+      1,
+      10
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape3()d%": {
+    "text": " z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\\\)c)"
+    ]
+  },
+  "escape3()c%X<Esc>": {
+    "text": "X z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\\\)c)"
+    ]
+  },
+  "escape3()y%": {
+    "text": "a (b\\\\\\)c) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\\\)c)"
+    ]
+  },
+  "escape3()$%": {
+    "text": "a (b\\\\\\)c) z\n",
+    "cursor": [
+      1,
+      12
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape3[]%": {
+    "text": "a [b\\\\\\]c] z\n",
+    "cursor": [
+      1,
+      10
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape3[]d%": {
+    "text": " z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\\\]c]"
+    ]
+  },
+  "escape3[]c%X<Esc>": {
+    "text": "X z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\\\]c]"
+    ]
+  },
+  "escape3[]y%": {
+    "text": "a [b\\\\\\]c] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\\\]c]"
+    ]
+  },
+  "escape3[]$%": {
+    "text": "a [b\\\\\\]c] z\n",
+    "cursor": [
+      1,
+      12
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape3{}%": {
+    "text": "a {b\\\\\\}c} z\n",
+    "cursor": [
+      1,
+      10
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape3{}d%": {
+    "text": " z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\\\}c}"
+    ]
+  },
+  "escape3{}c%X<Esc>": {
+    "text": "X z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\\\}c}"
+    ]
+  },
+  "escape3{}y%": {
+    "text": "a {b\\\\\\}c} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\\\}c}"
+    ]
+  },
+  "escape3{}$%": {
+    "text": "a {b\\\\\\}c} z\n",
+    "cursor": [
+      1,
+      12
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape4()%": {
+    "text": "a (b\\\\\\\\)c) z\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape4()d%": {
+    "text": "c) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\\\\\)"
+    ]
+  },
+  "escape4()c%X<Esc>": {
+    "text": "Xc) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\\\\\)"
+    ]
+  },
+  "escape4()y%": {
+    "text": "a (b\\\\\\\\)c) z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a (b\\\\\\\\)"
+    ]
+  },
+  "escape4()$%": {
+    "text": "a (b\\\\\\\\)c) z\n",
+    "cursor": [
+      1,
+      13
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape4[]%": {
+    "text": "a [b\\\\\\\\]c] z\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape4[]d%": {
+    "text": "c] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\\\\\]"
+    ]
+  },
+  "escape4[]c%X<Esc>": {
+    "text": "Xc] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\\\\\]"
+    ]
+  },
+  "escape4[]y%": {
+    "text": "a [b\\\\\\\\]c] z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a [b\\\\\\\\]"
+    ]
+  },
+  "escape4[]$%": {
+    "text": "a [b\\\\\\\\]c] z\n",
+    "cursor": [
+      1,
+      13
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape4{}%": {
+    "text": "a {b\\\\\\\\}c} z\n",
+    "cursor": [
+      1,
+      9
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "escape4{}d%": {
+    "text": "c} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\\\\\}"
+    ]
+  },
+  "escape4{}c%X<Esc>": {
+    "text": "Xc} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\\\\\}"
+    ]
+  },
+  "escape4{}y%": {
+    "text": "a {b\\\\\\\\}c} z\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      "a {b\\\\\\\\}"
+    ]
+  },
+  "escape4{}$%": {
+    "text": "a {b\\\\\\\\}c} z\n",
+    "cursor": [
+      1,
+      13
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count1%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count25%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count33%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count50%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count67%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      4,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count99%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      5,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count100%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      5,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count101%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count999%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count0%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "countd50%": {
+    "text": "d\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a\n b\n   c\n"
+    ]
+  },
+  "count50d%": {
+    "text": "d\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a\n b\n   c\n"
+    ]
+  },
+  "count2d25%": {
+    "text": "d\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a\n b\n   c\n"
+    ]
+  },
+  "countd101%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count101d%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "county50%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a\n b\n   c\n"
+    ]
+  },
+  "countc50%X<Esc>": {
+    "text": "  X\nd\ne\n",
+    "cursor": [
+      1,
+      3
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a\n b\n   c\n"
+    ]
+  },
+  "count>50%": {
+    "text": "      a\n     b\n       c\nd\ne\n",
+    "cursor": [
+      1,
+      7
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "count<50%": {
+    "text": "a\nb\nc\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "countG50%": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      3,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  },
+  "countGd50%": {
+    "text": "  a\n b\n",
+    "cursor": [
+      2,
+      2
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "   c\nd\ne\n"
+    ]
+  },
+  "countd50%u": {
+    "text": "  a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "V",
+      "  a\n b\n   c\n"
+    ]
+  },
+  "count101%x": {
+    "text": " a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      " "
+    ]
+  },
+  "countd101%x": {
+    "text": " a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      " "
+    ]
+  },
+  "count101d%x": {
+    "text": " a\n b\n   c\nd\ne\n",
+    "cursor": [
+      1,
+      1
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      " "
+    ]
+  },
+  "wide_vertical": {
+    "text": "a文z\nabcdef\n",
+    "cursor": [
+      2,
+      4
+    ],
+    "mode": 0,
+    "register": [
+      "v",
+      ""
+    ]
+  }
+}

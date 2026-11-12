@@ -1,0 +1,26 @@
+{
+  "id": "undo-selects-delete",
+  "rules": [
+    "UNDO-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b337e",
+    "1a"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      0,
+      1
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "tab-no-indent-uses-spaces",
+  "rules": [
+    "KEY-4"
+  ],
+  "text": "a\nb",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "09"
+  ],
+  "expect": {
+    "text": "    a\nb",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

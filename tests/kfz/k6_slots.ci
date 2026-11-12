@@ -1,0 +1,85 @@
+// tests/kfz/k6_slots.ci: a slot taken again (G4 of the kernel read of PR 344). The kernel keeps a process's words in
+// arrays by slot; fork (new_child) takes the lowest free child slot and sets the words a process starts with, from
+// its parent or fresh, and exit (finish) and the kernel's forgetting (kern_forget) clear the rest. A word neither
+// path sets is the slot's last process's, seen by the next: a leak across processes. Here a process fills its slot's
+// words, by its calls where a kit process can make them and by hand where only a loaded program can (its image,
+// break and map), then ends by exit and its parent's wait4, and a fork from another parent takes the slot.
+
+const U64 NR_PRCTL_SLOT = 157;
+const U64 NR_SIGACTION = 13;
+const U64 NR_FSTAT = 5;
+const U64 NR_CLONE = 56;
+const U64 NR_TRAY_SLOT = 1002;
+
+test "slots: a fork into a slot an ended process left takes its parent's words or fresh ones, never the slot's last" {
+    I64 a = kz_spawn(1000, fs.GRANT_ALL, 0);
+    I64 s = a;
+    // by its calls: a name, the tray and its minimize, a download running, a pipe, SIGPIPE ignored
+    kz_own(a, PATHS, 4096);
+    kz_put(a, PATHS, "stale-name");
+    assert(kz_call(a, NR_PRCTL_SLOT, 15, PATHS, 0, 0, 0, 0) == 0);
+    assert(kz_call(a, NR_TRAY_SLOT, 1, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(a, NR_TRAY_SLOT, 2, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(a, NR_TRAY_SLOT, 3, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(a, 293, PATHS + 256, 0, 0, 0, 0, 0) == 0);
+    U8[32] act;
+    act[0] = 1;                                          // SIG_IGN
+    assert(uvm.poke(a, PATHS + 512, act, 32, false) == 32);
+    assert(kz_call(a, NR_SIGACTION, 13, PATHS + 512, 0, 8, 0, 0) == 0);
+    assert(trayf[a] && traymin[a] && dlrun[a] && job.ignored(a, 13));
+    // by hand: what a loaded program, a timed poll, a capture, ring 0's hold and a vfork leave
+    for i in 0..32 {
+        exe[a * 32 + i] = 0x5A;
+    }
+    exelen[a] = 32;
+    exe_ino[a] = 77;
+    brk_base[a] = 0x600000;
+    brk_now[a] = 0x602000;
+    mmap_next[a] = 0x7F0000000000;
+    exec_at[a] = 9;
+    clock[a] = 123456789;
+    zero_at[a] = 987654321;
+    poll_wait[a] = 1;
+    poll_spent[a] = true;
+    capture[a] = true;
+    caplen[a] = 40;
+    hold_end[a] = 5000;
+    vfork_child[a] = 3;
+    ticks[a] = 11;
+    forks[a] = 2;
+    kz_reap(a);
+    // another parent, uid 1001, of its own family, with its own words; its child takes the slot
+    I64 q = kz_proc(1001, fs.GRANT_ALL, 0);
+    I64 b = kz_fork(q);
+    assert(b == s);
+    for i in 0..16 {
+        assert(comm[b * 16 + i] == comm[q * 16 + i]);
+    }
+    for i in 0..32 {
+        assert(exe[b * 32 + i] == exe[q * 32 + i]);
+    }
+    assert(exelen[b] == exelen[q] && exe_ino[b] == exe_ino[q] && exec_at[b] == exec_at[q] && clock[b] == clock[q]);
+    assert(zero_at[b] == zero_at[q]);
+    assert(brk_base[b] == brk_base[q] && brk_now[b] == brk_now[q] && mmap_next[b] == mmap_next[q]);
+    assert(!trayf[b] && !traymin[b] && !dlrun[b] && !job.ignored(b, 13));
+    assert(poll_wait[b] == 0 && !poll_spent[b] && !capture[b] && caplen[b] == 0);
+    assert(hold_end[b] == 0 && vfork_child[b] == 0 && ticks[b] == 0 && forks[b] == 0);
+    assert(parent[b] == q && root[b] == root[q] && fs.uid_of(b) == 1001);
+    // what it holds and calls: the console only, the name its parent's, a vfork of its own
+    for fd in 3..8 {
+        assert(kz_call(b, NR_FSTAT, fd as U64, KZ_RW, 0, 0, 0, 0) == E_BADF);
+    }
+    kz_own(b, PATHS, 4096);
+    assert(kz_call(b, NR_PRCTL_SLOT, 16, PATHS, 0, 0, 0, 0) == 0);
+    U8[16] nm;
+    assert(uvm.peek(b, PATHS, nm, 16) == 16);
+    for i in 0..16 {
+        assert(nm[i] == comm[q * 16 + i]);
+    }
+    assert(kz_call_raw(b, NR_CLONE, 0x4111, KZ_TOP + 4000, 0, 0, 0, 0) == fs.WOULD_BLOCK);
+    assert(vfork_child[b] > 0 && parent[vfork_child[b] - 1] == b);
+    kz_end(vfork_child[b] - 1);
+    kz_end(b);
+    kz_end(q);
+}
+// SPDX-License-Identifier: Apache-2.0

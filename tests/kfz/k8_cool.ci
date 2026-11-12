@@ -1,0 +1,137 @@
+// tests/kfz/k8_cool.ci: AC-D4's cooldown (src/proc.ci cool; PR 441), the KFZ cases after the accounts work's
+// tests/kfz/k2_cool.ci, whose kc_ helpers these use. On the tick a test holds (machine.ci's kfz_tick): the no at
+// tick T cools the tree to T + 2999 and no further, the loop's every new process included. The tree as the scheduler
+// holds it at the no, the asker waiting in kern and the shell in wait4, is cooled. execve keeps the mark: a cooled
+// process loads the kit's image program /kzx (k0_kit.ci's kz_image) through load, and is still refused. grant_ask
+// is cooled as kern is, and a no to a grant_ask cools the tree's kern.
+
+// p makes the call nr and is left as the scheduler leaves a call that must wait: WAITING, to be retried at its turn.
+void kd_wait_in(I64 p, U64 nr, U64 a0, U64 a1) {
+    user.user_set_reg(p, user.R_RAX, nr);
+    user.user_set_reg(p, user.R_RDI, a0);
+    user.user_set_reg(p, user.R_RSI, a1);
+    user.user_set_reg(p, user.R_RDX, 0);
+    user.user_set_reg(p, user.R_R10, 0);
+    user.user_set_reg(p, user.R_R8, 0);
+    user.user_set_reg(p, user.R_R9, 0);
+    syscall(p);
+    assert(state[p] == WAITING);
+}
+
+// p's grant_ask for word w, the command line `true`: the call's answer.
+I64 kd_grant_ask(I64 p, U64 w) {
+    kz_put(p, KZ_RW, "true");
+    return kz_call(p, NR_GRANT_ASK, KZ_RW, 5, w, 0, 0, 0);
+}
+
+test "AC-D4 on the held tick: a no at T; the loop's every new kern refused at once to T + 2999, put up at T + 3000" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 a = kz_fork(sh);
+    machine.kfz_tick(50000);
+    assert(kc_ask(a) == fs.WOULD_BLOCK);
+    assert(kc_answer(d, a, KC_NO) == 0);
+    assert(kc_ask(a) == E_PERM);                            // the refused process takes its no
+    assert(cool_end[a] == 53000 && cool_end[sh] == 53000);  // 30 s at 100 Hz from the no's tick
+    I64[4] at = [50000, 50001, 51500, 52999];
+    for i in 0..4 {
+        machine.kfz_tick(at[i]);
+        I64 b = kz_fork(sh);                                 // `: | kern true`: a new kern each time
+        kc_at_once(b);
+        kz_reap(b);
+        kc_at_once(sh);
+        kc_at_once(a);
+    }
+    machine.kfz_tick(53000);
+    I64 b = kz_fork(sh);
+    kc_put_up(b);
+    assert(kc_answer(d, b, KC_NO) == 0 && kc_ask(b) == E_PERM);   // a second no cools the tree again, from 53000
+    assert(cool_end[sh] == 56000 && cool_end[a] == 56000 && cool_end[b] == 56000);
+    machine.kfz_tick(55999);
+    kc_at_once(sh);
+    machine.kfz_tick(56000);
+    kc_put_up(sh);
+    machine.kfz_tick(-1);                                    // the tick runs on again for the files after
+    kz_end(b);
+    kz_end(a);
+    kz_end(sh);
+    kz_end(d);
+}
+
+test "AC-D4: the tree as the scheduler holds it at the no, the asker in kern and the shell in wait4, is cooled" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 a = kz_fork(sh);
+    kz_put(a, KZ_RW, "true");
+    kd_wait_in(a, NR_KERN, KZ_RW, 5);                        // the prompt is up: kern waits on it
+    assert(kc_waits(a));
+    kd_wait_in(sh, 61, 0xFFFFFFFFFFFFFFFF, 0);               // the shell waits for kern in wait4(-1)
+    assert(kc_answer(d, a, KC_NO) == 0);
+    assert(state[a] == WAITING && state[sh] == WAITING);
+    I64 e = cool_end[a];
+    assert(e > 0 && cool_end[sh] == e);
+    state[a] = READY;                                        // a's turn: the retried kern takes the no
+    assert(kz_call(a, NR_KERN, KZ_RW, 5, 0, 0, 0, 0) == E_PERM);
+    kc_at_once(a);
+    state[sh] = READY;                                       // kern exits; the shell's wait takes it
+    kz_reap(a);
+    kc_at_once(sh);
+    I64 b = kz_fork(sh);                                     // the loop's next kern
+    assert(cool_end[b] == e);
+    kc_at_once(b);
+    kz_reap(b);
+    kz_end(sh);
+    kz_end(d);
+}
+
+test "AC-D4: execve keeps the mark: a cooled process that loads a program is refused at once, and what it forks" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 a = kz_fork(sh);
+    I64 g = kz_fork(sh);                                     // alive at the no
+    kc_refused(d, a);
+    I64 e = cool_end[a];
+    assert(e > 0 && cool_end[g] == e);
+    I64 x = exec_at[g];
+    kz_put(g, KZ_RW, "/kzx");
+    _ = kz_call_raw(g, 59, KZ_RW, 0, 0, 0, 0, 0);            // execve("/kzx", NULL, NULL): the image's program loads
+    assert(state[g] == READY && exec_at[g] > x && exelen[g] == 3 && exe[32 * g] == 107);
+    assert(cool_end[g] == e);
+    kc_at_once(g);
+    I64 h = kz_fork(g);
+    assert(cool_end[h] == e);
+    kc_at_once(h);
+    kz_reap(h);
+    kz_end(g);
+    kz_reap(a);
+    kz_end(sh);
+    kz_end(d);
+}
+
+test "AC-D4: grant_ask is cooled as kern is; a no to a grant_ask cools the tree's kern; another window is put up" {
+    I64 d = kz_desk();
+    I64 sh = kz_child(d, 1000);
+    I64 other = kz_child(d, 1000);
+    fs.set_login(sh, 1000, 1000, fs.GRANT_DISK);            // a ceiling under the network, so grant_ask asks for it
+    fs.set_login(other, 1000, 1000, fs.GRANT_DISK);
+    I64 a = kz_fork(sh);
+    kc_refused(d, a);                                        // a no to kern
+    I64 n = kq_asked;
+    assert(kd_grant_ask(a, fs.GRANT_NET) == E_PERM);
+    assert(kd_grant_ask(sh, fs.GRANT_NET | fs.GRANT_AUDIO) == E_PERM);
+    I64 b = kz_fork(sh);
+    assert(kd_grant_ask(b, fs.GRANT_NET) == E_PERM);
+    assert(kq_asked == n && !kc_waits(a) && !kc_waits(sh) && !kc_waits(b));
+    assert(kd_grant_ask(b, fs.GRANT_DISK) == 0);             // within the ceiling: nothing to ask, so no refusal
+    assert(kd_grant_ask(other, fs.GRANT_NET) == fs.WOULD_BLOCK && kc_waits(other) && kq_asked == n + 1);
+    assert(kc_answer(d, other, KC_NO) == 0);                 // a no to a grant_ask
+    assert(kd_grant_ask(other, fs.GRANT_NET) == E_PERM);
+    assert(cool_end[other] > 0);
+    kc_at_once(other);                                       // its tree's kern is refused at once
+    kz_reap(b);
+    kz_reap(a);
+    kz_end(other);
+    kz_end(sh);
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

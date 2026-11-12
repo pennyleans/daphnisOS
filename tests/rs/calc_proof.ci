@@ -1,0 +1,51 @@
+// tests/rs/calc_proof.ci: RS-CALC's proof twins (frame 39): Calc's body drawn by the kit (kit/calcpad.ci) in the
+// dark and light themes at 1x and 2x, with the tape and display of the frame (the frame's third tape line, 2 ^ 64,
+// is past I64, so 2 ^ 62 stands in). Prints `frame NAME W H` and each row as runs `r rgb count`; tools/rsproof.py
+// writes the PNGs. Run: cint run --root . tests/rs/calc_proof.ci | python3 tools/rsproof.py OUTDIR ref_daphnis_rs_
+import user.ci.kit.calcpad;
+import user.ci.kit.tokens;
+
+U32[1144] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+void keys(in U8[_] s) {
+    for i in 0..len(s) { calcpad.typed(s[i]); }
+}
+
+export void main(in U8[_] a) {
+    calcpad.reset();
+    keys(b"12 * 4");
+    calcpad.equals();
+    keys(b" / 7");
+    calcpad.equals();
+    calcpad.clear();
+    keys(b"2 ^ 62");
+    calcpad.equals();
+    calcpad.clear();
+    keys(b"(1920 - 720) / 2");
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            I64 w = calcpad.W * z;
+            I64 h = calcpad.H * z;
+            "frame calc_{th}_{z}x {w} {h}\n";
+            for y in 0..h {
+                calcpad.row_at(row, y, z);
+                emit(w);
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

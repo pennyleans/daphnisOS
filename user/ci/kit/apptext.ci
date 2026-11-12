@@ -1,0 +1,63 @@
+// user/ci/kit/apptext.ci: the apps' own text (stage RS: Calc's result and keys, Monitor's figure and facts), the
+// faces of kit/appfaces.ci on kit/ctext.ci's contract: the caller holds row y and each call paints what of the text
+// falls on it; UTF-8 in (kit/ucode.ci); each glyph's coverage laid toward the color by the one blend (MS-1,
+// kit/blend.ci). Apart from ctext.ci so the chrome programs carry none of these tables.
+import user.ci.kit.appfaces;
+import user.ci.kit.ucode;
+import user.ci.kit.blend;
+
+I64 next_at(in U8[_] s, I64 n, I64 at) {
+    I64 b1 = 0;
+    I64 b2 = 0;
+    I64 b3 = 0;
+    if (at + 1 < n) { b1 = s[at + 1] as I64; }
+    if (at + 2 < n) { b2 = s[at + 2] as I64; }
+    if (at + 3 < n) { b3 = s[at + 3] as I64; }
+    I64 avail = n - at;
+    if (avail > 4) { avail = 4; }
+    return ucode.decode(s[at] as I64, b1, b2, b3, avail);
+}
+
+// The width in pixels of s[0..n] in face f at scale z: the sum of its advances.
+export I64 width(in U8[_] s, I64 n, I64 f, I64 z) {
+    I64 w = 0;
+    I64 at = 0;
+    while (at < n) {
+        I64 d = next_at(s, n, at);
+        w = w + appfaces.advance(f, z, appfaces.index(f, z, d / 8));
+        at = at + d % 8;
+    }
+    return w;
+}
+
+export I64 ascent(I64 f, I64 z) { return appfaces.ascent(f, z); }
+export I64 descent(I64 f, I64 z) { return appfaces.descent(f, z); }
+
+// Row y of s[0..n] in face f at scale z and color c, the pen from x0 on the baseline at row base; the pen past the
+// last glyph drawn. A glyph whose advance would end past x1 is not drawn, and nor is any after it.
+export I64 text(inout U32[_] row, I64 y, I64 x0, I64 base, I64 x1, in U8[_] s, I64 n, U32 c, I64 f, I64 z) {
+    I64 x = x0;
+    I64 at = 0;
+    while (at < n) {
+        I64 d = next_at(s, n, at);
+        at = at + d % 8;
+        I64 g = appfaces.index(f, z, d / 8);
+        I64 a = appfaces.advance(f, z, g);
+        if (x + a > x1) { return x; }
+        I64 gy = y - base - appfaces.top(f, z, g);
+        if (gy >= 0 && gy < appfaces.height(f, z, g)) {
+            I64 gx = x + appfaces.left(f, z, g);
+            I64 w = appfaces.width(f, z, g);
+            for i in 0..w {
+                I64 px = gx + i;
+                if (px >= 0 && px < len(row)) {
+                    I64 v = appfaces.at(f, z, g, i, gy);
+                    if (v > 0) { row[px] = blend.mix_px(row[px], c, (v * 256 + 7) / 15); }
+                }
+            }
+        }
+        x = x + a;
+    }
+    return x;
+}
+// SPDX-License-Identifier: Apache-2.0

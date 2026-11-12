@@ -1,0 +1,21 @@
+// user/ci/kit/stack.ci: HX-1 (docs/specs/2026-11-05-h-hybrid.md: "focusing a window raises it"). The desk keeps one
+// rank a window (user/ci/hdesk.ci wrank) and the last one given (ranks); kit/layout.ci stacks a float or a monocle
+// window by its rank, above the tiles, and lays the tiles in the order of theirs. A focused float or monocle window
+// takes the next rank, so it covers every other; a tile keeps its rank, which is its cell.
+import user.ci.kit.layout;
+
+// Window i focused, its mode m: the rank it takes when the last one given is top. Its own when it already holds top
+// or is tiled or minimized.
+export I64 raised(I64 m, I64 r, I64 top) {
+    if (m != layout.FLOAT && m != layout.MONOCLE) { return r; }
+    if (r == top) { return r; }
+    return top + 1;
+}
+
+// Window leaving fullscreen (Super+z again, or minimized), in mode m, its mode before fullscreen prev, at rank r, the
+// rank it had as a tile tr: a tile takes its cell back; any other keeps r.
+export I64 unfull(I64 m, I64 prev, I64 r, I64 tr) {
+    if (m == layout.MONOCLE && prev == layout.TILED) { return tr; }
+    return r;
+}
+// SPDX-License-Identifier: Apache-2.0

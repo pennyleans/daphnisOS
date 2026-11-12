@@ -1,0 +1,133 @@
+// HTML character references over immutable code points. No parser host calls.
+import user.ci.web.reference_data;
+export struct Reference {
+    I64 used;
+    I64 count;
+    U32 first;
+    U32 second;
+    I64 errors;
+}
+Reference empty() {
+    Reference r;
+    r.used = 0; r.count = 0; r.first = 0; r.second = 0; r.errors = 0;
+    return r;
+}
+Bool alnum(U32 c) {
+    return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
+I64 digit(U32 c, I64 base) {
+    if (c >= 48 && c <= 57) { return (c - 48) as I64; }
+    if (base == 16 && c >= 65 && c <= 70) { return (c - 55) as I64; }
+    if (base == 16 && c >= 97 && c <= 102) { return (c - 87) as I64; }
+    return -1;
+}
+U32 remap(U32 c) {
+    if (c == 128) { return 8364; }
+    if (c == 130) { return 8218; }
+    if (c == 131) { return 402; }
+    if (c == 132) { return 8222; }
+    if (c == 133) { return 8230; }
+    if (c == 134) { return 8224; }
+    if (c == 135) { return 8225; }
+    if (c == 136) { return 710; }
+    if (c == 137) { return 8240; }
+    if (c == 138) { return 352; }
+    if (c == 139) { return 8249; }
+    if (c == 140) { return 338; }
+    if (c == 142) { return 381; }
+    if (c == 145) { return 8216; }
+    if (c == 146) { return 8217; }
+    if (c == 147) { return 8220; }
+    if (c == 148) { return 8221; }
+    if (c == 149) { return 8226; }
+    if (c == 150) { return 8211; }
+    if (c == 151) { return 8212; }
+    if (c == 152) { return 732; }
+    if (c == 153) { return 8482; }
+    if (c == 154) { return 353; }
+    if (c == 155) { return 8250; }
+    if (c == 156) { return 339; }
+    if (c == 158) { return 382; }
+    if (c == 159) { return 376; }
+    return c;
+}
+Reference numeric(in U32[_] input, I64 at) {
+    Reference r = empty();
+    I64 p = at + 1;
+    I64 base = 10;
+    if (p < len(input) && (input[p] == 120 || input[p] == 88)) { base = 16; p = p + 1; }
+    I64 start = p;
+    I64 value = 0;
+    while (p < len(input)) {
+        I64 d = digit(input[p], base);
+        if (d < 0) { break; }
+        // The Unicode ceiling plus one is a sufficient saturating sentinel.
+        if (value > (1114112 - d) / base) { value = 1114112; }
+        else { value = value * base + d; }
+        p = p + 1;
+    }
+    if (p == start) { r.errors = 1; return r; }
+    if (p < len(input) && input[p] == 59) { p = p + 1; }
+    else { r.errors = 2; }
+    r.used = p - at;
+    r.count = 1;
+    if (value == 0) { r.errors = r.errors | 4; value = 65533; }
+    else if (value > 1114111) { r.errors = r.errors | 8; value = 65533; }
+    else if (value >= 55296 && value <= 57343) { r.errors = r.errors | 16; value = 65533; }
+    else {
+        if ((value >= 64976 && value <= 65007) || value % 65536 >= 65534) { r.errors = r.errors | 32; }
+        if (value == 13 || (value >= 1 && value <= 8) || value == 11
+            || (value >= 14 && value <= 31) || (value >= 127 && value <= 159)) { r.errors = r.errors | 64; }
+    }
+    r.first = remap(value as U32);
+    return r;
+}
+// Find the first row whose next byte is at least c inside the prefix range.
+I64 prefix_lower(I64 low, I64 high, I64 depth, U32 c) {
+    I64 lo = low;
+    I64 hi = high;
+    while (lo < hi) {
+        I64 mid = lo + (hi - lo) / 2;
+        if (reference_data.letter(mid, depth) < c) { lo = mid + 1; }
+        else { hi = mid; }
+    }
+    return lo;
+}
+export Reference resolve(in U32[_] input, I64 at, Bool attribute) {
+    Reference r = empty();
+    if (at < 0 || at >= len(input)) { return r; }
+    if (input[at] == 35) { return numeric(input, at); }
+    if (!alnum(input[at])) { return r; }
+    I64 lo = 0;
+    I64 hi = reference_data.SIZE;
+    I64 depth = 0;
+    I64 p = at;
+    while (p < len(input)) {
+        U32 c = input[p];
+        if (!alnum(c) && c != 59) { break; }
+        I64 nextlo = prefix_lower(lo, hi, depth, c);
+        I64 nexthi = prefix_lower(nextlo, hi, depth, c + 1);
+        if (nextlo == nexthi) { break; }
+        lo = nextlo; hi = nexthi;
+        depth = depth + 1; p = p + 1;
+        if (reference_data.width(lo) == depth) {
+            r.used = depth; r.count = 1;
+            r.first = reference_data.point(lo, 0); r.second = reference_data.point(lo, 1);
+            if (r.second != 0) { r.count = 2; }
+        }
+        if (c == 59) { break; }
+    }
+    if (r.used != 0) {
+        I64 next = at + r.used;
+        if (input[next - 1] != 59) {
+            if (attribute && next < len(input) && (alnum(input[next]) || input[next] == 61)) { return empty(); }
+            r.errors = 2;
+        }
+        return r;
+    }
+    p = at;
+    while (p < len(input) && alnum(input[p])) { p = p + 1; }
+    if (p < len(input) && input[p] == 59) { r.errors = 128; }
+    return r;
+}
+// SPDX-License-Identifier: Apache-2.0

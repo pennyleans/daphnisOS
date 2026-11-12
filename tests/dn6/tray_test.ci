@@ -1,0 +1,312 @@
+// tests/dn6/tray_test.ci: hosted tests of SP-5, DN-14's chevron and DN-15's tray plate. hdesk.ci is a program, so
+// cint test cannot import it: expand_by, keep_at, chan, corners_at, seg_d2, near_v, sin_d, cos_d, chevron and
+// tray_at_row below are hdesk.ci's, copied verbatim (tsin with them), and plate is win_row's order for a desk surface
+// (what is under its corners kept, its ground, its 1x drawing through the pen, spread, corners). The sums are
+// tools/check-hdesk.py's dn_test_tray (--dn6-sums) at UI scale 1, 2 and 3 in both themes. Run by check.sh.
+
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.pen;
+import user.ci.kit.icons3;
+import user.ci.kit.blend;
+
+const I64 R_CTRL = 6;       // hdesk.ci's
+const I64 RAD = 8;
+
+U32[3840] row;
+U32[256] under;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+void expand_by(I64 x0, I64 n, I64 m) {
+    if (m == 1) { return; }
+    for qq in 0..n {
+        I64 q = n - 1 - qq;
+        U32 v = row[x0 + q];
+        for t in 0..m { row[x0 + m * q + t] = v; }
+    }
+}
+
+void keep_at(I64 x0, I64 x1, I64 r) {
+    for k in 0..r {
+        under[k] = row[x0 + k];
+        under[r + k] = row[x1 - r + k];
+    }
+}
+
+I64 chan(in U32[_] b, I64 k, I64 c) { return ((b[k] >> ((8 * c) as U32)) & 255) as I64; }
+
+void corners_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 r, I64 b, U32 e, I64 y) {
+    if (y < y0 || y >= y1 || (y >= y0 + r && y < y1 - r)) { return; }
+    I64 py = y - y0;
+    if (y >= y1 - r) { py = y1 - 1 - y; }
+    U32[1] ec;
+    ec[0] = e;
+    for px in 0..r {
+        I64 nu = 0;
+        I64 no = 0;
+        for s in 0..4 {
+            for t in 0..4 {
+                I64 dx = 8 * r - (8 * px + 2 * s + 1);
+                I64 dy = 8 * r - (8 * py + 2 * t + 1);
+                I64 d2 = dx * dx + dy * dy;
+                if (d2 > 64 * r * r) {
+                    nu = nu + 1;
+                } else if (d2 > 64 * (r - b) * (r - b)) {
+                    no = no + 1;
+                }
+            }
+        }
+        I64 ni = 16 - nu - no;
+        for side in 0..2 {
+            I64 x = x0 + px;
+            I64 k = px;
+            if (side == 1) {
+                x = x1 - 1 - px;
+                k = 2 * r - 1 - px;
+            }
+            I64 c = 0;
+            for ch in 0..3 {
+                I64 v = (nu * chan(under, k, ch) + no * chan(ec, 0, ch) + ni * chan(row, x, ch) + 8) / 16;
+                c = c | (v << (8 * ch));
+            }
+            draw.put(row, x, c as U32);
+        }
+    }
+}
+
+I64[91] tsin = [0, 71, 143, 214, 286, 357, 428, 499, 570, 641, 711, 782, 852, 921, 991, 1060, 1129, 1198, 1266, 1334, 1401, 1468, 1534, 1600, 1666, 1731, 1796, 1860, 1923, 1986, 2048, 2110, 2171, 2231, 2290, 2349, 2408, 2465, 2522, 2578, 2633, 2687, 2741, 2793, 2845, 2896, 2946, 2996, 3044, 3091, 3138, 3183, 3228, 3271, 3314, 3355, 3396, 3435, 3474, 3511, 3547, 3582, 3617, 3650, 3681, 3712, 3742, 3770, 3798, 3824, 3849, 3873, 3896, 3917, 3937, 3956, 3974, 3991, 4006, 4021, 4034, 4046, 4056, 4065, 4074, 4080, 4086, 4090, 4094, 4095, 4096];   // DN-14: sin of 0 to 90 degrees, times 4096
+
+I64 seg_d2(I64 u, I64 v, I64 ax, I64 ay, I64 ex, I64 ey) {
+    I64 dx = ex - ax;
+    I64 dy = ey - ay;
+    I64 l2 = dx * dx + dy * dy;
+    I64 t = (u - ax) * dx + (v - ay) * dy;
+    if (t <= 0) { return (u - ax) * (u - ax) + (v - ay) * (v - ay); }
+    if (t >= l2) { return (u - ex) * (u - ex) + (v - ey) * (v - ey); }
+    I64 px = u - ax;
+    I64 py = v - ay;
+    return px * px + py * py - t * t / l2;
+}
+
+Bool near_v(I64 u, I64 v, I64 z) {   // DN-14: (2.5, 4.25), (6, 7.75), (9.5, 4.25) from the box's center, 0.875 wide
+    return seg_d2(u, v, -28 * z, -14 * z, 0, 14 * z) <= 49 * z * z || seg_d2(u, v, 28 * z, -14 * z, 0, 14 * z) <= 49 * z * z;
+}
+
+I64 sin_d(I64 a) {
+    if (a <= 90) { return tsin[a]; }
+    return tsin[180 - a];
+}
+
+I64 cos_d(I64 a) {
+    if (a <= 90) { return tsin[90 - a]; }
+    return 0 - tsin[a - 90];
+}
+
+void chevron(I64 y, I64 cx, I64 cy, I64 a, U32 ink) {
+    if (y < cy - 6 || y >= cy + 6) { return; }
+    U32[1] ic;
+    ic[0] = ink;
+    I64 z = pen.zoom();
+    I64 ox = pen.x(cx);
+    I64 oy = pen.y(cy);
+    I64 c = cos_d(a);
+    I64 s = sin_d(a);
+    for px in pen.x(cx - 6)..pen.x(cx + 6) {
+        I64 cov = 0;
+        for i in 0..4 {
+            for j in 0..4 {
+                I64 x8 = 8 * (px - ox) + 2 * i + 1;
+                I64 y8 = 8 * (pen.row_y() - oy) + 2 * j + 1;
+                I64 u = (x8 * c + y8 * s) / 4096;   // the sample turned back by the angle
+                I64 v = (y8 * c - x8 * s) / 4096;
+                if (near_v(u, v, z)) { cov = cov + 1; }
+            }
+        }
+        if (cov > 0) {
+            I64 o = 0;
+            for ch in 0..3 {
+                I64 q = (cov * chan(ic, 0, ch) + (16 - cov) * chan(row, px, ch) + 8) / 16;
+                o = o | (q << (8 * ch));
+            }
+            draw.put(row, px, o as U32);
+        }
+    }
+}
+
+void tray_at_row(I64 x0, I64 y0, I64 n, in I64[_] ic, I64 sel, I64 hov, I64 y) {
+    for k in 0..n {
+        I64 cx = x0 + 4 + 32 * (k % 5);
+        I64 cy = y0 + 4 + 32 * (k / 5);
+        if (y >= cy && y < cy + 32) {
+            I64 g = tokens.SURF2;
+            if (k == sel) {
+                g = tokens.FILL;
+            } else if (k == hov) {
+                g = tokens.SURF1;
+            }
+            if (g != tokens.SURF2) { pen.round(row, cx, cy, cx + 32, cy + 32, R_CTRL, tok(g)); }
+            if (y >= cy + 8 && y < cy + 24) {
+                icons3.icon_at(row, pen.row_y(), pen.x(cx + 8), pen.y(cy + 8), ic[k], 16, pen.zoom(), tok(g));
+            }
+        }
+    }
+}
+
+I64 tr_pw(I64 n) { return 8 + 32 * min(max(n, 1), 5); }   // hdesk.ci tr_pw and tr_ph for n residents
+I64 tr_ph(I64 n) { return 8 + 32 * ((max(n, 1) + 4) / 5); }
+
+// A desk surface of pw x ph at 1x from device (x0, y0) at UI scale s, radius rad, ground g: chevron k (what 0) or
+// tray plate k (what 1), on device row y.
+void plate(I64 what, I64 k, I64 x0, I64 y0, I64 pw, I64 ph, I64 s, I64 rad, U32 g, I64 y) {
+    I64 x1 = x0 + pw * s;
+    I64 y1 = y0 + ph * s;
+    if (y < y0 || y >= y1) { return; }
+    I64 r = rad * s;
+    Bool rnd = r > 0 && (y < y0 + r || y >= y1 - r);
+    if (rnd) { keep_at(x0, x1, r); }
+    draw.paint(row, x0, x1, g);
+    I64 z = 1;
+    if (s % 2 == 0) { z = 2; }
+    pen.at(x0, y0, z, y0 + (y - y0) / (s / z));
+    I64 yy = y0 + (y - y0) / s;
+    if (what == 0) {
+        I64[6] ang = [0, 45, 90, 135, 180, 0];
+        if (k == 3 || k == 4) { pen.round(row, x0, y0, x0 + 24, y0 + 20, 6, tok(tokens.BAR_SLOT)); }
+        U32 ink = tok(tokens.INK);
+        if (k == 5) { ink = blend.mix_px(tok(tokens.BAR), tok(tokens.INK_DIM), 128); }
+        chevron(yy, x0 + 12, y0 + 10, ang[k], ink);
+    } else {
+        I64[8] ic;
+        for q in 0..8 { ic[q] = q % 8; }
+        if (k == 0) { tray_at_row(x0, y0, 1, ic, -1, -1, yy); }
+        if (k == 1) { tray_at_row(x0, y0, 5, ic, 2, -1, yy); }
+        if (k == 2) { tray_at_row(x0, y0, 7, ic, -1, 6, yy); }
+    }
+    expand_by(x0, pw * z, s / z);
+    if (rnd) { corners_at(x0, y0, x1, y1, r, 0, tok(tokens.RULE), y); }
+}
+
+// The twin's 640 x 160 frame (MANTLE): six chevrons, then plates of 1, 5 and 7 icons.
+I64 tray_sum(I64 s) {
+    I64 h = 0;
+    for y in 0..160 * s {
+        draw.paint(row, 0, 640 * s, tok(tokens.MANTLE));
+        for k in 0..6 { plate(0, k, (8 + 32 * k) * s, 4 * s, 24, 20, s, 0, tok(tokens.BAR), y); }
+        plate(1, 0, 8 * s, 40 * s, tr_pw(1), tr_ph(1), s, RAD, tok(tokens.SURF2), y);
+        plate(1, 1, 64 * s, 40 * s, tr_pw(5), tr_ph(5), s, RAD, tok(tokens.SURF2), y);
+        plate(1, 2, 248 * s, 40 * s, tr_pw(7), tr_ph(7), s, RAD, tok(tokens.SURF2), y);
+        for x in 0..640 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "DN-14 and DN-15: the chevron turned 0 to 180 degrees, dim, and the tray's plates equal the twin's, both themes" {
+    assert(sin_d(0) == 0 && sin_d(90) == 4096 && cos_d(0) == 4096 && cos_d(180) == -4096 && cos_d(90) == 0);
+    assert(tr_pw(1) == 40 && tr_pw(5) == 168 && tr_pw(9) == 168 && tr_ph(5) == 40 && tr_ph(6) == 72);
+    tokens.set_theme(tokens.DARK);
+    assert(tray_sum(1) == 409245235);
+    assert(tray_sum(2) == 655785248);
+    assert(tray_sum(3) == 237686762);
+    tokens.set_theme(tokens.LIGHT);
+    assert(tray_sum(1) == 75042306);
+    assert(tray_sum(2) == 260236693);
+    assert(tray_sum(3) == 896346992);
+    tokens.set_theme(tokens.DARK);
+}
+// SP-6: hdesk.ci's tray_member and tray_order, copied verbatim.
+Bool tray_member(Bool ask_now, Bool min_to_tray, Bool in_tray) { return ask_now || (min_to_tray && in_tray); }
+
+// SP-6: the cells' order: the k-th of the windows in the tray by when each came in (tr_seq), oldest first; -1 none.
+I64 tray_order(in Bool[16] member, in I64[16] seq, I64 k) {
+    I64 last = 0;
+    I64 at = -1;
+    for c in 0..k + 1 {
+        at = -1;
+        for i in 0..16 {
+            if (member[i] && seq[i] > last && (at < 0 || seq[i] < seq[at])) { at = i; }
+        }
+        if (at < 0) { return -1; }
+        last = seq[at];
+    }
+    return at;
+}
+
+test "SP-6: in the tray while the program asks (bit 32), or minimized there by its own ask (bit 33) until restored" {
+    assert(tray_member(true, false, false) && tray_member(true, true, false));
+    assert(!tray_member(false, true, false));       // minimize-to-tray asked, not minimized: on the desk
+    assert(tray_member(false, true, true));         // minimized to the tray
+    assert(!tray_member(false, false, true));       // no ask of either kind: out
+}
+
+test "SP-6: the cells keep the order the windows came in, not the windows' numbers" {
+    Bool[16] m;
+    I64[16] q;
+    for i in 0..16 {
+        m[i] = false;
+        q[i] = 0;
+    }
+    m[5] = true;
+    q[5] = 3;
+    m[2] = true;
+    q[2] = 7;
+    m[9] = true;
+    q[9] = 1;
+    assert(tray_order(m, q, 0) == 9 && tray_order(m, q, 1) == 5 && tray_order(m, q, 2) == 2);
+    assert(tray_order(m, q, 3) == -1);
+    m[5] = false;                                    // one leaves: the rest close up, in order
+    assert(tray_order(m, q, 0) == 9 && tray_order(m, q, 1) == 2);
+}
+
+// SP-7: hdesk.ci's digits, put_text, tray_slot and dl_text, copied verbatim.
+const I64 DL_ITEM = 16;
+
+I64 digits(inout U8[_] dst, I64 at, I64 v) {
+    U8[20] dg;
+    I64 n = 0;
+    I64 q = v;
+    if (q == 0) { dg[0] = '0'; n = 1; }
+    while (q > 0) {
+        dg[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { dst[at + k] = dg[n - 1 - k]; }
+    return at + n;
+}
+
+I64 put_text(inout U8[_] dst, I64 at, in U8[_] t) {
+    for q in 0..len(t) { dst[at + q] = t[q]; }
+    return at + len(t);
+}
+
+I64 tray_slot(I64 k, I64 before, I64 at_k, I64 at_k1) {
+    if (k < before) { return at_k; }
+    if (k == before) { return DL_ITEM; }
+    return at_k1;
+}
+
+I64 dl_text(I64 done, inout U8[_] t) {
+    if (done <= 0) { return put_text(t, 0, b"Fetch"); }
+    I64 n = digits(t, 0, done);
+    if (done == 1) { return put_text(t, n, b" download finished"); }
+    return put_text(t, n, b" downloads finished");
+}
+
+test "SP-7: Downloads takes its arrival place among the tray's windows" {
+    assert(tray_slot(0, 0, 9, -1) == DL_ITEM);        // it came first: the first cell
+    assert(tray_slot(1, 0, 5, 9) == 9);               // then the windows from the first
+    assert(tray_slot(0, 2, 9, -1) == 9 && tray_slot(1, 2, 5, 9) == 5 && tray_slot(2, 2, -1, 5) == DL_ITEM);
+    assert(tray_slot(3, 2, -1, 2) == 2);
+}
+
+test "SP-7: the tooltip reads Fetch, then 1 download finished, then N downloads finished" {
+    U8[32] t;
+    I64 n = dl_text(0, t);
+    assert(n == 5 && t[0] == 'F' && t[4] == 'h');
+    n = dl_text(1, t);
+    assert(n == 19 && t[0] == '1' && t[2] == 'd' && t[18] == 'd' && t[10] == ' ');
+    n = dl_text(12, t);
+    assert(n == 21 && t[0] == '1' && t[1] == '2' && t[11] == 's' && t[20] == 'd');
+}
+// SPDX-License-Identifier: Apache-2.0

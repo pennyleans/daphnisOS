@@ -1,0 +1,508 @@
+// tests/dn6/float_test.ci: hosted tests of DN-6 frame 8, the floating window's ring and bar (design note 6, l
+// 2026-11-10 04:48Z; docs/specs/2026-11-07-wb-window-bars.md, as built). hdesk.ci is a program (it imports the
+// tiler's externs), so cint test cannot import it: expand_by, keep_at, chan, corners_at, float_row and bar_glyphs
+// below are hdesk.ci's, copied verbatim, and win_row's order for a float with no content is float_at, whose window
+// shows no document (RS-TTL: bartitle.parts with doc false, the bar as before). The sums are
+// tools/check-hdesk.py's dn_floats_frame (the twin) over the same three floats at UI scale 1, 2 and 3 in both
+// themes. Run by check.sh: cint test --root . tests/dn6/float_test.ci
+
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.draw;
+import user.ci.kit.shape;
+import user.ci.kit.pen;
+import user.ci.kit.wbglyph;
+import user.ci.kit.blend;
+import user.ci.kit.icons3;
+import user.ci.kit.bartitle;
+
+const I64 TBASE = 13;       // hdesk.ci's
+const I64 BTN_W = 24;
+const I64 WBAR = 32;
+const I64 FB = 2;
+const I64 RAD = 8;
+const I64 R_CTRL = 6;
+const I64 R_KEY = 4;
+const I64 KP_W = 420;
+const I64 KP_H = 212;
+const I64 R_PLATE = 12;
+
+U32[5120] row;   // RES-1: a 5120-wide screen's row
+U32[256] under;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+void expand_by(I64 x0, I64 n, I64 m) {
+    if (m == 1) { return; }
+    for qq in 0..n {
+        I64 q = n - 1 - qq;
+        U32 v = row[x0 + q];
+        for t in 0..m { row[x0 + m * q + t] = v; }
+    }
+}
+
+void keep_at(I64 x0, I64 x1, I64 r) {
+    for k in 0..r {
+        under[k] = row[x0 + k];
+        under[r + k] = row[x1 - r + k];
+    }
+}
+
+I64 chan(in U32[_] b, I64 k, I64 c) { return ((b[k] >> ((8 * c) as U32)) & 255) as I64; }
+
+void corners_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 r, I64 b, U32 e, I64 y) {
+    if (y < y0 || y >= y1 || (y >= y0 + r && y < y1 - r)) { return; }
+    I64 py = y - y0;
+    if (y >= y1 - r) { py = y1 - 1 - y; }
+    U32[1] ec;
+    ec[0] = e;
+    for px in 0..r {
+        I64 nu = 0;
+        I64 no = 0;
+        for s in 0..4 {
+            for t in 0..4 {
+                I64 dx = 8 * r - (8 * px + 2 * s + 1);
+                I64 dy = 8 * r - (8 * py + 2 * t + 1);
+                I64 d2 = dx * dx + dy * dy;
+                if (d2 > 64 * r * r) {
+                    nu = nu + 1;
+                } else if (d2 > 64 * (r - b) * (r - b)) {
+                    no = no + 1;
+                }
+            }
+        }
+        I64 ni = 16 - nu - no;
+        for side in 0..2 {
+            I64 x = x0 + px;
+            I64 k = px;
+            if (side == 1) {
+                x = x1 - 1 - px;
+                k = 2 * r - 1 - px;
+            }
+            I64 c = 0;
+            for ch in 0..3 {
+                I64 v = (nu * chan(under, k, ch) + no * chan(ec, 0, ch) + ni * chan(row, x, ch) + 8) / 16;
+                c = c | (v << (8 * ch));
+            }
+            draw.put(row, x, c as U32);
+        }
+    }
+}
+
+const Bool RIMLESS = true;   // hdesk.ci's (DN-24 B)
+const I64 RING = 1;          // hdesk.ci's (DN-29)
+
+I64 ring_fill(I64 r) {
+    if (r == tokens.ULTRAMARINE) { return tokens.FILL; }
+    return r;
+}
+
+I64 ring_type(I64 r) {
+    if (r == tokens.OCHRE) { return tokens.ON_OCHRE; }
+    return tokens.ON_FILL;
+}
+
+void float_row(I64 x0, I64 y0, I64 x1, I64 y1, I64 s, Bool lit, I64 rk, I64 ic, in U8[_] nm, I64 nl, in U8[_] v,
+               I64 vl, I64 p, I64 held, I64 hov, U32 ground, I64 y) {
+    if (y < y0 || y >= y1) { return; }
+    if (RIMLESS) {
+        // DN-24 B: ring and bar one solid shape in one color, no seam at any Size: focused, both FILL (DN-27: never a
+        // grant's or ring 0's color; grants show in the system panel and the tiles' pips) with the bar's type in its
+        // ink; at rest no ring and no outline, a SURF1 bar.
+        I64 c = tokens.SURF1;
+        I64 ink = tokens.INK_DIM;
+        if (lit) {
+            c = tokens.FILL;           // DN-27 (l 14:29Z, B): an app window's bar and ring never take a grant's color
+            ink = ring_type(c);
+        }
+        if (y < y0 + WBAR * s) {       // DN-36: the bar, the shape's top WBAR px; nothing on its edges
+            draw.paint(row, x0, x1, tok(c));
+            bar_glyphs(x0 + FB * s, (x1 - x0) / s - 2 * FB, s, c, ink, ic, nm, nl, v, vl, p, held, hov, y - y0);
+        } else if (lit) {              // DN-36: the shape beside and below the body, the body inset RING
+            draw.paint(row, x0, x1, tok(c));
+            shape.lower_rounded(row, y, x0 + RING * s, y0 + WBAR * s, x1 - RING * s, y1 - RING * s, (RAD - RING) * s,
+                                ground);
+        }
+        return;
+    }
+    I64 rt = 1;
+    U32 e = tok(tokens.RULE);
+    I64 g = tokens.SURF1;
+    I64 fg = tokens.INK_DIM;
+    if (lit) {
+        rt = 2;
+        e = tok(rk);
+        g = tokens.FILL;
+        fg = tokens.ON_FILL;
+    }
+    if (y >= y0 + s && y < y0 + (FB + WBAR) * s) {
+        draw.paint(row, x0 + s, x1 - s, tok(g));
+        I64 dy = y - y0 - FB * s;
+        if (dy >= 0) { bar_glyphs(x0 + FB * s, (x1 - x0) / s - 2 * FB, s, g, fg, ic, nm, nl, v, vl, p, held, hov, dy); }
+    }
+    draw.frame(row, y, x0, y0, x1, y1, rt * s, e);
+}
+
+void bar_glyphs(I64 cx, I64 uw, I64 s, I64 g, I64 fg, I64 ic, in U8[_] nm, I64 nl, in U8[_] v, I64 vl, I64 p,
+                I64 held, I64 hov, I64 dy) {
+    I64 z = 1;
+    if (s % 2 == 0) { z = 2; }
+    pen.at(cx, 0, z, dy / (s / z));
+    pen.paint(row, cx, cx + uw, tok(g));
+    I64 bx = cx + uw - 2 - 4 * BTN_W;
+    for k in 0..4 {
+        I64 a = 0;
+        if (hov == k) { a = 31; }
+        if (held == k) { a = 41; }
+        if (a > 0) { pen.round(row, bx + BTN_W * k, 4, bx + BTN_W * (k + 1), 28, R_CTRL, blend.mix_px(tok(g), tok(fg), a)); }
+    }
+    if ((p & bartitle.FILE) != 0) {
+        I64 tx = cx + 12;
+        if ((p & bartitle.DOT) != 0) {
+            pen.round(row, tx, 13, tx + 6, 19, 3, tok(fg));
+            tx = tx + 14;
+        }
+        I64 f = pen.text(row, tx, 8 + TBASE, bx - 8, v, vl, tok(fg), faces.NAME_BOLD);
+    } else {
+        icons3.icon_at(row, pen.row_y(), pen.x(cx + 8), pen.y(8), ic, 16, z, tok(g));
+        I64 e = pen.text(row, cx + 32, 8 + TBASE, bx - 8, nm, nl, tok(fg), faces.NAME_BOLD);
+        if ((p & bartitle.VAR) != 0 && vl > 0) {
+            e = ctext.text(row, pen.row_y(), e + 8 * z, pen.y(8 + TBASE), pen.x(bx - 8), v, vl, tok(fg), faces.PATH,
+                           z);
+        }
+    }
+    expand_by(cx, uw * z, s / z);
+    I64 gy = dy - 10 * s;
+    if (gy < 0 || gy >= 12 * s) { return; }
+    for k in 0..4 {
+        I64 gx = cx + s * (uw - 2 - 4 * BTN_W + BTN_W * k + 6);
+        for q in 0..12 * s {
+            I64 c = wbglyph.at(k, s, q, gy);
+            if (c > 0) { row[gx + q] = blend.mix_px(row[gx + q], tok(fg), 16 * c); }
+        }
+    }
+}
+
+// hdesk.ci win_row for a float with no content: keep what is under its corner rows, its ground, the ring and the
+// bar, the corners.
+void float_at(I64 x0, I64 y0, I64 x1, I64 y1, I64 s, Bool lit, I64 rk, U32 ground, I64 ic, in U8[_] nm, I64 nl,
+              in U8[_] v, I64 vl, I64 held, I64 hov, I64 y) {
+    if (y < y0 || y >= y1) { return; }
+    I64 r = RAD * s;
+    Bool rnd = y < y0 + r || y >= y1 - r;
+    if (rnd) { keep_at(x0, x1, r); }
+    draw.paint(row, x0, x1, ground);
+    float_row(x0, y0, x1, y1, s, lit, rk, ic, nm, nl, v, vl, bartitle.parts(false, vl, false), held, hov, ground, y);
+    U32 e = tok(tokens.RULE);
+    I64 b = s;
+    if (lit) {
+        e = tok(rk);
+        b = 2 * s;
+    }
+    if (RIMLESS) {                     // hdesk.ci cut_corners, DN-24 B: the bar's color focused, no band at rest
+        e = tok(tokens.FILL);          // DN-27: never a grant's color
+        b = 0;                         // DN-36: no stroke; the shape is the ring
+    }
+    if (rnd) { corners_at(x0, y0, x1, y1, r, b, e, y); }
+}
+
+Bool lit_of(Bool focus, Bool prompt) { return focus && !prompt; }
+
+I64 txt_w(in U8[_] s, I64 n, I64 f) { return ctext.width(s, n, f, 1); }
+
+I64 ptxt(I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text(row, x0, y0 + TBASE, x1, s, n, c, f);
+}
+
+I64 ptxt_mid(I64 x0, I64 span, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text_mid(row, x0, span, y0 + TBASE, x1, s, n, c, f);
+}
+
+void prompt_at(I64 x0, I64 y0, in U8[_] c, I64 cn, in U8[_] who, I64 wn, I64 ic, in U8[_] p, I64 pn, I64 y) {
+    I64 x1 = x0 + KP_W;
+    pen.rect(row, x0, y0, x1, y0 + KP_H, tok(tokens.CADMIUM));   // DN-36: one CADMIUM shape, the header its top 36
+    pen.lower_round(row, x0 + RING, y0 + 36, x1 - RING, y0 + KP_H - RING, R_PLATE - RING, tok(tokens.PAPER));
+    I64 e = ptxt_mid(x0, KP_W, y0 + 10, x1, b"KERNEL ELEVATION REQUEST", 24, tok(tokens.ON_FILL), faces.LABEL);
+    pen.round(row, x0 + 16, y0 + 52, x1 - 16, y0 + 88, R_CTRL, tok(tokens.SURF2));
+    e = ptxt(x0 + 28, y0 + 62, x1 - 28, c, cn, tok(tokens.INK), faces.PATH);
+    e = ptxt(x0 + 16, y0 + 100, x1 - 16, b"requested from:", 15, tok(tokens.INK_DIM), faces.BODY);
+    if (y >= y0 + 128 && y < y0 + 144) {
+        icons3.icon_at(row, pen.row_y(), pen.x(x0 + 16), pen.y(y0 + 128), ic, 16, pen.zoom(), tok(tokens.PAPER));
+    }
+    I64 px = pen.x(x1 - 16) - pen.width(p, pn, faces.PATH);   // the pid right aligned, at the zoom
+    e = ctext.text(row, pen.row_y(), pen.x(x0 + 40), pen.y(y0 + 128 + TBASE), px - 8 * pen.zoom(), who, wn,
+                   tok(tokens.INK), faces.PATH, pen.zoom());
+    e = pen.text_right(row, x1 - 16, y0 + 128 + TBASE, p, pn, tok(tokens.INK_DIM), faces.PATH);
+    I64 kw = txt_w(b"Super+Enter", 11, faces.PATH) + 12;
+    I64 rw = 12 + kw + 10 + txt_w(b"Run", 3, faces.NAME) + 12;
+    pen.round(row, x0 + 16, y0 + 160, x0 + 16 + rw, y0 + 196, R_CTRL, tok(tokens.CADMIUM));
+    pen.ring(row, x0 + 28, y0 + 168, x0 + 28 + kw, y0 + 188, R_KEY, 1, tok(tokens.ON_FILL));
+    e = ptxt_mid(x0 + 28, kw, y0 + 170, x0 + 28 + kw, b"Super+Enter", 11, tok(tokens.ON_FILL), faces.PATH);
+    e = ptxt(x0 + 38 + kw, y0 + 170, x0 + 16 + rw, b"Run", 3, tok(tokens.ON_FILL), faces.NAME);
+    I64 ew = txt_w(b"Esc", 3, faces.PATH) + 12;
+    I64 fw = 12 + ew + 10 + txt_w(b"Refuse", 6, faces.NAME) + 12;
+    pen.round(row, x1 - 16 - fw, y0 + 160, x1 - 16, y0 + 196, R_CTRL, tok(tokens.SURF1));
+    pen.ring(row, x1 - 4 - fw, y0 + 168, x1 - 4 - fw + ew, y0 + 188, R_KEY, 1, tok(tokens.RULE));
+    e = ptxt_mid(x1 - 4 - fw, ew, y0 + 170, x1 - 4 - fw + ew, b"Esc", 3, tok(tokens.INK_DIM), faces.PATH);
+    e = ptxt(x1 + 6 - fw + ew, y0 + 170, x1 - 16, b"Refuse", 6, tok(tokens.INK), faces.NAME);
+}
+
+// The OV window holding the kern prompt (win_row's order), its 1x top left at device (x0, y0), UI scale s.
+void prompt_plate(I64 x0, I64 y0, I64 s, I64 y) {
+    I64 x1 = x0 + KP_W * s;
+    I64 y1 = y0 + KP_H * s;
+    if (y < y0 || y >= y1) { return; }
+    I64 r = R_PLATE * s;
+    Bool rnd = y < y0 + r || y >= y1 - r;
+    if (rnd) { keep_at(x0, x1, r); }
+    draw.paint(row, x0, x1, tok(tokens.PAPER));
+    I64 z = 1;
+    if (s % 2 == 0) { z = 2; }
+    pen.at(x0, y0, z, y0 + (y - y0) / (s / z));
+    prompt_at(x0, y0, b"ced /etc/hosts", 14, b"cish  /home/ci/kit", 18, icons3.TERMINAL, b"pid 9", 5, y0 + (y - y0) / s);
+    expand_by(x0, KP_W * z, s / z);
+    if (rnd) { corners_at(x0, y0, x1, y1, r, 0, tok(tokens.CADMIUM), y); }   // DN-36: no stroke
+}
+
+// DN-24: the twin's 900 x 240 frame (dn_test_prompt_over): Finder, the focused window, and sh behind the kern
+// prompt, both at rest (lit_of), the prompt at (464, 16).
+I64 prompt_over_sum(I64 s) {
+    I64 h = 0;
+    for y in 0..240 * s {
+        draw.paint(row, 0, 900 * s, tok(tokens.MANTLE));
+        float_at(16 * s, 16 * s, 436 * s, 136 * s, s, lit_of(true, true), tokens.ULTRAMARINE, tok(tokens.PAPER),
+                 icons3.FINDER, b"Index", 5, b"/home/ci", 8, -1, -1, y);
+        float_at(16 * s, 144 * s, 436 * s, 232 * s, s, lit_of(false, true), tokens.ULTRAMARINE, tokens.term_paper(),
+                 icons3.TERMINAL, b"sh", 2, b"/etc", 4, -1, -1, y);
+        prompt_plate(464 * s, 16 * s, s, y);
+        for x in 0..900 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "DN-24: with a prompt up, the focused window behind it draws at rest, as the twin's (dn_test_prompt_over)" {
+    assert(!lit_of(true, true) && lit_of(true, false) && !lit_of(false, false));
+    tokens.set_theme(tokens.DARK);
+    assert(prompt_over_sum(1) == 283406174);
+    assert(prompt_over_sum(2) == 101841708);
+    assert(prompt_over_sum(3) == 503470029);
+    tokens.set_theme(tokens.LIGHT);
+    assert(prompt_over_sum(1) == 996726543);
+    assert(prompt_over_sum(2) == 44815708);
+    assert(prompt_over_sum(3) == 187837199);
+    tokens.set_theme(tokens.DARK);
+}
+
+// A focused float holding a grant (rk) on a 340 x 120 frame at UI scale s.
+I64 grant_sum(I64 rk, I64 s) {
+    I64 h = 0;
+    for y in 0..120 * s {
+        draw.paint(row, 0, 340 * s, tok(tokens.MANTLE));
+        float_at(8 * s, 8 * s, 328 * s, 104 * s, s, true, rk, tokens.term_paper(), icons3.FETCH, b"Fetch", 5,
+                 b"/home/ci", 8, -1, -1, y);
+        for x in 0..340 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "DN-27: a focused window's bar and ring are FILL whatever it holds (disk, network, ring 0), both themes" {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for s in 1..3 {
+            I64 plain = grant_sum(tokens.ULTRAMARINE, s);
+            assert(grant_sum(tokens.SIENNA, s) == plain && grant_sum(tokens.OCHRE, s) == plain);
+            assert(grant_sum(tokens.CADMIUM, s) == plain);
+        }
+    }
+    tokens.set_theme(tokens.DARK);
+}
+
+// The sum of tools/check-hdesk.py's DN_FLOATS frame (808 x 272 at 1x, MANTLE) at UI scale s.
+I64 floats_sum(I64 s) {
+    I64 h = 0;
+    for y in 0..272 * s {
+        draw.paint(row, 0, 808 * s, tok(tokens.MANTLE));
+        float_at(16 * s, 16 * s, 456 * s, 136 * s, s, true, tokens.ULTRAMARINE, tok(tokens.PAPER), icons3.FINDER,
+                 b"Index", 5, b"/home/ci", 8, -1, 1, y);
+        float_at(16 * s, 152 * s, 416 * s, 256 * s, s, false, tokens.ULTRAMARINE, tokens.term_paper(),
+                 icons3.TERMINAL, b"sh", 2, b"/etc", 4, -1, 2, y);
+        float_at(472 * s, 16 * s, 792 * s, 112 * s, s, false, tokens.SIENNA, tokens.term_paper(), icons3.FETCH,
+                 b"Fetch", 5, b"/home/ci", 8, 3, -1, y);
+        for x in 0..808 * s { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "the float's bar: 32 px, four 24 px buttons with no gap ending 4 px from the frame's right (DN-23)" {
+    assert(WBAR == 32 && FB == 2);
+    assert(4 * BTN_W == 96);        // hdesk.ci bar_button: lx / BTN_W over 96 px ending 2 px inside the content box
+    assert(wbglyph.at(0, 1, 6, 9) == 16 && wbglyph.at(0, 1, 6, 6) == 0);   // minimize: M2 9.5H10, 1.5 px
+}
+
+test "three floats at UI scale 1, 2 and 3 equal the twin's (tools/check-hdesk.py dn_floats_frame), both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(floats_sum(1) == 487757821);
+    assert(floats_sum(2) == 351149707);
+    assert(floats_sum(3) == 561523744);
+    tokens.set_theme(tokens.LIGHT);
+    assert(floats_sum(1) == 793431686);
+    assert(floats_sum(2) == 289160030);
+    assert(floats_sum(3) == 61902316);
+    tokens.set_theme(tokens.DARK);
+}
+// tools/check-hdesk.py's DN_WIDE: a 5120 x 136 1x frame with one focused float at its right end (4672 to 5112).
+I64 wide_sum() {
+    I64 h = 0;
+    for y in 0..136 {
+        draw.paint(row, 0, 5120, tok(tokens.MANTLE));
+        float_at(4672, 8, 5112, 128, 1, true, tokens.ULTRAMARINE, tok(tokens.PAPER), icons3.FINDER, b"Index", 5,
+                 b"/home/ci", 8, -1, -1, y);
+        for x in 0..5120 { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return h;
+}
+
+test "RES-1: a float at the end of a 5120 px row equals the twin's (dn_floats_frame of DN_WIDE), both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(wide_sum() == 212756680);
+    tokens.set_theme(tokens.LIGHT);
+    assert(wide_sum() == 706314137);
+    tokens.set_theme(tokens.DARK);
+}
+
+// DN-36 (design note 36): channel-wise, pixel p lies between colors a and b (a mix of the two, or either).
+Bool between(U32 p, U32 a, U32 b) {
+    for k in 0..3 {
+        I64 v = ((p >> ((8 * k) as U32)) & 255) as I64;
+        I64 x = ((a >> ((8 * k) as U32)) & 255) as I64;
+        I64 w = ((b >> ((8 * k) as U32)) & 255) as I64;
+        if ((v < x && v < w) || (v > x && v > w)) { return false; }
+    }
+    return true;
+}
+
+// DN-36: row y of one float (lit or at rest) or the kern prompt (prompt) on MANTLE, 1x frame at (16, 16), UI scale s.
+void edge_row(Bool prompt, Bool lit, I64 s, I64 y) {
+    draw.paint(row, 0, 480 * s, tok(tokens.MANTLE));
+    if (prompt) {
+        prompt_plate(16 * s, 16 * s, s, y);
+    } else {
+        float_at(16 * s, 16 * s, 456 * s, 136 * s, s, lit, tokens.ULTRAMARINE, tok(tokens.PAPER), icons3.FINDER,
+                 b"Index", 5, b"/home/ci", 8, -1, -1, y);
+    }
+}
+
+// DN-36's corners for a float (bar WBAR, radius RAD) or the prompt (header 36, radius R_PLATE): in the bar's rows the
+// bar's color reaches the outer edge (inside the arc it is the bar's color, on the arc only the bar's color mixed
+// with the desk's, never a ring's or the body's); the body starts exactly at the bar's lower edge; the ring is only
+// the shape beside and below the body (focused and prompt), and at rest the body is flush with no ring.
+void corners_hold(Bool prompt, Bool lit, I64 s) {
+    I64 x0 = 16 * s;
+    I64 y0 = 16 * s;
+    I64 w = 440 * s;
+    I64 h = 120 * s;
+    I64 bh = WBAR * s;
+    I64 r = RAD * s;
+    U32 bar = tok(tokens.FILL);
+    if (!lit) { bar = tok(tokens.SURF1); }
+    if (prompt) {
+        w = KP_W * s;
+        h = KP_H * s;
+        bh = 36 * s;
+        r = R_PLATE * s;
+        bar = tok(tokens.CADMIUM);
+    }
+    I64 x1 = x0 + w;
+    U32 desk = tok(tokens.MANTLE);
+    U32 body = tok(tokens.PAPER);
+    for y in y0 - 2..y0 + h + 2 {
+        edge_row(prompt, lit, s, y);
+        if (y < y0 || y >= y0 + h) {
+            for x in x0 - 2..x1 + 2 { assert(row[x] == desk); }       // nothing above, below or round the shape
+        } else {
+            assert(row[x0 - 1] == desk && row[x1] == desk);          // nothing beside it
+            if (y < y0 + bh) {
+                for x in x0..x0 + 8 * s {                            // the bar's left and right ends
+                    assert(between(row[x], bar, desk));
+                    assert(between(row[x1 - 1 - (x - x0)], bar, desk));
+                    if (y >= y0 + r) { assert(row[x] == bar && row[x1 - 1 - (x - x0)] == bar); }
+                }
+                if (y == y0 + bh - 1) { assert(row[x0 + r] == bar && row[x1 - 1 - r] == bar); }
+            } else if (y < y0 + h - r) {
+                if (lit || prompt) {
+                    for k in 0..s { assert(row[x0 + k] == bar && row[x1 - 1 - k] == bar); }   // the ring, RING px
+                    assert(row[x0 + s] == body && row[x1 - 1 - s] == body);                   // then the body
+                } else {
+                    assert(row[x0] == body && row[x1 - 1] == body);                           // flush, no ring
+                }
+                if (y == y0 + bh) { assert(row[x0 + r] == body && row[x1 - 1 - r] == body); }   // from the bar's edge
+            }
+            if ((lit || prompt) && y >= y0 + h - s) { assert(row[x0 + r] == bar); }          // the ring below
+        }
+    }
+}
+
+test "DN-36: no stroke round a bar: the bar's color to the outer edge, the body from its lower edge, the ring only beside and below the body" {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for s in 1..3 {
+            corners_hold(false, true, s);
+            corners_hold(false, false, s);
+            corners_hold(true, true, s);
+        }
+    }
+    tokens.set_theme(tokens.DARK);
+}
+
+// RS-TTL, frame 40: the bar of a focused window (FILL, ON_FILL) at UI scale s, parts p, into bars[WBAR * s rows].
+U32[38400] bars;    // 32 rows at 2x by 600 px
+
+void bar_into(I64 s, I64 p) {
+    for dy in 0..WBAR * s {
+        draw.paint(row, 0, 600, tok(tokens.MANTLE));
+        bar_glyphs(20, 280, s, tokens.FILL, tokens.ON_FILL, icons3.TERMINAL, b"Edit", 4, b"notes.txt", 9, p, -1, -1,
+                   dy);
+        for x in 0..600 { bars[600 * dy + x] = row[x]; }
+    }
+}
+
+// The bar's pixels from 1x column a to b (device a * s to b * s) that are not the bar's ground.
+I64 inked(I64 s, I64 a, I64 b) {
+    I64 n = 0;
+    for dy in 0..WBAR * s {
+        for x in 20 + a * s..20 + b * s {
+            if (bars[600 * dy + x] != tok(tokens.FILL)) { n = n + 1; }
+        }
+    }
+    return n;
+}
+
+test "RS-TTL frame 40: Edit's notes.txt 12 px in, no icon; unsaved, a 6 px dot 8 px before it; else as before" {
+    U32[38400] file;
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for s in 1..3 {
+            bar_into(s, bartitle.ICON | bartitle.NAME | bartitle.VAR);
+            assert(inked(s, 8, 24) > 0);                     // the icon, 8 px in
+            bar_into(s, bartitle.FILE);
+            assert(inked(s, 0, 12) == 0);                    // no icon: the ground to the title
+            assert(inked(s, 12, 120) > 0);                   // the title
+            for k in 0..WBAR * s * 600 { file[k] = bars[k]; }
+            bar_into(s, bartitle.FILE | bartitle.DOT);
+            assert(inked(s, 0, 12) == 0 && inked(s, 18, 26) == 0);
+            for dy in 0..WBAR * s {                          // the dot: 6 px round, the title's color, rows 13 to 18
+                for x in 12 * s..18 * s {
+                    U32 c = bars[600 * dy + 20 + x];
+                    if (dy < 13 * s || dy >= 19 * s) { assert(c == tok(tokens.FILL)); }
+                    if (dy >= 15 * s && dy < 17 * s && x >= 13 * s && x < 17 * s) { assert(c == tok(tokens.ON_FILL)); }
+                }
+            }
+            for dy in 0..WBAR * s {                          // the title, 14 px later, the same pixels
+                for x in 12 * s..150 * s { assert(bars[600 * dy + 20 + x + 14 * s] == file[600 * dy + 20 + x]); }
+            }
+        }
+    }
+    tokens.set_theme(tokens.DARK);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,31 @@
+{
+  "id": "replace-no-match",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a b",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "7a0d",
+    "790d"
+  ],
+  "expect": {
+    "text": "a b",
+    "screen": [
+      "a b",
+      "",
+      "",
+      "",
+      " x  not found                       1:1",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

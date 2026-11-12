@@ -1,0 +1,78 @@
+// tests/rs/calpop_twin_test.ci: RS-CAL's calendar (user/ci/kit/calpop.ci, frame 44) equals tools/check-hdesk.py's
+// twin (CalPop, --calpop-sums), which the screen check draws where the desk opens it: four frames 304 x 360 at 1x
+// over the mantle, the plate's right edge 8 in and its top at 36, dark and light at zoom 1 and 2. Run by check.sh.
+//   gate      January 2026 on its first day (the gate's epoch), from Sunday
+//   monday    November 9, 2026 from Monday: October's days lead the first week, dim
+//   august    stepped back to August 2026: six weeks, the next chevron hovered
+//   february  stepped on to February 2026: four weeks, the back chevron hovered
+import user.ci.kit.tokens;
+import user.ci.kit.calpop;
+import user.ci.core.cal;
+
+const I64 FW = 304;
+const I64 FH = 360;
+
+U32[608] row;
+
+void frame(I64 f) {
+    I64 jan = cal.days(2026, 1, 1) * 86400;
+    I64 nov = cal.days(2026, 11, 9) * 86400 + 6 * 3600 + 59 * 60;
+    if (f == 0) { calpop.open(-1, jan, 0, FW - 8, 36); }
+    if (f == 1) { calpop.open(-1, nov, 1, FW - 8, 36); }
+    if (f == 2) {
+        calpop.open(-1, nov, 0, FW - 8, 36);
+        for k in 0..3 { Bool m = calpop.step(-1); }
+        Bool h = calpop.hover(calpop.left() + calpop.W - 20, calpop.top() + 20);
+    }
+    if (f == 3) {
+        calpop.open(-1, jan, 0, FW - 8, 36);
+        Bool m = calpop.step(1);
+        Bool h = calpop.hover(calpop.left() + calpop.W - 54, calpop.top() + 20);
+    }
+}
+
+I64 frame_sum(I64 f, I64 th, I64 z) {
+    tokens.set_theme(th);
+    frame(f);
+    I64 s = 0;
+    for y in 0..FH * z {
+        for x in 0..FW * z { row[x] = tokens.word(tokens.MANTLE); }
+        calpop.row_at(row, y, z, th);
+        for x in 0..FW * z { s = (s * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return s;
+}
+
+test "the frames equal the twin's (tools/check-hdesk.py --calpop-sums): 1x and 2x, dark and light" {
+    I64[16] want = [66920289, 325586244, 742578086, 772109698,
+                    517832463, 819994488, 282285849, 185989863,
+                    404399217, 323514283, 83954728, 935945799,
+                    952167174, 24913377, 865760644, 306241059];
+    for f in 0..4 {
+        for th in 0..2 {
+            for z in 1..3 {
+                I64 got = frame_sum(f, th, z);
+                if (got != want[4 * f + 2 * th + z - 1]) { "frame {f} theme {th} z {z}: {got}\n"; }
+                assert(got == want[4 * f + 2 * th + z - 1]);
+            }
+        }
+    }
+    tokens.set_theme(0);
+    calpop.close();
+}
+
+test "the frames are what they name: weeks, the hovered chevron's place" {
+    frame(0);
+    assert(calpop.year() == 2026 && calpop.month() == 1 && calpop.weeks() == 5 && calpop.today() == 1);
+    frame(1);
+    assert(calpop.month() == 11 && calpop.weeks() == 6 && calpop.today() == 9);
+    frame(2);
+    assert(calpop.month() == 8 && calpop.weeks() == 6 && calpop.today() == 0);
+    assert(!calpop.hover(calpop.left() + calpop.W - 20, calpop.top() + 20));      // already the next chevron
+    frame(3);
+    assert(calpop.month() == 2 && calpop.weeks() == 4);
+    assert(!calpop.hover(calpop.left() + calpop.W - 54, calpop.top() + 20));      // already the back chevron
+    assert(calpop.hover(calpop.left() + calpop.W - 20, calpop.top() + 20));       // the next one is another
+    calpop.close();
+}
+// SPDX-License-Identifier: Apache-2.0

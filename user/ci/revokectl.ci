@@ -1,0 +1,7 @@
+// user/ci/revokectl.ci: the row of GV-2 (user/ci/host.c, CI_ROWS_REVOKE; docs/specs/2026-11-11-gv-revoke.md section 2),
+// its own module so no other program's import table moves.
+//   co_revoke(vpid, word): Daphnis's revoke (1008): the disk (1) and network (2) bits of word leave the grant word and
+//     the ceiling of every live process of vpid's window; the count of processes that held one, or -errno (-EPERM for
+//     any caller but the desk, -EINVAL for ring 0 or an unknown bit, -ESRCH for no such window, -ENOSYS on Linux).
+export extern unrestricted I64 co_revoke(I64 vpid, I64 word);
+// SPDX-License-Identifier: Apache-2.0

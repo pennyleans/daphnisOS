@@ -1,0 +1,374 @@
+// src/frames.ci: the physical frame allocator. A bitmap over the pool of 4 KiB frames at 32 MiB (docs/memory.md):
+// 16,384 frames (64 MiB) until init says otherwise, the pool of the gates; under M-3 (src/pool.ci) as many as the
+// memory map gives up to 8 GiB, the frames that are not RAM marked taken from the start. First-fit over
+// contiguous runs. The counts are module state (they survive a fault, SPEC-03 A-7), so every function takes no state
+// parameter. The bitmap's words are not (unit FB, docs/specs/2026-11-08-fb-frame-bitmap.md, ruling FB-1 A): they lie
+// in the pool's own frames, the first one on the gates' pool, taken from the start and counted as RAM, and
+// src/bits.ci reads and writes them through the view shim, a word for 64 frames. The hosted builds give src/bits.ci
+// words in module state (tests/hosted/src/bits.ci, FB-2 A) and run these functions unchanged.
+//
+// Every request is two-phase: a search that only reads, then the stores. A refusal returns
+// before the first store, so it leaves the state, and therefore the state digest, unchanged.
+// All address and index arithmetic is checked cint arithmetic.
+
+import src.sha256;
+import src.bits;
+
+export const I64 POOL_BASE = 33554432;   // 32 MiB: rt/rt.h RT_POOL_BASE
+export const I64 FRAMES = 16384;         // the pool of the gates: the bitmap's reach until init
+export const I64 CAPACITY = 2088960;     // frames to 8 GiB of physical address: (8 GiB - 32 MiB) / 4 KiB
+export const I64 FRAME_BYTES = 4096;
+export const I64 RESERVE = 1024;         // M-1: frames a process's take leaves to the kernel's own takers (files, pipes,
+                                         // caches, rings, tiles): 4 MiB; uvm.MAX_FRAMES is the rest of the pool
+
+// Status codes: a function returns a value >= 0 or one of these. (An error union returned
+// across modules is refused by this cintc, C9102, docs/cint-gaps.md.)
+export const I64 ERR_EXHAUSTED = -1;
+export const I64 ERR_BAD_COUNT = -2;
+export const I64 ERR_NOT_OWNED = -3;
+export const I64 ERR_BAD_FRAME = -4;
+
+I64 reach = 16384;    // frames the bitmap covers: FRAMES, or what init set
+I64 usable = 16384;   // of them, RAM (free at init, or the bitmap's own); the rest are taken from the start
+I64 free_frames = 16383;   // FB: all but the bitmap's own frame
+I64 held = 0;        // M-2: frames promised to processes and not yet backed; alloc leaves them, back takes one
+I64 ops = 0;
+I64 own_at = 0;      // FB: the bitmap's first frame, and its frames, (reach + 63) / 64 words in 4 KiB each: taken
+I64 own = 1;         // from the start, never released, counted as RAM
+Bool ready = false;  // FB: the gates' words are written at the first call that reads them; init writes its own
+I64 low = 0;         // FB: no frame below word `low` is free, so the first fit starts its scan there
+
+// The physical address of the bitmap.
+U64 bmap() {
+    return (POOL_BASE + own_at * FRAME_BYTES) as U64;
+}
+
+U64 word(I64 w) {
+    return bits.word(bmap(), w);
+}
+
+void put(I64 w, U64 v) {
+    bits.set(bmap(), w, v);
+}
+
+// FB: the gates' pool's words, once: every frame free but the bitmap's own (the pool's RAM is not known to be zero).
+void ensure() {
+    if (ready) {
+        return;
+    }
+    ready = true;
+    for w in 0..(reach + 63) / 64 {
+        put(w, 0);
+    }
+    put(0, mask(own_at, own_at + own));
+}
+
+// Bits lo to hi - 1 of a word, 0 <= lo <= hi <= 64.
+U64 mask(I64 lo, I64 hi) {
+    U64 m = 0xFFFFFFFFFFFFFFFF;
+    if (hi < 64) {
+        m = ((1 as U64) << hi) - 1;
+    }
+    return m & ~(((1 as U64) << lo) - 1);
+}
+
+// The bits of word w that frames [first, first + n) cover.
+U64 cover(I64 w, I64 first, I64 n) {
+    I64 lo = first - w * 64;
+    I64 hi = first + n - w * 64;
+    if (lo < 0) {
+        lo = 0;
+    }
+    if (hi > 64) {
+        hi = 64;
+    }
+    if (lo >= hi) {
+        return 0;
+    }
+    return mask(lo, hi);
+}
+
+// Frames [first, first + n) taken (on) or free, a word at a time.
+void mark(I64 first, I64 n, Bool on) {
+    for w in first / 64..(first + n + 63) / 64 {
+        U64 m = cover(w, first, n);
+        U64 v = word(w);
+        if (on) {
+            put(w, v | m);
+        } else {
+            put(w, v & ~m);
+        }
+    }
+}
+
+// True when every frame of [first, first + n) is taken.
+Bool all_used(I64 first, I64 n) {
+    for w in first / 64..(first + n + 63) / 64 {
+        U64 m = cover(w, first, n);
+        if ((word(w) & m) != m) {
+            return false;
+        }
+    }
+    return true;
+}
+
+I64 ones(U64 x) {
+    U64 y = x;
+    I64 c = 0;
+    while (y != 0) {
+        y = y & (y - 1);
+        c += 1;
+    }
+    return c;
+}
+
+// The first frame of the first run of n free frames.
+I64 find_run(I64 n) {
+    if (n < 1) {
+        return ERR_BAD_COUNT;
+    }
+    if (n > free_frames) {
+        return ERR_EXHAUSTED;
+    }
+    // FB: the words come through the view shim 64 at a time, and the scan starts at `low`, below which every frame
+    // is taken: the same first fit, with a call for 4,096 frames where the module state had none
+    U64[64] b;
+    I64 words = (reach + 63) / 64;
+    I64 base = 0;
+    I64 have = 0;
+    I64 nlow = low;
+    I64 run = 0;
+    I64 f = low * 64;
+    I64 at = -1;
+    U64 cur = 0;
+    while (f < reach) {
+        if (f / 64 != at) {
+            at = f / 64;
+            if (at >= base + have) {
+                base = at;
+                have = words - at;
+                if (have > 64) {
+                    have = 64;
+                }
+                bits.read(bmap(), base, b[0..have]);
+            }
+            cur = b[at - base];
+            if (at == nlow && cur == 0xFFFFFFFFFFFFFFFF) {
+                nlow = at + 1;
+            }
+        }
+        if (run == 0 && f % 64 == 0 && cur == 0xFFFFFFFFFFFFFFFF) {
+            f += 64;              // a full word: skipped whole (the same first fit, M-3)
+        } else if (((cur >> (f % 64)) & 1) != 0) {
+            run = 0;
+            f += 1;
+        } else {
+            run += 1;
+            if (run == n) {
+                low = nlow;       // a search's only store, on success: a refusal leaves the state as it was
+                return f - n + 1;
+            }
+            f += 1;
+        }
+    }
+    return ERR_EXHAUSTED;
+}
+
+// Allocates n contiguous frames and returns the first frame's index, or a status code. The held frames are
+// not for taking: a promise made is always backable (M-2).
+export I64 alloc(I64 n) {
+    ensure();
+    if (n >= 1 && free_frames - held < n) {
+        return ERR_EXHAUSTED;
+    }
+    I64 first = find_run(n);
+    if (first < 0) {
+        return first;
+    }
+    mark(first, n, true);
+    free_frames -= n;
+    ops += 1;
+    return first;
+}
+
+// Frees n frames from first; every one must be allocated, and none the bitmap's own (FB). Returns the free reach.
+export I64 release(I64 first, I64 n) {
+    ensure();
+    if (first < 0 || n < 1 || first > reach - n) {
+        return ERR_BAD_COUNT;
+    }
+    if (!all_used(first, n) || (first < own_at + own && first + n > own_at)) {
+        return ERR_NOT_OWNED;
+    }
+    mark(first, n, false);
+    if (first / 64 < low) {
+        low = first / 64;
+    }
+    free_frames += n;
+    ops += 1;
+    return free_frames;
+}
+
+// Holds n frames for pages promised and not yet backed: refused when fewer than n free frames are unheld.
+// Returns the held reach.
+export I64 hold(I64 n) {
+    if (n < 1) {
+        return ERR_BAD_COUNT;
+    }
+    if (free_frames - held < n) {
+        return ERR_EXHAUSTED;
+    }
+    held += n;
+    return held;
+}
+
+// Gives up n held frames (a promise unmade); returns the held reach.
+export I64 unhold(I64 n) {
+    if (n < 1 || n > held) {
+        return ERR_BAD_COUNT;
+    }
+    held -= n;
+    return held;
+}
+
+// Backs one promise: one frame out of the held reach, allocated; its index. ERR_BAD_COUNT when nothing is
+// held; the pool cannot be out, since every held frame is a free one.
+export I64 back() {
+    ensure();
+    if (held < 1) {
+        return ERR_BAD_COUNT;
+    }
+    I64 first = find_run(1);
+    if (first < 0) {
+        return first;
+    }
+    mark(first, 1, true);
+    free_frames -= 1;
+    held -= 1;
+    ops += 1;
+    return first;
+}
+
+export I64 held_count() {
+    return held;
+}
+
+// The physical address of frame f, or ERR_BAD_FRAME.
+export I64 frame_addr(I64 f) {
+    if (f < 0 || f >= reach) {
+        return ERR_BAD_FRAME;
+    }
+    return POOL_BASE + f * FRAME_BYTES;
+}
+
+// M-3: the bitmap over n frames (FRAMES to CAPACITY), every one taken until usable_range gives it; only on a
+// pool nothing was taken from. FB: the bitmap moves to frame at, the first one no loader module lies under
+// (src/pool.ci's floor), and takes (n + 63) / 64 words there, 64 frames at CAPACITY, counted as RAM and never
+// given. Returns n, or ERR_BAD_COUNT.
+export I64 init(I64 n, I64 at) {
+    I64 words = (n + 63) / 64;
+    I64 need = (words * 8 + FRAME_BYTES - 1) / FRAME_BYTES;
+    if (n < FRAMES || n > CAPACITY || ops != 0 || held != 0 || free_frames != usable - own || at < 0 || at > n - need) {
+        return ERR_BAD_COUNT;
+    }
+    ready = true;
+    reach = n;
+    own_at = at;
+    own = need;
+    low = 0;
+    for w in 0..words {
+        put(w, 0xFFFFFFFFFFFFFFFF);
+    }
+    usable = need;
+    free_frames = 0;
+    return n;
+}
+
+// M-3: frames [lo, hi) are RAM: free from the start. Clipped to the bitmap; returns the frames made usable.
+export I64 usable_range(I64 lo, I64 hi) {
+    I64 a = lo;
+    I64 b = hi;
+    if (a < 0) {
+        a = 0;
+    }
+    if (b > reach) {
+        b = reach;
+    }
+    if (ops != 0 || a >= b) {
+        return 0;
+    }
+    ensure();
+    for w in a / 64..(b + 63) / 64 {
+        U64 v = word(w);
+        U64 got = v & cover(w, a, b - a) & ~cover(w, own_at, own);   // FB: the bitmap's own frames stay taken
+        if (got != 0) {
+            put(w, v & ~got);
+            usable += ones(got);
+            free_frames += ones(got);
+            if (w < low) {
+                low = w;
+            }
+        }
+    }
+    return b - a;
+}
+
+// FB: the frames the bitmap takes in the pool: 1 on the gates' pool, (reach + 63) / 64 words in 4 KiB under M-3.
+export I64 bitmap_frames() {
+    return own;
+}
+
+// ram: the frames that are RAM: FRAMES on the gates' pool, the memory map's under M-3.
+export I64 ram() {
+    return usable;
+}
+
+// The frames the bitmap covers: the pool's reach in physical address, POOL_BASE + covered() * FRAME_BYTES.
+export I64 covered() {
+    return reach;
+}
+
+// A process's quota, its RLIMIT_AS in frames (M-1): the RAM of the pool less the kernel's reserve.
+export I64 quota() {
+    return usable - RESERVE;
+}
+
+export I64 free_count() {
+    return free_frames;
+}
+
+export I64 owned_count() {
+    return usable - free_frames;
+}
+
+void put_le(U64 v, inout U8[8] w) {
+    for k in 0..8 {
+        w[k] = (v >> (8 * k)) as% U8;
+    }
+}
+
+// SHA-256 of the state: the bitmap's words, the free reach and the operation reach, each as 8 little-endian
+// bytes. Two states with the same digest are the same state. The held reach is not in it: it is a process's
+// promise, part of that process's digest (uvm.state_digest) as the zero page it will be. On the gates' pool
+// the digest covers the first 64 words (4,096 frames), as tests/expected/mem.skeleton pinned it before M-3;
+// a pool from the memory map digests its whole reach.
+export void digest(inout U8[32] result) {
+    sha256.Sha256[1] s;
+    U8[8] w;
+    I64 words = 64;
+    if (reach > FRAMES) {
+        words = (reach + 63) / 64;
+    }
+    ensure();
+    sha256.sha_init(s);
+    for i in 0..words {
+        put_le(word(i), w);
+        sha256.sha_update(s, w, 0, 8);
+    }
+    put_le(free_frames as U64, w);
+    sha256.sha_update(s, w, 0, 8);
+    put_le(ops as U64, w);
+    sha256.sha_update(s, w, 0, 8);
+    sha256.sha_final(s, result);
+}
+// SPDX-License-Identifier: Apache-2.0

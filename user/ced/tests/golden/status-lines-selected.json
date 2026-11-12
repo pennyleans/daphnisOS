@@ -1,0 +1,33 @@
+{
+  "id": "status-lines-selected",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "a\nb\nc\nd",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b32421b5b313b3242"
+  ],
+  "expect": {
+    "text": "a\nb\nc\nd",
+    "sel": [
+      0,
+      4
+    ],
+    "screen": [
+      "a",
+      "b",
+      "c",
+      "d",
+      " x  2 lines selected                3:1",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

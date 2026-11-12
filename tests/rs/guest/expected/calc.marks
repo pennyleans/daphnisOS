@@ -1,0 +1,9 @@
+# RS-CALC (PR 306): ccalc's arithmetic in the guest, which Calc's window shares (sh/calc.sh, status 0); then Calc's
+# window opens, takes `6*7=` and draws it (guest.py differ); Super+Shift+Q twice shuts down.
+hdesk: screen 1920x1080 plane 1920x
+=hdesk: terminal 1 ended, status 0
+~hdesk: float 1 app -?[0-9]+ frame -?[0-9]+,-?[0-9]+ [0-9]+x[0-9]+
+~hdesk: pixel 1 pid [0-9]+ size [0-9]+x[0-9]+
+hdesk: ff armed 3
+daphnis: shut down
+!fault: cint-core-1/fault/v2

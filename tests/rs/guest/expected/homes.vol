@@ -1,0 +1,19 @@
+# the homes leg's volume: every home 0700 and its three folders 0700, owned by the account (RS-HOME); eve's first home
+# aside under its uid with its folders, its mode, uid and gid kept (RS-R3); sam never logged in, so no home
+dir /ada 0700 1000 1000
+dir /ada/Documents 0700 1000 1000
+dir /ada/Downloads 0700 1000 1000
+dir /ada/Pictures 0700 1000 1000
+dir /eve 0700 1003 1003
+dir /eve/Documents 0700 1003 1003
+dir /eve/Downloads 0700 1003 1003
+dir /eve/Pictures 0700 1003 1003
+dir /.removed.eve.1002 0700 1002 1002
+dir /.removed.eve.1002/Documents 0700 1002 1002
+dir /.removed.eve.1002/Downloads 0700 1002 1002
+dir /.removed.eve.1002/Pictures 0700 1002 1002
+gone /sam
+store eve uid=1003 role=child ceil=0
+store ada role=parent
+store sam role=child
+fsck

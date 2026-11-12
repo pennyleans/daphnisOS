@@ -1,0 +1,19 @@
+// tests/shep_twin.ci: the hosted twin of the K4.5 network. It runs the network one task after the
+// other with no scheduler (src/shepwork.ci reference_root) and writes the root as 64 hex digits.
+// Every run of network 0 in the kernel, under any fuel quantum, must print this very root.
+
+import console;
+import src.text;
+import src.shepwork;
+
+void main(Grants g) {
+    U8[32] d;
+    U8[64] hex;
+    U8[1] nl;
+    nl[0] = 10;
+    shepwork.reference_root(d);
+    text.hex_bytes(d, 32, hex);
+    console.write(g, hex) catch (e) { return; };
+    console.write(g, nl) catch (e) { return; };
+}
+// SPDX-License-Identifier: Apache-2.0

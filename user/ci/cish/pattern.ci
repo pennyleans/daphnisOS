@@ -1,0 +1,105 @@
+// user/ci/cish/pattern.ci: shell pattern matching (XCU 2.13): `*` any run, `?` any byte, `[...]` a set (`!` or `^`
+// first negates, `a-z` a range, `]` first is itself), a backslash makes the next byte literal. expand writes a
+// quoted pattern byte with a backslash before it, so quoting reaches here as escapes.
+
+// The set at p[i] (after its `[`): the index after its `]` and whether c is in it; -1 when there is no `]`.
+I64 set_end(in U8[_] p, I64 i) {
+    I64 j = i;
+    if (j < len(p) && (p[j] == '!' || p[j] == '^')) { j = j + 1; }
+    if (j < len(p) && p[j] == ']') { j = j + 1; }
+    while (j < len(p) && p[j] != ']') {
+        if (p[j] == '\\') { j = j + 1; }
+        j = j + 1;
+    }
+    if (j >= len(p)) { return -1; }
+    return j + 1;
+}
+
+Bool in_set(in U8[_] p, I64 i, I64 e, U8 c) {
+    I64 j = i;
+    Bool neg = false;
+    if (p[j] == '!' || p[j] == '^') {
+        neg = true;
+        j = j + 1;
+    }
+    Bool hit = false;
+    Bool first = true;
+    while (j < e - 1 && (first || p[j] != ']')) {
+        first = false;
+        U8 lo = p[j];
+        if (lo == '\\' && j + 1 < e - 1) {
+            j = j + 1;
+            lo = p[j];
+        }
+        U8 hi = lo;
+        if (j + 2 < e - 1 && p[j + 1] == '-' && p[j + 2] != ']') {
+            hi = p[j + 2];
+            if (hi == '\\' && j + 3 < e - 1) {
+                j = j + 1;
+                hi = p[j + 2];
+            }
+            j = j + 2;
+        }
+        if (c >= lo && c <= hi) { hit = true; }
+        j = j + 1;
+    }
+    return hit != neg;
+}
+
+// Pattern p matches all of s.
+export Bool match(in U8[_] p, in U8[_] s) {
+    I64 i = 0;
+    I64 k = 0;
+    I64 star_i = -1;   // the pattern index after the last `*`, and the string index it stands at
+    I64 star_k = 0;
+    while (k < len(s) || i < len(p)) {
+        if (i < len(p)) {
+            U8 c = p[i];
+            if (c == '*') {
+                star_i = i + 1;
+                star_k = k;
+                i = i + 1;
+            } else if (k < len(s) && c == '?') {
+                i = i + 1;
+                k = k + 1;
+            } else if (k < len(s) && c == '[' && set_end(p, i + 1) > 0) {
+                I64 e = set_end(p, i + 1);
+                if (in_set(p, i + 1, e, s[k])) {
+                    i = e;
+                    k = k + 1;
+                } else if (star_i >= 0 && star_k < len(s)) {
+                    star_k = star_k + 1;
+                    i = star_i;
+                    k = star_k;
+                } else {
+                    return false;
+                }
+            } else {
+                U8 want = c;
+                I64 w = 1;
+                if (c == '\\' && i + 1 < len(p)) {
+                    want = p[i + 1];
+                    w = 2;
+                }
+                if (k < len(s) && s[k] == want) {
+                    i = i + w;
+                    k = k + 1;
+                } else if (star_i >= 0 && star_k < len(s)) {
+                    star_k = star_k + 1;
+                    i = star_i;
+                    k = star_k;
+                } else {
+                    return false;
+                }
+            }
+        } else if (star_i >= 0 && star_k < len(s)) {
+            star_k = star_k + 1;
+            i = star_i;
+            k = star_k;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

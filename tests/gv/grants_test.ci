@@ -1,0 +1,220 @@
+// tests/gv/grants_test.ci: GV-1a (docs/specs/2026-11-11-gv-revoke.md sections 2 and 5), hosted: the arithmetic of
+// src/grants.ci over every word, ceiling and revoke there is (16 x 8 x 8), and the property the spec asks: a revoked
+// bit cannot come back without the desk's yes. GV-1c (section 2a): that holds through ring 0 as well. Over every
+// word, ceiling and grant call, in one, two and three steps: when ring 0 ends, by the desk or by the process's own
+// grant call, no grant bit beyond the ceiling is left in the word.
+
+import src.grants;
+
+test "revoke takes disk, net and audio; ring 0 or an unknown bit is refused" {
+    for w in 0..8 {
+        assert(grants.revocable(w as U64));
+    }
+    assert(!grants.revocable(grants.KERN));
+    assert(!grants.revocable(grants.KERN | grants.NET));
+    assert(!grants.revocable(16));
+    assert(!grants.revocable(0x100000000));
+    assert(!grants.revocable(0xFFFFFFFFFFFFFFFF));
+}
+
+test "after a revoke the bits are in neither the word nor the ceiling, and nothing else moved" {
+    for g in 0..16 {
+        for c in 0..8 {
+            for w in 0..8 {
+                U64 g2 = grants.word_after(g as U64, w as U64);
+                U64 c2 = grants.ceiling_after(c as U64, w as U64);
+                assert((g2 & w as U64) == 0 && (c2 & w as U64) == 0);
+                assert((g2 | (g as U64 & w as U64)) == g as U64);      // only word's bits left the word
+                assert((c2 | (c as U64 & w as U64)) == c as U64);      // only word's bits left the ceiling
+                assert((g2 & grants.KERN) == (g as U64 & grants.KERN)); // ring 0 is not revoke's to take
+            }
+        }
+    }
+}
+
+test "no silent way back: every revoked bit is beyond the ceiling again, for a process outside ring 0" {
+    for g in 0..8 {
+        for c in 0..8 {
+            for w in 0..8 {
+                U64 g2 = grants.word_after(g as U64, w as U64);
+                U64 c2 = grants.ceiling_after(c as U64, w as U64);
+                assert(grants.beyond(g2, c2, w as U64) == w as U64);   // asking for them all needs the desk for them all
+                for b in 0..3 {
+                    U64 bit = 1 << (b as U64);
+                    if ((w as U64 & bit) != 0) {
+                        assert(grants.beyond(g2, c2, bit) == bit);
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "what was not revoked is taken as before: within the ceiling in silence, held kept" {
+    for g in 0..8 {
+        for c in 0..8 {
+            for w in 0..8 {
+                U64 g2 = grants.word_after(g as U64, w as U64);
+                U64 c2 = grants.ceiling_after(c as U64, w as U64);
+                U64 rest = 7 & ~(w as U64);
+                assert(grants.beyond(g2, c2, rest) == grants.beyond(g as U64, c as U64, rest));
+            }
+        }
+    }
+}
+
+test "beyond is AC-1a's: held or within the ceiling is free; ring 0 holds every grant" {
+    assert(grants.beyond(0, 0, grants.NET) == grants.NET);
+    assert(grants.beyond(grants.NET, 0, grants.NET) == 0);
+    assert(grants.beyond(0, grants.NET, grants.NET) == 0);
+    assert(grants.beyond(0, grants.DISK, grants.NET | grants.DISK) == grants.NET);
+    assert(grants.beyond(grants.KERN, 0, grants.ALL) == 0);
+    assert(grants.beyond(0, grants.ALL, grants.KERN) == 0);            // ring 0 is not beyond()'s to weigh
+}
+
+test "holds: any one of the bits" {
+    assert(grants.holds(grants.NET | grants.DISK, grants.NET));
+    assert(grants.holds(grants.NET, grants.NET | grants.AUDIO));
+    assert(!grants.holds(grants.DISK, grants.NET | grants.AUDIO));
+    assert(!grants.holds(0, grants.ALL));
+    assert(!grants.holds(grants.ALL, 0));
+}
+
+// GV-1c. The bits a process holds beyond its ceiling outside ring 0: what only the desk's yes may put there. In
+// ring 0 the word is not yet what the process keeps, so it counts as none.
+U64 past(U64 g, U64 c) {
+    if ((g & grants.KERN) != 0) {
+        return 0;
+    }
+    return g & ~c & grants.ALL;
+}
+
+// Ring 0's end as src/fs.ci's kern_set(pid, false) applies it: nothing for a process outside ring 0.
+U64 ended(U64 g, U64 c) {
+    if ((g & grants.KERN) != 0) {
+        return grants.after_ring0(g, c);
+    }
+    return g;
+}
+
+test "ring 0's end: ring 0 is gone, nothing is beyond the ceiling, what is within it stays" {
+    for g in 0..16 {
+        for c in 0..8 {
+            U64 a = grants.after_ring0(g as U64, c as U64);
+            assert((a & grants.KERN) == 0);
+            assert((a & ~(c as U64)) == 0);
+            assert(a == (g as U64 & c as U64 & grants.ALL));
+        }
+    }
+    assert(grants.after_ring0(grants.KERN | grants.NET, 0) == 0);                    // taken under ring 0, or the desk's yes: gone
+    assert(grants.after_ring0(grants.KERN | grants.NET | grants.DISK, grants.DISK) == grants.DISK);
+}
+
+test "grant: the answer and the word, against the rule written out case by case" {
+    for g in 0..16 {
+        for c in 0..8 {
+            for w in 0..16 {
+                U64 gu = g as U64;
+                U64 cu = c as U64;
+                U64 wu = w as U64;
+                I64 r = grants.set_answer(gu, cu, wu);
+                U64 n = grants.set_word(gu, cu, wu);
+                Bool in0 = (gu & grants.KERN) != 0;
+                Bool asks0 = (wu & grants.KERN) != 0;
+                if (asks0 && !in0) {
+                    assert(r == 0 - 1 && n == gu);                       // ring 0 is never taken
+                } else if (in0 && asks0) {
+                    assert(r == 0 && n == wu);                           // ring 0 kept: every grant is held by it
+                } else if (in0) {
+                    U64 base = gu & cu & grants.ALL;                     // ring 0 ends with the call
+                    if ((wu & ~base & ~cu) != 0) {
+                        assert(r == 0 - 13 && n == base);
+                    } else {
+                        assert(r == 0 && n == wu);
+                    }
+                } else {
+                    if ((wu & ~gu & ~cu) != 0) {
+                        assert(r == 0 - 13 && n == gu);                  // outside ring 0: as before GV-1c
+                    } else {
+                        assert(r == 0 && n == wu);
+                    }
+                }
+                if (r == 0) {
+                    assert(n == wu);                                     // 0 means the word is exactly what was asked
+                }
+                if (!asks0) {
+                    assert((n & grants.KERN) == 0);                      // leaving ring 0 out ends it, whatever the answer
+                }
+            }
+        }
+    }
+    assert(grants.set_answer(0, grants.ALL, 16) == 0 - 22);
+    assert(grants.set_word(grants.KERN | grants.NET, 0, 16) == (grants.KERN | grants.NET));
+    assert(grants.set_answer(grants.KERN, grants.ALL, 0x100000000) == 0 - 22);
+}
+
+test "no step leaves a bit beyond the ceiling that was not there outside ring 0: grant, ring 0's end, revoke" {
+    for g in 0..16 {
+        for c in 0..8 {
+            U64 gu = g as U64;
+            U64 cu = c as U64;
+            U64 before = past(gu, cu);
+            assert((past(ended(gu, cu), cu) & ~before) == 0);
+            for w in 0..16 {
+                assert((past(grants.set_word(gu, cu, w as U64), cu) & ~before) == 0);
+            }
+            for w in 0..8 {
+                U64 g2 = grants.word_after(gu, w as U64);
+                U64 c2 = grants.ceiling_after(cu, w as U64);
+                assert((past(g2, c2) & ~before) == 0);
+                assert((past(g2, c2) & w as U64) == 0);
+            }
+        }
+    }
+}
+
+test "from ring 0, in two grant calls and ring 0's end: outside ring 0 the word is within the ceiling" {
+    for g in 8..16 {
+        for c in 0..8 {
+            for w1 in 0..16 {
+                U64 s1 = grants.set_word(g as U64, c as U64, w1 as U64);
+                assert((past(s1, c as U64)) == 0);
+                assert((ended(s1, c as U64) & ~(c as U64)) == 0);
+                for w2 in 0..16 {
+                    U64 s2 = grants.set_word(s1, c as U64, w2 as U64);
+                    assert(past(s2, c as U64) == 0);                     // grant(net | ring 0), then grant(net): not kept
+                    U64 e = ended(s2, c as U64);
+                    assert((e & grants.KERN) == 0 && (e & ~(c as U64)) == 0);
+                    for w3 in 0..8 {
+                        assert(past(grants.set_word(e, c as U64, w3 as U64), c as U64) == 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "GV-R2: a revoked bit taken under ring 0 is gone when ring 0 ends, and grant answers -EACCES again" {
+    for b in 0..3 {
+        U64 bit = 1 << (b as U64);
+        for g in 8..16 {
+            for c in 0..8 {
+                U64 g1 = grants.word_after(g as U64, bit);               // the desk's revoke, on a process in ring 0
+                U64 c1 = grants.ceiling_after(c as U64, bit);
+                assert(grants.set_answer(g1, c1, grants.KERN | bit) == 0);
+                U64 took = grants.set_word(g1, c1, grants.KERN | bit);
+                assert((took & bit) != 0);                               // in ring 0 it holds the bit, as it holds every grant
+                U64 e = ended(took, c1);                                 // the hold ends
+                assert((e & bit) == 0);
+                assert(grants.set_answer(e, c1, bit) == 0 - 13);
+                assert(grants.beyond(e, c1, bit) == bit);                // the way back is the prompt
+                assert(grants.set_answer(took, c1, bit) == 0 - 13);      // or the process leaves ring 0 itself, asking to keep it
+                U64 left = grants.set_word(took, c1, bit);
+                assert((left & grants.KERN) == 0 && (left & bit) == 0);
+                assert(grants.set_answer(g1, c1, bit) == 0 - 13);        // in one call as in two
+                assert((grants.set_word(g1, c1, bit) & (grants.KERN | bit)) == 0);
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

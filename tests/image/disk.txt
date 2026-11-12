@@ -1,0 +1,14 @@
+ls home
+ls -R home
+cat home/hello.txt home/a/b.txt
+cat home/link
+md5sum home/big home/sparse home/hello.txt
+wc -c home/big home/sparse
+tail -c 100 home/sparse
+find home | sort
+cd home/a; pwd; cat b.txt; cd ..; pwd; cat ./link; cd ..; pwd
+find home | sort | xargs stat -c 'stat %n %i %f %h %u %g %s %b %X %Y %Z'
+stat -L -c 'statL %n %i %f %h %u %g %s %b %X %Y %Z' home/link
+cat home/nothere
+exit 0
+

@@ -1,0 +1,646 @@
+// user/ci/kit/indexcopy.ci: Index's Copy and Paste of files and folders (frame 32, design note 58, DN-37's wheel), as a
+// kit. It holds the plan and the walk and asks the program for one file call at a time, so it reads no file and no
+// device itself and tests/ix/indexcopy_test.ci runs it hosted over a tree in memory.
+//
+// The plan. Paste copies the clip's names, from the folder they were copied in, into the folder shown, whole or not at
+// all:
+//   - A folder copies whole: each folder in it, each file's bytes, each link as a link. No link is ever followed: each
+//     entry is stat'd without following and only a folder is listed. Anything else (a device, a pipe, a socket) is
+//     left out.
+//   - A name taken in the folder shown gets the next free one: `NAME`, then `STEM 2.EXT`, `STEM 3.EXT` (a leading dot
+//     is no ending), as Paste after Cut and the Trash's Restore give (indexband.candidate). No name is taken inside a
+//     folder the copy made. After TRIES names the copy fails.
+//   - A copy into itself, or into a folder inside itself, is refused: can_start() is false there, which dims Paste
+//     (note 58), and start() refuses it. A folder the copy made is never copied again, so a folder shown through a
+//     link into the source ends rather than repeats.
+//   - A file keeps its permission bits (mode & 0777); a folder keeps its bits with its owner's read, write and search
+//     added, so the copy can fill it. The copy's times are its own.
+//   - The source is never written: no call that writes names a chosen entry or a path in one. In the folder the clip
+//     was copied in, the first name tried is `STEM 2.EXT`.
+//   - A failure at any step, or cancel(), ends the copy and removes each entry it made in the folder shown, with all
+//     under it, deepest first and never through a link, and nothing else. A failure is a call's -errno, a name past
+//     NAME or a path past PATH (ENAMETOOLONG), a folder DEPTH deep (ELOOP), or a folder's names past the pool (E2BIG).
+//     The folder shown is then as it was, and nothing is said (note 58).
+//
+// The wheel (DN-37): S16, 16 in from the status bar's right end and centered in it, once a paste has run SHOW_MS.
+// While the copy measures the tree the share is unknown; then it is the bytes moved and the entries done, each entry
+// weighed as ITEM bytes, of the whole. An undo is unknown.
+//
+// The program's part. A step at a time, until its frame's time is spent, it takes next(), makes that one call on
+// path(), and tells the kit what the call gave:
+//   STAT      corectl.co_stat(path, 0, rec), then stated(r, rec[ST_DEV], rec[ST_INO], rec[ST_MODE], rec[ST_SIZE])
+//   LIST      shctl.sh_dirents(path, names) into 65,536 bytes, then listed(names, n): n the bytes, each name ended
+//             by a 0 byte, or -errno (-E2BIG when they do not fit)
+//   MKDIR     corectl.co_mkdir(path, mode()), then done(r)
+//   OPEN_SRC  fi = shctl.sh_open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW, 0), then done(fi, or 0 when it opened)
+//   FSTAT     fdctl.fd_stat(fi, rec), then stated(r, rec[ST_DEV], rec[ST_INO], rec[ST_MODE], rec[ST_SIZE])
+//   OPEN_DST  fo = shctl.sh_open(path, O_WRONLY | O_CREAT | O_EXCL, mode()), then done(fo, or 0 when it opened)
+//   BYTES     at most CHUNK bytes read from fi and all of them written to fo, then moved(the bytes, 0 at fi's end, or
+//             -errno)
+//   CLOSE     fi and fo closed, those open, then done(fo's close, or 0)
+//   READLINK  corectl.co_readlink(path, target), then done(its length, or -errno)
+//   SYMLINK   corectl.co_symlink(target, path), then done(r)
+//   UNLINK    corectl.co_unlink(path), then done(r)
+//   RMDIR     corectl.co_rmdir(path), then done(r)
+//   END       no call: the paste is over (failed() says whether it worked); the program lists the folder again.
+// O_CREAT | O_EXCL never opens through a link (the kernel's open); mkdir, symlink, unlink and rmdir never follow one.
+// A file swapped between its STAT and its open is never read: for a link the open is -ELOOP (O_NOFOLLOW), for anything
+// else FSTAT finds another entry or no regular file (-EAGAIN), and the paste fails (O_NONBLOCK: a pipe never waits).
+// While a paste runs, touches() holds its folder and each folder inside it: the program moves nothing into one or out
+// of it (a drop, a rename, Move to Trash, Restore) until the paste ends, so the undo removes only what the copy made.
+// The hold binds this program alone: another one (a second Index, a shell's mv) can still move a name into such a
+// folder, and the undo could then remove it with the copy.
+// A known gap: the undo can delete under a link's target if a folder it lists is swapped for a link between its stat
+// and its list. It runs as the account, so it removes only what that account could remove itself. The kernel routes
+// openat, getdents64 on a descriptor and unlinkat, so an undo relative to each folder's descriptor would close the gap;
+// the runtime has no rows for them yet.
+import user.ci.kit.wheel;
+import user.ci.kit.indexui;
+import user.ci.kit.indexband;
+
+export const I64 PATH = 4096;        // a path's bytes with its ending 0
+export const I64 NAME = 255;
+export const I64 DEPTH = 256;        // folders open at once, the clip's level among them
+export const I64 CHUNK = 65536;      // the most bytes of one BYTES step
+export const I64 ITEM = 4096;        // an entry's weight in the share, in bytes
+export const I64 TRIES = 1000;       // names tried for one entry of the clip
+export const I64 SHOW_MS = 400;      // a paste shows the wheel once it has run this long
+export const I64 WHEEL_IN = 16;      // the wheel's right edge from the status bar's
+export const I64 CLIP_NAMES = 1024;  // the clip's entries at most (kit/finder.ci's ENTRIES)
+export const I64 CLIP_BYTES = 16384; // the clip's names, each ended by a 0 byte
+const I64 POOL = 65536;              // the open folders' names together
+const I64 NAMES = 8192;
+const I64 BCAP = 1152921504606846976;   // 2^60: bytes are counted to here
+const I64 ICAP = 1099511627776;         // 2^40: entries are counted to here
+
+// next()
+export const I64 END = 0;
+export const I64 STAT = 1;
+export const I64 LIST = 2;
+export const I64 MKDIR = 3;
+export const I64 OPEN_SRC = 4;
+export const I64 OPEN_DST = 5;
+export const I64 BYTES = 6;
+export const I64 CLOSE = 7;
+export const I64 READLINK = 8;
+export const I64 SYMLINK = 9;
+export const I64 UNLINK = 10;
+export const I64 RMDIR = 11;
+export const I64 FSTAT = 12;
+
+const I64 S_IFMT = 0xF000;
+const I64 S_IFDIR = 0x4000;
+const I64 S_IFREG = 0x8000;
+const I64 S_IFLNK = 0xA000;
+const I64 E2BIG = 7;
+const I64 EAGAIN = 11;               // the file opened is not the one stat'd
+const I64 EEXIST = 17;
+const I64 ENAMETOOLONG = 36;
+const I64 ELOOP = 40;
+const I64 ECANCELED = 125;
+
+const I64 IDLE = 0;
+const I64 MEASURE = 1;               // the tree walked once for its entries and bytes
+const I64 RUN = 2;                   // walked again, each entry made
+const I64 UNDO = 3;                  // each top entry made, removed
+
+I64 phase = IDLE;
+I64 op = END;
+Bool on_dst = false;                 // path() is the destination's
+Bool marking = false;                // the STAT of a folder just made at the top, for its device and inode
+I64 err = 0;                         // the first failure, -errno
+Bool fi = false;                     // the program holds the source file open
+Bool fo = false;                     // and the destination file
+
+U8[4096] sp;                         // the entry's path in the source, and in the folder shown
+I64 sn = 0;
+U8[4096] dp;
+I64 dn = 0;
+U8[256] cand;
+
+U8[65536] pool;                      // the names of each open folder, level 0 the clip's
+I64 ptop = 0;
+I64[8192] noff;
+I64[8192] nlen;
+I64 ntop = 0;
+I64 lv = 0;                          // the open level
+I64[256] l_first;                    // per level: its first name, its names, the next one, the pool's top before it,
+I64[256] l_count;                    // and its folder's path lengths
+I64[256] l_pos;
+I64[256] l_ptop;
+I64[256] l_slen;
+I64[256] l_dlen;
+
+I64[1024] t_j;                       // each top entry made: its clip name, its candidate, a folder's device and inode
+I64[1024] t_k;
+I64[1024] t_dev;
+I64[1024] t_ino;
+I64 tn = 0;
+I64 e_j = 0;                         // the entry: its name, its candidate at the top, its mode for MKDIR or OPEN_DST
+I64 e_k = 1;
+I64 k0 = 1;                          // the first candidate: 2 in the folder the clip was copied in
+I64 e_mode = 0;
+I64 e_dev = 0;                       // the entry's device and inode, as stat'd
+I64 e_ino = 0;
+
+I64 itot = 0;                        // the measure, and what is done
+I64 btot = 0;
+I64 idone = 0;
+I64 bdone = 0;
+
+I64 kind(I64 m) { return m & S_IFMT; }
+
+I64 plus(I64 a, I64 b, I64 cap) {
+    if (b >= cap - a) { return cap; }
+    return a + b;
+}
+
+void ask(I64 o, Bool d) {
+    op = o;
+    on_dst = d;
+}
+
+// Whether nb[s..e] is . or .., which a level leaves out.
+Bool dots(in U8[_] nb, I64 s, I64 e) {
+    return (e - s == 1 && nb[s] == '.') || (e - s == 2 && nb[s] == '.' && nb[s + 1] == '.');
+}
+
+// The names in nb[0..n], each ended by a 0 byte, . and .. left out, put after c names of p pool bytes: their count, or
+// -1 when one is past NAME bytes or they pass the pool or NAMES.
+I64 fit(in U8[_] nb, I64 n, I64 p, I64 c) {
+    I64 bytes = p;
+    I64 m = 0;
+    I64 s = 0;
+    while (s < n) {
+        I64 e = s;
+        while (e < n && nb[e] != 0) { e = e + 1; }
+        I64 k = e - s;
+        if (k > 0 && !dots(nb, s, e)) {
+            if (k > NAME || bytes + k > POOL || c + m == NAMES) { return 0 - 1; }
+            bytes = bytes + k;
+            m = m + 1;
+        }
+        s = e + 1;
+    }
+    return m;
+}
+
+// The names in nb[0..n], each ended by a 0 byte, as level at's; . and .. left out. False when they do not fit (fit()),
+// and then none is taken.
+Bool level(I64 at, in U8[_] nb, I64 n) {
+    l_first[at] = ntop;
+    l_ptop[at] = ptop;
+    l_pos[at] = 0;
+    l_count[at] = 0;
+    if (fit(nb, n, ptop, ntop) < 0) { return false; }
+    I64 s = 0;
+    while (s < n) {
+        I64 e = s;
+        while (e < n && nb[e] != 0) { e = e + 1; }
+        I64 k = e - s;
+        if (k > 0 && !dots(nb, s, e)) {
+            for q in 0..k { pool[ptop + q] = nb[s + q]; }
+            noff[ntop] = ptop;
+            nlen[ntop] = k;
+            ptop = ptop + k;
+            ntop = ntop + 1;
+        }
+        s = e + 1;
+    }
+    l_count[at] = ntop - l_first[at];
+    return true;
+}
+
+// p[0..b], a '/' unless p[0..b] is the root, and nm[0..k]: the new length, or -1 at PATH or past it.
+I64 joined(inout U8[_] p, I64 b, in U8[_] nm, I64 k) {
+    I64 at = b;
+    if (!(b == 1 && p[0] == '/')) {
+        if (at + 1 >= PATH) { return 0 - 1; }
+        p[at] = '/';
+        at = at + 1;
+    }
+    if (at + k >= PATH) { return 0 - 1; }
+    for q in 0..k { p[at + q] = nm[q]; }
+    return at + k;
+}
+
+// Clip name j's k-th candidate in the folder shown, into dp: false past NAME or PATH.
+Bool top_dst(I64 j, I64 k) {
+    I64 c = indexband.candidate(pool[noff[j]..noff[j] + nlen[j]], nlen[j], k, cand);
+    if (c < 0) { return false; }
+    dn = joined(dp, l_dlen[0], cand, c);
+    return dn >= 0;
+}
+
+Bool made_here(I64 dev, I64 ino) {
+    for t in 0..tn {
+        if (t_ino[t] == ino && t_dev[t] == dev) { return true; }
+    }
+    return false;
+}
+
+void made() {
+    t_j[tn] = e_j;
+    t_k[tn] = e_k;
+    t_dev[tn] = 0 - 1;
+    t_ino[tn] = 0 - 1;
+    tn = tn + 1;
+}
+
+// The next step after an entry is done: the next entry's STAT, a folder's RMDIR after its entries in an undo, or END.
+void advance() {
+    while (true) {
+        if (phase == UNDO && lv == 0) {
+            if (l_pos[0] == tn) {
+                phase = IDLE;
+                ask(END, false);
+                return;
+            }
+            I64 t = tn - 1 - l_pos[0];
+            l_pos[0] = l_pos[0] + 1;
+            _ = top_dst(t_j[t], t_k[t]);           // it fit when it was made
+            ask(STAT, true);
+            return;
+        }
+        if (l_pos[lv] < l_count[lv]) {
+            I64 j = l_first[lv] + l_pos[lv];
+            l_pos[lv] = l_pos[lv] + 1;
+            e_j = j;
+            e_k = 1;
+            if (phase == UNDO) {
+                dn = joined(dp, l_dlen[lv], pool[noff[j]..noff[j] + nlen[j]], nlen[j]);
+                if (dn >= 0) {
+                    ask(STAT, true);
+                    return;
+                }
+            } else {
+                sn = joined(sp, l_slen[lv], pool[noff[j]..noff[j] + nlen[j]], nlen[j]);
+                Bool fits = sn >= 0;
+                if (fits && phase == RUN && lv == 0) {
+                    e_k = k0;
+                    fits = top_dst(j, k0);
+                } else if (fits && phase == RUN) {
+                    dn = joined(dp, l_dlen[lv], pool[noff[j]..noff[j] + nlen[j]], nlen[j]);
+                    fits = dn >= 0;
+                }
+                if (!fits) {
+                    fail(0 - ENAMETOOLONG);
+                    return;
+                }
+                ask(STAT, false);
+                return;
+            }
+        } else if (lv == 0) {
+            if (phase == RUN) {
+                phase = IDLE;
+                ask(END, false);
+                return;
+            }
+            phase = RUN;
+            l_pos[0] = 0;
+        } else {
+            I64 own = l_dlen[lv];
+            ntop = l_first[lv];
+            ptop = l_ptop[lv];
+            lv = lv - 1;
+            if (phase == UNDO) {
+                dn = own;
+                ask(RMDIR, true);
+                return;
+            }
+        }
+    }
+}
+
+// Ends the copy: the open files closed first, then each top entry made removed.
+void fail(I64 e) {
+    if (err == 0) { err = e; }
+    phase = UNDO;
+    marking = false;
+    if (fi || fo) {
+        ask(CLOSE, false);
+        return;
+    }
+    unwind();
+}
+
+// The undo's walk: over the top entries made, last first.
+void unwind() {
+    ntop = l_first[0] + l_count[0];
+    ptop = l_ptop[1];
+    lv = 0;
+    l_pos[0] = 0;
+    advance();
+}
+
+// A name taken at the top: the next candidate and the same step again. False when r is not that.
+Bool clash(I64 r) {
+    if (r != 0 - EEXIST || lv != 0 || e_k >= TRIES) { return false; }
+    e_k = e_k + 1;
+    if (!top_dst(e_j, e_k)) { fail(0 - ENAMETOOLONG); }
+    return true;
+}
+
+// --- the program's part ---
+
+// Whether dst is a name of the clip in dir, or lies inside one: Paste is dimmed there (note 58). names: the clip's,
+// each ended by a 0 byte.
+export Bool inside(in U8[_] dir, in U8[_] names, in U8[_] dst) {
+    I64 a = len(dir);
+    I64 b = len(dst);
+    I64 n = len(names);
+    I64 at = a + 1;
+    if (a == 1 && dir[0] == '/') { at = 1; }
+    I64 s = 0;
+    while (s < n) {
+        I64 e = s;
+        while (e < n && names[e] != 0) { e = e + 1; }
+        I64 m = at + e - s;
+        if (e > s && b >= m && (b == m || dst[m] == '/')) {
+            Bool eq = at == 1 || dst[a] == '/';
+            for q in 0..a {
+                if (dst[q] != dir[q]) { eq = false; }
+            }
+            for q in 0..(e - s) {
+                if (dst[at + q] != names[s + q]) { eq = false; }
+            }
+            if (eq) { return true; }
+        }
+        s = e + 1;
+    }
+    return false;
+}
+
+// Name nm put after the k names in clip[0..at], ended by a 0 byte: the clip's new length, or -1 when nm is no
+// entry's name (empty, . or .., past NAME bytes, or holding a 0 byte or a /) or the clip would pass CLIP_NAMES names
+// or CLIP_BYTES bytes. A clip is taken whole or not at all: on a -1 the program takes none of it and keeps the clip it
+// had, so start() always gets the whole set that was asked for.
+export I64 clip_put(inout U8[_] clip, I64 at, I64 k, in U8[_] nm) {
+    I64 n = len(nm);
+    if (n == 0 || n > NAME || dots(nm, 0, n) || k >= CLIP_NAMES) { return 0 - 1; }
+    if (at + n + 1 > CLIP_BYTES || at + n + 1 > len(clip)) { return 0 - 1; }
+    for q in 0..n {
+        if (nm[q] == 0 || nm[q] == '/') { return 0 - 1; }
+    }
+    for q in 0..n { clip[at + q] = nm[q]; }
+    clip[at + n] = 0;
+    return at + n + 1;
+}
+
+// Whether start(dir, names, dst) begins a paste: no paste runs, each folder's path is 1 to PATH - 1 bytes, dst is not
+// inside() the clip, and the clip holds 1 to CLIP_NAMES names that fit(). Paste is dimmed where it is false (note
+// 58), so a Paste the program lets through always starts.
+export Bool can_start(in U8[_] dir, in U8[_] names, in U8[_] dst) {
+    I64 a = len(dir);
+    I64 b = len(dst);
+    if (phase != IDLE || a == 0 || b == 0 || a >= PATH || b >= PATH || inside(dir, names, dst)) { return false; }
+    I64 c = fit(names, len(names), 0, 0);
+    return c >= 1 && c <= CLIP_NAMES;
+}
+
+// A paste of the clip's names (each ended by a 0 byte) from folder dir into folder dst. False, and nothing starts,
+// where can_start() is false.
+export Bool start(in U8[_] dir, in U8[_] names, in U8[_] dst) {
+    if (!can_start(dir, names, dst)) { return false; }
+    I64 a = len(dir);
+    I64 b = len(dst);
+    ntop = 0;
+    ptop = 0;
+    if (!level(0, names, len(names))) { return false; }
+    l_ptop[1] = ptop;
+    for q in 0..a { sp[q] = dir[q]; }
+    for q in 0..b { dp[q] = dst[q]; }
+    l_slen[0] = a;
+    l_dlen[0] = b;
+    k0 = 1;
+    if (a == b) { k0 = 2; }
+    for q in 0..a {
+        if (a == b && dir[q] != dst[q]) { k0 = 1; }
+    }
+    lv = 0;
+    tn = 0;
+    err = 0;
+    itot = 0;
+    btot = 0;
+    idone = 0;
+    bdone = 0;
+    fi = false;
+    fo = false;
+    marking = false;
+    phase = MEASURE;
+    advance();
+    return true;
+}
+
+// The step to make now: END while no paste runs.
+export I64 next() { return op; }
+
+// The step's path into buf: its length.
+export I64 path(inout U8[_] buf) {
+    if (on_dst) {
+        for q in 0..dn { buf[q] = dp[q]; }
+        return dn;
+    }
+    for q in 0..sn { buf[q] = sp[q]; }
+    return sn;
+}
+
+// The mode for MKDIR and OPEN_DST.
+export I64 mode() { return e_mode; }
+
+// STAT's and FSTAT's answer: r 0 or -errno, and the entry's device, inode, mode and size.
+export void stated(I64 r, I64 dev, I64 ino, I64 m, I64 bytes) {
+    if (op == FSTAT) {
+        if (r < 0) {
+            fail(r);
+        } else if (kind(m) != S_IFREG || dev != e_dev || ino != e_ino) {
+            fail(0 - EAGAIN);
+        } else {
+            ask(OPEN_DST, true);
+        }
+        return;
+    }
+    if (op != STAT) { return; }
+    if (marking) {
+        marking = false;
+        if (r < 0) {
+            fail(r);
+            return;
+        }
+        t_dev[tn - 1] = dev;
+        t_ino[tn - 1] = ino;
+        ask(LIST, false);
+        return;
+    }
+    I64 t = kind(m);
+    if (phase == UNDO) {
+        if (r < 0) {
+            advance();
+        } else if (t == S_IFDIR) {
+            ask(LIST, true);
+        } else {
+            ask(UNLINK, true);
+        }
+        return;
+    }
+    if (r < 0) {
+        fail(r);
+        return;
+    }
+    if (phase == MEASURE) {
+        itot = plus(itot, 1, ICAP);
+        if (t == S_IFREG && bytes > 0) { btot = plus(btot, bytes, BCAP); }
+        if (t == S_IFDIR) {
+            ask(LIST, false);
+            return;
+        }
+        advance();
+        return;
+    }
+    idone = plus(idone, 1, ICAP);
+    e_mode = m & 0x1FF;                             // 0777
+    e_dev = dev;
+    e_ino = ino;
+    if (t == S_IFDIR && made_here(dev, ino)) {
+        advance();
+    } else if (t == S_IFDIR) {
+        e_mode = e_mode | 0x1C0;                    // 0700
+        ask(MKDIR, true);
+    } else if (t == S_IFREG) {
+        ask(OPEN_SRC, false);
+    } else if (t == S_IFLNK) {
+        ask(READLINK, false);
+    } else {
+        advance();
+    }
+}
+
+// LIST's answer: the folder's names in nb[0..n], each ended by a 0 byte, or n -errno.
+export void listed(in U8[_] nb, I64 n) {
+    if (op != LIST) { return; }
+    I64 e = 0;
+    if (n < 0) {
+        e = n;
+    } else if (lv + 1 >= DEPTH) {
+        e = 0 - ELOOP;
+    } else if (!level(lv + 1, nb, n)) {
+        e = 0 - E2BIG;
+    }
+    if (e != 0 && phase == UNDO) {
+        ask(RMDIR, true);
+        return;
+    }
+    if (e != 0) {
+        fail(e);
+        return;
+    }
+    lv = lv + 1;
+    l_slen[lv] = sn;
+    l_dlen[lv] = dn;
+    advance();
+}
+
+// BYTES' answer: the bytes moved, 0 at the source's end, or -errno.
+export void moved(I64 n) {
+    if (op != BYTES) { return; }
+    if (n < 0) {
+        fail(n);
+    } else if (n == 0) {
+        ask(CLOSE, false);
+    } else {
+        bdone = plus(bdone, n, BCAP);
+    }
+}
+
+// The answer of every other step: 0 or more, or -errno.
+export void done(I64 r) {
+    if (op == MKDIR || op == OPEN_DST || op == SYMLINK) {
+        if (r < 0 && clash(r)) { return; }
+        if (r < 0) {
+            fail(r);
+            return;
+        }
+        if (lv == 0) { made(); }
+        if (op == MKDIR && lv == 0) {
+            marking = true;
+            ask(STAT, true);
+        } else if (op == MKDIR) {
+            ask(LIST, false);
+        } else if (op == OPEN_DST) {
+            fo = true;
+            ask(BYTES, false);
+        } else {
+            advance();
+        }
+    } else if (op == OPEN_SRC || op == READLINK) {
+        if (r < 0) {
+            fail(r);
+        } else if (op == OPEN_SRC) {
+            fi = true;
+            ask(FSTAT, false);
+        } else {
+            ask(SYMLINK, true);
+        }
+    } else if (op == CLOSE) {
+        fi = false;
+        fo = false;
+        if (phase == UNDO) {
+            unwind();
+        } else if (r < 0) {
+            fail(r);
+        } else {
+            advance();
+        }
+    } else if (op == UNLINK || op == RMDIR) {
+        advance();
+    }
+}
+
+// The paste ended by the person (or by the program closing): undone as a failure is.
+export void cancel() {
+    if (phase == MEASURE || phase == RUN) { fail(0 - ECANCELED); }
+}
+
+export Bool busy() { return phase != IDLE; }
+
+// Whether a paste runs and folder p is the folder it pastes into, or lies inside it (every folder when that is /).
+export Bool touches(in U8[_] p) {
+    if (phase == IDLE) { return false; }
+    I64 b = l_dlen[0];
+    I64 n = len(p);
+    if (n < b) { return false; }
+    for q in 0..b {
+        if (p[q] != dp[q]) { return false; }
+    }
+    return n == b || (b == 1 && dp[0] == '/') || p[b] == '/';
+}
+
+// How the last paste ended: 0 when it worked, else the -errno that ended it (-ECANCELED for cancel()).
+export I64 failed() { return err; }
+
+// The wheel's share: 0 to 100, or wheel.UNKNOWN while measuring or undoing.
+export I64 share() {
+    if (phase != RUN) { return wheel.UNKNOWN; }
+    I64 whole = btot + ITEM * itot;
+    I64 part = bdone + ITEM * idone;
+    if (part > whole) { part = whole; }
+    while (whole > ICAP) {
+        whole = whole / 1024;
+        part = part / 1024;
+    }
+    if (whole <= 0) { return 0; }
+    return part * 100 / whole;
+}
+
+// Whether the wheel shows, t_ms after the paste began.
+export Bool shows(I64 t_ms) { return phase != IDLE && t_ms >= SHOW_MS; }
+
+// Row y of the wheel over row, on a surface sw x sh at 1x, theme th (wheel.DARK or LIGHT), t_ms after the paste
+// began, motion the Motion setting.
+export void wheel_row(inout U32[_] row, I64 y, I64 sw, I64 sh, I64 th, I64 t_ms, Bool motion) {
+    if (!shows(t_ms)) { return; }
+    I64 x0 = sw - WHEEL_IN - 16;
+    I64 y0 = sh - indexui.STATUS_H + (indexui.STATUS_H - 16) / 2;
+    wheel.row_at(row, y, x0, y0, wheel.S16, 1, th, share(), t_ms, motion);
+}
+// SPDX-License-Identifier: Apache-2.0

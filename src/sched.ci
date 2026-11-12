@@ -1,0 +1,59 @@
+// src/sched.ci: the scheduler policy, in cint. Three tasks with fixed grants (task 1 holds
+// console.input, task 2 console.raw only, task 3 both: the grants are given at task_create and
+// never change; a hosted run can be given the same three sets, which is how the twin compares). Round robin: each pass runs every task that is not finished
+// for one turn, until all are. A turn ends when the task yields, ends, or (with preemption on)
+// its quantum of timer ticks runs out; the policy does not care which.
+
+import src.serial;
+import src.report;
+import src.taskapi;
+
+const I64 TASKS = 3;
+
+// Returns how many tasks were preempted at least once and later ran to the end.
+export I64 run_all(Bool trace) {
+    I64[3] done;
+    I64[3] was_preempted;
+    I64 resumed = 0;
+    I64 left = TASKS;
+    for i in 0..TASKS {
+        done[i] = 0;
+        was_preempted[i] = 0;
+    }
+    _ = taskapi.task_create(0, 1);
+    _ = taskapi.task_create(1, 2);
+    _ = taskapi.task_create(2, 3);
+    while (left > 0) {
+        for id in 0..TASKS {
+            if (done[id] == 0) {
+                if (trace) {
+                    report.line_dec("run task ", id + 1);
+                }
+                I64 st = taskapi.task_run(id);
+                if (st == 2) {
+                    was_preempted[id] = 1;
+                }
+                if (st == 1 && was_preempted[id] == 1) {
+                    resumed += 1;
+                }
+                if (st == 1 || st == 3 || st < 0) {
+                    done[id] = 1;
+                    left -= 1;
+                }
+            }
+        }
+    }
+    return resumed;
+}
+
+// Prints what each task wrote, in task order, so the transcript does not depend on how the
+// turns interleaved.
+export void print_outputs() {
+    for id in 0..TASKS {
+        I64 n = taskapi.task_out_len(id);
+        for i in 0..n {
+            serial.serial_putc(taskapi.task_out_byte(id, i));
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

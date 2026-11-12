@@ -1,0 +1,60 @@
+// src/allocdemo.ci: the fixed allocator sequence of the mem flavor, extern-free. The kernel
+// prints its results from serial; the hosted twin (tests/mem_twin.ci) runs the same function
+// and compares the hashes, so the allocator's checked arithmetic is run by both runtimes.
+//
+// facts: 0 a, 1 b, 2 c (allocations of 8, 4, 1 frames), 3 d (5 frames after freeing b), 4 e (4
+// frames, into the hole), 5 to 8 four refused requests (too many frames, zero frames, frames not
+// owned, a range off the pool; and 16, one frame more than are free), 9 free frames after them, 10 an arena of 2 frames, 11 and 12 two
+// objects in it, 13 a refused 9,000-byte object, 14 free frames at the end, 15 bytes in use
+// after the refused object, 16 the refused request for one frame more than are free.
+// hashes, 32 bytes each: 0 the empty state, 1 before and 2 after the four refused frame
+// requests (equal), 3 before and 4 after the refused object (equal), 5 the final state.
+
+import src.frames;
+import src.heap;
+import src.memstate;
+
+export const I64 FACTS = 20;
+export const I64 HASHES = 6;
+
+void snapshot(inout U8[192] hashes, I64 slot) {
+    U8[32] h;
+    memstate.hash(h);
+    for i in 0..32 {
+        hashes[32 * slot + i] = h[i];
+    }
+}
+
+export void run(inout I64[20] facts, inout U8[192] hashes) {
+    snapshot(hashes, 0);
+    facts[0] = frames.alloc(8);
+    facts[1] = frames.alloc(4);
+    facts[2] = frames.alloc(1);
+    _ = frames.release(facts[1], 4);
+    facts[3] = frames.alloc(5);
+    facts[4] = frames.alloc(4);
+    snapshot(hashes, 1);
+    facts[5] = frames.alloc(20000);
+    facts[6] = frames.alloc(0);
+    facts[7] = frames.release(100, 2);
+    facts[8] = frames.release(16380, 20);
+    facts[16] = frames.alloc(frames.free_count() + 1);
+    snapshot(hashes, 2);
+    facts[9] = frames.free_count();
+    facts[10] = heap.arena_new(2);
+    facts[11] = heap.arena_alloc(facts[10], 100, 8);
+    facts[12] = heap.arena_alloc(facts[10], 100, 64);
+    snapshot(hashes, 3);
+    facts[13] = heap.arena_alloc(facts[10], 9000, 8);
+    snapshot(hashes, 4);
+    facts[15] = heap.arena_used(facts[10]);
+    _ = heap.arena_reset(facts[10]);
+    _ = heap.arena_free(facts[10]);
+    _ = frames.release(facts[0], 8);
+    _ = frames.release(facts[2], 1);
+    _ = frames.release(facts[3], 5);
+    _ = frames.release(facts[4], 4);
+    facts[14] = frames.free_count();
+    snapshot(hashes, 5);
+}
+// SPDX-License-Identifier: Apache-2.0

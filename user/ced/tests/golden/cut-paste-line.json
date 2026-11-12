@@ -1,0 +1,22 @@
+{
+  "id": "cut-paste-line",
+  "rules": [
+    "KEY-5"
+  ],
+  "text": "one\ntwo\n",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "18",
+    "16"
+  ],
+  "expect": {
+    "text": "one\ntwo\n"
+  }
+}

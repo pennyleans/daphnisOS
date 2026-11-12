@@ -1,0 +1,114 @@
+// user/ci/atone.ci: the test signal of stage AU's gate (docs/specs/2026-11-06-au-audio.md section 6). S seconds of
+// 16-bit stereo at 48,000 Hz in which no frame is silent: frame i is left 1 + (i * 7919 mod 32767), right its
+// negative. Written to /dev/dsp, then SNDCTL_DSP_SYNC; with --out PATH, to the file PATH instead (Linux: the bytes
+// the kernel's `audio: stream` line must digest). Prints `atone: frames N` at the end.
+//   atone [--seconds S] [--out PATH]
+// Status 2 for a usage error, 1 when the device or the file refused.
+import user.ci.dev;
+import user.ci.outfile;
+import user.ci.dspdev;
+
+const I64 RATE = 48000;
+const I64 BLOCK = 1024;                // frames a write
+
+U8[4096] buf;
+
+I64 arg(in U8[_] args, I64 k, inout U8[_] word) {
+    I64 at = 0;
+    I64 i = 0;
+    while (i < k) {
+        if (at >= len(args)) { return -1; }
+        if (args[at] == 0) { i = i + 1; }
+        at = at + 1;
+    }
+    if (at >= len(args)) { return -1; }
+    I64 n = 0;
+    while (args[at + n] != 0) {
+        if (n == len(word) - 1) { return -1; }
+        word[n] = args[at + n];
+        n = n + 1;
+    }
+    word[n] = 0;
+    return n;
+}
+
+I64 number(in U8[_] word, I64 n) {
+    I64 v = 0;
+    for i in 0..n {
+        I64 d = (word[i] as I64) - 48;
+        if (d < 0 || d > 9) { return -1; }
+        v = v * 10 + d;
+    }
+    return v;
+}
+
+void usage() {
+    "atone: usage: atone [--seconds S] [--out PATH]\n";
+    dev.exit_now(2);
+}
+
+void main(in U8[_] args) {
+    U8[256] word;
+    U8[256] path;
+    I64 seconds = 2;
+    Bool to_file = false;
+    I64 k = 0;
+    I64 n = arg(args, k, word);
+    while (n >= 0) {
+        if (n == 9 && equal(word[0..9], b"--seconds")) {
+            I64 m = arg(args, k + 1, word);
+            seconds = m > 0 ? number(word, m) : -1;
+            if (seconds < 1 || seconds > 60) { usage(); }
+            k = k + 2;
+        } else if (n == 5 && equal(word[0..5], b"--out")) {
+            I64 m = arg(args, k + 1, path);
+            if (m <= 0) { usage(); }
+            I64 r = outfile.out_open(path[0..m]);
+            if (r < 0) {
+                "atone: cannot write the file: error {0 - r}\n";
+                dev.exit_now(1);
+            }
+            to_file = true;
+            k = k + 2;
+        } else {
+            usage();
+        }
+        n = arg(args, k, word);
+    }
+    if (!to_file) {
+        I64 r = dspdev.dsp_open();
+        if (r < 0) {
+            "atone: cannot open /dev/dsp: error {0 - r}\n";
+            dev.exit_now(1);
+        }
+    }
+    I64 frames = seconds * RATE;
+    I64 i = 0;
+    while (i < frames) {
+        I64 c = frames - i;
+        if (c > BLOCK) { c = BLOCK; }
+        for f in 0..c {
+            I64 l = 1 + ((i + f) * 7919) % 32767;
+            I64 r = 65536 - l;
+            buf[4 * f] = (l & 255) as U8;
+            buf[4 * f + 1] = (l >> 8) as U8;
+            buf[4 * f + 2] = (r & 255) as U8;
+            buf[4 * f + 3] = (r >> 8) as U8;
+        }
+        I64 w = to_file ? outfile.out_put(buf[0..4 * c]) : dspdev.dsp_put(buf[0..4 * c]);
+        if (w != 4 * c) {
+            "atone: the write failed: error {0 - w}\n";
+            dev.exit_now(1);
+        }
+        i = i + c;
+    }
+    if (!to_file) {
+        I64 r = dspdev.dsp_sync();
+        if (r < 0) {
+            "atone: SNDCTL_DSP_SYNC failed: error {0 - r}\n";
+            dev.exit_now(1);
+        }
+    }
+    "atone: frames {frames}\n";
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,513 @@
+Daphnis CS: cish
+daphnis: image 15454244 bytes from the loader module
+daphnis: input 3952 bytes
+daphnis: run cish pid 1
+one two three
+four  five
+
+six	seven eight
+nine
+no newline at the end
+        5        14        68
+        5         9        47 text.txt
+      301      1492     20825 long.txt
+        2         5       512 bin.dat
+      308      1506     21384 total
+301
+20825
+cat: missing: No such file or directory
+cat status 1
+wc: not supported: -L
+wc status 2
+        5        23
+[
+basename
+cat
+chmod
+cmp
+cp
+cut
+date
+dirname
+du
+echo
+env
+false
+fetch
+find
+grep
+head
+ln
+ls
+md5sum
+mkdir
+mktemp
+mv
+printf
+rev
+rm
+rmdir
+seq
+sha256sum
+sleep
+sort
+stat
+sync
+tail
+tee
+test
+touch
+tr
+true
+truncate
+uname
+uniq
+wc
+xargs
+look:
+a.txt
+b.txt
+run.sh
+sub
+
+look/sub:
+c.txt
+inner
+
+look/sub/inner:
+d.txt
+look:
+a.txt   b.txt   run.sh  sub
+
+look/sub:
+c.txt  inner
+look
+look/a.txt
+ls: missing: No such file or directory
+ls status 1
+one two three
+four  five
+
+==> look/b.txt <==
+line 001 of b
+line 002 of b
+
+==> look/a.txt <==
+alpha
+300
+six	seven eight
+nine
+at the end
+9050
+line 029 of b
+line 030 of b
+text.txt 47 regular file
+empty 0 regular empty file
+look/sub/c.txt 2 regular file
+look directory
+stat: missing: No such file or directory
+stat status 1
+du: missing: No such file or directory
+du status 1
+du: not supported: -h
+du status 2
+mkdir 0
+5
+no newline at the end
+c
+c
+c
+cp: made/box2: is a directory (no -R)
+cp status 1
+47 made/t2
+mv: made/t1: No such file or directory
+mv status 1
+mktemp file
+mktemp dir
+rmdir: made/a: Directory not empty
+rmdir status 1
+rm: made/q: remove? 
+q gone
+rm: made/box2: Is a directory
+rm status 1
+box2 gone
+rmdir: made/t2: Not a directory
+rmdir status 1
+made gone
+native echo: a b
+A=1
+B=2
+C=x=y
+A=1
+f/a
+f/a/b
+f/a/b/c.txt
+found f/a/b/c.txt
+f/big.dat
+dirs: f/a f/a/b
+a b c
+d e f g
+h"i j'k
+\ l
+[one]
+[two three]
+[four]
+a b c d
+e f g h
+Thu Jan  1 00:00:00 UTC 2026
+1970-01-01 00:00:00 UTC 0 001 01
+sleep status 0
+find: missing: No such file or directory
+find status 1
+xargs: nosuch: No such file or directory
+xargs status 127
+1:apple 3
+4:apple 3
+5:apple 3
+3
+grep status 1
+dir/a.txt
+dir/sub/c.txt
+dir/sub/d.txt
+
+nodelim
+root
+short
+daemon
+l
+nobody
+      3 apple 3
+      1 x*y+z?
+      1 tab	here
+ONE TWO THREE
+FOUR FIVE
+
+SIX	SEVEN EIGHT
+NINE
+line 0 of
+line 1 of
+text.txt text3.txt differ: char 1, line 1
+cmp status 1
+4eb69a7d087144a689c9be93972cb54fc24423fc88828ac8cd569d7ca761651a  text.txt
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  empty
+text.txt: OK
+nonl.txt: OK
+empty: OK
+
+  elder 12
+4d940f893a5ab77a3e0ed3026bb8b3c7  text.txt
+d41d8cd98f00b204e9800998ecf8427e  empty
+text.txt: OK
+nonl.txt: OK
+empty: OK
+long.txt: OK
+test 0
+bracket 0
+cish: [: missing ]
+bracket 2
+x=5|   ab|
+true 0
+false 1
+c
+/a/b
+.
+1,2,3,4,5
+08
+09
+10
+seq: zero increment
+seq status 2
+dne eht ta enilwen on
+eerht owt eno
+evif  ruof
+one t
+1024 cut.txt
+sync 0
+ln 0
+a 3 2 regular file
+b 3 2 regular file
+c 1 1 symbolic link
+d 3 2 regular file
+49
+a
+b
+c
+d
+t
+a 700
+b 700
+c 777
+d 700
+t 777
+a 1577934245 1577934245
+b 1577934245 1577934245
+n 946684830 86400
+ln: x: No such file or directory
+ln status 1
+chmod: invalid mode
+chmod status 2
+x86_64
+uname: not supported: -x
+uname status 2
+m gone
+done
+daphnis: state db7efb9e3577bcfff28873a1d9db7e713f0a237ba29d3a81c81bda7783e39167
+daphnis: exit 0
+daphnis: pid 1 forked 138
+daphnis: run cish pid 2
+one two three
+four  five
+
+six	seven eight
+nine
+no newline at the end
+        5        14        68
+        5         9        47 text.txt
+      301      1492     20825 long.txt
+        2         5       512 bin.dat
+      308      1506     21384 total
+301
+20825
+cat: missing: No such file or directory
+cat status 1
+wc: not supported: -L
+wc status 2
+        5        23
+[
+basename
+cat
+chmod
+cmp
+cp
+cut
+date
+dirname
+du
+echo
+env
+false
+fetch
+find
+grep
+head
+ln
+ls
+md5sum
+mkdir
+mktemp
+mv
+printf
+rev
+rm
+rmdir
+seq
+sha256sum
+sleep
+sort
+stat
+sync
+tail
+tee
+test
+touch
+tr
+true
+truncate
+uname
+uniq
+wc
+xargs
+look:
+a.txt
+b.txt
+run.sh
+sub
+
+look/sub:
+c.txt
+inner
+
+look/sub/inner:
+d.txt
+look:
+a.txt   b.txt   run.sh  sub
+
+look/sub:
+c.txt  inner
+look
+look/a.txt
+ls: missing: No such file or directory
+ls status 1
+one two three
+four  five
+
+==> look/b.txt <==
+line 001 of b
+line 002 of b
+
+==> look/a.txt <==
+alpha
+300
+six	seven eight
+nine
+at the end
+9050
+line 029 of b
+line 030 of b
+text.txt 47 regular file
+empty 0 regular empty file
+look/sub/c.txt 2 regular file
+look directory
+stat: missing: No such file or directory
+stat status 1
+du: missing: No such file or directory
+du status 1
+du: not supported: -h
+du status 2
+mkdir 0
+5
+no newline at the end
+c
+c
+c
+cp: made/box2: is a directory (no -R)
+cp status 1
+47 made/t2
+mv: made/t1: No such file or directory
+mv status 1
+mktemp file
+mktemp dir
+rmdir: made/a: Directory not empty
+rmdir status 1
+rm: made/q: remove? 
+q gone
+rm: made/box2: Is a directory
+rm status 1
+box2 gone
+rmdir: made/t2: Not a directory
+rmdir status 1
+made gone
+native echo: a b
+A=1
+B=2
+C=x=y
+A=1
+f/a
+f/a/b
+f/a/b/c.txt
+found f/a/b/c.txt
+f/big.dat
+dirs: f/a f/a/b
+a b c
+d e f g
+h"i j'k
+\ l
+[one]
+[two three]
+[four]
+a b c d
+e f g h
+Thu Jan  1 00:00:00 UTC 2026
+1970-01-01 00:00:00 UTC 0 001 01
+sleep status 0
+find: missing: No such file or directory
+find status 1
+xargs: nosuch: No such file or directory
+xargs status 127
+1:apple 3
+4:apple 3
+5:apple 3
+3
+grep status 1
+dir/a.txt
+dir/sub/c.txt
+dir/sub/d.txt
+
+nodelim
+root
+short
+daemon
+l
+nobody
+      3 apple 3
+      1 x*y+z?
+      1 tab	here
+ONE TWO THREE
+FOUR FIVE
+
+SIX	SEVEN EIGHT
+NINE
+line 0 of
+line 1 of
+text.txt text3.txt differ: char 1, line 1
+cmp status 1
+4eb69a7d087144a689c9be93972cb54fc24423fc88828ac8cd569d7ca761651a  text.txt
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  empty
+text.txt: OK
+nonl.txt: OK
+empty: OK
+
+  elder 12
+4d940f893a5ab77a3e0ed3026bb8b3c7  text.txt
+d41d8cd98f00b204e9800998ecf8427e  empty
+text.txt: OK
+nonl.txt: OK
+empty: OK
+long.txt: OK
+test 0
+bracket 0
+cish: [: missing ]
+bracket 2
+x=5|   ab|
+true 0
+false 1
+c
+/a/b
+.
+1,2,3,4,5
+08
+09
+10
+seq: zero increment
+seq status 2
+dne eht ta enilwen on
+eerht owt eno
+evif  ruof
+one t
+1024 cut.txt
+sync 0
+ln 0
+a 3 2 regular file
+b 3 2 regular file
+c 1 1 symbolic link
+d 3 2 regular file
+49
+a
+b
+c
+d
+t
+a 700
+b 700
+c 777
+d 700
+t 777
+a 1577934245 1577934245
+b 1577934245 1577934245
+n 946684830 86400
+ln: x: No such file or directory
+ln status 1
+chmod: invalid mode
+chmod status 2
+x86_64
+uname: not supported: -x
+uname status 2
+m gone
+done
+daphnis: state db7efb9e3577bcfff28873a1d9db7e713f0a237ba29d3a81c81bda7783e39167
+daphnis: exit 0
+daphnis: pid 2 forked 138
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 27 frames held
+daphnis: pool frames free 16354 of 16383
+cish: done

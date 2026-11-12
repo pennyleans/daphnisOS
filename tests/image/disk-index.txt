@@ -1,0 +1,23 @@
+echo -- the ring kept beside a session
+./grant disk ./ix /home ./sh <<'EOF2'
+echo one > home/new.txt
+echo two >> home/new.txt
+mkdir -p home/m/n
+cp home/new.txt home/m/n/copy
+mv home/m/n/copy home/m/moved
+mv home/m/n home/a/n
+mv home/new.txt home/hello.txt
+rm home/link
+truncate -s 5000 home/big
+rmdir home/a/n
+sync
+EOF2
+echo ix: $?
+echo -- the ring overflows
+./grant disk ./ix /home ./sh <<'EOF2'
+i=0; while [ $i -lt 2100 ]; do echo $i >> home/many; i=$((i+1)); done
+sync
+EOF2
+echo ix: $?
+exit 0
+

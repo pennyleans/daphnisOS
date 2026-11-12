@@ -1,0 +1,39 @@
+{
+ "id": "untitled-name-takes-segment-bytes",
+ "rules": [
+  "RUN-8"
+ ],
+ "untitled": true,
+ "text": "",
+ "size": [
+  4,
+  24
+ ],
+ "sel": [
+  0,
+  0
+ ],
+ "chunks": [
+  "78",
+  "13",
+  "61",
+  "20",
+  "2f",
+  "62",
+  "7f",
+  "63"
+ ],
+ "expect": {
+  "text": "x\n",
+  "sel": [
+   1,
+   1
+  ],
+  "screen": [
+   "x",
+   "",
+   " Untitled [+]       1:2",
+   "save as: ac"
+  ]
+ }
+}

@@ -1,0 +1,26 @@
+// user/ci/printf.ci: printf FORMAT [ARGUMENT...]: XCU printf, by cish's own `printf` (user/ci/cish/fmt.ci); no floating
+// conversions (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C). One binary on the shell's code, so /bin/printf and the
+// builtin agree byte for byte; a diagnostic carries cish's prefix (`cish: ...`, D-50).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.cish.limits;
+import user.ci.cish.lex;
+import user.ci.cish.msg;
+import user.ci.cish.fields;
+import user.ci.cish.fmt;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+U8[8192] ab;      // field 0 the name, then each argument, each NUL-ended (cish/fields.ci)
+I64[1024] fo;
+I64[1024] fe;
+
+void main(in U8[_] a) {
+    I64 nf = fields.gather(a, b"printf", ab, fo, fe);
+    if (nf < 0) {
+        msg.begin();
+        msg.text(b"printf: limit: ARGS_MAX");
+        msg.send();
+        dev.exit_now(2);
+    }
+    dev.exit_now(fmt.printf(ab, fo, fe, nf));
+}
+// SPDX-License-Identifier: Apache-2.0

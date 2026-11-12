@@ -1,0 +1,14 @@
+Daphnis K3: stack overflow and interrupt stacks
+trap stack
+fault: cint-core-1/fault/v2 165 bytes
+HEX
+trap nmi
+fault: cint-core-1/fault/v2 163 bytes
+HEX
+trap df
+fault: cint-core-1/fault/v2 162 bytes
+HEX
+trap pf
+fault: cint-core-1/fault/v2 162 bytes
+HEX
+stackover: done

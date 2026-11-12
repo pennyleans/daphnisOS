@@ -1,0 +1,25 @@
+// user/ci/kit/mark.ci: the kit's mark (docs/specs/2026-11-05-w-tiler.md section 2, ruling MK-1), written
+// by tools/mark.py; do not edit. The counter-change disc and "daphnis" in the kit's face.
+// W x H pixels, row y as WPR words from bits[y * WPR], column 0 in the first word's top bit.
+
+export const I64 W = 79;
+export const I64 H = 16;
+const I64 WPR = 2;
+
+U64[32] bits = [
+    0xff00000000000000, 0x0000000000000000, 0xff00000000000000, 0x0000000000000000,
+    0xfcc0000000000000, 0x0000000000000000, 0xf0f0000200004000, 0x0000000000000000,
+    0xe0f8000200004000, 0x1000000000000000, 0xe0f8000200004000, 0x0000000000000000,
+    0xc0fc003e3e7c7c7c, 0x303e000000000000, 0xc0fc004242424242, 0x1040000000000000,
+    0xc0fc004242424242, 0x1040000000000000, 0xc0fc004242424242, 0x103c000000000000,
+    0xe0f8004242424242, 0x1002000000000000, 0xe0f8004242424242, 0x1002000000000000,
+    0xf0f0003e3e7c4242, 0x387c000000000000, 0xfcc0000000400000, 0x0000000000000000,
+    0xff00000000400000, 0x0000000000000000, 0xff00000000400000, 0x0000000000000000
+];
+
+// True when pixel (x, y) of the mark is ink.
+export Bool ink(I64 x, I64 y) {
+    U64 word = bits[y * WPR + x / 64];
+    return ((word >> (63 - x % 64) as U64) & 1) == 1;
+}
+// SPDX-License-Identifier: Apache-2.0

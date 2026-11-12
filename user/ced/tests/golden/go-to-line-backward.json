@@ -1,0 +1,29 @@
+{
+  "id": "go-to-line-backward",
+  "rules": [
+    "KEY-8",
+    "TEST-5"
+  ],
+  "text": "a\nb\nc\nd\ne\nf",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "07360d",
+    "07350d",
+    "07310d",
+    "07330d"
+  ],
+  "expect": {
+    "text": "a\nb\nc\nd\ne\nf",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

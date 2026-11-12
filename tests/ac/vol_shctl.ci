@@ -1,0 +1,247 @@
+// tests/ac/vol_shctl.ci: the account directory in memory, for the tests of authd's store operations (RS-ROLE).
+// tools/check-authop.py copies it over user/ci/shctl.ci in an isolated root, and tests/ac/vol_corectl.ci over
+// user/ci/corectl.ci, so user/ci/acctio.ci, acctput.ci and authop.ci run as they are. It holds eight names by path;
+// a home is one name.
+// A write open is O_WRONLY | O_CREAT | O_EXCL only, as the writer's must be. deny(true) answers every call
+// -EACCES, as src/fs.ci does under /home/.daphnis for a process that is neither uid 0 nor ring 0. fail(kind, nth,
+// err) makes the nth call of a kind answer err; a failed write stores half its bytes first.
+export const I64 K_OPEN_R = 0;
+export const I64 K_OPEN_W = 1;
+export const I64 K_WRITE = 2;
+export const I64 K_CLOSE = 3;
+export const I64 K_RENAME = 4;
+export const I64 K_UNLINK = 5;
+export const I64 K_SYNC = 6;
+export const I64 K_STAT = 7;
+
+const I64 FILES = 8;
+const I64 SIZE = 4608;
+const I64 PATH = 64;
+
+U8[36864] data;
+U8[512] names;
+I64[8] nlen;
+I64[8] sizev;
+I64[8] modev;
+U8[36864] kdata;
+U8[512] knames;
+I64[8] knlen;
+I64[8] ksize;
+I64[8] calls;
+I64[8] fail_at;
+I64[8] fail_err;
+I64 open_slot = -1;
+I64 open_at = 0;
+Bool open_w = false;
+Bool denied = false;
+I64 pid = 77;
+
+export void reset() {
+    for k in 0..FILES { nlen[k] = 0; sizev[k] = 0; modev[k] = 0; }
+    for k in 0..8 { calls[k] = 0; fail_at[k] = 0; fail_err[k] = 0; }
+    open_slot = -1;
+    denied = false;
+    pid = 77;
+}
+
+export void deny(Bool on) { denied = on; }
+export void set_pid(I64 p) { pid = p; }
+export I64 calls_of(I64 kind) { return calls[kind]; }
+
+export void fail(I64 kind, I64 nth, I64 err) {
+    fail_at[kind] = calls[kind] + nth;
+    fail_err[kind] = err;
+}
+
+// The call of kind counted; its planned error, or 0.
+I64 planned(I64 kind) {
+    calls[kind] = calls[kind] + 1;
+    if (fail_at[kind] == calls[kind]) { return fail_err[kind]; }
+    return 0;
+}
+
+I64 slot(in U8[_] path) {
+    for i in 0..FILES {
+        if (nlen[i] == len(path)) {
+            Bool same = true;
+            for k in 0..len(path) {
+                if (same && names[PATH * i + k] != path[k]) { same = false; }
+            }
+            if (same) { return i; }
+        }
+    }
+    return -1;
+}
+
+I64 make(in U8[_] path, I64 mode) {
+    assert(len(path) >= 1 && len(path) <= PATH);
+    for i in 0..FILES {
+        if (nlen[i] == 0) {
+            nlen[i] = len(path);
+            for k in 0..len(path) { names[PATH * i + k] = path[k]; }
+            sizev[i] = 0;
+            modev[i] = mode;
+            return i;
+        }
+    }
+    return -1;
+}
+
+// A file put there by the test.
+export void set(in U8[_] path, in U8[_] bytes, I64 n) {
+    assert(n >= 0 && n <= SIZE && n <= len(bytes));
+    I64 i = slot(path);
+    if (i < 0) { i = make(path, 384); }
+    assert(i >= 0);
+    sizev[i] = n;
+    for k in 0..n { data[SIZE * i + k] = bytes[k]; }
+}
+
+export I64 size_of(in U8[_] path) {
+    I64 i = slot(path);
+    if (i < 0) { return -1; }
+    return sizev[i];
+}
+
+export I64 mode_of(in U8[_] path) {
+    I64 i = slot(path);
+    if (i < 0) { return -1; }
+    return modev[i];
+}
+
+export U8 byte_of(in U8[_] path, I64 k) {
+    I64 i = slot(path);
+    assert(i >= 0 && k >= 0 && k < sizev[i]);
+    return data[SIZE * i + k];
+}
+
+export I64 files() {
+    I64 n = 0;
+    for i in 0..FILES {
+        if (nlen[i] != 0) { n = n + 1; }
+    }
+    return n;
+}
+
+// The volume as it is now, kept; kept() says whether it is still that, name for name and byte for byte.
+export void keep() {
+    for i in 0..FILES {
+        knlen[i] = nlen[i];
+        ksize[i] = sizev[i];
+        for k in 0..PATH { knames[PATH * i + k] = names[PATH * i + k]; }
+        for k in 0..sizev[i] { kdata[SIZE * i + k] = data[SIZE * i + k]; }
+    }
+}
+
+export Bool kept() {
+    for i in 0..FILES {
+        if (knlen[i] != nlen[i]) { return false; }
+        if (nlen[i] != 0) {
+            if (ksize[i] != sizev[i]) { return false; }
+            for k in 0..nlen[i] {
+                if (knames[PATH * i + k] != names[PATH * i + k]) { return false; }
+            }
+            for k in 0..sizev[i] {
+                if (kdata[SIZE * i + k] != data[SIZE * i + k]) { return false; }
+            }
+        }
+    }
+    return true;
+}
+
+export I64 sh_open(in U8[_] path, I64 flags, I64 mode) {
+    assert(open_slot < 0);
+    assert(flags == 0 || flags == 0xC1);
+    if (flags == 0) {
+        I64 e = planned(K_OPEN_R);
+        if (denied) { return -13; }
+        if (e != 0) { return e; }
+        I64 i = slot(path);
+        if (i < 0) { return -2; }
+        open_slot = i;
+        open_at = 0;
+        open_w = false;
+        return 10 + i;
+    }
+    I64 e = planned(K_OPEN_W);
+    if (denied) { return -13; }
+    if (e != 0) { return e; }
+    if (slot(path) >= 0) { return -17; }
+    I64 i = make(path, mode);
+    if (i < 0) { return -28; }
+    open_slot = i;
+    open_at = 0;
+    open_w = true;
+    return 10 + i;
+}
+
+export I64 fd_read(I64 fd, inout U8[_] buf) {
+    assert(fd == 10 + open_slot && !open_w);
+    I64 n = sizev[open_slot] - open_at;
+    if (n > len(buf)) { n = len(buf); }
+    for k in 0..n { buf[k] = data[SIZE * open_slot + open_at + k]; }
+    open_at = open_at + n;
+    return n;
+}
+
+export I64 fd_write(I64 fd, in U8[_] bytes) {
+    assert(fd == 10 + open_slot && open_w);
+    I64 e = planned(K_WRITE);
+    I64 n = len(bytes);
+    if (e != 0) { n = n / 2; }
+    assert(open_at + n <= SIZE);
+    for k in 0..n { data[SIZE * open_slot + open_at + k] = bytes[k]; }
+    open_at = open_at + n;
+    sizev[open_slot] = open_at;
+    if (e != 0) { return e; }
+    return n;
+}
+
+export I64 fd_close(I64 fd) {
+    assert(fd == 10 + open_slot);
+    open_slot = -1;
+    return planned(K_CLOSE);
+}
+
+export I64 sh_getpid() { return pid; }
+
+export I64 vol_rename(in U8[_] from, in U8[_] to) {
+    assert(open_slot < 0);
+    I64 e = planned(K_RENAME);
+    if (denied) { return -13; }
+    if (e != 0) { return e; }
+    I64 i = slot(from);
+    if (i < 0) { return -2; }
+    I64 j = slot(to);
+    if (j >= 0) { nlen[j] = 0; }
+    assert(len(to) <= PATH);
+    nlen[i] = len(to);
+    for k in 0..len(to) { names[PATH * i + k] = to[k]; }
+    return 0;
+}
+
+export I64 vol_unlink(in U8[_] path) {
+    assert(open_slot < 0);
+    I64 e = planned(K_UNLINK);
+    if (denied) { return -13; }
+    if (e != 0) { return e; }
+    I64 i = slot(path);
+    if (i < 0) { return -2; }
+    nlen[i] = 0;
+    return 0;
+}
+
+// lstat: 0 for a name that is there, -ENOENT for none.
+export I64 vol_stat(in U8[_] path) {
+    I64 e = planned(K_STAT);
+    if (denied) { return -13; }
+    if (e != 0) { return e; }
+    if (slot(path) < 0) { return -2; }
+    return 0;
+}
+
+export I64 vol_sync() {
+    calls[K_SYNC] = calls[K_SYNC] + 1;
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,21 @@
+# RS-HOME (PR 316), RS-R4 and RS-R3 (PR 319): ada adds eve; eve logs in (eve's home and its three folders are made
+# as eve); ada removes eve (the home set aside), removes again (no eve) and adds eve again; eve logs in to a new
+# home under uid 1003.
+hdesk: accounts 2
+hdesk: login ada uid 1000
+hdesk: approval ask want 8 uid 1000
+hdesk: kern 1 pid
+-hdesk: approval ask
+=hdesk: terminal 1 ended, status 0
+hdesk: logout ada
+hdesk: login eve uid 1002
+hdesk: logout eve
+hdesk: login ada uid 1000
+hdesk: approval ask want 8 uid 1000
+hdesk: kern 1 pid
+-hdesk: approval ask
+=hdesk: terminal 1 ended, status 0
+hdesk: logout ada
+hdesk: login eve uid 1003
+hdesk: logout eve
+!sevenhorsesrun

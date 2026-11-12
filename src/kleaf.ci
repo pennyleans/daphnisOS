@@ -1,0 +1,124 @@
+// src/kleaf.ci: the leaves and the root of the K5 state tree (docs/snapshot.md). A leaf is the
+// SHA-256 of a preimage; the same bytes that are hashed are the bytes a snapshot prints, so a
+// reader that decodes a snapshot can recompute every leaf. Tags keep the kinds apart: 0 for a task,
+// 1 for the kernel's tables, 2 for an inner node of the tree.
+
+import src.sha256;
+import src.stepapi;
+import src.kio;
+import src.kspace;
+
+// Absorbs b[0..nbytes) into the leaf's hash. When emit is set (a snapshot is being written) the bytes
+// are also printed as hex and absorbed into `whole`, the digest of the whole snapshot.
+export void absorb[n](inout sha256.Sha256[_] s, inout sha256.Sha256[_] whole, in U8[n] b, I64 nbytes, Bool emit) {
+    sha256.sha_update(s, b, 0, nbytes);
+    if (emit) {
+        kio.hex_out(b, nbytes);
+        sha256.sha_update(whole, b, 0, nbytes);
+    }
+}
+
+// Part of a snapshot that is in no leaf: printed as hex and absorbed into the digest of the whole.
+export void part[n](inout sha256.Sha256[_] whole, in U8[n] b, I64 nbytes) {
+    kio.hex_out(b, nbytes);
+    sha256.sha_update(whole, b, 0, nbytes);
+}
+
+// The leaf of task t. Preimage: 0, t, flags (1 byte each), the task's total fuel (8), the length of
+// its module state (4), the state, then the number of pages it owns (1) and, for each, its slot (1), the number of its non-zero words (2) and each of them as its index (2) and its 8 bytes: a page is its non-zero words, in index order. Returns the byte length
+// of the module state, or -1 if the build has state rt cannot encode.
+export I64 task_leaf(I64 t, I64 flags, Bool emit, inout sha256.Sha256[_] whole, inout U8[32] leaf) {
+    sha256.Sha256[1] s;
+    U8[16] h;
+    U8[128] chunk;
+    I64 slen = stepapi.task_state_size(t);
+    if (slen < 0) {
+        return -1;
+    }
+    sha256.sha_init(s);
+    I64 o = kio.put(h, 0, 0, 1);
+    o = kio.put(h, o, t, 1);
+    o = kio.put(h, o, flags, 1);
+    o = kio.put(h, o, stepapi.task_fuel_total(t), 8);
+    o = kio.put(h, o, slen, 4);
+    absorb(s, whole, h, o, emit);
+    I64 off = 0;
+    while (off < slen) {
+        I64 n = stepapi.task_state_read(t, off, chunk);
+        if (n <= 0) {
+            return -1;
+        }
+        absorb(s, whole, chunk, n, emit);
+        off += n;
+    }
+    I64 mask = kspace.own_mask(t);
+    I64 np = 0;
+    for k in 0..kspace.SLOTS {
+        np += (mask >> k) & 1;
+    }
+    U8[1] one;
+    one[0] = np as U8;
+    absorb(s, whole, one, 1, emit);
+    for k in 0..kspace.SLOTS {
+        if (((mask >> k) & 1) != 0) {
+            U64[64] pw;
+            U8[10] pair;
+            I64 nz = 0;
+            for c in 0..8 {
+                kspace.page_words(t, k, c, pw);
+                for j in 0..64 {
+                    if (pw[j] != 0) {
+                        nz += 1;
+                    }
+                }
+            }
+            one[0] = k as U8;
+            absorb(s, whole, one, 1, emit);
+            I64 po = kio.put(pair, 0, nz, 2);
+            absorb(s, whole, pair, po, emit);
+            for c in 0..8 {
+                kspace.page_words(t, k, c, pw);
+                for j in 0..64 {
+                    if (pw[j] != 0) {
+                        po = kio.put(pair, 0, 64 * c + j, 2);
+                        po = kio.put_u64(pair, po, pw[j]);
+                        absorb(s, whole, pair, po, emit);
+                    }
+                }
+            }
+        }
+    }
+    sha256.sha_final(s, leaf);
+    return slen;
+}
+
+// The leaf of the kernel's tables: the hash of b[0..nbytes) (its first byte is the tag 1).
+export void table_leaf[n](in U8[n] b, I64 nbytes, inout U8[32] leaf) {
+    sha256.sha_digest(b, 0, nbytes, leaf);
+}
+
+// An inner node: SHA-256 of 2, a, b, where a and b are 32 bytes of lv at offsets ia and ib.
+export void node[n](in U8[n] lv, I64 ia, I64 ib, inout U8[32] res) {
+    U8[65] b;
+    b[0] = 2;
+    for i in 0..32 {
+        b[1 + i] = lv[ia + i];
+        b[33 + i] = lv[ib + i];
+    }
+    sha256.sha_digest(b, 0, 65, res);
+}
+
+// The root over four leaves (lv holds them, 32 bytes each): node(node(l0, l1), node(l2, l3)).
+export void root[n](in U8[n] lv, inout U8[32] res) {
+    U8[96] mid;
+    U8[32] a;
+    U8[32] c;
+    node(lv, 0, 32, a);
+    node(lv, 64, 96, c);
+    for i in 0..32 {
+        mid[i] = a[i];
+        mid[32 + i] = c[i];
+    }
+    node(mid, 0, 32, res);
+}
+// SPDX-License-Identifier: Apache-2.0

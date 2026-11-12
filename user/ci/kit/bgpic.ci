@@ -1,0 +1,8 @@
+// user/ci/kit/bgpic.ci: BG-1, whether this release takes a picture as the desk's background. One switch read by
+// everything that offers or shows one: the desk (hdesk.ci BG_PICTURES: no picture run is started, desk.background
+// as a path is the default), Settings' Desk page (kit/stdesk.ci set_pick_live: Choose Picture dimmed and inert) and
+// View (cview.ci: Set as Background dimmed and inert). Under BG-1 option A, 0.1.0 ships colors only; flipping
+// PICTURES flips all three. It imports nothing, so any program or kit module may import it.
+
+export const Bool PICTURES = false;
+// SPDX-License-Identifier: Apache-2.0

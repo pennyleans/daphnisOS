@@ -1,0 +1,438 @@
+// tests/ac/acct_test.ci: hosted tests of the account store (AC-1c, user/ci/acct.ci; docs/specs/2026-11-08-ac-accounts.md
+// sections 3 and 4). Run by check.sh: cint test --root . tests/ac/acct_test.ci
+
+import user.ci.acct;
+
+I64 cp(inout U8[_] dst, I64 at, in U8[_] s) {
+    for k in 0..len(s) { dst[at + k] = s[k]; }
+    return at + len(s);
+}
+
+void two(inout U8[_] b, inout I64[_] n) {
+    U8[4096] o;
+    acct.clear();
+    I64 p = acct.add("ada", 3, acct.PARENT, 1000, 1000, 65536, 3, "000102030405060708090a0b0c0d0e0f",
+                     "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386", 7,
+                     "000102030405060708090a0b0c0d0e0f");
+    I64 c = acct.add("sam", 3, acct.CHILD, 1001, 1001, 64, 1, "f0e0d0c0b0a090807060504030201000",
+                     "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 1,
+                     "f0e0d0c0b0a090807060504030201000");
+    assert(p == 0 && c == 1);
+    n[0] = acct.write_text(o);
+    for k in 0..n[0] { b[k] = o[k]; }
+}
+
+test "format then parse keeps every field" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    assert(acct.parse(b, n[0]) == 2);
+    assert(acct.uid_of(0) == 1000 && acct.role_of(0) == acct.PARENT && acct.m_of(0) == 65536 && acct.t_of(0) == 3);
+    assert(acct.uid_of(1) == 1001 && acct.role_of(1) == acct.CHILD && acct.ceil_of(1) == 1);
+    assert(acct.name_len(1) == 3 && acct.name_byte(1, 0) == 115);
+    assert(acct.ver_byte(0, 0) == 101 && acct.salt_byte(1, 31) == 48);
+}
+
+test "a wrong header or malformed account is refused; unknown keys and comments are skipped" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    b[17] = 50;                                   // `daphnis-accounts 2`
+    assert(acct.parse(b, n[0]) == -1);
+    U8[400] s;
+    I64 at = cp(s, 0, "daphnis-accounts 1\n");
+    at = cp(s, at, "# a note\n");
+    at = cp(s, at, "acct name=x uid=1001 m\n");   // missing fields invalidate the store
+    assert(acct.parse(s, at) == -1);
+    assert(acct.accounts() == 0);
+    at = cp(s, 0, "daphnis-accounts 1\nacct id=000102030405060708090a0b0c0d0e0f uid=1004 gid=1004 name=ivy ");
+    at = cp(s, at, "role=child m=64 t=1 later=1 salt=000102030405060708090a0b0c0d0e0f ver=");
+    at = cp(s, at, "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386 ceil=3\n");
+    assert(acct.parse(s, at) == 1);               // `later=1`, a key of a later version, is skipped
+    assert(acct.uid_of(0) == 1004 && acct.ceil_of(0) == 3);
+}
+
+test "names, passphrase minimums and the order of the login screen" {
+    assert(acct.name_ok("sam", 3));
+    assert(acct.name_ok("ivy-2", 5));
+    assert(!acct.name_ok("Sam", 3));
+    assert(!acct.name_ok("-x", 2));
+    assert(!acct.name_ok("a b", 3));
+    assert(acct.pass_ok(acct.PARENT, 8) && !acct.pass_ok(acct.PARENT, 7));   // AC-D3 as DN-52 amends it: 8, was 12
+    assert(acct.PARENT_MIN == 8 && acct.CHILD_MIN == 4);
+    assert(acct.pass_ok(acct.CHILD, 4) && !acct.pass_ok(acct.CHILD, 3));
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    assert(acct.parse(b, n[0]) == 2);
+    assert(acct.shown(0) == 0 && acct.shown(1) == 1 && acct.shown(2) == -1);
+    assert(acct.next_parent(0) == 0 && acct.next_parent(1) == 0);
+    assert(acct.next_uid() == 1002);
+    assert(acct.find("sam", 3) == 1 && acct.find("ivy", 3) == -1);
+}
+
+test "a taken name and a bad field are refused" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    assert(acct.parse(b, n[0]) == 2);
+    assert(acct.add("sam", 3, acct.CHILD, 1002, 1002, 64, 1, "f0e0d0c0b0a090807060504030201000",
+                    "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 1,
+                    "f0e0d0c0b0a090807060504030201000") == -1);
+    assert(acct.add("ivy", 3, acct.CHILD, 1002, 1002, 64, 1, "F0e0d0c0b0a090807060504030201000",
+                    "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 1,
+                    "f0e0d0c0b0a090807060504030201000") == -1);
+    assert(acct.add("ivy", 3, acct.CHILD, 1002, 1002, 64, 1, "f0e0d0c0b0a090807060504030201000",
+                    "a9bc0a6f4fa52c9edf21e4be1a0b7dfc2c890bb810885d96a8ce8f71947b2c45", 9,
+                    "f0e0d0c0b0a090807060504030201000") == -1);
+}
+
+test "a new passphrase keeps the account; the last parent cannot be removed" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    assert(acct.parse(b, n[0]) == 2);
+    assert(acct.parents() == 1);
+    assert(acct.set_pass(1, 128, 2, "00000000000000000000000000000001",
+                         "1111111111111111111111111111111111111111111111111111111111111111"));
+    assert(acct.m_of(1) == 128 && acct.t_of(1) == 2 && acct.salt_byte(1, 31) == 49 && acct.uid_of(1) == 1001);
+    assert(!acct.remove(0));
+    assert(acct.remove(1));
+    assert(acct.accounts() == 1 && acct.uid_of(0) == 1000);
+}
+
+test "AC-D2: no delay for three, then 2 s doubling to 60" {
+    assert(acct.delay_s(0) == 0 && acct.delay_s(3) == 0);
+    assert(acct.delay_s(4) == 2 && acct.delay_s(5) == 4 && acct.delay_s(6) == 8);
+    assert(acct.delay_s(8) == 32 && acct.delay_s(9) == 60 && acct.delay_s(40) == 60);
+}
+
+test "a damaged parent rejects the primary without keeping a partial account set" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    I64 damaged = 0;
+    for k in 0..n[0] - 5 {
+        if (damaged == 0 && b[k] == 115 && b[k + 1] == 97 && b[k + 2] == 108 && b[k + 3] == 116 && b[k + 4] == 61) {
+            b[k + 5] = 122;
+            damaged = 1;
+        }
+    }
+    assert(damaged == 1);
+    assert(acct.parse(b, n[0]) == -1);
+    assert(acct.accounts() == 0);
+    two(b, n);
+    assert(acct.parse(b, n[0]) == 2);
+    assert(acct.parents() == 1 && acct.uid_of(0) == 1000 && acct.uid_of(1) == 1001);
+}
+
+test "a malformed trailing account invalidates earlier valid accounts" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    I64 end = cp(b, n[0], "acct name=broken uid=1002\n");
+    assert(acct.parse(b, end) == -1);
+    assert(acct.accounts() == 0);
+}
+
+test "duplicate account names cannot be silently discarded" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    I64 start = 0;
+    while (b[start] != 10) { start = start + 1; }
+    start = start + 1;
+    I64 end = start;
+    while (b[end] != 10) { end = end + 1; }
+    end = end + 1;
+    I64 span = end - start;
+    for k in 0..span { b[n[0] + k] = b[start + k]; }
+    assert(acct.parse(b, n[0] + span) == -1);
+    assert(acct.accounts() == 0);
+}
+
+test "AC-D5: idle minutes default to 10, are written only when set, and refuse 0 and past a day" {
+    U8[4096] b;
+    I64[1] n;
+    two(b, n);
+    assert(acct.parse(b, n[0]) == 2);
+    assert(acct.idle_of(0) == acct.IDLE_MIN && acct.idle_of(1) == 10);
+    for k in 0..n[0] - 4 { assert(!(b[k] == 105 && b[k + 1] == 100 && b[k + 2] == 108 && b[k + 3] == 101)); }
+    assert(acct.set_idle(1, 1) && !acct.set_idle(1, 0) && !acct.set_idle(1, acct.IDLE_MAX + 1) && !acct.set_idle(2, 5));
+    U8[4096] o;
+    I64 m = acct.write_text(o);
+    assert(m == n[0] + 7);                        // ` idle=1` on sam's line only
+    assert(acct.parse(o, m) == 2);
+    assert(acct.idle_of(0) == 10 && acct.idle_of(1) == 1);
+    assert(acct.remove(1) && acct.accounts() == 1 && acct.idle_of(0) == 10);
+    U8[400] s;
+    I64 at = cp(s, 0, "daphnis-accounts 1\nacct id=000102030405060708090a0b0c0d0e0f uid=1004 gid=1004 name=ivy ");
+    at = cp(s, at, "role=child m=64 t=1 salt=000102030405060708090a0b0c0d0e0f ver=");
+    at = cp(s, at, "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386 ceil=3 idle=0\n");
+    assert(acct.parse(s, at) == -1);              // idle=0 is malformed: the store is refused
+}
+
+test "AC-D5: a session is due to lock after its idle minutes without input, not before" {
+    assert(!acct.idle_due(59999999999, 0, 1));
+    assert(acct.idle_due(60000000000, 0, 1));
+    assert(!acct.idle_due(600000000000 + 5, 6, 10));
+    assert(acct.idle_due(700000000000, 100000000000, 10));
+    assert(!acct.idle_due(700000000000, 0, 0));
+}
+
+test "a passphrase the desk cannot type is refused (r4519898110)" {
+    assert(acct.pass_typeable("correct horse ~!", 16));
+    assert(acct.pass_typeable(" ~", 2));
+    assert(!acct.pass_typeable(b"tab\there-pass", 13));
+    assert(!acct.pass_typeable(b"del\x7fhere-pass", 13));
+    assert(!acct.pass_typeable(b"caf\xc3\xa9-passphrase", 17));
+}
+
+test "the login list shows the chosen row with 9 or more accounts (r4520257052)" {
+    assert(acct.list_top(0, 0, 3, 3) == 0);
+    for sel in 0..8 { assert(acct.list_top(sel, 0, 16, 8) == 0); }
+    assert(acct.list_top(8, 0, 9, 8) == 1);           // the 9th of 9: one row down
+    assert(acct.list_top(15, 0, 16, 8) == 8);         // the last of 16
+    assert(acct.list_top(0, 8, 16, 8) == 0);          // Down past the last wraps to the first
+    assert(acct.list_top(10, 8, 16, 8) == 8);         // in view: the list stays
+    assert(acct.list_top(7, 8, 16, 8) == 7);          // Up past the top moves it one row
+    assert(acct.list_top(15, 15, 16, 8) == 8);        // never past the last full page
+    I64 top = 0;
+    for sel in 0..16 {
+        top = acct.list_top(sel, top, 16, 8);
+        assert(sel >= top && sel < top + 8);
+    }
+}
+
+// --- RS-ROLE (docs/specs/2026-11-11-rs-role.md): roles, ceilings, the parent's mark, uids never given twice ---
+
+// An account of n name bytes with fixed hashes; add's index.
+I64 put5(in U8[_] name, I64 n, I64 role, I64 uid, I64 m, I64 t) {
+    return acct.add(name, n, role, uid, uid, m, t, "000102030405060708090a0b0c0d0e0f",
+                    "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386", 7,
+                    "000102030405060708090a0b0c0d0e0f");
+}
+
+I64 put4(in U8[_] name, I64 role, I64 uid) { return put5(name, len(name), role, uid, 64, 1); }
+
+Bool repass(I64 i) {
+    return acct.set_pass(i, 64, 1, "000102030405060708090a0b0c0d0e0f",
+                         "e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386");
+}
+
+Bool has(in U8[_] b, I64 n, in U8[_] w) {
+    for at in 0..n - len(w) + 1 {
+        Bool same = true;
+        for k in 0..len(w) {
+            if (same && b[at + k] != w[k]) { same = false; }
+        }
+        if (same) { return true; }
+    }
+    return false;
+}
+
+test "RS-ROLE: a role is set; the last parent stays one; a promotion needs the parent's mark" {
+    U8[4096] b;
+    acct.clear();
+    assert(put4("ci", acct.PARENT, 1000) == 0 && put4("sam", acct.CHILD, 1001) == 1);
+    assert(acct.set_role(0, acct.CHILD) == acct.LAST_PARENT && acct.role_of(0) == acct.PARENT);
+    assert(acct.set_role(1, acct.PARENT) == acct.SHORT_PASS && acct.role_of(1) == acct.CHILD);
+    assert(acct.set_role(2, acct.CHILD) == acct.NO_ACCOUNT && acct.set_role(-1, acct.CHILD) == acct.NO_ACCOUNT);
+    assert(acct.set_role(1, 3) == acct.NO_ACCOUNT && acct.set_role(1, 0) == acct.NO_ACCOUNT);
+    assert(acct.set_role(0, acct.PARENT) == 0 && acct.set_role(1, acct.CHILD) == 0);
+    assert(acct.parent_pass(0) && !acct.parent_pass(1) && !acct.parent_pass(2));
+    acct.pass_len(1, acct.PARENT_MIN - 1);
+    assert(acct.set_role(1, acct.PARENT) == acct.SHORT_PASS);
+    acct.pass_len(1, acct.PARENT_MIN);
+    assert(acct.parent_pass(1));
+    I64 n = acct.write_text(b);
+    assert(has(b, n, " role=child m=64 t=1") && has(b, n, " ceil=7 long=1\n"));
+    assert(acct.parse(b, n) == 2 && acct.parent_pass(1));
+    assert(acct.set_role(1, acct.PARENT) == 0 && acct.ceil_of(1) == 7 && acct.parents() == 2);
+    n = acct.write_text(b);
+    assert(!has(b, n, "long="));                                   // a parent's mark is its role
+    assert(acct.set_role(0, acct.CHILD) == 0 && acct.parents() == 1 && acct.ceil_of(0) == 7);
+    assert(acct.parent_pass(0));                                   // its passphrase was a parent's
+    assert(acct.set_role(1, acct.CHILD) == acct.LAST_PARENT);
+    assert(acct.set_role(0, acct.PARENT) == 0 && acct.set_role(1, acct.CHILD) == 0);
+}
+
+test "RS-ROLE: a new passphrase drops the mark until its length is noted" {
+    acct.clear();
+    assert(put4("ci", acct.PARENT, 1000) == 0 && put4("sam", acct.CHILD, 1001) == 1);
+    acct.pass_len(1, 40);
+    assert(acct.parent_pass(1));
+    assert(repass(1) && !acct.parent_pass(1));
+    acct.pass_len(1, acct.CHILD_MIN);
+    assert(!acct.parent_pass(1));
+    acct.pass_len(1, acct.PASS_MAX + 1);
+    assert(!acct.parent_pass(1));
+    acct.pass_len(7, 40);
+    acct.pass_len(-1, 40);
+    assert(repass(0) && acct.parent_pass(0));
+}
+
+test "RS-ROLE: a child's ceiling is set; a parent's is every grant" {
+    acct.clear();
+    assert(put4("ci", acct.PARENT, 1000) == 0 && put4("sam", acct.CHILD, 1001) == 1);
+    assert(acct.set_ceil(1, 0) == 0 && acct.ceil_of(1) == 0);
+    assert(acct.set_ceil(1, 5) == 0 && acct.ceil_of(1) == 5);
+    assert(acct.set_ceil(1, 8) == acct.NO_ACCOUNT && acct.ceil_of(1) == 5);
+    assert(acct.set_ceil(0, 1) == acct.IS_PARENT && acct.ceil_of(0) == 7);
+    assert(acct.set_ceil(2, 1) == acct.NO_ACCOUNT);
+}
+
+test "RS-ROLE: a removed account's uid is never given again, across a write and a read" {
+    U8[4096] b;
+    acct.clear();
+    assert(put4("ci", acct.PARENT, 1000) == 0 && put4("sam", acct.CHILD, 1001) == 1);
+    assert(put4("lee", acct.CHILD, 1002) == 2);
+    I64 n = acct.write_text(b);
+    assert(!has(b, n, "next="));                                   // a store that removed nothing keeps its bytes
+    assert(acct.remove(1) && acct.next_uid() == 1003);
+    n = acct.write_text(b);
+    assert(!has(b, n, "next="));                                   // lee's 1002 still says it
+    assert(acct.remove(1) && acct.next_uid() == 1003);
+    n = acct.write_text(b);
+    assert(has(b, n, "daphnis-accounts 1 next=1003\n"));
+    assert(acct.parse(b, n) == 1 && acct.next_uid() == 1003);
+    assert(put4("new", acct.CHILD, acct.next_uid()) == 1 && acct.uid_of(1) == 1003);
+    n = acct.write_text(b);
+    assert(!has(b, n, "next=") && acct.parse(b, n) == 2 && acct.next_uid() == 1004);
+    acct.clear();
+    assert(acct.next_uid() == 1000);
+}
+
+I64 head(inout U8[_] b, in U8[_] first) {
+    I64 at = cp(b, 0, first);
+    at = cp(b, at, "\nacct id=000102030405060708090a0b0c0d0e0f uid=1000 gid=1000 name=ci role=parent m=64 t=1 ");
+    at = cp(b, at, "salt=000102030405060708090a0b0c0d0e0f ");
+    at = cp(b, at, "ver=e971e705e184e10bc3590eeb53b4677d68b100b93d97da7bed2b23764c41e386 ceil=7\n");
+    return at;
+}
+
+test "RS-ROLE: the header takes next=UID and unknown words, and nothing malformed" {
+    U8[4096] b;
+    assert(acct.parse(b, head(b, "daphnis-accounts 1")) == 1 && acct.next_uid() == 1001);
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 next=1500")) == 1 && acct.next_uid() == 1500);
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 later=x next=65536 more")) == 1 && acct.next_uid() == 65536);
+    assert(put4("full", acct.CHILD, acct.next_uid()) == -1);       // no uid is left to give
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 next=1000")) == 1 && acct.next_uid() == 1001);   // the uids are past it
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 next=999")) == -1);
+    assert(acct.parse(b, head(b, "daphnis-accounts 10")) == -1);
+    assert(acct.parse(b, head(b, "daphnis-accounts 1\tnext=1500")) == -1);
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 next=")) == -1);
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 next=12x4")) == -1);
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 next=65537")) == -1);
+    assert(acct.parse(b, head(b, "daphnis-accounts 1 next=1234567")) == -1);
+    assert(acct.accounts() == 0 && acct.next_uid() == 1000);
+    I64 n = head(b, "daphnis-accounts 1");
+    n = cp(b, n - 1, " long=2\n");
+    assert(acct.parse(b, n) == -1);
+}
+
+test "RS-ROLE: the longest store fits the 4,096 bytes its readers take" {
+    U8[4096] b;
+    U8[32] name;
+    acct.clear();
+    for k in 0..31 { name[k] = 97; }
+    for i in 0..16 {
+        name[31] = (97 + i) as U8;
+        I64 uid = 65519 + i;
+        if (i == 15) { uid = 65535; }
+        assert(put5(name, 32, acct.CHILD, uid, 65536, 16) == i);
+        assert(acct.set_idle(i, 1440));
+        acct.pass_len(i, 256);
+    }
+    assert(acct.remove(15));
+    assert(put5(name, 32, acct.CHILD, 65534, 65536, 16) == 15 && acct.set_idle(15, 1440));
+    acct.pass_len(15, 256);
+    I64 n = acct.write_text(b);
+    assert(n == 19 + 11 + 16 * 254 && n <= 4096);
+    assert(has(b, n, "daphnis-accounts 1 next=65536\n"));
+    assert(acct.parse(b, n) == 16 && acct.idle_of(15) == 1440 && acct.parent_pass(15) && acct.next_uid() == 65536);
+}
+
+// Name k of ci, pat, lee, sam into o; its length.
+I64 nm(I64 k, inout U8[_] o) {
+    for j in 0..3 { o[j] = b"ci patleesam"[3 * k + j]; }
+    if (k == 0) { return 2; }
+    return 3;
+}
+
+// The store of signature s: digit k (base 3) is account k's state, 0 absent, 1 parent, 2 child. ci, pat and lee
+// carry the parent's mark; sam, a child with a short passphrase, does not.
+void build(I64 s) {
+    acct.clear();
+    I64 q = s;
+    for k in 0..4 {
+        I64 d = q % 3;
+        q = q / 3;
+        if (d != 0) {
+            I64 role = acct.CHILD;
+            if (d == 1) { role = acct.PARENT; }
+            U8[3] name;
+            I64 nl = nm(k, name);
+            I64 i = put5(name, nl, role, 1000 + k, 64, 1);
+            assert(i >= 0);
+            if (k < 3) { acct.pass_len(i, 40); }
+        }
+    }
+}
+
+I64 sig() {
+    I64 s = 0;
+    I64 w = 1;
+    for k in 0..4 {
+        U8[3] name;
+        I64 nl = nm(k, name);
+        I64 i = acct.find(name, nl);
+        if (i >= 0) {
+            if (acct.role_of(i) == acct.PARENT) { s = s + w; } else { s = s + 2 * w; }
+        }
+        w = w * 3;
+    }
+    return s;
+}
+
+test "RS-ROLE: from two parents and two children, every store any order of operations reaches has a parent" {
+    Bool[81] seen;
+    I64[81] todo;
+    I64 n = 0;
+    I64 states = 0;
+    I64 refused = 0;
+    I64 start = 1 + 3 * 1 + 9 * 2 + 27 * 2;
+    seen[start] = true;
+    todo[0] = start;
+    n = 1;
+    while (n > 0) {
+        n = n - 1;
+        I64 s = todo[n];
+        states = states + 1;
+        for op in 0..12 {
+            build(s);
+            assert(sig() == s && acct.parents() >= 1);
+            U8[3] name;
+            I64 nl = nm(op / 3, name);
+            I64 i = acct.find(name, nl);
+            Bool did = false;
+            if (op % 3 == 0) { did = acct.set_role(i, acct.PARENT) == 0; }
+            if (op % 3 == 1) { did = acct.set_role(i, acct.CHILD) == 0; }
+            if (op % 3 == 2) { did = acct.remove(i); }
+            assert(acct.parents() >= 1);
+            I64 t = sig();
+            if (!did) {
+                assert(t == s);
+                refused = refused + 1;
+            }
+            if (!seen[t]) {
+                seen[t] = true;
+                todo[n] = t;
+                n = n + 1;
+            }
+        }
+    }
+    // ci, pat and lee each absent, parent or child, sam absent or child: 54 stores, the 16 with no parent left out
+    assert(states == 38 && refused > 38);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,153 @@
+// tests/ff/indexbody_test.ci: Index's body (DN-55, design note 65; user/ci/kit/indexbody.ci), hosted: the Grid's
+// columns in any box, where a cell and a list row are, the List's columns and their header, the narrow drops, and
+// the scroll that keeps an entry shown. Run by check.sh.
+import user.ci.kit.indexbody;
+import user.ci.kit.finder;
+import user.ci.kit.opener;
+import user.ci.kit.tokens;
+import user.ci.kit.indexband;
+
+U32[2048] row;
+
+void home(I64 n) {
+    I64 r = opener.load_default();
+    assert(finder.go(b"/home/ci"));
+    finder.begin();
+    U8[8] nm;
+    for k in 0..n {
+        nm[0] = 'f';
+        nm[1] = ('0' as I64 + k / 10) as U8;
+        nm[2] = ('0' as I64 + k % 10) as U8;
+        assert(finder.add(nm[0..3], false, 100, -1, opener.NOTHING, false));
+    }
+    finder.end();
+}
+
+test "the Grid: 112 x 104 cells 8 apart from 16 in and 12 down, as many columns as fit, left aligned" {
+    home(9);
+    indexbody.set_list(false);
+    indexbody.set_box(184, 48, 958, 639);                  // frame 4's body
+    assert(indexbody.cols() == 6);
+    indexbody.set_box(184, 48, 880, 612);                  // Index's 880 x 640 surface
+    assert(indexbody.cols() == 5);
+    indexbody.set_box(0, 0, 100, 100);                     // under one cell: one column, clipped
+    assert(indexbody.cols() == 1);
+    indexbody.set_box(184, 48, 958, 639);
+    assert(indexbody.hit(200, 60) == 0 && indexbody.hit(311, 163) == 0);
+    assert(indexbody.hit(312, 60) == indexbody.EMPTY);     // the gap
+    assert(indexbody.hit(320, 60) == 1 && indexbody.hit(200, 172) == 6);
+    assert(indexbody.hit(200, 59) == indexbody.EMPTY && indexbody.hit(199, 60) == indexbody.EMPTY);
+    assert(indexbody.hit(200 + 4 * 120, 172) == indexbody.EMPTY);   // past the ninth
+    assert(indexbody.hit(183, 60) == indexbody.OUTSIDE && indexbody.hit(500, 639) == indexbody.OUTSIDE);
+    assert(indexbody.down_step() == 6);
+}
+
+test "the List: a 28 px header 4 down, rows 28 high 2 apart, NAME takes the slack" {
+    home(9);
+    indexbody.set_list(true);
+    indexbody.set_box(184, 48, 958, 639);
+    I64 hy = 48 + 4 + 10;
+    assert(indexbody.hit(210, hy) == indexbody.HEAD - finder.BY_NAME);
+    assert(indexbody.hit(958 - 18 - 1, hy) == indexbody.HEAD - finder.BY_MODIFIED);
+    assert(indexbody.hit(958 - 18 - 128 - 12 - 1, hy) == indexbody.HEAD - finder.BY_SIZE);
+    assert(indexbody.hit(958 - 18 - 128 - 12 - 80 - 12 - 1, hy) == indexbody.HEAD - finder.BY_TYPE);
+    assert(indexbody.hit(200, 48 + 4 + 28 + 2) == 0 && indexbody.hit(200, 48 + 4 + 28 + 2 + 27) == 0);
+    assert(indexbody.hit(200, 48 + 4 + 28 + 2 + 28) == indexbody.EMPTY);
+    assert(indexbody.hit(200, 48 + 4 + 28 + 2 + 30) == 1);
+    assert(indexbody.hit(191, 90) == indexbody.EMPTY);     // the list's 8 px padding
+    assert(indexbody.down_step() == 1);
+}
+
+test "the List narrows: MODIFIED drops first, then TYPE, as NAME would go under 120" {
+    home(3);
+    indexbody.set_list(true);
+    I64 hy = 4 + 10;
+    indexbody.set_box(0, 0, 499, 400);                     // frame 3's tile: NAME, TYPE, SIZE
+    assert(indexbody.hit(499 - 18 - 1, hy) == indexbody.HEAD - finder.BY_SIZE);
+    assert(indexbody.hit(499 - 18 - 80 - 12 - 1, hy) == indexbody.HEAD - finder.BY_TYPE);
+    indexbody.set_box(0, 0, 300, 400);                     // NAME and SIZE
+    assert(indexbody.hit(300 - 18 - 1, hy) == indexbody.HEAD - finder.BY_SIZE);
+    assert(indexbody.hit(300 - 18 - 80 - 12 - 1, hy) == indexbody.HEAD - finder.BY_NAME);
+}
+
+test "PR 337's drop target: SURF1 under an entry not chosen, nothing with -1" {
+    home(3);
+    finder.select(0);
+    indexbody.set_list(false);
+    indexbody.set_box(0, 0, 600, 400);
+    I64 y = 12 + 2;                                         // inside the first row of cells
+    indexbody.set_drop(-1);
+    indexbody.body_row(row, y);
+    assert(row[16 + 120 + 20] == tokens.word(tokens.PAPER));
+    indexbody.set_drop(1);
+    indexbody.body_row(row, y);
+    assert(row[16 + 120 + 20] == tokens.word(tokens.SURF1));   // cell 1, past its radius
+    assert(row[16 + 20] == tokens.word(tokens.FILL));           // cell 0 is chosen: FILL, as before
+    indexbody.set_drop(-1);
+}
+
+test "the scroll keeps an entry shown by whole rows" {
+    home(40);
+    indexbody.set_list(true);
+    indexbody.set_box(0, 0, 600, 4 + 28 + 2 + 5 * 30);  // five rows
+    assert(indexbody.rows() == 5);
+    indexbody.keep(7);
+    assert(indexbody.hit(20, 4 + 30 + 1) == 3);            // rows 3 to 7 shown
+    indexbody.keep(1);
+    assert(indexbody.hit(20, 4 + 30 + 1) == 1);
+    indexbody.set_list(false);
+    indexbody.set_box(0, 0, 32 + 3 * 120 - 8, 12 + 2 * 112);   // three columns, two rows
+    assert(indexbody.cols() == 3 && indexbody.rows() == 2);
+    indexbody.keep(20);                                    // row 6
+    assert(indexbody.hit(20, 20) == 15);
+}
+
+test "a band at the edge scrolls by whole rows, from the first row to the last wholly shown, and no further" {
+    home(40);
+    indexbody.set_list(true);
+    indexbody.set_box(0, 0, 600, 4 + 28 + 2 + 5 * 30);  // five rows of 40
+    indexbody.scroll_top();
+    assert(!indexbody.scroll(0 - 1));                     // at the first row
+    assert(indexbody.scroll(1) && indexbody.hit(20, 4 + 30 + 1) == 1);
+    assert(indexbody.scroll(100) && indexbody.hit(20, 4 + 30 + 1) == 35);   // rows 35 to 39 shown
+    assert(!indexbody.scroll(1));
+    assert(indexbody.scroll(0 - 1) && indexbody.hit(20, 4 + 30 + 1) == 34);
+    indexbody.set_list(false);
+    indexbody.set_box(0, 0, 32 + 3 * 120 - 8, 12 + 2 * 112);   // three columns, two rows: 14 rows of 40
+    assert(indexbody.scroll(100) && indexbody.hit(20, 20) == 36);  // rows 12 and 13 shown
+    assert(!indexbody.scroll(1));
+    home(4);                                              // fewer than fill the body: it never scrolls
+    indexbody.scroll_top();
+    assert(!indexbody.scroll(1));
+}
+
+// Every point of the body on an entry: kit/indexband.ci's box from indexbody's origin holds the same entry (above the
+// first row shown the band still sees the rows scrolled away, which the body does not draw).
+Bool band_agrees(I64 w, I64 h) {
+    I64 n = 0;
+    for y in 0..h {
+        for x in 0..w {
+            I64 k = indexbody.hit(x, y);
+            if (k >= 0) {
+                if (indexband.at(x, y) != k) { return false; }
+                n = n + 1;
+            }
+        }
+    }
+    return n > 0;
+}
+
+test "frame 32: the band's boxes come from indexbody's origin, after a scroll, in the Grid and the List" {
+    home(40);
+    indexbody.set_list(false);
+    indexbody.set_box(0, 0, 32 + 3 * 120 - 8, 12 + 2 * 112);   // three columns, two rows
+    indexbody.keep(20);                                    // scrolled to row 6
+    indexband.set_grid(indexbody.origin_x(), indexbody.origin_y(), indexbody.cols(), finder.kept());
+    assert(band_agrees(32 + 3 * 120 - 8, 12 + 2 * 112));
+    indexbody.set_list(true);
+    indexbody.set_box(0, 0, 600, 4 + 28 + 2 + 5 * 30);
+    indexbody.keep(7);                                     // rows 3 to 7
+    indexband.set_list(indexbody.origin_x(), indexbody.origin_y(), indexbody.row_x1(), finder.kept());
+    assert(indexbody.row_x1() == 600 - 8 && band_agrees(600, 4 + 28 + 2 + 5 * 30));
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,832 @@
+// user/ci/cish/expand.ci: a word of the text into fields (docs/specs/2026-11-06-cish-shell.md section 6), written
+// into the caller's block: each field's bytes and a NUL, so the block is an argv as execve takes it.
+// CS-1: quote removal ('...', "...", backslash), line continuations, $name, ${name}, the positional parameters and
+// $?, $#, $$, $!, $@, $*, $0; "$@" is one field per parameter.
+// CS-2: pattern mode for case: a quoted *, ?, [, ] or backslash is written after a backslash.
+// CS-3: the ${x...} forms (:- - := = :? ? :+ + # ## % %% and ${#x}); $((...)), checked (arith); $(...) and
+// backquotes; field splitting on IFS (XCU 2.6.5); a tilde at a word's start ($HOME); here-document bodies; and
+// marks for pathname expansion: in pattern mode an unquoted *, ? or [ marks its field, which run hands to glob.
+// A command substitution needs a process, so range() stops at one not yet run and returns NEED, the caller runs
+// it (run.subst) and gives its output back (provide), then calls range() again on the same word: the outputs and
+// the arithmetic results of the word are kept by their place in the text, so each runs once. fresh() starts a
+// word. Refused by name: ${x/...}, ${x:n}, ${!x} and the other forms past XCU, ~user, $'...', brace expansion.
+import user.ci.dev;
+import user.ci.cish.limits;
+import user.ci.cish.lex;
+import user.ci.cish.vars;
+import user.ci.cish.msg;
+import user.ci.cish.pattern;
+import user.ci.cish.arith;
+
+export const I64 NEED = -2;
+
+I64 nbytes = 0;   // bytes of the block in use
+I64 nfields = 0;
+Bool open = false;
+Bool fullup = false;
+I64 last_status = 0;
+I64 last_bg = 0;
+I64 shell_pid = 0;
+Bool pat = false;
+Bool[256] gflag;   // the field has an unquoted *, ? or [ (pattern mode)
+U8[64] ifs;
+I64 nifs = 3;
+Bool after_ws = false;   // the last field was ended by IFS white space
+
+// The outputs of this word's substitutions and arithmetic, by the text index of their `$` or backquote.
+U8[65536] sbuf;
+I64 sused = 0;
+I64[64] skey;
+I64[64] soff;
+I64[64] slen;
+I64 nsub = 0;
+I64 need_a = 0;   // the substitution to run: its inside, its place, 2 for backquotes
+I64 need_b = 0;
+I64 need_at = 0;
+I64 need_kind = 0;
+
+U8[65536] vbuf;   // a parameter's value, or a pattern, read back from the block
+U8[65536] pbuf;
+
+export void set_status(I64 s) { last_status = s; }
+export I64 status() { return last_status; }
+export void set_bg(I64 p) { last_bg = p; }
+export void set_pid(I64 p) { shell_pid = p; }
+export void set_pattern(Bool b) { pat = b; }
+export I64 fields() { return nfields; }
+export I64 bytes() { return nbytes; }
+export Bool globbed(I64 f) { return gflag[f]; }
+export I64 need_start() { return need_a; }
+export I64 need_stop() { return need_b; }
+export I64 need_place() { return need_at; }
+export I64 need_backquote() { return need_kind; }
+
+export void begin() {
+    nbytes = 0;
+    nfields = 0;
+    open = false;
+    fullup = false;
+}
+
+export void fresh() {
+    nsub = 0;
+    sused = 0;
+}
+
+I64 found(I64 key) {
+    for i in 0..nsub {
+        if (skey[i] == key) { return i; }
+    }
+    return -1;
+}
+
+// The output of the substitution at text index key; false when the table is full (said).
+export Bool provide(I64 key, in U8[_] got) {
+    if (nsub == 64 || sused + len(got) > limits.SUBST) {
+        msg.begin();
+        msg.text(b"limit: SUBST ");
+        msg.num(limits.SUBST);
+        msg.text(b" bytes or 64 substitutions in one word");
+        msg.send();
+        return false;
+    }
+    skey[nsub] = key;
+    soff[nsub] = sused;
+    slen[nsub] = len(got);
+    for i in 0..len(got) { sbuf[sused + i] = got[i]; }
+    sused = sused + len(got);
+    nsub = nsub + 1;
+    return true;
+}
+
+void open_field(inout U8[_] ab, inout I64[_] fo) {
+    if (!open) {
+        if (nfields == limits.FIELDS) {
+            fullup = true;
+            return;
+        }
+        fo[nfields] = nbytes;
+        gflag[nfields] = false;
+        open = true;
+    }
+}
+
+void put(U8 b, inout U8[_] ab, inout I64[_] fo) {
+    open_field(ab, fo);
+    after_ws = false;
+    if (!open) { return; }
+    if (nbytes + 1 >= len(ab)) {
+        fullup = true;
+        return;
+    }
+    ab[nbytes] = b;
+    nbytes = nbytes + 1;
+}
+
+// An unquoted byte: in pattern mode a *, ? or [ marks the field and a backslash is escaped.
+void put_u(U8 b, inout U8[_] ab, inout I64[_] fo) {
+    if (pat && b == '\\') { put('\\', ab, fo); }
+    put(b, ab, fo);
+    if (pat && open && (b == '*' || b == '?' || b == '[')) { gflag[nfields] = true; }
+}
+
+// A quoted byte: in pattern mode one that would be special is escaped.
+void lit(U8 b, inout U8[_] ab, inout I64[_] fo) {
+    if (pat && (b == '*' || b == '?' || b == '[' || b == ']' || b == '\\')) { put('\\', ab, fo); }
+    put(b, ab, fo);
+}
+
+// A field exists even if empty (a quote was seen).
+void touch(inout U8[_] ab, inout I64[_] fo) {
+    open_field(ab, fo);
+    after_ws = false;
+}
+
+void finish(inout U8[_] ab, inout I64[_] fe) {
+    if (open) {
+        if (nbytes + 1 > len(ab)) {
+            fullup = true;
+            return;
+        }
+        fe[nfields] = nbytes;
+        ab[nbytes] = 0;
+        nbytes = nbytes + 1;
+        nfields = nfields + 1;
+        open = false;
+    }
+}
+
+export Bool is_ifs(U8 c) {
+    for i in 0..nifs {
+        if (ifs[i] == c) { return true; }
+    }
+    return false;
+}
+
+export Bool white(U8 c) { return c == ' ' || c == '\t' || c == '\n'; }
+
+export void load_ifs() {
+    I64 v = vars.lookup(b"IFS");
+    if (!vars.has_value(v)) {
+        ifs[0] = ' ';
+        ifs[1] = '\t';
+        ifs[2] = '\n';
+        nifs = 3;
+        return;
+    }
+    nifs = vars.value_len(v);
+    if (nifs > 64) { nifs = 64; }
+    for i in 0..nifs { ifs[i] = vars.value_at(v, i); }
+}
+
+// One byte of an expansion's value: quoted, it is kept; unquoted and split, an IFS byte delimits (XCU 2.6.5: IFS
+// white space runs are one delimiter and vanish at the ends; any other IFS byte ends a field, empty or not).
+void value_byte(U8 c, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    if (quoted) {
+        lit(c, ab, fo);
+    } else if (split && is_ifs(c)) {
+        if (white(c)) {
+            if (open) {
+                finish(ab, fe);
+                after_ws = true;
+            }
+        } else {
+            if (open) {
+                finish(ab, fe);
+            } else if (!after_ws) {
+                touch(ab, fo);
+                finish(ab, fe);
+            }
+            after_ws = false;
+        }
+    } else {
+        put_u(c, ab, fo);
+    }
+}
+
+// The decimal text of v into dst at k: the length after.
+I64 decimal(I64 v, inout U8[_] dst, I64 k) {
+    U8[24] d;
+    I64 m = 0;
+    I64 x = v;
+    I64 at = k;
+    if (x < 0) {
+        dst[at] = '-';
+        at = at + 1;
+    }
+    if (x == 0) {
+        d[0] = '0';
+        m = 1;
+    }
+    while (x != 0) {
+        I64 r = x % 10;
+        I64 q = x / 10;
+        if (r != 0 && x < 0) {
+            r = r - 10;
+            q = q + 1;
+        }
+        if (r < 0) { r = 0 - r; }
+        d[m] = (r as U8) + 48;
+        m = m + 1;
+        x = q;
+    }
+    while (m > 0) {
+        m = m - 1;
+        dst[at] = d[m];
+        at = at + 1;
+    }
+    return at;
+}
+
+void number(I64 v, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    U8[24] t;
+    I64 n = decimal(v, t, 0);
+    for k in 0..n { value_byte(t[k], quoted, split, ab, fo, fe); }
+}
+
+Bool name_start(U8 c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+
+Bool name_char(U8 c) { return name_start(c) || (c >= '0' && c <= '9'); }
+
+Bool special(U8 c) { return c == '?' || c == '#' || c == '$' || c == '!' || c == '@' || c == '*' || c == '0' || c == '-'; }
+
+void refuse(I64 a, I64 b) {
+    msg.begin();
+    msg.text(b"not supported: ");
+    msg.span(a, b);
+    msg.send();
+}
+
+// The byte that joins "$*": IFS's first, a blank when IFS is unset, none when it is empty (0 then).
+I64 joiner() {
+    I64 v = vars.lookup(b"IFS");
+    if (!vars.has_value(v)) { return 32; }
+    if (vars.value_len(v) == 0) { return -1; }
+    return vars.value_at(v, 0) as I64;
+}
+
+// Parameter a..b of the text (a name, digits or one special character), its value into the block.
+void param(I64 a, I64 b, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    U8 c = lex.at(a);
+    if (b - a == 1 && c == '?') {
+        number(last_status, quoted, split, ab, fo, fe);
+    } else if (b - a == 1 && c == '#') {
+        number(vars.positional(), quoted, split, ab, fo, fe);
+    } else if (b - a == 1 && c == '$') {
+        number(shell_pid, quoted, split, ab, fo, fe);
+    } else if (b - a == 1 && c == '!') {
+        if (last_bg > 0) { number(last_bg, quoted, split, ab, fo, fe); }
+    } else if (b - a == 1 && c == '-') {
+        // no options are set in this edition
+    } else if (b - a == 1 && c == '0') {
+        for k in 0..vars.zero_len() { value_byte(vars.zero_at(k), quoted, split, ab, fo, fe); }
+    } else if (b - a == 1 && (c == '@' || c == '*')) {
+        I64 n = vars.positional();
+        I64 j = joiner();
+        for i in 0..n {
+            for k in 0..vars.pos_len(i) { value_byte(vars.pos_at(i, k), quoted, split, ab, fo, fe); }
+            if (i + 1 < n) {
+                if (quoted && c == '@') {
+                    finish(ab, fe);
+                    touch(ab, fo);
+                } else if (quoted) {
+                    if (j >= 0) { lit(j as U8, ab, fo); }
+                } else if (split) {
+                    finish(ab, fe);
+                } else {
+                    put(' ', ab, fo);
+                }
+            }
+        }
+        if (n > 0 && quoted) { touch(ab, fo); }
+    } else if (c >= '0' && c <= '9') {
+        I64 n = 0;
+        for k in a..b {
+            if (n < 100000) { n = n * 10 + (lex.at(k) - '0') as I64; }
+        }
+        if (n >= 1 && n <= vars.positional()) {
+            for k in 0..vars.pos_len(n - 1) { value_byte(vars.pos_at(n - 1, k), quoted, split, ab, fo, fe); }
+        }
+    } else {
+        U8[256] name;
+        I64 m = b - a;
+        if (m > 256) { m = 256; }
+        for k in 0..m { name[k] = lex.at(a + k); }
+        I64 v = vars.lookup(name[0..m]);
+        if (vars.has_value(v)) {
+            for k in 0..vars.value_len(v) { value_byte(vars.value_at(v, k), quoted, split, ab, fo, fe); }
+        }
+    }
+}
+
+// Parameter a..b's value into vbuf: its length, or -1 when unset.
+I64 fetch(I64 a, I64 b) {
+    U8 c = lex.at(a);
+    if (b - a == 1 && c == '?') { return decimal(last_status, vbuf, 0); }
+    if (b - a == 1 && c == '#') { return decimal(vars.positional(), vbuf, 0); }
+    if (b - a == 1 && c == '$') { return decimal(shell_pid, vbuf, 0); }
+    if (b - a == 1 && c == '!') {
+        if (last_bg <= 0) { return -1; }
+        return decimal(last_bg, vbuf, 0);
+    }
+    if (b - a == 1 && c == '-') { return 0; }
+    if (b - a == 1 && c == '0') {
+        for k in 0..vars.zero_len() { vbuf[k] = vars.zero_at(k); }
+        return vars.zero_len();
+    }
+    if (b - a == 1 && (c == '@' || c == '*')) {
+        I64 n = vars.positional();
+        if (n == 0) { return -1; }
+        I64 at = 0;
+        for i in 0..n {
+            if (i > 0) {
+                vbuf[at] = ' ';
+                at = at + 1;
+            }
+            for k in 0..vars.pos_len(i) { vbuf[at + k] = vars.pos_at(i, k); }
+            at = at + vars.pos_len(i);
+        }
+        return at;
+    }
+    if (c >= '0' && c <= '9') {
+        I64 n = 0;
+        for k in a..b {
+            if (n < 100000) { n = n * 10 + (lex.at(k) - '0') as I64; }
+        }
+        if (n < 1 || n > vars.positional()) { return -1; }
+        for k in 0..vars.pos_len(n - 1) { vbuf[k] = vars.pos_at(n - 1, k); }
+        return vars.pos_len(n - 1);
+    }
+    U8[256] name;
+    I64 m = b - a;
+    if (m > 256) { m = 256; }
+    for k in 0..m { name[k] = lex.at(a + k); }
+    I64 v = vars.lookup(name[0..m]);
+    if (!vars.has_value(v)) { return -1; }
+    for k in 0..vars.value_len(v) { vbuf[k] = vars.value_at(v, k); }
+    return vars.value_len(v);
+}
+
+// The parameter's name at a..b of ${...}: its end, or -1 when it is not one (name, digits, one special).
+I64 param_end(I64 a, I64 b) {
+    if (a >= b) { return -1; }
+    U8 c = lex.at(a);
+    if (name_start(c)) {
+        I64 j = a + 1;
+        while (j < b && name_char(lex.at(j))) { j = j + 1; }
+        return j;
+    }
+    if (c >= '0' && c <= '9') {
+        I64 j = a + 1;
+        while (j < b && lex.at(j) >= '0' && lex.at(j) <= '9') { j = j + 1; }
+        return j;
+    }
+    if (special(c)) { return a + 1; }
+    return -1;
+}
+
+// Expands text a..b into the block in place and reads it back into pbuf (into_p) or vbuf (no split), leaving the block as it was:
+// the length, or -1 / NEED.
+I64 read_back(I64 a, I64 b, Bool quoted, Bool as_pattern, Bool into_p, inout U8[_] ab, inout I64[_] fo,
+        inout I64[_] fe) {
+    I64 mark = nbytes;
+    Bool was_open = open;
+    I64 mf = nfields;
+    Bool g = false;
+    if (open) { g = gflag[nfields]; }
+    Bool was_pat = pat;
+    pat = as_pattern;
+    I64 r = walk(a, b, quoted, false, false, ab, fo, fe);
+    pat = was_pat;
+    if (r < 0) { return r; }
+    I64 n = nbytes - mark;
+    for k in 0..n {
+        if (into_p) {
+            pbuf[k] = ab[mark + k];
+        } else {
+            vbuf[k] = ab[mark + k];
+        }
+    }
+    nbytes = mark;
+    nfields = mf;
+    open = was_open;
+    if (open) { gflag[nfields] = g; }
+    return n;
+}
+
+void emit(in U8[_] v, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    for k in 0..len(v) { value_byte(v[k], quoted, split, ab, fo, fe); }
+}
+
+// ${...} at i (its `$`), its closing brace at e - 1: the index after it, or -1 / NEED.
+I64 braced(I64 i, I64 e, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    I64 a = i + 2;
+    I64 z = e - 1;
+    if (a < z && lex.at(a) == '#' && z - a > 1) {
+        I64 pe = param_end(a + 1, z);
+        if (pe != z) {
+            refuse(i, e);
+            return -1;
+        }
+        I64 n = fetch(a + 1, z);
+        if (n < 0) { n = 0; }
+        if (z - a == 2 && (lex.at(a + 1) == '@' || lex.at(a + 1) == '*')) { n = vars.positional(); }
+        number(n, quoted, split, ab, fo, fe);
+        return e;
+    }
+    I64 pe = param_end(a, z);
+    if (pe < 0) {
+        refuse(i, e);
+        return -1;
+    }
+    if (pe == z) {
+        param(a, z, quoted, split, ab, fo, fe);
+        return e;
+    }
+    // the operator
+    Bool colon = lex.at(pe) == ':';
+    I64 o = pe;
+    if (colon) { o = pe + 1; }
+    if (o >= z) {
+        refuse(i, e);
+        return -1;
+    }
+    U8 op = lex.at(o);
+    I64 w = o + 1;
+    Bool twice = false;
+    if (!colon && (op == '#' || op == '%') && w < z && lex.at(w) == op) {
+        twice = true;
+        w = w + 1;
+    }
+    Bool known = op == '-' || op == '=' || op == '?' || op == '+' || (!colon && (op == '#' || op == '%'));
+    if (!known) {
+        refuse(i, e);
+        return -1;
+    }
+    if (op == '#' || op == '%') {
+        I64 pn = read_back(w, z, false, true, true, ab, fo, fe);   // the pattern is not quoted by outer quotes (XCU 2.6.2)
+        if (pn < 0) { return pn; }
+        I64 n = fetch(a, pe);
+        if (n < 0) { n = 0; }
+        I64 from = 0;
+        I64 to = n;
+        if (op == '#') {
+            I64 k = 0;
+            Bool done = false;
+            if (twice) { k = n; }
+            while (!done) {
+                if (pattern.match(pbuf[0..pn], vbuf[0..k])) {
+                    from = k;
+                    done = true;
+                } else if (twice) {
+                    if (k == 0) { done = true; }
+                    k = k - 1;
+                    if (k < 0) { k = 0; }
+                } else {
+                    if (k == n) { done = true; }
+                    k = k + 1;
+                    if (k > n) { k = n; }
+                }
+            }
+        } else {
+            I64 k = n;
+            Bool done = false;
+            if (twice) { k = 0; }
+            while (!done) {
+                if (pattern.match(pbuf[0..pn], vbuf[k..n])) {
+                    to = k;
+                    done = true;
+                } else if (twice) {
+                    if (k == n) { done = true; }
+                    k = k + 1;
+                    if (k > n) { k = n; }
+                } else {
+                    if (k == 0) { done = true; }
+                    k = k - 1;
+                    if (k < 0) { k = 0; }
+                }
+            }
+        }
+        emit(vbuf[from..to], quoted, split, ab, fo, fe);
+        return e;
+    }
+    I64 n = fetch(a, pe);
+    Bool isset = n >= 0 && !(colon && n == 0);
+    if (op == '-') {
+        if (isset) {
+            emit(vbuf[0..n], quoted, split, ab, fo, fe);
+            return e;
+        }
+        I64 r = walk(w, z, quoted, split, false, ab, fo, fe);
+        if (r < 0) { return r; }
+        return e;
+    }
+    if (op == '+') {
+        if (isset) {
+            I64 r = walk(w, z, quoted, split, false, ab, fo, fe);
+            if (r < 0) { return r; }
+        }
+        return e;
+    }
+    if (isset) {
+        emit(vbuf[0..n], quoted, split, ab, fo, fe);
+        return e;
+    }
+    I64 wn = read_back(w, z, quoted, false, true, ab, fo, fe);
+    if (wn < 0) { return wn; }
+    if (op == '?') {
+        msg.begin();
+        msg.span(a, pe);
+        msg.text(b": ");
+        if (wn > 0) {
+            msg.text(pbuf[0..wn]);
+        } else {
+            msg.text(b"parameter not set");
+        }
+        msg.send();
+        dev.exit_now(2);
+    }
+    // = : only a variable takes it
+    if (!name_start(lex.at(a))) {
+        msg.begin();
+        msg.span(i, e);
+        msg.text(b": cannot assign in this way");
+        msg.send();
+        dev.exit_now(2);
+    }
+    U8[256] name;
+    I64 m = pe - a;
+    if (m > 256) { m = 256; }
+    for k in 0..m { name[k] = lex.at(a + k); }
+    if (!vars.set(name[0..m], pbuf[0..wn])) {
+        msg.begin();
+        msg.text(b"limit: VARS or VARBYTES");
+        msg.send();
+        return -1;
+    }
+    emit(pbuf[0..wn], quoted, split, ab, fo, fe);
+    return e;
+}
+
+// $((...)) at i, its end at e: the index after it, or -1 / NEED.
+I64 arithmetic(I64 i, I64 e, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    I64 s = found(i);
+    if (s < 0) {
+        I64 n = read_back(i + 3, e - 2, true, false, false, ab, fo, fe);
+        if (n < 0) { return n; }
+        I64 v = arith.eval(vbuf[0..n]);
+        if (!arith.ok()) { dev.exit_now(2); }
+        U8[24] t;
+        I64 k = decimal(v, t, 0);
+        if (!provide(i, t[0..k])) { return -1; }
+        s = nsub - 1;
+    }
+    for k in 0..slen[s] { value_byte(sbuf[soff[s] + k], quoted, split, ab, fo, fe); }
+    return e;
+}
+
+// $(...) or a backquoted command at i, its end at e: the index after it, or NEED the first time.
+I64 command(I64 i, I64 e, Bool bq, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    I64 s = found(i);
+    if (s < 0) {
+        need_at = i;
+        if (bq) {
+            need_a = i + 1;
+            need_kind = 2;
+        } else {
+            need_a = i + 2;
+            need_kind = 1;
+        }
+        need_b = e - 1;
+        return NEED;
+    }
+    for k in 0..slen[s] { value_byte(sbuf[soff[s] + k], quoted, split, ab, fo, fe); }
+    return e;
+}
+
+// A `$` at i: the index after the expansion, or -1 (refused, said) / NEED.
+I64 dollar(I64 i, I64 b, Bool quoted, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    if (i + 1 >= b) {
+        put('$', ab, fo);
+        return i + 1;
+    }
+    U8 c = lex.at(i + 1);
+    if (c == '(') {
+        I64 e = lex.nested(i + 2, ')');
+        if (e < 0 || e > b) {
+            refuse(i, b);
+            return -1;
+        }
+        if (i + 2 < b && lex.at(i + 2) == '(' && lex.at(e - 2) == ')' && e - 2 > i + 2) {
+            return arithmetic(i, e, quoted, split, ab, fo, fe);
+        }
+        return command(i, e, false, quoted, split, ab, fo, fe);
+    }
+    if (c == '{') {
+        I64 e = lex.nested(i + 2, '}');
+        if (e < 0 || e > b) {
+            refuse(i, b);
+            return -1;
+        }
+        return braced(i, e, quoted, split, ab, fo, fe);
+    }
+    if (c == '\'' && !quoted) {
+        refuse(i, i + 2);
+        return -1;
+    }
+    if (c == '[') {
+        refuse(i, i + 2);
+        return -1;
+    }
+    if (special(c) || (c >= '1' && c <= '9')) {
+        param(i + 1, i + 2, quoted, split, ab, fo, fe);
+        return i + 2;
+    }
+    if (name_start(c)) {
+        I64 j = i + 1;
+        while (j < b && name_char(lex.at(j))) { j = j + 1; }
+        param(i + 1, j, quoted, split, ab, fo, fe);
+        return j;
+    }
+    put('$', ab, fo);
+    return i + 1;
+}
+
+// An unquoted `{` at i opens a brace expansion when a `,` or `..` comes before its `}` (refused by name).
+Bool brace_expansion(I64 i, I64 b) {
+    I64 j = i + 1;
+    while (j < b) {
+        U8 c = lex.at(j);
+        if (c == '}') { return false; }
+        if (c == ',' || (c == '.' && j + 1 < b && lex.at(j + 1) == '.')) { return true; }
+        if (c == '\'' || c == '"' || c == '\\' || c == '$' || c == '`' || c == '{') { return false; }
+        j = j + 1;
+    }
+    return false;
+}
+
+// A tilde at i, the start of a word: the index after the tilde prefix, or -1 (~user refused). Its value is
+// quoted: it is not split or globbed.
+I64 tilde(I64 i, I64 b, inout U8[_] ab, inout I64[_] fo) {
+    I64 j = i + 1;
+    while (j < b && lex.at(j) != '/') {
+        U8 c = lex.at(j);
+        if (c == '\'' || c == '"' || c == '\\' || c == '$' || c == '`') { return i; }
+        j = j + 1;
+    }
+    if (j > i + 1) {
+        refuse(i, j);
+        return -1;
+    }
+    I64 v = vars.lookup(b"HOME");
+    if (!vars.has_value(v)) {
+        put('~', ab, fo);
+        return i + 1;
+    }
+    touch(ab, fo);
+    for k in 0..vars.value_len(v) { lit(vars.value_at(v, k), ab, fo); }
+    return i + 1;
+}
+
+// The text a..b into the block. quoted: inside double quotes (or a here-document body, heredoc: `"` is then
+// a byte). start: a tilde here begins the word. 0, or -1 (said) / NEED.
+Bool heredoc = false;
+
+I64 walk(I64 a, I64 b, Bool quoted, Bool split, Bool start, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    I64 i = a;
+    if (start && !quoted && i < b && lex.at(i) == '~') {
+        i = tilde(i, b, ab, fo);
+        if (i < 0) { return -1; }
+    }
+    while (i < b && !fullup) {
+        U8 c = lex.at(i);
+        if (c == '\\') {
+            U8 d = 0;
+            if (i + 1 < b) { d = lex.at(i + 1); }
+            if (d == '\n') {
+                i = i + 2;
+            } else if (i + 1 >= b) {
+                put_u(c, ab, fo);
+                i = i + 1;
+            } else if (!quoted || d == '$' || d == '`' || d == '\\' || (d == '"' && !heredoc)) {
+                lit(d, ab, fo);
+                i = i + 2;
+            } else {
+                lit(c, ab, fo);
+                i = i + 1;
+            }
+        } else if (c == '\'' && !quoted) {
+            touch(ab, fo);
+            I64 e = lex.squote(i + 1);
+            if (e < 0 || e > b) { e = b + 1; }
+            for k in i + 1..e - 1 { lit(lex.at(k), ab, fo); }
+            i = e;
+        } else if (c == '"' && !heredoc) {
+            if (quoted) {
+                i = i + 1;   // a nested quote inside ${...} within quotes: removed
+            } else {
+                I64 e = lex.dquote(i + 1);
+                if (e < 0 || e > b) { e = b + 1; }
+                Bool lone_at = e == i + 4 && lex.at(i + 1) == '$' && lex.at(i + 2) == '@' && vars.positional() == 0;
+                if (!lone_at) {
+                    touch(ab, fo);
+                    I64 r = walk(i + 1, e - 1, true, split, false, ab, fo, fe);
+                    if (r < 0) { return r; }
+                }
+                i = e;
+            }
+        } else if (c == '$') {
+            if (i + 1 < b && lex.at(i + 1) == '\'' && !quoted) {
+                refuse(i, i + 2);
+                return -1;
+            }
+            i = dollar(i, b, quoted, split, ab, fo, fe);
+            if (i < 0) { return i; }
+        } else if (c == '`') {
+            I64 e = lex.nested(i + 1, '`');
+            if (e < 0 || e > b) {
+                refuse(i, b);
+                return -1;
+            }
+            i = command(i, e, true, quoted, split, ab, fo, fe);
+            if (i < 0) { return i; }
+        } else if (quoted) {
+            lit(c, ab, fo);
+            i = i + 1;
+        } else {
+            if (c == '{' && split && brace_expansion(i, b)) {
+                msg.begin();
+                msg.text(b"not supported: brace expansion ");
+                I64 j = i;
+                while (j < b && lex.at(j) != '}') { j = j + 1; }
+                msg.span(i, j + 1);
+                msg.send();
+                return -1;
+            }
+            put_u(c, ab, fo);
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+void say_full(inout U8[_] ab) {
+    msg.begin();
+    msg.text(b"limit: FIELDS ");
+    msg.num(limits.FIELDS);
+    msg.text(b" or ARGBYTES ");
+    msg.num(len(ab));
+    msg.send();
+}
+
+// The text a..b into fields of the block (split: an unquoted expansion splits; false for an assignment's value
+// and a redirection's target, which are one field). 0, -1 when refused or full (said), or NEED: run the
+// substitution need_*() names, provide() its output and call again.
+export I64 range(I64 a, I64 b, Bool split, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    I64 mark_bytes = nbytes;
+    I64 mark_fields = nfields;
+    open = false;
+    after_ws = false;
+    load_ifs();
+    if (!split) { touch(ab, fo); }
+    I64 r = walk(a, b, false, split, true, ab, fo, fe);
+    if (r == NEED) {
+        nbytes = mark_bytes;
+        nfields = mark_fields;
+        open = false;
+        return NEED;
+    }
+    if (r < 0) { return -1; }
+    finish(ab, fe);
+    if (fullup) {
+        say_full(ab);
+        return -1;
+    }
+    return 0;
+}
+
+// A here-document body a..b into one field of the block: $, ` and \ work as inside double quotes, `"` is a byte.
+export I64 body(I64 a, I64 b, inout U8[_] ab, inout I64[_] fo, inout I64[_] fe) {
+    I64 mark_bytes = nbytes;
+    I64 mark_fields = nfields;
+    open = false;
+    load_ifs();
+    touch(ab, fo);
+    heredoc = true;
+    I64 r = walk(a, b, true, false, false, ab, fo, fe);
+    heredoc = false;
+    if (r == NEED) {
+        nbytes = mark_bytes;
+        nfields = mark_fields;
+        open = false;
+        return NEED;
+    }
+    if (r < 0) { return -1; }
+    finish(ab, fe);
+    if (fullup) {
+        say_full(ab);
+        return -1;
+    }
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,865 @@
+// user/ci/cview.ci: cview [-d] FILE, or cview alone (docs/specs/2026-11-07-bp-basics.md section 4, BP-3, BP-6;
+// stage RS, RS-VIEW, frame 39): View, the image viewer. FILE (PNG, QOI, or Netpbm P2, P3, P5, P6) is decoded to RGBA
+// (user/ci/core/img.ci). With -d it prints `cview: FILE WxH rgba SHA256` and ends. Without, it asks the desk for a
+// window the picture's size, names it on the bar, and draws the picture whole, never above actual size, on the
+// MANTLE ground (alpha composed on it); kit/viewpad.ci is the window. Wedges at the left and right show while the
+// pointer is over their bands; a click on one, or Left and Right, shows the picture before or after in the folder's
+// names. + and - zoom by whole scales, 0 is Actual Size, a drag pans a picture larger than the window. Each box the
+// desk tells after (tiled, maximized, a frame dragged) takes a surface of its size (RS-SURF, kit/surfask.ci): the
+// picture fitted whole again, or at a hand zoom's scale; a box under 320 x 240 clips right and bottom. The right
+// button opens the picture menu (kit/ctxmenu.ci's PICTURE list; the Menu key and Shift+F10 at the center): Zoom In,
+// Zoom Out, Actual Size; Set as Background (a PNG only, dimmed while kit/bgpic.ci's PICTURES is false, BG-1: the
+// account's settings key desk.background, written by this process, the account's, through kit/setfile.ci); Show in
+// Index (the desk asked to open the picture's folder, call 1005); Properties, dimmed until the Index remainder's
+// Properties window. With no FILE (the app grid), or a FILE that does not open, the window shows frame 25's empty state
+// (design note 64); with no FILE and no desk to give a window, the usage, as before. q or Esc ends it. The buffers are
+// frame locals, zeroed whole when taken, in two sizes: the small ones (8 MiB of file, 16 MiB of inflated rows, 8 MiB of
+// RGBA: 32 MiB, a picture of 8 bit channels up to 2,097,152 pixels, which is what View held before stage RS) and the
+// large ones (32, 64 and 32 MiB: 128 MiB, up to img.PIXELS_MAX, 3840 x 2160). A window starts on the small ones and
+// moves to the large ones, giving the small ones back, at the first picture that needs them; user/ci/build.sh gives
+// cview the frame arena for the large.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.tilewin;
+import user.ci.tilesurf;      // RS-SURF: the surface follows the box the desk tells
+import user.ci.kit.appmenu;   // AM-3: the app menu's About
+import user.ci.tilepoint;
+import user.ci.opencall;      // Show in Index: the desk asked to open the folder (FF-6c)
+import user.ci.wall;          // the menu's motion
+import src.sha256;
+import user.ci.kit.tokens;
+import user.ci.kit.anim;
+import user.ci.kit.ctxmenu;
+import user.ci.kit.viewpad;
+import user.ci.kit.surfask;
+import user.ci.kit.setfile;   // U-SET: Set as Background
+import user.ci.fdctl;         // setfile's fd_stat row (CI_ROWS_FD): build.sh reads only this file's imports
+import user.ci.kit.bgpic;     // BG-1: whether the release takes a picture as the background
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.get;
+import user.ci.core.inflate;
+import user.ci.core.img;
+
+const I64 FILE_MAX = 33554432;    // 32 MiB
+const I64 RAW_MAX = 67108864;     // 64 MiB: the inflated rows of a 3840 x 2160 PNG of 16 bit channels with alpha
+const I64 PX_MAX = 33177600;      // 4 * img.PIXELS_MAX
+const I64 PATH_MAX = 4096;
+const I64 IMAGES_MAX = 1024;
+const I64 E_OPEN = -1;            // load(): the file did not open or read (already said)
+const I64 E_BIG = -2;             // load(): past the file buffer (FILE_MAX on the large buffers)
+const I64 EV_KEY = 1;
+const I64 EV_ABS = 3;
+const I64 EV_WIN_RESIZE = 5;      // the desk's content box, code w and value h at 1x (RS-SURF)
+const I64 CAP_W = 1920;           // the widest surface the rows hold
+const I64 CAP_H = 1080;
+const I64 KEY_ESC = 1;
+const I64 KEY_0 = 11;
+const I64 KEY_MINUS = 12;
+const I64 KEY_EQUAL = 13;
+const I64 KEY_Q = 16;
+const I64 KEY_LEFTSHIFT = 42;
+const I64 KEY_RIGHTSHIFT = 54;
+const I64 KEY_F10 = 68;
+const I64 KEY_KPMINUS = 74;
+const I64 KEY_KPPLUS = 78;
+const I64 KEY_KP0 = 82;
+const I64 KEY_LEFT = 105;
+const I64 KEY_RIGHT = 106;
+const I64 KEY_COMPOSE = 127;      // the Menu key
+const I64 BTN_LEFT = 272;
+const I64 BTN_RIGHT = 273;
+const I64 NONE = 0;               // what the window shows: nothing loaded,
+const I64 SHOWN = 1;              // the picture,
+const I64 FAILED = 2;             // or a picture that does not open
+
+U32[1920] row;                    // one row of the widest surface (1920)
+U8[7680] obuf;                    // and its bytes
+U8[65536] chunk;                  // a read: an extern's view is staged whole, so reads go through this
+U8[24] ev;
+U8[32] digest;
+U8[4096] cur;                     // the path of the image shown
+I64 cur_n = 0;
+I64 dir_n = 0;                    // cur[0..dir_n] is the folder with its '/', or empty for `.`
+I64 n_img = 0;                    // compatible names in the folder, sorted by their bytes
+I64 iw = 0;                       // the image shown
+I64 ih = 0;
+I64 state = NONE;
+Bool png = false;                 // the image shown is a PNG (Set as Background takes only a PNG)
+I64 sw = 0;                       // the surface
+I64 sh = 0;
+Bool wedges = false;              // the folder holds another picture
+I64 hover = 0;                    // 0 none, 1 the left wedge, 2 the right
+I64 px_x = -1;                    // the pointer in the surface's pixels, -1 off it
+I64 px_y = -1;
+Bool drag = false;                // the left button holds the picture
+I64 drag_x = 0;
+I64 drag_y = 0;
+Bool shift = false;
+Bool cm_up = false;               // the menu is drawn (open, or closing)
+anim.Anim cm_an;                  // its openness, 0 to 1000
+I64 cm_a0 = 0;                    // the rows it last drew over
+I64 cm_a1 = 0;
+I64 cm_last = -1;                 // the openness last drawn
+U8[64] cm_w;
+I64 up = 0;                       // 1: run again from the start on the large buffers; 2: show cur on them (a step)
+I64 up_dir = 0;                   // the step that found cur
+Bool opened = false;              // the window is asked and mapped
+
+U8 hex(I64 v) {
+    if (v < 10) { return (v + 48) as U8; }
+    return (v + 87) as U8;
+}
+
+void reason(I64 r) {
+    if (r == img.E_FORM) { msg.text(b"not PNG, QOI or Netpbm"); }
+    else if (r == img.E_TRUNC) { msg.text(b"the file ends inside the image"); }
+    else if (r == img.E_CRC) { msg.text(b"a chunk's CRC differs"); }
+    else if (r == img.E_HDR) { msg.text(b"a header out of its range"); }
+    else if (r == img.E_PIXELS) { msg.text(b"limit: PIXELS_MAX"); }
+    else if (r == img.E_ZLIB) {
+        msg.text(b"the image data does not inflate (");
+        msg.num(img.zlib_failure());
+        msg.text(b")");
+    }
+    else if (r == img.E_ROWS) { msg.text(b"the rows are not the size the header gives"); }
+    else if (r == img.E_PALETTE) { msg.text(b"an index past the palette"); }
+    else { msg.text(b"limit: RAW_MAX"); }
+}
+
+// path read into f and decoded into px: 0, an img.E_ code, E_OPEN (said already) or E_BIG.
+I64 load[a, m, pn](in U8[_] path, inout U8[a] f, inout U8[m] raw, inout U8[pn] px) {
+    I64 fd = get.open(path);
+    if (fd < 0) { return E_OPEN; }
+    I64 n = 0;
+    Bool more = true;
+    Bool big = false;
+    while (more) {
+        if (n == a) {
+            U8[1] one;
+            if (get.read(fd, one) > 0) { big = true; }
+            more = false;
+        } else {
+            I64 k = a - n;
+            if (k > 65536) { k = 65536; }
+            I64 r = get.read(fd, chunk[0..k]);
+            if (r < 0) {
+                msg.file(path, 0 - r);
+                get.close(fd);
+                return E_OPEN;
+            }
+            for i in 0..r {
+                f[n + i] = chunk[i];
+            }
+            if (r == 0) { more = false; } else { n = n + r; }
+        }
+    }
+    get.close(fd);
+    if (big) { return E_BIG; }
+    png = n >= 8 && f[0] == 0x89 && f[1] == 'P' && f[2] == 'N' && f[3] == 'G';
+    return img.decode(f, n, raw, px);
+}
+
+// load's r on buffers of a bytes of file says the picture may open on the large buffers: the file, its rows or its
+// pixels are past the small ones and within img.PIXELS_MAX.
+Bool needs_large(I64 r, I64 a) {
+    if (a >= FILE_MAX) { return false; }
+    if (r == E_BIG || r == img.E_ROOM) { return true; }
+    if (r != img.E_PIXELS) { return false; }
+    I64 w = img.width();
+    I64 h = img.height();
+    if (w > img.PIXELS_MAX || h > img.PIXELS_MAX) { return false; }
+    return w * h <= img.PIXELS_MAX;
+}
+
+// `cview: path: what failed` for load's r (E_OPEN was said already); the status becomes 1.
+void say(in U8[_] path, I64 r) {
+    if (r == E_OPEN) { return; }
+    msg.begin();
+    msg.text(path);
+    msg.text(b": ");
+    if (r == E_BIG) { msg.text(b"limit: FILE_MAX"); } else { reason(r); }
+    msg.send();
+    msg.status_one();
+}
+
+// --- the folder ---
+
+U8 fold(U8 b) {
+    if (b >= 'A' && b <= 'Z') { return b + 32; }
+    return b;
+}
+
+// nb[s..e] ends, in any case, in tail (lower case), with a name before it.
+Bool ends_in[k](in U8[k] nb, I64 s, I64 e, in U8[_] tail) {
+    if (e - s <= len(tail)) { return false; }
+    for i in 0..len(tail) {
+        if (fold(nb[e - len(tail) + i]) != tail[i]) { return false; }
+    }
+    return true;
+}
+
+Bool compatible[k](in U8[k] nb, I64 s, I64 e) {
+    return ends_in(nb, s, e, b".png") || ends_in(nb, s, e, b".qoi") || ends_in(nb, s, e, b".ppm") ||
+        ends_in(nb, s, e, b".pgm") || ends_in(nb, s, e, b".pnm");
+}
+
+// The end of the name at nb[s]: its NUL.
+I64 name_end[k](in U8[k] nb, I64 s) {
+    I64 e = s;
+    while (e < k && nb[e] != 0) { e = e + 1; }
+    return e;
+}
+
+// The name at nb[s] against cur's last part (its bytes after dir_n), by bytes: -1 before, 0 the same, 1 after.
+I64 vs_cur[k](in U8[k] nb, I64 s) {
+    I64 e = name_end(nb, s);
+    I64 an = e - s;
+    I64 bn = cur_n - dir_n;
+    I64 m = an;
+    if (bn < m) { m = bn; }
+    for i in 0..m {
+        I64 x = nb[s + i] as I64;
+        I64 y = cur[dir_n + i] as I64;
+        if (x < y) { return -1; }
+        if (x > y) { return 1; }
+    }
+    if (an < bn) { return -1; }
+    if (an > bn) { return 1; }
+    return 0;
+}
+
+// The name at nb[s] sorts before the one at nb[t], by bytes (both NUL-ended).
+Bool before[k](in U8[k] nb, I64 s, I64 t) {
+    I64 i = 0;
+    Bool going = true;
+    Bool r = false;
+    while (going) {
+        I64 x = nb[s + i] as I64;
+        I64 y = nb[t + i] as I64;
+        if (x != y) {
+            r = x < y;
+            going = false;
+        } else if (x == 0) {
+            going = false;
+        }
+        i = i + 1;
+    }
+    return r;
+}
+
+// cur's folder read: its compatible names' starts into at, sorted by bytes (insertion, at most IMAGES_MAX).
+void folder[k, q](inout U8[k] nb, inout I64[q] at) {
+    dir_n = 0;
+    for i in 0..cur_n {
+        if (cur[i] == '/') { dir_n = i + 1; }
+    }
+    I64 got = 0;
+    if (dir_n == 0) {
+        got = shctl.sh_dirents(b".", nb);
+    } else if (dir_n == 1) {
+        got = shctl.sh_dirents(b"/", nb);
+    } else {
+        got = shctl.sh_dirents(cur[0..dir_n - 1], nb);
+    }
+    n_img = 0;
+    if (got <= 0) { return; }
+    I64 s = 0;
+    while (s < got) {
+        I64 e = name_end(nb, s);
+        if (compatible(nb, s, e) && n_img < IMAGES_MAX) {
+            I64 j = n_img;
+            while (j > 0 && before(nb, s, at[j - 1])) {
+                at[j] = at[j - 1];
+                j = j - 1;
+            }
+            at[j] = s;
+            n_img = n_img + 1;
+        }
+        s = e + 1;
+    }
+}
+
+// The folder holds an image other than cur.
+Bool others[k, q](in U8[k] nb, in I64[q] at) {
+    for i in 0..n_img {
+        if (vs_cur(nb, at[i]) != 0) { return true; }
+    }
+    return false;
+}
+
+// The place in at of the name after cur (dir 1) or before it (dir -1), round the ends; -1 for none.
+I64 next_of[k, q](in U8[k] nb, in I64[q] at, I64 dir) {
+    if (n_img == 0) { return -1; }
+    if (dir > 0) {
+        for i in 0..n_img {
+            if (vs_cur(nb, at[i]) > 0) { return i; }
+        }
+        if (vs_cur(nb, at[0]) != 0) { return 0; }
+        return -1;
+    }
+    I64 i = n_img - 1;
+    while (i >= 0) {
+        if (vs_cur(nb, at[i]) < 0) { return i; }
+        i = i - 1;
+    }
+    if (vs_cur(nb, at[n_img - 1]) != 0) { return n_img - 1; }
+    return -1;
+}
+
+// --- drawing ---
+
+// Surface rows [y0, y1): the picture or the empty state, the wedge that shows, the menu while it is up.
+void paint_rows(in U8[_] px, I64 y0, I64 y1) {
+    I64 a = y0;
+    I64 b = y1;
+    if (a < 0) { a = 0; }
+    if (b > sh) { b = sh; }
+    I64 cv = cm_v();
+    for y in a..b {
+        if (state == SHOWN) { viewpad.picture_row(row, y, 1, px); }
+        else if (state == FAILED) { viewpad.empty_row(row, y, 1, b"This picture cannot be opened."); }
+        else { viewpad.empty_row(row, y, 1, b"No picture is open."); }
+        if (hover != 0) { viewpad.wedge_row(row, y, hover, 1); }
+        if (cm_up) { ctxmenu.row_at(row, y, 1, tokens.theme(), cv); }
+        for x in 0..sw {
+            U32 v = row[x];
+            for k in 0..4 { obuf[4 * x + k] = ((v >> ((8 * k) as U32)) & 255) as U8; }
+        }
+        dev.fb_row(y, obuf[0..4 * sw]);
+    }
+}
+
+void paint(in U8[_] px) {
+    declare();                         // the app menu's rows follow what is shown (AM-4)
+    paint_rows(px, 0, sh);
+}
+
+// The app menu (AM-2, AM-4, frame 41): About; Settings, dimmed (plan ruling A: View has no settings of its own yet);
+// Open Ctrl+O | Next Right, Previous Left | Zoom In +, Zoom Out -, Actual Size 0 | Set as Background, Show in Index.
+// Open is dimmed (no file chooser yet); the rest are dimmed when they cannot act on what is shown, as the picture
+// menu dims Set as Background (note 58). Declared again only when a dim changes. A kernel without AM-4's rows refuses
+// the whole declaration, so About and Settings are declared again alone, and About alone after that.
+const I64 M_SETTINGS = 1;
+const I64 M_OPEN = 15;
+const I64 M_NEXT = 21;
+const I64 M_PREVIOUS = 22;
+const I64 M_ZOOM_IN = 23;
+const I64 M_ZOOM_OUT = 24;
+const I64 M_ACTUAL = 25;
+const I64 M_BACKGROUND = 26;
+const I64 M_INDEX = 27;
+I64 am_sig = -1;
+
+I64 dim_unless(Bool live) {
+    if (live) { return 0; }
+    return appmenu.DIM;
+}
+
+void declare() {
+    Bool shown = state == SHOWN;
+    Bool bg = shown && png && bgpic.PICTURES;
+    I64 sig = 0;
+    if (wedges) { sig = sig + 1; }
+    if (shown) { sig = sig + 2; }
+    if (bg) { sig = sig + 4; }
+    if (cur_n > 0) { sig = sig + 8; }
+    if (sig == am_sig) { return; }
+    am_sig = sig;
+    U8[1220] am_rec;
+    I64 am_n = appmenu.record(am_rec, b"View", b"0.1.0", b"The image viewer: PNG, QOI and Netpbm.", M_SETTINGS);
+    appmenu.settings_dim(am_rec);
+    I64 base = am_n;
+    I64 g = 1;                         // a divider before the row (appitems.GROUP)
+    am_n = appmenu.item(am_rec, M_OPEN, 0, b"Open", b"Ctrl+O", g | appmenu.DIM);
+    am_n = appmenu.item(am_rec, M_NEXT, 0, b"Next", b"Right", g | dim_unless(wedges));
+    am_n = appmenu.item(am_rec, M_PREVIOUS, 0, b"Previous", b"Left", dim_unless(wedges));
+    am_n = appmenu.item(am_rec, M_ZOOM_IN, 0, b"Zoom In", b"+", g | dim_unless(shown));
+    am_n = appmenu.item(am_rec, M_ZOOM_OUT, 0, b"Zoom Out", b"-", dim_unless(shown));
+    am_n = appmenu.item(am_rec, M_ACTUAL, 0, b"Actual Size", b"0", dim_unless(shown));
+    am_n = appmenu.item(am_rec, M_BACKGROUND, 0, b"Set as Background", b"", g | dim_unless(bg));
+    am_n = appmenu.item(am_rec, M_INDEX, 0, b"Show in Index", b"", dim_unless(cur_n > 0));
+    if (tilewin.win_menu(am_rec[0..am_n]) < 0) {
+        am_rec[0] = ((base - 4) / 32) as U8;
+        if (tilewin.win_menu(am_rec[0..base]) < 0) {
+            am_n = appmenu.record(am_rec, b"View", b"0.1.0", b"The image viewer: PNG, QOI and Netpbm.", -1);
+            _ = tilewin.win_menu(am_rec[0..am_n]);
+        }
+    }
+}
+
+// RS-SURF: the surface taken to the box the desk told; the picture fitted to it again (or at a hand's scale), the
+// menu closed, all drawn.
+void resize(in U8[_] px, I64 now) {
+    I64 r = tilesurf.fb_resize(surfask.want_w(), surfask.want_h());
+    sw = dev.fb_word(0) as I64;
+    sh = dev.fb_word(1) as I64;
+    if (sw > CAP_W) { sw = CAP_W; }
+    surfask.answered(r, sw, sh, now);
+    "cview: resize {sw}x{sh} ({r})\n";
+    if (sw == 0) { return; }
+    viewpad.resurface(sw, sh);
+    if (ctxmenu.is_open() || cm_up) {
+        ctxmenu.close();
+        cm_up = false;
+        cm_a0 = 0;
+        cm_a1 = 0;
+    }
+    drag = false;
+    paint(px);
+}
+
+// The rows a wedge covers, drawn again.
+void paint_wedge(in U8[_] px) {
+    I64 t = viewpad.plate_top();
+    paint_rows(px, t, t + viewpad.PLATE_H);
+}
+
+// The bar's variable: cur's last part.
+void name_bar() {
+    _ = tilewin.win_var(cur[dir_n..cur_n]);
+}
+
+// --- the menu (DN-32 motion: open 160 ms, close 100 ms) ---
+
+I64 cm_v() {
+    if (!cm_up) { return 0; }
+    return anim.value(cm_an, wall.wall_ns());
+}
+
+// The rows the menu touches now and the rows it touched last, drawn again.
+void cm_paint(in U8[_] px) {
+    I64 t = ctxmenu.area_top(1, tokens.theme());
+    I64 b = ctxmenu.area_bottom(1, tokens.theme());
+    I64 lo = t;
+    I64 hi = b;
+    if (cm_a1 > cm_a0) {
+        if (cm_a0 < lo) { lo = cm_a0; }
+        if (cm_a1 > hi) { hi = cm_a1; }
+    }
+    cm_last = cm_v();
+    paint_rows(px, lo, hi);
+    cm_a0 = t;
+    cm_a1 = b;
+    if (!cm_up) {
+        cm_a0 = 0;
+        cm_a1 = 0;
+    }
+}
+
+void cm_tick(in U8[_] px) {
+    I64 t = wall.wall_ns();
+    I64 v = anim.value(cm_an, t);
+    if (v != cm_last) { cm_paint(px); }
+    if (!anim.running(cm_an, t) && v == 0 && !ctxmenu.is_open()) {
+        cm_up = false;
+        cm_paint(px);
+    }
+}
+
+// The picture menu at (x, y); keyed: by the Menu key or Shift+F10, its first row selected.
+void cm_open(in U8[_] px, I64 x, I64 y, Bool keyed) {
+    ctxmenu.begin(ctxmenu.PICTURE, false);
+    if (!png || !bgpic.PICTURES) { ctxmenu.row_dim(ctxmenu.SET_BACKGROUND); }   // note 58: dimmed, never hidden
+    ctxmenu.row_dim(ctxmenu.PROPERTIES);     // the Index remainder's Properties window is not built yet
+    ctxmenu.open_at(x, y, 0, 0, sw, sh, keyed);
+    cm_an = anim.toward(cm_an, wall.wall_ns(), 1000, anim.ms(160), anim.OUT, true);
+    cm_up = true;
+    "cview: menu at {ctxmenu.left()},{ctxmenu.top()}\n";
+    cm_paint(px);
+}
+
+void cm_close(in U8[_] px) {
+    ctxmenu.close();
+    cm_an = anim.toward(cm_an, wall.wall_ns(), 0, anim.ms(100), anim.IN, true);
+    cm_paint(px);
+}
+
+// --- acting ---
+
+// cur as a path from /, into p: cur itself, or the working directory, '/', cur; its length, or -1.
+I64 abs_cur(inout U8[_] p) {
+    I64 n = 0;
+    if (cur_n > 0 && cur[0] != '/') {
+        n = shctl.sh_getcwd(p);
+        if (n < 1) { return -1; }
+        if (p[n - 1] != '/') {
+            p[n] = '/';
+            n = n + 1;
+        }
+    }
+    if (n + cur_n > len(p)) { return -1; }
+    for i in 0..cur_n { p[n + i] = cur[i]; }
+    return n + cur_n;
+}
+
+// HOME from the environment, into h; its length, or -1.
+I64 home(inout U8[_] h) {
+    U8[4096] e;
+    I64 i = 0;
+    while (i < 4096) {
+        I64 n = shctl.sh_environ(i, e);
+        if (n == -2) { return -1; }                    // ENOENT: past the last
+        if (n > 5 && e[0] == 'H' && e[1] == 'O' && e[2] == 'M' && e[3] == 'E' && e[4] == '=') {
+            if (n - 5 > len(h)) { return -1; }
+            for k in 5..n { h[k - 5] = e[k]; }
+            return n - 5;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Set as Background (a PNG only, while the release takes pictures: kit/bgpic.ci): the picture's path as the account's
+// desk.background, written by this process, the account's own (U-SET section 3: the desk opens it with the account's
+// rights, never its own).
+void set_background() {
+    if (!png || !bgpic.PICTURES) { return; }
+    U8[4096] p;
+    U8[512] h;
+    I64 n = abs_cur(p);
+    I64 hn = home(h);
+    if (n < 0 || hn < 1) {
+        "cview: background refused\n";
+        return;
+    }
+    I64 r = setfile.put(h[0..hn], b"desk.background", p[0..n]);
+    "cview: background |";
+    I64 w = shctl.fd_write(1, p[0..n]);
+    "| ({r})\n";
+}
+
+// Show in Index: the desk asked to open the picture's folder (call 1005), as Index asks for a file.
+void show_in_index() {
+    U8[4096] p;
+    I64 n = abs_cur(p);
+    if (n < 0) { return; }
+    while (n > 1 && p[n - 1] != '/') { n = n - 1; }
+    if (n > 1) { n = n - 1; }                          // the folder without its last '/', or "/"
+    if (n > 256) {
+        "cview: index refused\n";
+        return;
+    }
+    I64 asked = opencall.open_ask(p[0..n]);
+    "cview: index |";
+    I64 w = shctl.fd_write(1, p[0..n]);
+    "| ({asked})\n";
+}
+
+// A zoom step taken: the whole surface drawn again.
+void zoomed(in U8[_] px, Bool moved) {
+    if (moved) {
+        "cview: scale {viewpad.scale_up()}/{viewpad.scale_down()}\n";
+        paint(px);
+    }
+}
+
+// What the menu answered: an action chosen, STAY (drawn again) or CLOSE.
+void cm_choose(in U8[_] px, I64 a) {
+    if (a == ctxmenu.STAY) {
+        cm_paint(px);
+        return;
+    }
+    cm_close(px);
+    if (a == ctxmenu.CLOSE) { return; }
+    if (a == ctxmenu.ZOOM_IN) { zoomed(px, viewpad.zoom_in()); }
+    else if (a == ctxmenu.ZOOM_OUT) { zoomed(px, viewpad.zoom_out()); }
+    else if (a == ctxmenu.ACTUAL_SIZE) { zoomed(px, viewpad.actual()); }
+    else if (a == ctxmenu.SET_BACKGROUND) { set_background(); }
+    else if (a == ctxmenu.SHOW_IN_INDEX) { show_in_index(); }
+}
+
+// The image after (dir 1) or before (dir -1) cur, passing over any that does not decode (said on descriptor 2). When
+// none does, cur is loaded again and stays, or shows that it does not open.
+void go[a, m, pn, k, q](I64 dir, inout U8[a] f, inout U8[m] raw, inout U8[pn] px, in U8[k] nb, in I64[q] at) {
+    U8[4096] keep;
+    I64 keep_n = cur_n;
+    for i in 0..cur_n { keep[i] = cur[i]; }
+    I64 tries = 0;
+    while (tries < n_img) {
+        I64 i = next_of(nb, at, dir);
+        if (i < 0) { tries = n_img; }
+        else {
+            I64 e = name_end(nb, at[i]);
+            if (dir_n + e - at[i] > PATH_MAX) { tries = n_img; }
+            else {
+                cur_n = dir_n;
+                for j in at[i]..e {
+                    cur[cur_n] = nb[j];
+                    cur_n = cur_n + 1;
+                }
+                I64 r = load(cur[0..cur_n], f, raw, px);
+                if (r == 0) {
+                    state = SHOWN;
+                    iw = img.width();
+                    ih = img.height();
+                    viewpad.picture(iw, ih);
+                    name_bar();
+                    paint(px);
+                    return;
+                }
+                if (needs_large(r, a)) {       // the window's loop ends; main shows cur on the large buffers
+                    up = 2;
+                    up_dir = dir;
+                    return;
+                }
+                say(cur[0..cur_n], r);
+                tries = tries + 1;
+            }
+        }
+    }
+    cur_n = keep_n;
+    for i in 0..keep_n { cur[i] = keep[i]; }
+    state = FAILED;
+    if (load(cur[0..cur_n], f, raw, px) == 0) {
+        state = SHOWN;
+        iw = img.width();
+        ih = img.height();
+        viewpad.picture(iw, ih);
+    }
+    paint(px);
+}
+
+// The window asked, mapped and named: once, whichever buffers View is on.
+void open_window() {
+    if (opened) { return; }
+    opened = true;
+    I64 ww = viewpad.EMPTY_W;
+    I64 wh = viewpad.EMPTY_H;
+    if (state == SHOWN) {
+        ctxmenu.begin(ctxmenu.PICTURE, false);         // the picture menu measured as it opens, then closed
+        ctxmenu.open_at(0, 0, 0, 0, 1920, 1080, false);
+        I64 mw = ctxmenu.width();
+        I64 mh = ctxmenu.height();
+        ctxmenu.close();
+        ww = viewpad.want_w(iw, wedges, mw);
+        wh = viewpad.want_h(ih, wedges, mh);
+    }
+    _ = tilewin.win_want(ww, wh);
+    _ = tilewin.win_resize(1);         // RS-SURF: asked before the open, so the desk's first box is told
+    I64 st = dev.fb_open();
+    declare();                         // AM-3, AM-4: the app menu (FBIO_TILE_MENU)
+    if (st < 0 && state == NONE) { msg.usage(b"usage: cview [-d] FILE"); }   // no file and no desk: a terminal's
+    if (st < 0) {
+        msg.begin();
+        msg.text(b"no surface: ");
+        msg.reason(0 - st);
+        msg.send();
+        msg.finish_with(3);
+    }
+    _ = tilepoint.win_point(1);
+    if (cur_n > 0) { name_bar(); }
+    sw = dev.fb_word(0) as I64;
+    sh = dev.fb_word(1) as I64;
+    if (sw > CAP_W) { sw = CAP_W; }
+}
+
+// The window and its loop on these buffers. Returns only when a step finds a picture that needs the large ones.
+void show[a, m, pn, k, q](inout U8[a] f, inout U8[m] raw, inout U8[pn] px, inout U8[k] nb, inout I64[q] at) {
+    if (cur_n > 0) {
+        folder(nb, at);
+        wedges = others(nb, at);
+    }
+    open_window();
+    viewpad.surface(sw, sh);
+    if (state == SHOWN) { viewpad.picture(iw, ih); }
+    paint(px);
+    Bool going = true;
+    while (going) {
+        I64 got = dev.ev_read(ev);
+        if (got < 0) {
+            going = false;
+        } else if (got == 0) {
+            I64 now = wall.wall_ns();
+            if (surfask.due(now)) {
+                resize(px, now);
+            } else {
+                I64 nap = 20000000;
+                if (cm_up) { nap = 10000000; }   // a frame each 10 ms while the menu moves
+                _ = corectl.co_sleep(nap);
+            }
+        } else {
+            I64 t = (ev[16] as I64) | ((ev[17] as I64) << 8);
+            I64 c = (ev[18] as I64) | ((ev[19] as I64) << 8);
+            I64 v = (ev[20] as I64) | ((ev[21] as I64) << 8) | ((ev[22] as I64) << 16) | ((ev[23] as I64) << 24);
+            if (v >= 0x80000000) { v = v - 0x100000000; }
+            if (t == EV_KEY && (c == KEY_LEFTSHIFT || c == KEY_RIGHTSHIFT)) { shift = v != 0; }
+            if (t == EV_WIN_RESIZE) {
+                surfask.told(c, v, CAP_W, CAP_H, sw, sh);
+            } else if (t == EV_KEY && c == BTN_LEFT) {
+                if (v == 0) { drag = false; }
+                else if (v == 1 && ctxmenu.is_open()) { cm_choose(px, ctxmenu.click(px_x, px_y)); }
+                else if (v == 1 && hover == 1) { go(-1, f, raw, px, nb, at); }
+                else if (v == 1 && hover == 2) { go(1, f, raw, px, nb, at); }
+                else if (v == 1 && state == SHOWN && viewpad.larger()) {
+                    drag = true;
+                    drag_x = px_x;
+                    drag_y = px_y;
+                }
+            } else if (t == appmenu.EV_MENU) {   // a chosen row of the app menu (AM-4), acting as its key does
+                if (ctxmenu.is_open()) { cm_close(px); }
+                if (wedges && c == M_NEXT) { go(1, f, raw, px, nb, at); }
+                else if (wedges && c == M_PREVIOUS) { go(-1, f, raw, px, nb, at); }
+                else if (state == SHOWN && c == M_ZOOM_IN) { zoomed(px, viewpad.zoom_in()); }
+                else if (state == SHOWN && c == M_ZOOM_OUT) { zoomed(px, viewpad.zoom_out()); }
+                else if (state == SHOWN && c == M_ACTUAL) { zoomed(px, viewpad.actual()); }
+                else if (c == M_BACKGROUND) { set_background(); }
+                else if (c == M_INDEX && cur_n > 0) { show_in_index(); }
+            } else if (t == EV_KEY && c == BTN_RIGHT && v == 1) {
+                if (ctxmenu.is_open()) { ctxmenu.close(); }
+                if (state == SHOWN) { cm_open(px, px_x, px_y, false); }
+            } else if (t == EV_KEY && v != 0 && ctxmenu.is_open()) {
+                cm_choose(px, ctxmenu.key(c));     // the menu has the keyboard while it is up
+            } else if (t == EV_KEY && v != 0) {
+                if (c == KEY_ESC || c == KEY_Q) { going = false; }
+                else if (wedges && c == KEY_LEFT) { go(-1, f, raw, px, nb, at); }
+                else if (wedges && c == KEY_RIGHT) { go(1, f, raw, px, nb, at); }
+                else if (state == SHOWN && (c == KEY_EQUAL || c == KEY_KPPLUS)) { zoomed(px, viewpad.zoom_in()); }
+                else if (state == SHOWN && (c == KEY_MINUS || c == KEY_KPMINUS)) { zoomed(px, viewpad.zoom_out()); }
+                else if (state == SHOWN && (c == KEY_0 || c == KEY_KP0)) { zoomed(px, viewpad.actual()); }
+                else if (state == SHOWN && (c == KEY_COMPOSE || (shift && c == KEY_F10))) {
+                    cm_open(px, sw / 2, sh / 2, true);
+                }
+            } else if (t == EV_ABS && (c == 0 || c == 1)) {
+                I64 lx = px_x;
+                I64 ly = px_y;
+                if (c == 0) { px_x = v; }
+                if (c == 1) { px_y = v; }
+                if (v < 0) { drag = false; }   // -1: the pointer left the surface (hdesk point_track); the drag ends
+                if (drag) {
+                    if (viewpad.pan(px_x - lx, px_y - ly)) { paint(px); }
+                } else if (ctxmenu.is_open()) {
+                    if (ctxmenu.hover(px_x, px_y)) { cm_paint(px); }
+                } else if (wedges) {
+                    I64 hv = 0;
+                    if (px_x >= 0 && px_y >= 0) { hv = viewpad.side_at(px_x); }
+                    if (hv != hover) {
+                        hover = hv;
+                        paint_wedge(px);
+                    }
+                }
+            }
+        }
+        if (cm_up) { cm_tick(px); }
+        if (up != 0) { return; }
+    }
+    msg.finish();
+}
+
+// View on one size of buffers: the window, or -d's line, for arg[s..e] (or nothing). Returns only when the picture
+// needs the large buffers (up), so main runs it again on those.
+void run[a, m, pn, k, q](in U8[_] arg, I64 s, I64 e, Bool dig, inout U8[a] f, inout U8[m] raw, inout U8[pn] px,
+                         inout U8[k] nb, inout I64[q] at) {
+    if (up == 2) {                     // a step found cur: shown here, or passed over as go() would
+        up = 0;
+        I64 dir = up_dir;
+        I64 r = load(cur[0..cur_n], f, raw, px);
+        if (r == 0) {
+            state = SHOWN;
+            iw = img.width();
+            ih = img.height();
+            name_bar();
+        } else {
+            say(cur[0..cur_n], r);
+            folder(nb, at);            // these buffers' listing is empty until show(); go() steps along it
+            go(dir, f, raw, px, nb, at);
+        }
+        show(f, raw, px, nb, at);
+        return;
+    }
+    up = 0;
+    if (len(arg) == 0) {               // opened with nothing (the app grid): the window, empty
+        show(f, raw, px, nb, at);
+        return;
+    }
+    I64 r = load(arg[s..e], f, raw, px);
+    if (needs_large(r, a)) {
+        up = 1;
+        return;
+    }
+    if (dig) {
+        if (r == E_OPEN) { msg.finish(); }
+        if (r == E_BIG) { msg.limit(b"FILE_MAX"); }
+        if (r < 0) {
+            msg.begin();
+            msg.text(arg[s..e]);
+            msg.text(b": ");
+            reason(r);
+            msg.send();
+            if (r == img.E_PIXELS || r == img.E_ROOM) { msg.finish_with(2); }
+            msg.finish_with(1);
+        }
+    } else {
+        if (e - s > PATH_MAX) { msg.limit(b"PATH_MAX"); }
+        cur_n = e - s;
+        for i in 0..cur_n { cur[i] = arg[s + i]; }
+        state = SHOWN;
+        if (r < 0) {
+            say(arg[s..e], r);
+            if (r == E_OPEN) { msg.status_one(); }
+            state = FAILED;
+        }
+        iw = img.width();
+        ih = img.height();
+        show(f, raw, px, nb, at);
+        return;
+    }
+    iw = img.width();
+    ih = img.height();
+    sha256.sha_digest(px, 0, 4 * iw * ih, digest);
+    put.bytes(b"cview: ");
+    put.bytes(arg[s..e]);
+    put.byte(' ');
+    put.num(iw, 0);
+    put.byte('x');
+    put.num(ih, 0);
+    put.bytes(b" rgba ");
+    for i in 0..32 {
+        put.byte(hex((digest[i] >> 4) as I64));
+        put.byte(hex((digest[i] & 15) as I64));
+    }
+    put.byte('\n');
+    msg.finish();
+}
+
+// The small buffers: 32 MiB, given back when this returns.
+void small(in U8[_] arg, I64 s, I64 e, Bool dig) {
+    U8[8388608] f;
+    U8[16777216] raw;
+    U8[8388608] px;
+    U8[65536] nb;
+    I64[1024] at;
+    run(arg, s, e, dig, f, raw, px, nb, at);
+}
+
+// The large buffers: 128 MiB, a picture up to img.PIXELS_MAX.
+void large(in U8[_] arg, I64 s, I64 e, Bool dig) {
+    U8[33554432] f;
+    U8[67108864] raw;
+    U8[33177600] px;
+    U8[65536] nb;
+    I64[1024] at;
+    run(arg, s, e, dig, f, raw, px, nb, at);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"cview");
+    Bool dig = false;
+    I64 s = 0;
+    I64 e = 0;
+    if (len(a) > 0) {
+        while (e < len(a) && a[e] != 0) { e = e + 1; }
+        if (e == 2 && a[0] == '-' && a[1] == 'd') {
+            dig = true;
+            s = 3;
+            e = s;
+            while (e < len(a) && a[e] != 0) { e = e + 1; }
+        }
+        if (e == s || e != len(a) - 1) { msg.usage(b"usage: cview [-d] FILE"); }
+    }
+    small(a, s, e, dig);
+    if (up != 0) { large(a, s, e, dig); }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

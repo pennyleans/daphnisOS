@@ -1,0 +1,80 @@
+// user/ci/seq.ci: seq [-w] [-s SEP] [FIRST [INCR]] LAST (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C; busybox
+// and GNU seq, no POSIX page): the integers from FIRST (default 1) by INCR (default 1) while they do not pass LAST,
+// SEP (default a newline) between them and a newline after the last. -w pads with zeros to the longer of the FIRST
+// and LAST operands as written. Integers only (no floating point in Daphnis): a fraction, an exponent or hex is a
+// bad number, an INCR of 0 is refused (busybox loops), and a magnitude past 2^62 is the limit COUNT.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+
+// args[s..e] as a signed decimal: an optional '-' or '+', then digits.
+I64 int_of(in U8[_] a, I64 s, I64 e) {
+    if (s < e && a[s] == '-') {
+        if (s + 1 == e || a[s + 1] < '0' || a[s + 1] > '9') { msg.usage(b"bad number"); }
+        return 0 - args.count_of(a, s + 1, e, b"bad number");
+    }
+    return args.count_of(a, s, e, b"bad number");
+}
+
+void zeros(I64 v, I64 width) {
+    I64 x = v;
+    I64 k = 1;
+    if (x < 0) {
+        put.byte('-');
+        x = 0 - x;
+        k = 2;
+    }
+    I64 t = x;
+    while (t >= 10) {
+        t = t / 10;
+        k = k + 1;
+    }
+    while (k < width) {
+        put.byte('0');
+        k = k + 1;
+    }
+    put.num(x, 0);
+}
+
+void main(in U8[_] a) {
+    msg.name(b"seq");
+    args.parse(a, b"w", b"s");
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    if (n > 3) { msg.usage(b"extra operand"); }
+    I64 first = 1;
+    I64 incr = 1;
+    I64 width = 0;
+    I64 l = n - 1;
+    I64 last = int_of(a, args.op_start(l), args.op_stop(a, l));
+    width = args.op_stop(a, l) - args.op_start(l);
+    if (n > 1) {
+        first = int_of(a, args.op_start(0), args.op_stop(a, 0));
+        I64 w0 = args.op_stop(a, 0) - args.op_start(0);
+        if (w0 > width) { width = w0; }
+    }
+    if (n == 3) { incr = int_of(a, args.op_start(1), args.op_stop(a, 1)); }
+    if (incr == 0) { msg.usage(b"zero increment"); }
+    if (!args.has('w')) { width = 0; }
+    Bool any = false;
+    I64 v = first;
+    Bool more = (incr > 0 && v <= last) || (incr < 0 && v >= last);
+    while (more) {
+        if (any) {
+            if (args.has('s')) { put.bytes(a[args.val_start('s')..args.val_stop('s')]); } else { put.byte('\n'); }
+        }
+        zeros(v, width);
+        any = true;
+        if (incr > 0) {
+            more = last - v >= incr;
+        } else {
+            more = last - v <= incr;
+        }
+        if (more) { v = v + incr; }
+    }
+    if (any) { put.byte('\n'); }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

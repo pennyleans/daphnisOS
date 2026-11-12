@@ -1,0 +1,34 @@
+// tests/dn6/tooltip_test.ci: DN-44's tooltip (kit/tooltip.ci): the light theme draws the very plate the dark one
+// does, at UI scale 1, 2 and 3, over either theme's ground. Run by check.sh.
+import user.ci.kit.tokens;
+import user.ci.kit.tooltip;
+
+U32[640] row;
+
+// The plate's rows over a ground g, summed (h * 31 + px, mod 1e9 + 7) with its corner and middle pixels checked.
+I64 plate_sum(I64 th, I64 u, U32 g) {
+    tokens.set_theme(th);
+    U8[19] t = b"1 download finished";
+    I64 wd = tooltip.width(t, 19, u);
+    I64 h = 0;
+    for y in 0..tooltip.H * u + 4 {
+        for x in 0..640 { row[x] = g; }
+        tooltip.row_at(row, y, 4, 2, wd, t, 19, u);
+        for x in 0..640 { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+        if (y == 2 + tooltip.H * u / 2) { assert(row[5] == tooltip.GROUND && row[4 + wd - 2] == tooltip.GROUND); }
+        if (y == 2) { assert(row[4] == g); }          // the radius leaves the corner as it was
+    }
+    return h;
+}
+
+test "DN-44: the light theme draws the same dark plate, text and size as the dark theme" {
+    for u in 1..4 {
+        U32 g = 1193046 as U32;                        // one ground under both, so only the theme differs
+        assert(plate_sum(0, u, g) == plate_sum(1, u, g));
+    }
+    tokens.set_theme(0);
+    I64 w0 = tooltip.width(b"Fetch", 5, 2);
+    tokens.set_theme(1);
+    assert(tooltip.width(b"Fetch", 5, 2) == w0 && w0 > 2 * 2 * tooltip.PAD);
+}
+// SPDX-License-Identifier: Apache-2.0

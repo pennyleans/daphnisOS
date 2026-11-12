@@ -1,0 +1,58 @@
+// tests/rs/openas_test.ci: RG-1, an open the desk cannot stat (user/ci/kit/openas.ci), hosted: account ada opens
+// files in the 0700 home /home/ada from Index; the desk reads the peek ada's run made (runas.h RUN_PEEK) and types
+// the line that opens each in its app in a terminal of ada's session. Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.openas;
+import user.ci.kit.opener;
+
+Bool is(in U8[_] t, I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (t[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "a peek's answer: d a folder, f and up to 512 bytes a file, anything else gone" {
+    assert(openas.kind(b"d", 1) == openas.DIR);
+    assert(openas.kind(b"fhello\n", 7) == openas.FILE && openas.kind(b"f", 1) == openas.FILE);
+    assert(openas.kind(b"", 0) == openas.GONE && openas.kind(b"x", 1) == openas.GONE);
+    assert(openas.kind(b"dd", 2) == openas.GONE);
+    U8[514] big;
+    big[0] = 'f';
+    assert(openas.kind(big, 513) == openas.FILE && openas.kind(big, 514) == openas.GONE);
+}
+
+test "a stat's mode: a folder, a regular file, and devices, pipes, sockets and links as other" {
+    assert(openas.of_mode(0x41C0) == openas.DIR);              // drwx------, ada's home
+    assert(openas.of_mode(0x81A4) == openas.FILE);             // -rw-r--r--
+    assert(openas.of_mode(0x2190) == openas.OTHER);            // crw--w----, /dev/pts/0
+    assert(openas.of_mode(0x21B6) == openas.OTHER);            // crw-rw-rw-, /dev/null
+    assert(openas.of_mode(0x61B0) == openas.OTHER);            // a block device
+    assert(openas.of_mode(0x11A4) == openas.OTHER);            // a pipe
+    assert(openas.of_mode(0xC1ED) == openas.OTHER);            // a socket
+    assert(openas.of_mode(0xA1FF) == openas.OTHER);            // a link, as lstat names it
+    assert(openas.of_mode(0) == openas.OTHER);
+}
+
+test "ada opens files in /home/ada from Index: each in its app, the path one quoted word" {
+    I64 rr = opener.load_default();
+    U8[256] c;
+    I64 n = openas.command(b"/home/ada/notes.txt", b"hello\n", c, 255);
+    assert(is(c, n, b"ced '/home/ada/notes.txt'"));          // Edit
+    n = openas.command(b"/home/ada/Pictures/sky.png", b"\x89PNG\r\n", c, 255);
+    assert(is(c, n, b"cview '/home/ada/Pictures/sky.png'"));   // View
+    n = openas.command(b"/home/ada/todo", b"milk\neggs\n", c, 255);
+    assert(is(c, n, b"ced '/home/ada/todo'"));                // text with no extension: Edit
+    n = openas.command(b"/home/ada/it's here.md", b"# a\n", c, 255);
+    assert(is(c, n, b"ced '/home/ada/it'\\''s here.md'"));    // a quote in the name stays one word
+}
+
+test "no program, or a line the shell could misread, opens nothing" {
+    I64 rr = opener.load_default();
+    U8[256] c;
+    assert(openas.command(b"/home/ada/a.bin", b"\x00\x01\x02", c, 255) == 0);
+    assert(openas.command(b"/home/ada/blob", b"\x00\x01\x02", c, 255) == 0);
+    assert(openas.command(b"/home/ada/a\nb.txt", b"x", c, 255) == -1);
+    assert(openas.command(b"/home/ada/notes.txt", b"x", c, 20) == -1);
+}
+// SPDX-License-Identifier: Apache-2.0

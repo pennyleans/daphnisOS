@@ -1,0 +1,260 @@
+// user/ci/cvim/edit.ci: the core's only ways to change the text (docs/specs/2026-11-07-cv-cvim.md section 5,
+// CV-2a). Each opens the command's undo step on its first change and notes itself in it; text taken out keeps its
+// spans in sp, which the unnamed register shares. A change to the empty buffer first gives it its one empty line,
+// as Vim's buffer always has one; undo takes that back too.
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.undo;
+import user.ci.cvim.state;
+
+// Marks a to z follow the lines they are on (Vim's mark_adjust and mark_col_adjust): lines put in above a mark move
+// it down, a split before its column takes it to the new line, deleted lines delete it, a join moves it onto the joined
+// line. Text changed within a line leaves its column, as Vim does.
+void marks_ins(inout I64[_] r, I64 l, I64 c, I64 lf, I64 tail) {
+    if (lf == 0) { return; }
+    for i in 0..26 {
+        I64 a = state.R_MARK0 + 2 * i;
+        if (r[a] < 0) { continue; }
+        if (r[a] > l) { r[a] += lf; }
+        else if (r[a] == l && r[a + 1] >= c) { r[a] += lf; r[a + 1] = r[a + 1] - c + tail; }
+    }
+}
+
+void marks_del(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, I64 n) {
+    I64 l0 = text.lf_before(x, orig, add, pos);
+    I64 le = text.lf_before(x, orig, add, pos + n);
+    I64 d = le - l0;
+    if (d == 0) { return; }
+    I64 c0 = pos - text.lstart(x, orig, add, l0);
+    I64 ce = pos + n - text.lstart(x, orig, add, le);
+    I64 dl = l0;
+    I64 dh = le - 1;
+    Bool join = true;
+    if (c0 == 0 && ce == 0) { join = false; }
+    else if (pos + n == buf.total(x) - 1 && text.ch(x, orig, add, pos) == '\n') { dl = l0 + 1; dh = le; join = false; }
+    for i in 0..26 {
+        I64 a = state.R_MARK0 + 2 * i;
+        I64 m = r[a];
+        if (m < 0) { continue; }
+        if (join) {
+            if (m > l0 && m < le) { r[a] = -1; }
+            else if (m == le) { r[a] = l0; r[a + 1] = c0 + max(r[a + 1] - ce, 0); }
+            else if (m > le) { r[a] = m - d; }
+        } else {
+            if (m >= dl && m <= dh) { r[a] = -1; }
+            else if (m > dh) { r[a] = m - d; }
+        }
+    }
+}
+
+// Marks of line l at or past column c move n columns (a join's inserted space, Vim's mark_col_adjust).
+export void marks_shift(inout I64[_] r, I64 l, I64 c, I64 n) {
+    for i in 0..26 {
+        I64 a = state.R_MARK0 + 2 * i;
+        if (r[a] == l && r[a + 1] >= c) { r[a + 1] += n; }
+    }
+}
+
+void marks_text(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, I64 lf, I64 tail) {
+    if (lf == 0) { return; }
+    I64 l = text.lf_before(x, orig, add, pos);
+    marks_ins(r, l, pos - text.lstart(x, orig, add, l), lf, tail);
+}
+
+Bool full(inout I64[_] r) {
+    r[state.R_FULL] = 1;
+    r[state.R_BELL] = 1;
+    return false;
+}
+
+// Reserve the complete command before any text, register, stack or history mutation.
+// Forward edits admit their source intervals and endpoints. Undo/redo only revisit those boundaries.
+// One block stays available for local splits; two transient boundary pieces fit beyond R_PBOUND.
+export Bool reserve(inout I64[_] r, in I64[_] x, in U8[_] add, in I64[_] sp, in I64[_] u,
+                    I64 bytes, I64 spans, I64 ops, I64 pieces) {
+    if (bytes > len(add)-r[state.R_ST_ADD] || (spans > 0 && spans > len(sp)/buf.SPAN-r[state.R_SPTOP])
+            || !undo.capacity(r,u,ops) || pieces > buf.piece_limit(x)-undo.bound(r,x,u)) { return full(r); }
+    return true;
+}
+
+export I64 span_cost(in I64[_] x, I64 pos, I64 n) {
+    return buf.cover(x,pos,n,9223372036854775807);
+}
+export I64 blank_ops(I64 n) { return (n+63)/64; }
+export I64 blank_cost(in I64[_] x, I64 n) { return (n/64)*buf.chunks(x,64) + buf.chunks(x,n%64) + 2*blank_ops(n); }
+
+export I64 insert_cost(in I64[_] r, in I64[_] x, in I64[_] u, I64 pos, I64 off, I64 n) {
+    I64 cost = buf.insert_cost(x,pos,off,n);
+    if (n > 0 && cost == 0 && !undo.joins(r,u,pos,off)) { cost = 2; }
+    return cost;
+}
+
+Bool raw_ins(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] u, I64 pos,
+             in U8[_] s) {
+    if (len(s) == 0) {
+        return true;
+    }
+    I64 cost = insert_cost(r,x,u,pos,r[state.R_ST_ADD],len(s));
+    I64[1] unused;
+    if (!reserve(r,x,add,unused,u,len(s),0,1,cost)) { return false; }
+    undo.prepare(r,u);
+    undo.open_step(r, x, orig, add, u);
+    I64 lf = 0;
+    I64 tail = 0;
+    for i in 0..len(s) { tail += 1; if (s[i] == '\n') { lf += 1; tail = 0; } }
+    marks_text(r, x, orig, add, pos, lf, tail);
+    I64 off = r[state.R_ST_ADD];
+    if (!buf.insert(x, r, orig, add, pos, s)) {
+        return full(r);
+    }
+    r[state.R_PBOUND] += cost;
+    undo.note(r, u, undo.K_INS, pos, off, len(s));
+    return true;
+}
+
+// Reserve append-only bytes before a compound command removes any original text.
+export Bool space(inout I64[_] r, in U8[_] add, I64 n) {
+    if (n > len(add) - r[state.R_ST_ADD]) { return full(r); }
+    return true;
+}
+
+// The empty buffer's one line, as a line feed, before a change.
+export Bool own_line(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] u) {
+    if (buf.total(x) > 0) {
+        return true;
+    }
+    U8[1] lf;
+    lf[0] = '\n';
+    return raw_ins(r, x, orig, add, u, 0, lf);
+}
+
+// s typed or made at pos.
+export Bool ins(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] u, I64 pos,
+                in U8[_] s) {
+    I64 extra = 0;
+    if (buf.total(x) == 0) { extra = 1; }
+    I64[1] unused;
+    I64 cost = insert_cost(r,x,u,pos,r[state.R_ST_ADD]+extra,len(s));
+    if (extra > 0) { cost += 3; }
+    if (!reserve(r,x,add,unused,u,len(s)+extra,0,1+extra,cost)) { return false; }
+    if (!own_line(r, x, orig, add, u)) {
+        return false;
+    }
+    return raw_ins(r, x, orig, add, u, pos, s);
+}
+
+// n blanks at pos.
+export Bool blanks(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] u, I64 pos,
+                   I64 n) {
+    I64[1] unused;
+    I64 extra = 0; if (buf.total(x) == 0) { extra = 1; }
+    if (!reserve(r,x,add,unused,u,n+extra,0,blank_ops(n)+extra,blank_cost(x,n)+3*extra)) { return false; }
+    U8[64] s;
+    I64 left = n;
+    I64 at = pos;
+    while (left > 0) {
+        I64 c = min(left, 64);
+        for i in 0..c {
+            s[i] = ' ';
+        }
+        if (!ins(r, x, orig, add, u, at, s[0..c])) {
+            return false;
+        }
+        at += c;
+        left -= c;
+    }
+    return true;
+}
+
+// n bytes at pos taken out; their spans are sp[R_SPTOP before, R_SPTOP after).
+export Bool del(inout I64[_] r, inout I64[_] x, in U8[_] orig, in U8[_] add, inout I64[_] sp, inout I64[_] u,
+                I64 pos, I64 n) {
+    if (n <= 0) {
+        return true;
+    }
+    if (!reserve(r,x,add,sp,u,0,span_cost(x,pos,n),1,2)) { return false; }
+    undo.prepare(r,u);
+    undo.open_step(r, x, orig, add, u);
+    marks_del(r, x, orig, add, pos, n);
+    I64 from = r[state.R_SPTOP];
+    I64 to = buf.delete(x, orig, add, pos, n, sp, from);
+    if (to < 0) {
+        return full(r);
+    }
+    r[state.R_SPTOP] = to;
+    r[state.R_PBOUND] += 2;
+    undo.note(r, u, undo.K_DEL, pos, from, to);
+    return true;
+}
+
+// The spans sp[from, to) put at pos (a paste).
+export Bool put(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp, inout I64[_] u,
+                I64 pos, I64 from, I64 to) {
+    if (from == to) {
+        return true;
+    }
+    I64 cost = 2;
+    for s in from..to { cost += buf.chunks(x,sp[s*buf.SPAN+2]); }
+    if (!reserve(r,x,add,sp,u,0,0,1,cost)) { return false; }
+    undo.prepare(r,u);
+    undo.open_step(r, x, orig, add, u);
+    I64 lf = 0;
+    I64 tail = 0;
+    for s in from..to {
+        for j in 0..sp[s * buf.SPAN + 2] {
+            U8 b = 0;
+            if (sp[s * buf.SPAN] == buf.SRC_ORIG) { b = orig[sp[s * buf.SPAN + 1] + j]; }
+            else { b = add[sp[s * buf.SPAN + 1] + j]; }
+            tail += 1;
+            if (b == '\n') { lf += 1; tail = 0; }
+        }
+    }
+    marks_text(r, x, orig, add, pos, lf, tail);
+    if (!buf.restore(x, orig, add, pos, sp, from, to)) {
+        return full(r);
+    }
+    r[state.R_PBOUND] += cost;
+    undo.note(r, u, undo.K_PUT, pos, from, to);
+    return true;
+}
+
+// [pos, pos + n) into the unnamed register, the text unchanged.
+export Bool yank(inout I64[_] r, in I64[_] x, inout I64[_] sp, I64 pos, I64 n, Bool line) {
+    I64 from = r[state.R_SPTOP];
+    I64 to = buf.spans(x, pos, n, sp, from);
+    if (to < 0) {
+        return full(r);
+    }
+    r[state.R_SPTOP] = to;
+    r[state.R_REG_FROM] = from;
+    r[state.R_REG_TO] = to;
+    r[state.R_REG_LINE] = 0;
+    if (line) {
+        r[state.R_REG_LINE] = 1;
+    }
+    return true;
+}
+
+// Line l's leading blanks made n blanks (Vim's set_indent with expandtab); the cursor keeps its place in the text.
+export Bool set_indent(inout I64[_] r, inout I64[_] x, in U8[_] orig, inout U8[_] add, inout I64[_] sp,
+                       inout I64[_] u, I64 l, I64 n) {
+    I64 ls = text.lstart(x, orig, add, l);
+    I64 e = text.first_nonblank(x, orig, add, l, false);
+    I64 old = e - ls;
+    Bool same = text.indent(x, orig, add, l) == n && old == n;
+    if (same) {
+        return true;
+    }
+    if (!reserve(r,x,add,sp,u,n,span_cost(x,ls,old),1+blank_ops(n),2+blank_cost(x,n))) { return false; }
+    I64 c = r[state.R_CUR];
+    if (!del(r, x, orig, add, sp, u, ls, old) || !blanks(r, x, orig, add, u, ls, n)) {
+        return false;
+    }
+    if (c >= e) {
+        r[state.R_CUR] = c - old + n;
+    } else if (c > ls + n) {
+        r[state.R_CUR] = ls + n;
+    }
+    return true;
+}
+// SPDX-License-Identifier: Apache-2.0

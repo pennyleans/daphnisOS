@@ -1,0 +1,34 @@
+{
+  "id": "replace-y-n",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a a a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "620d",
+    "79",
+    "6e",
+    "79"
+  ],
+  "expect": {
+    "text": "b a b",
+    "screen": [
+      "b a b",
+      "",
+      "",
+      "",
+      " x [+]  2 replaced                  1:6",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

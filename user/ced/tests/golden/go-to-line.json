@@ -1,0 +1,27 @@
+{
+  "id": "go-to-line",
+  "rules": [
+    "KEY-8"
+  ],
+  "text": "a\nb\nc\n",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "07",
+    "33",
+    "0d"
+  ],
+  "expect": {
+    "text": "a\nb\nc\n",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

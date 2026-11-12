@@ -1,0 +1,418 @@
+// user/ci/kit/stabout.ci: Settings' About page (frame 31, design note 49, DN-53: builds as drawn; l 2026-11-11
+// 14:45Z), a page module on kit/stpage.ci. In place of a title, the head: the 56 px roundel, 16 px, then "Daphnis" in
+// TITLE over the version in PATH, INK_DIM, 8 apart, the pair centered on the roundel; at the right Copy Details and
+// Licenses, 32 px buttons 16 apart. 20 px under the head, SYSTEM (Version, Build, Compiler) and, 18 px under it,
+// THIS MACHINE (Processor, Memory, Display, Disk): 32 px rows, a 1 px SURF1 rule between rows, the name in NAME and
+// the value at the right in INK, PATH for Version, Build, Compiler and Display, BODY for the rest.
+//
+// Every value is told by the host: the version, build and compiler from the image's /etc/daphnis (tools/mkabout.py:
+// VERSION, HEAD and its date, toolchain.pin), the processor from facts kind 1, memory from sysinfo, the display
+// from the screen's mode, the disk from statfs of /home. A value the host did not give is a row left out, and a
+// group with no row is left out with its label. The page never shows a number it was not given.
+//
+// Copy Details returns COPY with details(), the rows as "Label: value" lines; it is at 40 percent and takes no press
+// until the desk has a clipboard (set_copy_live). Licenses returns LICENSES for the host to open the image's notices
+// in Read; at 40 percent while the image has no notices or no Read (set_licenses_live). No caption (DN-46, note 58).
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.symbols;
+import user.ci.kit.stpage;
+import user.ci.kit.ststore;
+import user.ci.kit.roundel;
+
+export const I64 COPY = 16;            // stpage.ACT + 0
+export const I64 LICENSES = 17;
+
+export const I64 MARK = 56;            // the roundel
+export const I64 HEAD = 56;            // the head's height, from y0 + stpage.TOP
+export const I64 GROUPS = 20;          // the head's foot to the first label (frame 31: 24, less 4)
+export const I64 GROUP_GAP = 18;
+export const I64 PITCH = 33;           // a row and its rule
+
+export const I64 R_VERSION = 0;        // the rows, in the frame's order
+export const I64 R_BUILD = 1;
+export const I64 R_COMPILER = 2;
+export const I64 R_PROCESSOR = 3;
+export const I64 R_MEMORY = 4;
+export const I64 R_DISPLAY = 5;
+export const I64 R_DISK = 6;
+export const I64 ROWS = 7;
+export const I64 SYSTEM_ROWS = 3;      // R_VERSION to R_COMPILER; THIS MACHINE the rest
+
+export const I64 F_NONE = 0;
+export const I64 F_COPY = 1;
+export const I64 F_LICENSES = 2;
+
+U8[448] vals;                          // 64 bytes a row
+I64[7] vlen;
+Bool copy_live = false;
+Bool lic_live = false;
+
+I64 fs = F_NONE;
+Bool kbd = false;
+
+I64 mark_n = 0;                        // the roundel cached at its device size over its ground
+U32 mark_g = 0;
+U32[12544] mark_px;                    // 112 x 112: the 2x mark
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- what the host tells ---
+
+// Row r's value t[0..n] (n 0: the row is left out); 64 bytes at most.
+export void set_row(I64 r, in U8[_] t, I64 n) {
+    if (r < 0 || r >= ROWS) { return; }
+    I64 m = max(0, min(n, min(64, len(t))));
+    for k in 0..m { vals[64 * r + k] = t[k]; }
+    vlen[r] = m;
+}
+
+export void clear() {
+    for r in 0..ROWS { vlen[r] = 0; }
+}
+
+// The processor from facts kind 1: its brand string b (48 bytes, NUL padded) and the logical processors the kernel
+// runs on. The brand without (R), (TM) and (tm), cut at " @ ", a trailing " CPU" or " Processor" dropped, spaces
+// folded; ", N threads" only when the kernel runs on more than one.
+export void set_processor(in U8[_] b, I64 threads) {
+    U8[64] t;
+    I64 n = brand(b, t);
+    if (n > 0 && threads > 1) {
+        n = stpage.put(t, n, b", ");
+        n = stpage.digits(t, n, threads);
+        n = stpage.put(t, n, b" threads");
+    }
+    set_row(R_PROCESSOR, t, n);
+}
+
+// The brand string's words as the row shows them, into t; the length.
+export I64 brand(in U8[_] b, inout U8[_] t) {
+    U8[48] s;
+    I64 sn = 0;
+    I64 k = 0;
+    I64 bn = min(48, len(b));
+    while (k < bn && b[k] != 0) {
+        if (k + 3 <= bn && b[k] == '(' && b[k + 2] == ')' && (b[k + 1] == 'R' || b[k + 1] == 'r')) {
+            k = k + 3;
+        } else if (k + 4 <= bn && b[k] == '(' && b[k + 3] == ')' && (b[k + 1] == 'T' || b[k + 1] == 't')
+                   && (b[k + 2] == 'M' || b[k + 2] == 'm')) {
+            k = k + 4;
+        } else if (k + 3 <= bn && b[k] == ' ' && b[k + 1] == '@' && b[k + 2] == ' ') {
+            k = bn;
+        } else {
+            s[sn] = b[k];
+            sn = sn + 1;
+            k = k + 1;
+        }
+    }
+    I64 n = 0;                         // spaces folded, none leading or trailing
+    for q in 0..sn {
+        Bool sp = s[q] == ' ' || s[q] < 32 || s[q] > 126;
+        if (!sp) {
+            if (n > 0 && q > 0 && (s[q - 1] == ' ' || s[q - 1] < 32 || s[q - 1] > 126)) {
+                t[n] = ' ';
+                n = n + 1;
+            }
+            t[n] = s[q];
+            n = n + 1;
+        }
+    }
+    if (n >= 4 && ends(t, n, b" CPU")) { n = n - 4; }
+    if (n >= 10 && ends(t, n, b" Processor")) { n = n - 10; }
+    return n;
+}
+
+Bool ends(in U8[_] t, I64 n, in U8[_] w) {
+    I64 m = len(w);
+    if (n < m) { return false; }
+    for k in 0..m {
+        if (t[n - m + k] != w[k]) { return false; }
+    }
+    return true;
+}
+
+// Memory, its bytes as sysinfo gives them (totalram times mem_unit); 0 or less leaves the row out.
+export void set_memory(I64 bytes) {
+    if (bytes <= 0) {
+        vlen[R_MEMORY] = 0;
+        return;
+    }
+    U8[24] t;
+    I64 n = ststore.size_text(t, 0, bytes / 1024);
+    set_row(R_MEMORY, t, n);
+}
+
+// The display's mode, "W x H".
+export void set_display(I64 w, I64 h) {
+    if (w <= 0 || h <= 0) {
+        vlen[R_DISPLAY] = 0;
+        return;
+    }
+    U8[24] t;
+    I64 n = stpage.digits(t, 0, w);
+    n = stpage.put(t, n, b" x ");
+    n = stpage.digits(t, n, h);
+    set_row(R_DISPLAY, t, n);
+}
+
+// The disk from statfs of /home, capacity and free in KiB: "N used of M" as the Storage page writes it.
+export void set_disk(I64 cap_kib, I64 free_kib) {
+    if (cap_kib <= 0) {
+        vlen[R_DISK] = 0;
+        return;
+    }
+    U8[40] t;
+    I64 f = max(0, min(free_kib, cap_kib));
+    I64 n = ststore.size_text(t, 0, cap_kib - f);
+    n = stpage.put(t, n, b" used of ");
+    n = ststore.size_text(t, n, cap_kib);
+    set_row(R_DISK, t, n);
+}
+
+export void no_disk() { vlen[R_DISK] = 0; }
+
+// Whether Copy Details can work (a desk clipboard) and whether Licenses can (the notices and Read in the image).
+export void set_copy_live(Bool b) { copy_live = b; }
+export void set_licenses_live(Bool b) { lic_live = b; }
+
+export I64 row_len(I64 r) { return vlen[r]; }
+
+export void open() {
+    fs = F_NONE;
+    kbd = false;
+}
+
+// --- the rows ---
+
+I64 row_name(I64 r, inout U8[_] t) {
+    if (r == R_VERSION) { return stpage.put(t, 0, b"Version"); }
+    if (r == R_BUILD) { return stpage.put(t, 0, b"Build"); }
+    if (r == R_COMPILER) { return stpage.put(t, 0, b"Compiler"); }
+    if (r == R_PROCESSOR) { return stpage.put(t, 0, b"Processor"); }
+    if (r == R_MEMORY) { return stpage.put(t, 0, b"Memory"); }
+    if (r == R_DISPLAY) { return stpage.put(t, 0, b"Display"); }
+    return stpage.put(t, 0, b"Disk");
+}
+
+Bool mono(I64 r) { return r == R_VERSION || r == R_BUILD || r == R_COMPILER || r == R_DISPLAY; }
+
+I64 shown(I64 lo, I64 hi) {
+    I64 n = 0;
+    for r in lo..hi {
+        if (vlen[r] > 0) { n = n + 1; }
+    }
+    return n;
+}
+
+// The rows as "Label: value" lines, one a row shown, into t; the length (Copy Details, frame 31).
+export I64 details(inout U8[_] t) {
+    I64 at = 0;
+    U8[16] nm;
+    for r in 0..ROWS {
+        if (vlen[r] > 0 && at + 16 + 2 + vlen[r] + 1 <= len(t)) {
+            I64 n = row_name(r, nm);
+            for k in 0..n { t[at + k] = nm[k]; }
+            at = stpage.put(t, at + n, b": ");
+            for k in 0..vlen[r] { t[at + k] = vals[64 * r + k]; }
+            at = at + vlen[r];
+            t[at] = '\n';
+            at = at + 1;
+        }
+    }
+    return at;
+}
+
+// --- geometry, from the page's top y0 ---
+
+I64 head_y(I64 y0) { return y0 + stpage.TOP; }
+I64 btn_y(I64 y0) { return head_y(y0) + (HEAD - stpage.BTN) / 2; }
+I64 lic_w() { return stpage.bw(b"Licenses", 8, faces.NAME); }
+I64 copy_w() { return stpage.bw(b"Copy Details", 12, faces.NAME); }
+I64 copy_x(I64 cr) { return cr - lic_w() - 16 - copy_w(); }
+
+// The label's line of group g (0 SYSTEM, 1 THIS MACHINE), -1 when the group shows no row.
+I64 label_y(I64 y0, I64 g) {
+    I64 ly = head_y(y0) + HEAD + GROUPS;
+    I64 s = shown(0, SYSTEM_ROWS);
+    if (g == 0) {
+        if (s == 0) { return -1; }
+        return ly;
+    }
+    if (shown(SYSTEM_ROWS, ROWS) == 0) { return -1; }
+    if (s == 0) { return ly; }
+    return ly + stpage.LAB + PITCH * s - 1 + GROUP_GAP;
+}
+
+// Frame 48: the page's height from y0 with every row it shows; a box less tall scrolls it (kit/stbox.ci).
+export I64 tall() {
+    I64 e = head_y(0) + HEAD;
+    I64 m = shown(SYSTEM_ROWS, ROWS);
+    if (m > 0) {
+        e = label_y(0, 1) + stpage.LAB + PITCH * m - 1;
+    } else if (shown(0, SYSTEM_ROWS) > 0) {
+        e = label_y(0, 0) + stpage.LAB + PITCH * shown(0, SYSTEM_ROWS) - 1;
+    }
+    return e + stpage.FOOT;
+}
+
+// The keyboard's control, from the page's top (y0 = 0): its top and bottom, -1 while the keyboard is not in it.
+export I64 focus_top() {
+    if (!kbd || fs == F_NONE) { return -1; }
+    return btn_y(0);
+}
+
+export I64 focus_bottom() {
+    if (!kbd || fs == F_NONE) { return -1; }
+    return btn_y(0) + stpage.BTN;
+}
+
+export I64 focused() { return fs; }
+
+// --- drawing ---
+
+// The roundel n device pixels square over ground g, cached.
+void mark_make(I64 n, U32 g) {
+    if (n == mark_n && g == mark_g) { return; }
+    for j in 0..n {
+        for i in 0..n { mark_px[j * n + i] = roundel.px(n, i, j, g); }
+    }
+    mark_n = n;
+    mark_g = g;
+}
+
+void mark_row(inout U32[_] row, I64 x0, I64 y0) {
+    I64 n = MARK * pen.zoom();
+    if (n > 112) { return; }
+    I64 dy = pen.row_y() - pen.y(y0);
+    if (dy < 0 || dy >= n) { return; }
+    mark_make(n, tok(tokens.PAPER));
+    I64 dx = pen.x(x0);
+    for i in 0..n {
+        if (dx + i >= 0 && dx + i < len(row)) { row[dx + i] = mark_px[dy * n + i]; }
+    }
+}
+
+// The 1x row y of the page from (cx, y0) to (cr, yb), through the pen.
+export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
+    I64 hy = head_y(y0);
+    I64 mx = cx;
+    if (stpage.is_folded()) {          // frame 48's narrow form: the sidebar's button before the head
+        if (stpage.on(y, hy - 4, stpage.T_BTN)) {
+            pen.round(row, cx, hy - 4, cx + stpage.T_BTN, hy - 4 + stpage.T_BTN, stpage.R_CTRL, tok(tokens.SURF1));
+            stpage.sym(row, cx + 6, hy + 2, symbols.SIDEBAR_MONO, tok(tokens.INK));
+        }
+        mx = cx + stpage.T_LEAD;
+    }
+    if (stpage.on(y, hy, MARK)) { mark_row(row, mx, hy); }
+    I64 tx = mx + MARK + 16;
+    I64 bx = copy_x(cr);
+    if (stpage.on(y, hy + 4, 26)) {
+        I64 e = pen.text(row, tx, hy + 4 + 19, bx - 16, b"Daphnis", 7, tok(tokens.INK), faces.TITLE);
+    }
+    if (vlen[R_VERSION] > 0 && stpage.on(y, hy + 36, 16)) {
+        I64 e = pen.text(row, tx, stpage.base(hy + 36, 15), bx - 16, vals[0..vlen[R_VERSION]], vlen[R_VERSION],
+                         tok(tokens.INK_DIM), faces.PATH);
+    }
+    I64 bty = btn_y(y0);
+    if (stpage.on(y, bty, stpage.BTN)) {
+        stpage.button(row, bx, bty, copy_w(), stpage.BTN, b"Copy Details", 12, tok(tokens.INK), faces.NAME);
+        if (!copy_live) { stpage.fade(row, bx, bx + copy_w()); }
+        I64 lx = cr - lic_w();
+        stpage.button(row, lx, bty, lic_w(), stpage.BTN, b"Licenses", 8, tok(tokens.INK), faces.NAME);
+        if (!lic_live) { stpage.fade(row, lx, cr); }
+    }
+    if (kbd && fs == F_COPY) { stpage.focus(row, bx, bty, bx + copy_w(), bty + stpage.BTN, stpage.R_CTRL); }
+    if (kbd && fs == F_LICENSES) { stpage.focus(row, cr - lic_w(), bty, cr, bty + stpage.BTN, stpage.R_CTRL); }
+    group(row, cx, y0, cr, 0, b"SYSTEM", 6, 0, SYSTEM_ROWS, y);
+    group(row, cx, y0, cr, 1, b"THIS MACHINE", 12, SYSTEM_ROWS, ROWS, y);
+}
+
+void group(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 g, in U8[_] lab, I64 ln, I64 lo, I64 hi, I64 y) {
+    I64 ly = label_y(y0, g);
+    if (ly < 0) { return; }
+    stpage.section(row, cx, ly, cr, lab, ln, y);
+    I64 ry = ly + stpage.LAB;
+    U8[16] nm;
+    Bool first = true;
+    for r in lo..hi {
+        if (vlen[r] > 0) {
+            if (!first && stpage.on(y, ry - 1, 1)) { stpage.rule(row, cx, ry - 1, cr); }
+            if (stpage.on(y, ry, stpage.ROW_S)) {
+                I64 f = faces.BODY;
+                if (mono(r)) { f = faces.PATH; }
+                I64 vw = stpage.tw(vals[64 * r..64 * r + vlen[r]], vlen[r], f);
+                I64 n = row_name(r, nm);
+                stpage.label(row, cx, ry, stpage.ROW_S, cr - vw - 16, nm, n);
+                stpage.value(row, cr, ry, stpage.ROW_S, vals[64 * r..64 * r + vlen[r]], vlen[r], tok(tokens.INK), f);
+            }
+            ry = ry + PITCH;
+            first = false;
+        }
+    }
+}
+
+// --- the pointer and the keyboard ---
+
+I64 can() {
+    I64 c = 0;
+    if (copy_live) { c = c | 1; }
+    if (lic_live) { c = c | 2; }
+    return c;
+}
+
+Bool tab(I64 d) {
+    fs = stpage.tab_to(fs - 1, d, 2, can()) + 1;
+    return fs > 0;
+}
+
+// The keyboard moves in from the sidebar: Copy Details, then Licenses, whichever can work; whether one took it.
+export Bool enter() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(1);
+}
+
+export Bool enter_last() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(-1);
+}
+
+export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    kbd = false;
+    I64 bty = btn_y(y0);
+    if (py < bty || py >= bty + stpage.BTN) { return stpage.NONE; }
+    I64 bx = copy_x(cr);
+    if (copy_live && px >= bx && px < bx + copy_w()) {
+        fs = F_COPY;
+        return COPY;
+    }
+    if (lic_live && px >= cr - lic_w() && px < cr) {
+        fs = F_LICENSES;
+        return LICENSES;
+    }
+    return stpage.NONE;
+}
+
+// A key: Tab, Shift+Tab and the arrows move between the two buttons and Tab on to the sidebar (BACK); Enter or Space
+// presses the one with the focus.
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
+    if (stpage.is_tab(code)) {
+        if (tab(stpage.tab_d(code))) { return stpage.DRAW; }
+        return stpage.BACK;
+    }
+    if (stpage.is_arrow(code)) {
+        I64 d = 1;
+        if (code == stpage.K_LEFT || code == stpage.K_UP) { d = -1; }
+        I64 was = fs;
+        if (!tab(d)) { fs = was; }
+        if (fs == F_NONE) { Bool t = tab(1); }
+        return stpage.DRAW;
+    }
+    if (stpage.is_press(code) && fs == F_COPY && copy_live) { return COPY; }
+    if (stpage.is_press(code) && fs == F_LICENSES && lic_live) { return LICENSES; }
+    return stpage.NONE;
+}
+// SPDX-License-Identifier: Apache-2.0

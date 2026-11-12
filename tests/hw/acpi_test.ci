@@ -1,0 +1,127 @@
+// tests/hw/acpi_test.ci: hosted tests of src/acpitab.ci (HW-2): the FADT's ACPI mode handshake fields and \_S5 in
+// the encodings firmware compiles it to, each a fake table's bytes as a laptop's DSDT holds them.
+// cint test --root . tests/hw/acpi_test.ci
+
+import src.acpitab;
+
+// The bytes of s as a DSDT body: _S5 found from its start, both values back.
+Bool s5[n](in U8[n] d, inout I64[2] typ) {
+    typ[0] = -1;
+    typ[1] = -1;
+    return acpitab.s5_find(d, n, n, typ);
+}
+
+test "the FADT's SMI_CMD and ACPI_ENABLE: a legacy-mode machine's handshake, none on a short table" {
+    U8[116] f;                                        // revision 1's length
+    for k in 0..116 { f[k] = 0; }
+    f[48] = 0xB2;                                     // SMI_CMD 0xB2, as Intel chipsets and QEMU's ICH9 have it
+    f[52] = 0xA0;                                     // ACPI_ENABLE
+    f[53] = 0xA1;                                     // ACPI_DISABLE, not taken
+    assert(acpitab.smi_cmd(f, 116) == 0xB2 && acpitab.acpi_enable(f, 116) == 0xA0);
+    f[49] = 0x08;                                     // a port above 0xFF (0x8B2): all 4 bytes read
+    assert(acpitab.smi_cmd(f, 116) == 0x8B2);
+    assert(acpitab.smi_cmd(f, 52) == 0 && acpitab.acpi_enable(f, 52) == 0);   // too short to hold them
+    for k in 48..56 { f[k] = 0; }
+    assert(acpitab.smi_cmd(f, 116) == 0 && acpitab.acpi_enable(f, 116) == 0);  // always in ACPI mode
+}
+
+test "the FADT's PM1 event and GPE blocks: the 32-bit ports, the X_ forms in I/O space over them, none past the table" {
+    U8[244] f;                                        // revision 5's length
+    for k in 0..244 { f[k] = 0; }
+    f[56] = 0x00; f[57] = 0x06;                       // PM1a_EVT_BLK 0x600
+    f[60] = 0x00; f[61] = 0x08;                       // PM1b_EVT_BLK 0x800
+    f[80] = 0x20; f[81] = 0x06;                       // GPE0_BLK 0x620
+    f[84] = 0x40; f[85] = 0x06;                       // GPE1_BLK 0x640
+    f[88] = 4;                                        // PM1_EVT_LEN
+    f[92] = 8;                                        // GPE0_BLK_LEN
+    f[93] = 4;                                        // GPE1_BLK_LEN
+    assert(acpitab.io_block(f, 116, 56, 148) == 0x600 && acpitab.io_block(f, 116, 60, 160) == 0x800);
+    assert(acpitab.io_block(f, 116, 80, 220) == 0x620 && acpitab.io_block(f, 116, 84, 232) == 0x640);
+    assert(acpitab.block_len(f, 116, 88) == 4 && acpitab.block_len(f, 116, 92) == 8);
+    assert(acpitab.block_len(f, 116, 93) == 4);
+    f[220] = 1; f[224] = 0x20; f[225] = 0x18;         // X_GPE0_BLK in I/O space at 0x1820: taken over GPE0_BLK
+    f[232] = 0; f[236] = 0x00; f[237] = 0x10;         // X_GPE1_BLK in memory space: GPE1_BLK stays
+    f[148] = 1;                                       // X_PM1a_EVT_BLK in I/O space, address 0: PM1a_EVT_BLK stays
+    assert(acpitab.io_block(f, 244, 80, 220) == 0x1820 && acpitab.io_block(f, 244, 84, 232) == 0x640);
+    assert(acpitab.io_block(f, 244, 56, 148) == 0x600);
+    assert(acpitab.io_block(f, 231, 80, 220) == 0x620);           // the X_ form cut off: the 32-bit port
+    assert(acpitab.io_block(f, 83, 80, 220) == 0 && acpitab.block_len(f, 93, 93) == 0);   // too short to hold them
+}
+
+test "_S5 with BytePrefix values (iasl's Package (0x04) of 0x07, 0x07, Zero, Zero: QEMU and Intel laptops)" {
+    U8[18] d = [0x10, 0x08, 0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x0A, 0x04, 0x0A, 0x07, 0x0A, 0x07, 0x00, 0x00,
+                0x5B, 0x80];
+    I64[2] t;
+    assert(s5(d, t) && t[0] == 7 && t[1] == 7);
+}
+
+test "_S5 with the root prefix and bare Zero constants (a package of four Zero)" {
+    U8[12] d = [0x08, 0x5C, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x06, 0x04, 0x00, 0x00, 0x00];
+    I64[2] t;
+    assert(s5(d, t) && t[0] == 0 && t[1] == 0);
+}
+
+test "_S5 with mixed encodings: a BytePrefix SLP_TYPa and a Zero SLP_TYPb (AMD laptops' 0x05, Zero), and One" {
+    U8[12] d = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x07, 0x04, 0x0A, 0x05, 0x00, 0x00];
+    I64[2] t;
+    assert(s5(d, t) && t[0] == 5 && t[1] == 0);
+    U8[10] e = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x05, 0x02, 0x01, 0x0A];
+    assert(!s5(e, t));                                // the second value runs past the bytes: no match
+    U8[11] g = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x06, 0x02, 0x01, 0x0A, 0x01];
+    assert(s5(g, t) && t[0] == 1 && t[1] == 1);
+}
+
+test "_S5 with WordPrefix and DWordPrefix values, as an older compiler writes them" {
+    U8[18] d = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x0C, 0x04, 0x0B, 0x07, 0x00, 0x0C, 0x07, 0x00, 0x00, 0x00, 0x00,
+                0x00];
+    I64[2] t;
+    assert(s5(d, t) && t[0] == 7 && t[1] == 7);
+}
+
+test "_S5 with a two-byte PkgLength (bits 7 and 6 of its first byte say one more byte follows)" {
+    U8[13] d = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x47, 0x00, 0x04, 0x0A, 0x06, 0x0A, 0x06];
+    I64[2] t;
+    assert(s5(d, t) && t[0] == 6 && t[1] == 6);
+}
+
+test "_S5 of one element holds both values: SLP_TYPa in its low byte, SLP_TYPb in the next, as ACPICA reads it" {
+    U8[11] d = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x05, 0x01, 0x0B, 0x07, 0x05];
+    I64[2] t;
+    assert(s5(d, t) && t[0] == 7 && t[1] == 5);
+    U8[10] z = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x03, 0x01, 0x0A, 0x07];
+    assert(s5(z, t) && t[0] == 7 && t[1] == 0);
+}
+
+test "a reference to _S5 before its definition (Return of _S5 in a method) is passed over; the package is found" {
+    U8[22] d = [0xA4, 0x5C, 0x5F, 0x53, 0x35, 0x5F, 0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x0A, 0x04, 0x0A, 0x07,
+                0x0A, 0x07, 0x00, 0x00, 0x00, 0x00];
+    I64[2] t;
+    assert(s5(d, t) && t[0] == 7 && t[1] == 7);
+}
+
+test "_S5 whose values do not fit SLP_TYP's three bits, or are no integer, or an empty package: no match" {
+    I64[2] t;
+    U8[12] big = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x07, 0x04, 0x0A, 0x08, 0x0A, 0x07];
+    assert(!s5(big, t));
+    U8[10] ones = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x04, 0x02, 0xFF, 0x00];
+    assert(!s5(ones, t));
+    U8[11] str = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x06, 0x02, 0x0D, 0x41, 0x00];   // a String
+    assert(!s5(str, t));
+    U8[9] none = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x02, 0x00, 0x00];
+    assert(!s5(none, t));
+    U8[8] cut = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x0A, 0x04];                       // the table ends
+    assert(!s5(cut, t));
+}
+
+test "a scan takes an _S5 that starts in its piece and ends in the bytes after it; one past its stop is the next's" {
+    U8[24] d;
+    for k in 0..24 { d[k] = 0x5B; }
+    U8[14] p = [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x0C, 0x04, 0x0B, 0x07, 0x00, 0x0C, 0x07, 0x00];
+    for k in 0..14 { d[6 + k] = p[k]; }
+    d[20] = 0x00; d[21] = 0x00;
+    I64[2] t;
+    assert(acpitab.s5_find(d, 8, 24, t) && t[0] == 7 && t[1] == 7);     // starts at 7, before the stop at 8
+    assert(!acpitab.s5_find(d, 7, 24, t));                              // the piece ends before it starts
+    assert(!acpitab.s5_find(d, 8, 19, t));                              // its bytes run past what was read
+}
+// SPDX-License-Identifier: Apache-2.0

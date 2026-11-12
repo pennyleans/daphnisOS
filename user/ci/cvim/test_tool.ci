@@ -1,0 +1,56 @@
+// user/ci/cvim/test_tool.ci: CV-8's diagnostics list (tool.ci): CINT-DIAG-1 lines read (as public cint v0.2.18 writes
+// them), other lines not; the margin's E and W, the counts, ] d and [ d with wrapping, the list's selection, and a
+// column of code points (a tab one) as a byte offset.
+import user.ci.cvim.tool;
+
+I64[18755] dt;
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for i in 0..n {
+        if (a[i] != b[i]) { return false; }
+    }
+    return true;
+}
+
+test "a CINT-DIAG-1 line becomes an entry; its own keys, not its notes'; other lines are none" {
+    tool.clear(dt);
+    assert(tool.SIZE <= 18755);
+    assert(tool.add_line(dt, b"\x7b\"code\":\"C3004\",\"column\":16,\"file\":\"note.ci\",\"line\":3,\"message\":\"script local used in a function or test\",\"notes\":[\x7b\"column\":1,\"file\":\"other.ci\",\"line\":5,\"text\":\"x\"\x7d],\"schema\":\"CINT-DIAG-1\",\"severity\":\"error\"\x7d"));
+    assert(!tool.add_line(dt, b"built out/note"));
+    assert(!tool.add_line(dt, b"\x7b\"schema\":\"CINT-TEST-1\",\"severity\":\"error\"\x7d"));
+    assert(tool.entries(dt) == 1 && tool.total(dt) == 1);
+    assert(tool.severity(dt, 0) == tool.SEV_E && tool.line(dt, 0) == 3 && tool.column(dt, 0) == 16);
+    U8[256] t;
+    I64 n = tool.file(dt, 0, t);
+    assert(same(t, n, b"note.ci"));
+    n = tool.message(dt, 0, t);
+    assert(same(t, n, b"C3004  script local used in a function or test"));
+}
+
+test "the margin: E over W on a line; counts by file; a path and its last part are one file" {
+    tool.clear(dt);
+    _ = tool.add_line(dt, b"\x7b\"code\":\"C1\",\"column\":2,\"file\":\"src/a.ci\",\"line\":4,\"message\":\"m\",\"schema\":\"CINT-DIAG-1\",\"severity\":\"warning\"\x7d");
+    _ = tool.add_line(dt, b"\x7b\"code\":\"C2\",\"column\":9,\"file\":\"src/a.ci\",\"line\":4,\"message\":\"m\",\"schema\":\"CINT-DIAG-1\",\"severity\":\"error\"\x7d");
+    _ = tool.add_line(dt, b"\x7b\"code\":\"C3\",\"column\":1,\"file\":\"src/a.ci\",\"line\":9,\"message\":\"m\",\"schema\":\"CINT-DIAG-1\",\"severity\":\"warning\"\x7d");
+    _ = tool.add_line(dt, b"\x7b\"code\":\"C4\",\"column\":1,\"file\":\"b.ci\",\"line\":1,\"message\":\"m\",\"schema\":\"CINT-DIAG-1\",\"severity\":\"error\"\x7d");
+    assert(tool.mark_of(dt, b"src/a.ci", 4) == tool.SEV_E && tool.mark_of(dt, b"src/a.ci", 9) == tool.SEV_W);
+    assert(tool.mark_of(dt, b"src/a.ci", 5) == 0 && tool.mark_of(dt, b"/home/x/src/a.ci", 4) == tool.SEV_E);
+    assert(tool.mark_of(dt, b"xsrc/a.ci", 4) == 0);
+    assert(tool.count_of(dt, b"src/a.ci", tool.SEV_E) == 1 && tool.count_of(dt, b"src/a.ci", tool.SEV_W) == 2);
+    assert(tool.step(dt, b"src/a.ci", 1, 1, 1) == 0 && tool.step(dt, b"src/a.ci", 4, 2, 1) == 1);
+    assert(tool.step(dt, b"src/a.ci", 9, 1, 1) == 0);                    // wraps to the first
+    assert(tool.step(dt, b"src/a.ci", 4, 2, -1) == 2);                   // wraps to the last
+    assert(tool.step(dt, b"c.ci", 1, 1, 1) == -1);
+    tool.move(dt, 9);
+    assert(tool.selected(dt) == 3);
+    tool.move(dt, -9);
+    assert(tool.selected(dt) == 0);
+}
+
+test "a column counts code points, a tab one" {
+    assert(tool.byte_of_column(b"\tx = 1;", 1) == 0 && tool.byte_of_column(b"\tx = 1;", 2) == 1);
+    assert(tool.byte_of_column(b"\xc3\xa9t\xc3\xa9", 3) == 3);            // after e-acute and t
+    assert(tool.byte_of_column(b"ab", 9) == 2);                          // past the end: the end
+}
+// SPDX-License-Identifier: Apache-2.0

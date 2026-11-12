@@ -1,0 +1,280 @@
+// Capacity refusals preserve the complete command boundary.
+import user.ci.cvim.key;
+import user.ci.cvim.state;
+import user.ci.cvim.buf;
+import user.ci.cvim.undo;
+import user.ced.keys;
+
+test "capacity: span refusal preserves register and history" {
+    I64[16384] r; I64[20000] x; U8[2] orig; U8[16] add; I64[3] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    for trial in 0..3 {
+        key.init(r, x, 64, 256); assert(key.load(r, x, orig, add));
+        if (trial == 0) { key.step(r,x,orig,add,sp,u,'d'); key.step(r,x,orig,add,sp,u,'d'); }
+        else {
+            r[state.R_SPTOP] = 1;
+            if (trial == 1) { key.step(r,x,orig,add,sp,u,'r'); }
+            else { key.step(r,x,orig,add,sp,u,'R'); }
+            key.step(r,x,orig,add,sp,u,'Z');
+        }
+        assert(r[state.R_FULL] == 1 && r[state.R_BELL] == 1);
+        assert(buf.total(x) == 2 && buf.byte_at(x,orig,add,0) == 'a');
+        assert(r[state.R_CUR] == 0 && r[state.R_RS_N] == 0);
+        assert(r[state.R_REG_FROM] == 0 && r[state.R_REG_TO] == 0);
+        assert(r[state.R_SPTOP] == min(trial,1));
+        assert(r[state.R_U_N] == 0 && r[state.R_U_AT] == 0 && r[state.R_U_OPS] == 0);
+    }
+}
+
+test "capacity: failed replacement preserves a live redo branch" {
+    I64[16384] r; I64[20000] x; U8[2] orig; U8[16] add; I64[3] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r,x,64,256); assert(key.load(r,x,orig,add));
+    key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'Z'); key.step(r,x,orig,add,sp,u,keys.K_ESC);
+    key.step(r,x,orig,add,sp,u,'u');
+    r[state.R_SPTOP] = 1;
+    key.step(r,x,orig,add,sp,u,'r'); key.step(r,x,orig,add,sp,u,'X');
+    assert(r[state.R_FULL] == 1 && buf.total(x) == 2 && r[state.R_CUR] == 0);
+    assert(r[state.R_U_N] == 1 && r[state.R_U_AT] == 0 && r[state.R_U_OPS] == 1);
+    assert(r[state.R_SPTOP] == 1 && r[state.R_RS_N] == 0);
+    key.step(r,x,orig,add,sp,u,keys.M_CTRL + 'r');
+    assert(buf.total(x) == 3 && buf.byte_at(x,orig,add,0) == 'Z');
+}
+
+test "capacity: piece boundary remains repeatedly undoable and redoable" {
+    I64[16384] r; I64[2000] x; U8[2] orig; U8[128] add; I64[512] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r,x,4,1); assert(key.load(r,x,orig,add));
+    key.step(r,x,orig,add,sp,u,'i');
+    for i in 0..62 { key.step(r,x,orig,add,sp,u,'Z'); assert(r[state.R_FULL] == 0); }
+    I64 accepted = 62;
+    for attempt in 0..128 {
+        I64 before_ops = r[state.R_U_OPS]; I64 before_log = r[state.R_LOG_N];
+        key.step(r,x,orig,add,sp,u,'Z');
+        if (r[state.R_FULL] != 0) {
+            assert(buf.total(x) == accepted+2 && r[state.R_CUR] == accepted);
+            assert(r[state.R_U_OPS] == before_ops && r[state.R_LOG_N] == before_log);
+            break;
+        }
+        accepted += 1;
+    }
+    assert(r[state.R_FULL] == 1);
+    key.step(r,x,orig,add,sp,u,keys.K_ESC);
+    for trial in 0..5 {
+        key.step(r,x,orig,add,sp,u,'u');
+        assert(buf.total(x) == 2 && buf.byte_at(x,orig,add,0) == 'a' && r[state.R_U_AT] == 0);
+        key.step(r,x,orig,add,sp,u,keys.M_CTRL + 'r');
+        assert(buf.total(x) == accepted+2 && buf.byte_at(x,orig,add,accepted-1) == 'Z' && r[state.R_U_AT] == 1);
+    }
+}
+
+test "capacity: rejected insert key preserves earlier accepted session keys" {
+    I64[16384] r; I64[20000] x; U8[2] orig; U8[1] add; I64[64] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r,x,64,256); assert(key.load(r,x,orig,add));
+    key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'Z');
+    I64 log_n = r[state.R_LOG_N];
+    key.step(r,x,orig,add,sp,u,'X');
+    assert(r[state.R_FULL] == 1 && r[state.R_CUR] == 1 && buf.total(x) == 3);
+    assert(r[state.R_LOG_N] == log_n && r[state.R_U_OPS] == 1 && r[state.R_U_OPEN] == 1);
+    key.step(r,x,orig,add,sp,u,keys.K_ESC); key.step(r,x,orig,add,sp,u,'u');
+    assert(buf.total(x) == 2);
+}
+
+test "capacity: replacement reserves both undo operations" {
+    I64[16384] r; I64[20000] x; U8[2] orig; U8[16] add; I64[64] sp; I64[278528] u;
+    orig[0] = 'a'; orig[1] = '\n';
+    key.init(r,x,64,256); assert(key.load(r,x,orig,add));
+    key.step(r,x,orig,add,sp,u,'R');
+    r[state.R_U_OPEN] = 1; r[state.R_U_N] = 1; r[state.R_U_AT] = 1; r[state.R_U_OPS] = undo.OPS - 1;
+    u[0] = 0; u[1] = undo.OPS - 1;
+    key.step(r,x,orig,add,sp,u,'X');
+    assert(r[state.R_FULL] == 1 && buf.total(x) == 2 && buf.byte_at(x,orig,add,0) == 'a');
+    assert(r[state.R_CUR] == 0 && r[state.R_RS_N] == 0 && r[state.R_SPTOP] == 0);
+    assert(r[state.R_U_OPS] == undo.OPS - 1 && u[1] == undo.OPS - 1);
+}
+
+test "capacity: compound span refusals preserve all history words" {
+    I64[16384] r; I64[16384] before; I64[20000] x; U8[188] orig; U8[128] add;
+    I64[3] sp; I64[278528] u; I64[278528] old_u;
+    orig[0]=' '; orig[1]=' '; orig[2]='a'; orig[3]='\n';
+    orig[4]=' '; orig[5]=' '; orig[6]='b'; orig[7]='\n';
+    for trial in 0..7 {
+        key.init(r,x,64,256); assert(key.load(r,x,orig[0..8],add));
+        I64 k = 'X';
+        if (trial == 0) { key.step(r,x,orig,add,sp,u,'2'); key.step(r,x,orig,add,sp,u,'>'); k='>'; }
+        if (trial == 1) { key.step(r,x,orig,add,sp,u,'c'); k='c'; }
+        if (trial == 2) { r[state.R_SPTOP]=1; k='J'; }
+        if (trial == 3) { r[state.R_SPTOP]=1; key.step(r,x,orig,add,sp,u,'i'); k=keys.K_ENTER; }
+        if (trial == 4) { r[state.R_SPTOP]=1; key.step(r,x,orig,add,sp,u,'i'); k=keys.K_DELETE; }
+        if (trial == 5) {
+            key.step(r,x,orig,add,sp,u,'R'); key.step(r,x,orig,add,sp,u,'Z'); k=keys.K_BACKSPACE;
+        }
+        if (trial == 6) {
+            for i in 0..187 { orig[i]='a'; } orig[187]='\n';
+            key.init(r,x,4,1); assert(key.load(r,x,orig,add));
+            key.step(r,x,orig,add,sp,u,'y'); key.step(r,x,orig,add,sp,u,'l');
+            key.step(r,x,orig,add,sp,u,'2'); k='p';
+        }
+        before[0..16384]=r[0..16384]; old_u[0..278528]=u[0..278528];
+        U8[512] old_text; I64 n=buf.total(x); buf.copy_out(x,orig,add,0,old_text[0..n]);
+        key.step(r,x,orig,add,sp,u,k);
+        assert(r[state.R_FULL] == 1 && buf.total(x) == n);
+        for i in 0..n { assert(buf.byte_at(x,orig,add,i) == old_text[i]); }
+        for i in 0..278528 { assert(u[i] == old_u[i]); }
+        assert(r[state.R_CUR] == before[state.R_CUR] && r[state.R_ST_ADD] == before[state.R_ST_ADD]);
+        for i in state.R_REG_FROM..state.R_REPLAY+1 { assert(r[i] == before[i]); }
+        for i in state.R_U_N..state.R_U_OPEN+1 { assert(r[i] == before[i]); }
+        for i in state.R_LOG0..state.REGS { assert(r[i] == before[i]); }
+        for i in state.R_PBOUND..state.R_CHUNK+1 { assert(r[i] == before[i]); }
+    }
+}
+
+test "capacity: counted insert suffix refuses before changing earlier keys" {
+    I64[16384] r; I64[20000] x; U8[2] orig; U8[4] add; I64[64] sp; I64[278528] u;
+    orig[0]='a'; orig[1]='\n';
+    key.init(r,x,64,256); assert(key.load(r,x,orig,add));
+    key.step(r,x,orig,add,sp,u,'3'); key.step(r,x,orig,add,sp,u,'i');
+    key.step(r,x,orig,add,sp,u,'X'); key.step(r,x,orig,add,sp,u,'Y');
+    key.step(r,x,orig,add,sp,u,keys.K_ESC);
+    assert(r[state.R_FULL] == 1 && r[state.R_MODE] == state.MODE_INSERT && r[state.R_CUR] == 2);
+    assert(buf.total(x) == 4 && r[state.R_ST_ADD] == 2 && r[state.R_U_OPS] == 1 && r[state.R_LOG_N] == 2);
+    assert(buf.byte_at(x,orig,add,0) == 'X' && buf.byte_at(x,orig,add,1) == 'Y');
+    r[state.R_INS_COUNT]=1;
+    key.step(r,x,orig,add,sp,u,keys.K_ESC); key.step(r,x,orig,add,sp,u,'u');
+    assert(buf.total(x) == 2 && buf.byte_at(x,orig,add,0) == 'a');
+}
+
+test "capacity: multi-operation histories replay every recorded boundary" {
+    I64[16384] r; I64[2000] x; U8[21] orig; U8[512] add; I64[2048] sp; I64[278528] u;
+    U8[32768] versions; I64[128] sizes;
+    for i in 0..20 { orig[i]='a'; } orig[20]='\n';
+    for chunk in 1..4 {
+        key.init(r,x,4,chunk); assert(key.load(r,x,orig,add));
+        I64 kept=0; sizes[0]=buf.total(x); buf.copy_out(x,orig,add,0,versions[0..sizes[0]]);
+        for trial in 0..60 {
+            I64 at=r[state.R_U_AT];
+            if (trial%3 == 0) { key.step(r,x,orig,add,sp,u,'3'); key.step(r,x,orig,add,sp,u,'r'); key.step(r,x,orig,add,sp,u,'Z'); }
+            if (trial%3 == 1) { key.step(r,x,orig,add,sp,u,'3'); key.step(r,x,orig,add,sp,u,'~'); }
+            if (trial%3 == 2) { key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'X'); key.step(r,x,orig,add,sp,u,keys.K_ESC); }
+            if (r[state.R_U_AT] > at) {
+                kept += 1; sizes[kept]=buf.total(x);
+                buf.copy_out(x,orig,add,0,versions[kept*256..kept*256+sizes[kept]]);
+            }
+        }
+        // A refused insert can leave its mode active; cancel its repetition before replaying history.
+        if (r[state.R_MODE] != state.MODE_NORMAL) { r[state.R_INS_COUNT]=1; key.step(r,x,orig,add,sp,u,keys.K_ESC); }
+        for cycle in 0..3 {
+            I64 left=kept;
+            while (left > 0) {
+                key.step(r,x,orig,add,sp,u,'u'); left -= 1;
+                assert(r[state.R_FULL] == 0 && buf.total(x) == sizes[left]);
+                for i in 0..sizes[left] { assert(buf.byte_at(x,orig,add,i) == versions[left*256+i]); }
+            }
+            for at in 1..kept+1 {
+                key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r');
+                assert(r[state.R_FULL] == 0 && buf.total(x) == sizes[at]);
+                for i in 0..sizes[at] { assert(buf.byte_at(x,orig,add,i) == versions[at*256+i]); }
+            }
+        }
+    }
+}
+
+test "capacity: reachable mixed keys preserve every refused command boundary" {
+    I64[16384] r; I64[16384] before; I64[2000] x;
+    U8[11] orig; U8[96] add; U8[1024] old_text;
+    I64[96] sp; I64[96] old_sp; I64[278528] u; I64[278528] old_u;
+    orig[0]=' '; orig[1]=' '; orig[2]='a'; orig[3]=' '; orig[4]='{'; orig[5]='\n';
+    orig[6]=' '; orig[7]=' '; orig[8]='b'; orig[9]='}'; orig[10]='\n';
+    I64[32] kk;
+    kk[0]='i'; kk[1]='R'; kk[2]='o'; kk[3]='O'; kk[4]='r'; kk[5]='J'; kk[6]='>'; kk[7]='<';
+    kk[8]='c'; kk[9]='d'; kk[10]='p'; kk[11]='P'; kk[12]='~'; kk[13]='x'; kk[14]='y'; kk[15]='2';
+    kk[16]='a'; kk[17]='}'; kk[18]='Z'; kk[19]=' '; kk[20]=keys.K_ENTER; kk[21]=keys.K_TAB;
+    kk[22]=keys.K_BACKSPACE; kk[23]=keys.K_DELETE; kk[24]=keys.K_ESC; kk[25]=keys.K_LEFT;
+    kk[26]=keys.K_RIGHT; kk[27]=keys.K_UP; kk[28]=keys.K_DOWN; kk[29]='u'; kk[30]=keys.M_CTRL+'r'; kk[31]='$';
+    I64 seed=19831;
+    for config in 0..12 {
+        key.init(r,x,4,1+config%3); assert(key.load(r,x,orig,add));
+        I64 sp_words=3*(config%9); I64 add_bytes=1+config*7;
+        for trial in 0..100 {
+            seed=(seed*48271)%2147483647;
+            I64 k=kk[seed%32];
+            before[0..16384]=r[0..16384]; old_u[0..278528]=u[0..278528]; old_sp[0..96]=sp[0..96];
+            I64 n=buf.total(x); buf.copy_out(x,orig,add,0,old_text[0..n]);
+            key.step(r,x,orig,add[0..add_bytes],sp[0..sp_words],u,k);
+            assert(buf.pieces(x) <= r[state.R_PBOUND] && r[state.R_PBOUND] <= buf.piece_limit(x));
+            if (r[state.R_FULL] != 0) {
+                assert(buf.total(x) == n && r[state.R_CUR] == before[state.R_CUR] && r[state.R_MODE] == before[state.R_MODE]);
+                assert(r[state.R_ST_ADD] == before[state.R_ST_ADD]);
+                for i in state.R_PBOUND..state.R_CHUNK+1 { assert(r[i] == before[i]); }
+                for i in 0..n { assert(buf.byte_at(x,orig,add,i) == old_text[i]); }
+                for i in 0..278528 { assert(u[i] == old_u[i]); }
+                for i in 0..96 { assert(sp[i] == old_sp[i]); }
+                for i in state.R_REG_FROM..state.R_REPLAY+1 { assert(r[i] == before[i]); }
+                for i in state.R_U_N..state.R_U_OPEN+1 { assert(r[i] == before[i]); }
+                for i in state.R_LOG0..state.REGS { assert(r[i] == before[i]); }
+            }
+        }
+    }
+}
+
+test "capacity: CV-2b keys preserve every refused command boundary" {
+    I64[16384] r; I64[16384] before; I64[2000] x;
+    U8[11] orig; U8[96] add; U8[1024] old_text;
+    I64[96] sp; I64[96] old_sp; I64[278528] u; I64[278528] old_u;
+    orig[0]=' '; orig[1]=' '; orig[2]='a'; orig[3]=' '; orig[4]='{'; orig[5]='\n';
+    orig[6]=' '; orig[7]=' '; orig[8]='b'; orig[9]='}'; orig[10]='\n';
+    I64[64] kk;
+    kk[0]='i'; kk[1]='R'; kk[2]='o'; kk[3]='O'; kk[4]='r'; kk[5]='J'; kk[6]='>'; kk[7]='<';
+    kk[8]='c'; kk[9]='d'; kk[10]='p'; kk[11]='P'; kk[12]='~'; kk[13]='x'; kk[14]='y'; kk[15]='2';
+    kk[16]='a'; kk[17]='}'; kk[18]='Z'; kk[19]=' '; kk[20]=keys.K_ENTER; kk[21]=keys.K_TAB;
+    kk[22]=keys.K_BACKSPACE; kk[23]=keys.K_DELETE; kk[24]=keys.K_ESC; kk[25]=keys.K_LEFT;
+    kk[26]=keys.K_RIGHT; kk[27]=keys.K_UP; kk[28]=keys.K_DOWN; kk[29]='u'; kk[30]=keys.M_CTRL+'r'; kk[31]='$';
+    kk[32]='v'; kk[33]='V'; kk[34]=keys.M_CTRL+'v'; kk[35]='"'; kk[36]='A'; kk[37]='q'; kk[38]='@'; kk[39]='.';
+    kk[40]='g'; kk[41]='~'; kk[42]='U'; kk[43]='='; kk[44]='i'; kk[45]='w'; kk[46]='p'; kk[47]='o';
+    kk[48]='j'; kk[49]='l'; kk[50]='I'; kk[51]='c'; kk[52]='d'; kk[53]='y'; kk[54]='m'; kk[55]='`';
+    kk[56]='>'; kk[57]=keys.M_CTRL+'d'; kk[58]='a'; kk[59]='x'; kk[60]='b'; kk[61]='$'; kk[62]='r'; kk[63]=keys.K_ESC;
+    I64 seed=7919;
+    for config in 0..24 {
+        key.init(r,x,4,1+config%3); assert(key.load(r,x,orig,add));
+        I64 sp_words=3*(config%9); I64 add_bytes=1+(config%12)*7;
+        for trial in 0..200 {
+            seed=(seed*48271)%2147483647;
+            I64 k=kk[seed%64];
+            before[0..16384]=r[0..16384]; old_u[0..278528]=u[0..278528]; old_sp[0..96]=sp[0..96];
+            I64 n=buf.total(x); buf.copy_out(x,orig,add,0,old_text[0..n]);
+            key.step(r,x,orig,add[0..add_bytes],sp[0..sp_words],u,k);
+            assert(buf.pieces(x) <= r[state.R_PBOUND] && r[state.R_PBOUND] <= buf.piece_limit(x));
+            // . and @ run several commands; each of those is refused whole, so only a single command is checked.
+            if (r[state.R_FULL] != 0 && k != '.' && k != '@') {
+                assert(buf.total(x) == n && r[state.R_CUR] == before[state.R_CUR] && r[state.R_MODE] == before[state.R_MODE]);
+                assert(r[state.R_ST_ADD] == before[state.R_ST_ADD]);
+                for i in state.R_PBOUND..state.R_CHUNK+1 { assert(r[i] == before[i]); }
+                for i in 0..n { assert(buf.byte_at(x,orig,add,i) == old_text[i]); }
+                for i in 0..278528 { assert(u[i] == old_u[i]); }
+                for i in 0..96 { assert(sp[i] == old_sp[i]); }
+                for i in state.R_REG_FROM..state.R_REPLAY+1 { assert(r[i] == before[i]); }
+                for i in state.R_U_N..state.R_U_OPEN+1 { assert(r[i] == before[i]); }
+                for i in state.R_LOG0..state.REGS { assert(r[i] == before[i]); }
+            }
+        }
+    }
+}
+
+test "capacity: packing fragmented blocks preserves inverse replay" {
+    I64[16384] r; I64[2000] x; U8[151] orig; U8[64] add; I64[96] sp; I64[278528] u;
+    for i in 0..150 { orig[i]='a'; } orig[150]='\n';
+    key.init(r,x,4,1); assert(key.load(r,x,orig,add));
+    assert(buf.pieces(x) == 151 && buf.spare(x) == 0);
+    key.step(r,x,orig,add,sp,u,'A');
+    for i in 0..12 { key.step(r,x,orig,add,sp,u,'Z'); assert(r[state.R_FULL] == 0); }
+    key.step(r,x,orig,add,sp,u,keys.K_ESC);
+    assert(buf.total(x) == 163 && buf.pieces(x) == 163 && buf.spare(x) == 1);
+    for cycle in 0..5 {
+        key.step(r,x,orig,add,sp,u,'u'); assert(buf.total(x) == 151);
+        for i in 0..151 { assert(buf.byte_at(x,orig,add,i) == orig[i]); }
+        key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r'); assert(buf.total(x) == 163);
+        for i in 150..162 { assert(buf.byte_at(x,orig,add,i) == 'Z'); }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

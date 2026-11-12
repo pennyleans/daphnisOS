@@ -1,0 +1,26 @@
+{
+  "id": "backspace-code-point",
+  "rules": [
+    "TEXT-3",
+    "KEY-4"
+  ],
+  "text": "aé",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    3,
+    3
+  ],
+  "chunks": [
+    "7f"
+  ],
+  "expect": {
+    "text": "a",
+    "sel": [
+      1,
+      1
+    ]
+  }
+}

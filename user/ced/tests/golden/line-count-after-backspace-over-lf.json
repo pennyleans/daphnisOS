@@ -1,0 +1,37 @@
+{
+  "id": "line-count-after-backspace-over-lf",
+  "rules": [
+    "KEY-8",
+    "VIEW-1",
+    "TEST-5"
+  ],
+  "text": "a\nb\nc\nd",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "07330d",
+    "7f",
+    "07330d"
+  ],
+  "expect": {
+    "text": "a\nbc\nd",
+    "sel": [
+      5,
+      5
+    ],
+    "screen": [
+      "a",
+      "bc",
+      "d",
+      "",
+      " x [+]                              3:1",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

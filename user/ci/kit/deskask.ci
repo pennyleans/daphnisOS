@@ -1,0 +1,112 @@
+// user/ci/kit/deskask.ci: the desk's own asks on frame 17, PARENT APPROVAL: an act of
+// Settings that only uid 0 may do, which the desk does itself once a parent's password is checked. Two acts:
+//   CLOCK  Set on Date and Time (frame 36): the clock, by clock_settime (RS-CLK); arg the time, seconds since 1970 UTC,
+//          below the kernel's bound (SETTOD_MAX);
+//   ZONE   the Time Zone (frames 36 and 47): /home/.daphnis-zone (TZ-R1 A); arg the city (user/ci/core/tz.ci), -1 UTC.
+// One ask at a time. `open` holds it with the session generation and the prompt generation it was raised in;
+// `approve` takes authd's ok only for those same two, and leaves the act for the desk's tick; `take` gives it once,
+// and only to the session that asked. The words are the page's own: the control pressed, then what it sets.
+// Pure: user/ci/hdesk.ci makes the calls (kp_ask_for, kp_done), tests/rs/deskask_test.ci runs this hosted.
+import user.ci.core.tz;
+
+export const I64 CLOCK = 1;
+export const I64 ZONE = 2;
+export const I64 SETTOD_MAX = 8277292036;   // src/proc.ci's: Linux's TIME_SETTOD_SEC_MAX, the first time refused
+
+I64 act_ = 0;                          // the ask up: its act, 0 for none
+I64 arg_ = 0;
+U64 sess = 0;                          // the session generation it was asked in
+U64 gen = 0;                           // the prompt generation it was raised as
+I64 ok_ = 0;                           // approved and not yet taken: the act, 0 for none
+I64 ok_arg = 0;
+U64 ok_sess = 0;
+
+// Whether act a with arg g is one the desk does: a time from 1970 below SETTOD_MAX, a city of the table, or -1 (UTC).
+export Bool valid(I64 a, I64 g) {
+    if (a == CLOCK) { return g >= 0 && g < SETTOD_MAX; }
+    if (a == ZONE) { return g >= -1 && g < tz.cities(); }
+    return false;
+}
+
+// Act a with arg g asked in session s on prompt generation p; false (nothing held) when it is not valid. An approval
+// not yet taken is dropped: it never goes with another ask.
+export Bool open(I64 a, I64 g, U64 s, U64 p) {
+    close();
+    ok_ = 0;
+    if (!valid(a, g)) { return false; }
+    act_ = a;
+    arg_ = g;
+    sess = s;
+    gen = p;
+    return true;
+}
+
+export Bool up() { return act_ != 0; }
+export I64 act() { return act_; }
+
+// The ask ends without an act (refused, timed out, a lock, a log out, the Settings window closed).
+export void close() {
+    act_ = 0;
+    arg_ = 0;
+    sess = 0;
+    gen = 0;
+}
+
+// authd's ok for the ask raised in session s on prompt generation p: the act is left for `take`, the ask ends; false,
+// and nothing changes, for an ask that is not up or not that one.
+export Bool approve(U64 s, U64 p) {
+    if (act_ == 0 || s != sess || p != gen) { return false; }
+    ok_ = act_;
+    ok_arg = arg_;
+    ok_sess = sess;
+    close();
+    return true;
+}
+
+// With accounts off the desk is uid 0 and asks no one (AC-D11): the act is left for `take` at once.
+export Bool grant(I64 a, I64 g, U64 s) {
+    close();
+    ok_ = 0;
+    if (!valid(a, g)) { return false; }
+    ok_ = a;
+    ok_arg = g;
+    ok_sess = s;
+    return true;
+}
+
+// The approved act, once, into g[0] its arg; 0 for none, or when session s is not the one that asked.
+export I64 take(U64 s, inout I64[_] g) {
+    I64 a = ok_;
+    ok_ = 0;
+    if (a == 0 || ok_sess != s || len(g) < 1) { return 0; }
+    g[0] = ok_arg;
+    return a;
+}
+
+// Whether an approved act waits for `take`: the desk asks for the next tick (FBIO_TILE_SYNC's FRAME) while it does.
+export Bool waiting() { return ok_ != 0; }
+
+// An approval not yet taken is dropped (the session that asked has ended).
+export void drop() { ok_ = 0; }
+
+I64 put(inout U8[_] d, in U8[_] s) {
+    I64 n = min(len(s), len(d));
+    for k in 0..n { d[k] = s[k]; }
+    return n;
+}
+
+// The prompt's subject: the control pressed, as frame 36 names it.
+export I64 subject(inout U8[_] d) {
+    if (act_ == CLOCK) { return put(d, "Set"); }
+    if (act_ == ZONE) { return put(d, "Time Zone"); }
+    return 0;
+}
+
+// What it sets, at the subject's right: the clock's page, or the city as the Time Zone button shows it.
+export I64 target(inout U8[_] d) {
+    if (act_ == CLOCK) { return put(d, "Date and Time"); }
+    if (act_ == ZONE && arg_ < 0) { return put(d, "UTC"); }
+    if (act_ == ZONE) { return min(tz.city(arg_, d), len(d)); }
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

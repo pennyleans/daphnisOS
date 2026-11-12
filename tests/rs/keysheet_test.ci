@@ -1,0 +1,75 @@
+// tests/rs/keysheet_test.ci: hosted tests of the shortcut sheet (user/ci/kit/keysheet.ci, frame 27). Run by check.sh
+// with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.keysheet;
+
+U32[2400] row;
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for k in 0..n { if (a[k] != b[k]) { return false; } }
+    return true;
+}
+
+test "frame 27's rows, Console's copy and paste left out, the screenshot keys in" {
+    assert(keysheet.rows() == 25);
+    U8[32] k;
+    I64[1] kn;
+    U8[40] t;
+    I64 n = keysheet.row_text(0, k, kn, t);
+    assert(same(k, kn[0], b"Super") && same(t, n, b"Open the Super plane") && keysheet.column(0) == 0);
+    n = keysheet.row_text(7, k, kn, t);
+    assert(same(k, kn[0], b"Super /") && same(t, n, b"This sheet"));
+    n = keysheet.row_text(16, k, kn, t);
+    assert(same(k, kn[0], b"Super Ctrl Arrow") && same(t, n, b"Resize") && keysheet.column(16) == 1);
+    n = keysheet.row_text(21, k, kn, t);
+    assert(same(k, kn[0], b"Super Shift S") && same(t, n, b"An area") && keysheet.column(21) == 2);
+    n = keysheet.row_text(20, k, kn, t);
+    assert(same(k, kn[0], b"Print") && same(t, n, b"Whole screen"));
+    n = keysheet.row_text(22, k, kn, t);
+    assert(same(k, kn[0], b"Alt Print") && same(t, n, b"The focused window"));
+    n = keysheet.row_text(24, k, kn, t);
+    assert(same(k, kn[0], b"Super Shift Q") && same(t, n, b"Shut Down") && keysheet.column(24) == 2);
+    I64[3] per;
+    for c in 0..3 { per[c] = 0; }
+    for r in 0..keysheet.rows() {
+        I64 m = keysheet.row_text(r, k, kn, t);
+        per[keysheet.column(r)] = per[keysheet.column(r)] + 1;
+        assert(!(m >= 4 && t[0] == 'C' && t[1] == 'o' && t[2] == 'p' && t[3] == 'y'));      // no Copy in Console
+        assert(!(m >= 5 && t[0] == 'P' && t[1] == 'a' && t[2] == 's' && t[3] == 't' && t[4] == 'e'));
+    }
+    assert(per[0] == 8 && per[1] == 9 && per[2] == 8 && per[1] == keysheet.MOST);
+}
+
+test "centered on the screen, 900 wide, narrower screens keep 16 each side; Esc closes, other keys stay" {
+    keysheet.open(1920, 1080);
+    assert(keysheet.is_up());
+    assert(keysheet.hit(510, 540) && !keysheet.hit(509, 540) && keysheet.hit(1409, 540) && !keysheet.hit(1410, 540));
+    I64 h = keysheet.height();
+    assert(h == 28 + 24 + 24 + 13 + 12 + 30 * 9 + 28);
+    assert(keysheet.hit(960, (1080 - h) / 2) && !keysheet.hit(960, (1080 - h) / 2 - 1));
+    assert(keysheet.key(28) == keysheet.STAY && keysheet.is_up());
+    assert(keysheet.key(1) == keysheet.CLOSE && !keysheet.is_up());
+    assert(!keysheet.hit(960, 540));
+    keysheet.open(800, 600);
+    assert(keysheet.hit(16, 300) && !keysheet.hit(15, 300) && keysheet.hit(783, 300) && !keysheet.hit(784, 300));
+    keysheet.close();
+}
+
+test "keycaps: 6 in at each side, 4 between" {
+    assert(keysheet.keys_w(b"Super Shift M", 13) > keysheet.keys_w(b"Super M", 7));
+    assert(keysheet.keys_w(b"M", 1) + keysheet.keys_w(b"M", 1) + 4 == keysheet.keys_w(b"M M", 3));
+}
+
+test "every row of the sheet draws at both zooms in both themes" {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        for z in 1..3 {
+            keysheet.open(1024, 768);
+            for y in 0..768 * z { keysheet.row_at(row, y, z, th); }
+        }
+    }
+    keysheet.close();
+    tokens.set_theme(0);
+}
+// SPDX-License-Identifier: Apache-2.0

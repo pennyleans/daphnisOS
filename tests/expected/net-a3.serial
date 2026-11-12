@@ -1,0 +1,11 @@
+Daphnis N: the network device
+daphnis: rng replay from rng.journal, 151 bytes
+rtc 1793935850
+daphnis: net no device
+daphnis: run mrng pid 7
+rng 64 c99550a874c33b4c5e602310debd38648f6a27ddfa285c26de3c6d1fc1ee2c51bf5c1cf0f31e5e01bbb5db986291eec95150aa34666b28ed5ef08c54671a62fa
+mrng: getrandom 64 c99550a874c33b4c5e602310debd38648f6a27ddfa285c26de3c6d1fc1ee2c51bf5c1cf0f31e5e01bbb5db986291eec95150aa34666b28ed5ef08c54671a62fa
+mrng: realtime 1793935850
+daphnis: state 4a7845a08e0cdec39a0aca0c3e7e1df9fbb9d791a06c1b1137f704c7d9427114
+daphnis: exit 0
+net: done

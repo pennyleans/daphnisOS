@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/whatwg/encoding",
+  "commit": "be17ac5c49881336538acfc7b40dba3c8009144b",
+  "license": "LICENSE",
+  "sha256": {
+    "encoding.bs": "ba15016affa714efc01daeeedadfb09c73f63eeb3d0378b4df7cfed3a7560f5b",
+    "encodings.json": "078212b3697f60b81225b6671bd9da2604497abff0aa8e96e4d46605c02ac9e7",
+    "indexes.json": "b7c8961095f0b4cae8f4a16a5011e7c84047a60c1277e28ee8df9e56074ee509",
+    "LICENSE": "85dc6f5ccb57a6fe8c33d158f9fc8fc7ee5655a5d3db2cdd131c6a3d0f48a864",
+    "WPT-LICENSE.md": "5fac07febb0e2a97fb0d7b0def149ec08b642e1ba4b9c345283ab1cbd2af6570",
+    "wpt-manifest.json": "a64fa378ca88753b29a13cf9ca8494835201c9e47f7a1ce6aa77d10be3bd69db",
+    "wpt-tree.json": "407b31de0e41e9af634ff188314bb126bcca7e378ec04a2f428efb4314e896d9"
+  },
+  "wpt": {
+    "repository": "https://github.com/web-platform-tests/wpt",
+    "commit": "45337b80082d8987761d04fd2a406dcb3c48f4c5",
+    "directory": "tests/html/corpus/encoding/wpt"
+  }
+}

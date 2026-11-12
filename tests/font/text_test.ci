@@ -1,0 +1,108 @@
+// tests/font/text_test.ci: hosted tests of the coverage text path (FONT-1, F4): kit/ucode.ci, kit/ctext.ci,
+// kit/mtext.ci over kit/faces.ci and the one blend (MS-1). Run by check.sh: cint test --root . tests/font/text_test.ci
+
+import user.ci.kit.ucode;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.mtext;
+import user.ci.kit.blend;
+
+I64 dec(in U8[_] s, I64 n, I64 at) {
+    I64 b1 = 0;
+    I64 b2 = 0;
+    I64 b3 = 0;
+    if (at + 1 < n) { b1 = s[at + 1] as I64; }
+    if (at + 2 < n) { b2 = s[at + 2] as I64; }
+    if (at + 3 < n) { b3 = s[at + 3] as I64; }
+    I64 avail = n - at;
+    if (avail > 4) { avail = 4; }
+    return ucode.decode(s[at] as I64, b1, b2, b3, avail);
+}
+
+test "UTF-8: one to four bytes" {
+    U8[10] s = [0x41, 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80];
+    assert(dec(s, 10, 0) == 0x41 * 8 + 1);
+    assert(dec(s, 10, 1) == 0xE9 * 8 + 2);
+    assert(dec(s, 10, 3) == 0x20AC * 8 + 3);
+    assert(dec(s, 10, 6) == 0x1F600 * 8 + 4);
+}
+
+test "UTF-8: overlong, surrogate, past U+10FFFF, stray, cut" {
+    U8[2] ovl = [0xC0, 0x80];
+    assert(dec(ovl, 2, 0) == ucode.BAD * 8 + 1);
+    U8[3] ovl3 = [0xE0, 0x80, 0xAF];
+    assert(dec(ovl3, 3, 0) == ucode.BAD * 8 + 1);
+    U8[3] sur = [0xED, 0xA0, 0x80];
+    assert(dec(sur, 3, 0) == ucode.BAD * 8 + 1);
+    U8[4] big = [0xF4, 0x90, 0x80, 0x80];
+    assert(dec(big, 4, 0) == ucode.BAD * 8 + 1);
+    U8[1] stray = [0x80];
+    assert(dec(stray, 1, 0) == ucode.BAD * 8 + 1);
+    U8[2] cut = [0xE2, 0x82];
+    assert(dec(cut, 2, 0) == ucode.BAD * 8 + 1);
+    U8[3] broken = [0xC3, 0x41, 0x42];
+    assert(dec(broken, 3, 0) == ucode.BAD * 8 + 1);
+    assert(dec(broken, 3, 1) == 0x41 * 8 + 1);
+}
+
+test "the alpha of coverage: 0 leaves, 15 is the color" {
+    assert(ctext.alpha(0) == 0);
+    assert(ctext.alpha(15) == 256);
+    assert(ctext.alpha(8) == 137);
+}
+
+test "width is the sum of advances, and text returns the pen past it" {
+    U8[2] hi = [0x48, 0x69];
+    I64 f = faces.BODY;
+    I64 w = faces.advance(f, 1, faces.index(f, 1, 0x48)) + faces.advance(f, 1, faces.index(f, 1, 0x69));
+    assert(ctext.width(hi, 2, f, 1) == w);
+    U32[200] row;
+    assert(ctext.text(row, 0, 10, 20, 200, hi, 2, 0xFFFFFF, f, 1) == 10 + w);
+    assert(ctext.text(row, 0, 10, 20, 10 + w - 1, hi, 2, 0xFFFFFF, f, 1) < 10 + w);
+}
+
+test "an H at 13 px: every inked pixel is the blend of its coverage, the rest is the ground" {
+    U8[1] h = [0x48];
+    I64 f = faces.BODY;
+    I64 g = faces.index(f, 1, 0x48);
+    I64 base = 20;
+    U32 ground = 0x141413;
+    U32 ink = 0xF3EFE6;
+    I64 full = 0;
+    for y in 0..32 {
+        U32[40] row;
+        for x in 0..40 { row[x] = ground; }
+        I64 pen = ctext.text(row, y, 4, base, 40, h, 1, ink, f, 1);
+        assert(pen > 4);
+        for x in 0..40 {
+            I64 gx = x - 4 - faces.left(f, 1, g);
+            I64 gy = y - base - faces.top(f, 1, g);
+            I64 v = 0;
+            if (gx >= 0 && gx < faces.width(f, 1, g) && gy >= 0 && gy < faces.height(f, 1, g)) { v = faces.at(f, 1, g, gx, gy); }
+            assert(row[x] == blend.mix_px(ground, ink, ctext.alpha(v)));
+            if (v == 15) { full = full + 1; }
+        }
+    }
+    assert(full > 0);
+}
+
+test "the terminal cell: block is ink, space is ground, bold differs, 2x is twice" {
+    U32 bg = 0x141413;
+    U32 fg = 0xEAE6DF;
+    U32[16] row;
+    I64 blk = mtext.index(0x2588);
+    I64 sp = mtext.index(0x20);
+    for cy in 0..16 {
+        mtext.cell_row(row, 0, cy, blk, false, fg, bg, 1);
+        mtext.cell_row(row, 8, cy, sp, false, fg, bg, 1);
+        for x in 0..8 { assert(row[x] == fg && row[8 + x] == bg); }
+    }
+    I64 a = mtext.index(0x61);
+    I64 inkr = 0;
+    I64 inkb = 0;
+    for cy in 0..16 { for x in 0..8 { inkr = inkr + mtext.at(a, false, 1, x, cy); inkb = inkb + mtext.at(a, true, 1, x, cy); } }
+    assert(inkb > inkr);
+    assert(mtext.cell_w(2) == 16 && mtext.cell_h(2) == 32);
+    assert(mtext.index(0x10FFFF) == mtext.index(0xFFFD));
+}
+// SPDX-License-Identifier: Apache-2.0

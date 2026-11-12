@@ -1,0 +1,51 @@
+# tests/basics/cview.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-07-bp-basics.md section 5, BP-3). -d over every
+# fixture of tests/basics/tree/img (tools/check-basics.py fixtures); the good ones are checked against its reader too.
+-d img/bad-crc.png | - | -
+-d img/bad-form.png | - | -
+-d img/bad-short.png | - | -
+-d img/png-1x1.png | - | -
+-d img/png-c0-d1-i0.png | - | -
+-d img/png-c0-d1-i1.png | - | -
+-d img/png-c0-d16-i0.png | - | -
+-d img/png-c0-d16-i1.png | - | -
+-d img/png-c0-d2-i0.png | - | -
+-d img/png-c0-d2-i1.png | - | -
+-d img/png-c0-d4-i0.png | - | -
+-d img/png-c0-d4-i1.png | - | -
+-d img/png-c0-d8-i0.png | - | -
+-d img/png-c0-d8-i1.png | - | -
+-d img/png-c2-d16-i0.png | - | -
+-d img/png-c2-d16-i1.png | - | -
+-d img/png-c2-d8-i0.png | - | -
+-d img/png-c2-d8-i1.png | - | -
+-d img/png-c3-d1-i0.png | - | -
+-d img/png-c3-d1-i1.png | - | -
+-d img/png-c3-d2-i0.png | - | -
+-d img/png-c3-d2-i1.png | - | -
+-d img/png-c3-d4-i0.png | - | -
+-d img/png-c3-d4-i1.png | - | -
+-d img/png-c3-d8-i0.png | - | -
+-d img/png-c3-d8-i1.png | - | -
+-d img/png-c4-d16-i0.png | - | -
+-d img/png-c4-d16-i1.png | - | -
+-d img/png-c4-d8-i0.png | - | -
+-d img/png-c4-d8-i1.png | - | -
+-d img/png-c6-d16-i0.png | - | -
+-d img/png-c6-d16-i1.png | - | -
+-d img/png-c6-d8-i0.png | - | -
+-d img/png-c6-d8-i1.png | - | -
+-d img/png-trns-gray.png | - | -
+-d img/png-trns-pal.png | - | -
+-d img/png-trns-rgb.png | - | -
+-d img/png-wide.png | - | -
+-d img/pnm-p2.pgm | - | -
+-d img/pnm-p3.ppm | - | -
+-d img/pnm-p5.pgm | - | -
+-d img/pnm-p6-16.ppm | - | -
+-d img/qoi-rgb.qoi | - | -
+-d img/qoi-rgba.qoi | - | -
+ | - | -
+-d | - | -
+-d missing.png | - | -
+-d calc.txt | - | -
+-x img/png-1x1.png | - | -

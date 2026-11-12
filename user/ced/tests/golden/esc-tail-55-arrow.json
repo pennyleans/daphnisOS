@@ -1,0 +1,29 @@
+{
+  "id": "esc-tail-55-arrow",
+  "rules": [
+    "KEY-2",
+    "KEY-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    2,
+    2
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "5b44",
+    "58"
+  ],
+  "expect": {
+    "text": "aXbc",
+    "sel": [
+      2,
+      2
+    ]
+  }
+}

@@ -1,0 +1,685 @@
+// user/ci/cvim/buf.ci: cvim's text, a piece table (docs/specs/2026-11-07-cv-cvim.md section 12, CV-1). The bytes
+// live in two tables no edit overwrites: orig (the files as read) and add (typed and pasted text, append only),
+// shared by every buffer. A buffer is an I64 table x: a header, then blocks of up to BLOCK pieces, each piece a
+// span (source, offset, length, line feeds). A block's sums of bytes and line feeds make a lookup a walk of the
+// blocks, then of one block's pieces, then of at most one piece of CHUNK bytes. Deleted text stays in its table,
+// so undo records spans (source, offset, length), not bytes. st holds the used lengths of orig and add.
+
+export const I64 BLOCK = 64;
+export const I64 ST_ORIG = 0;
+export const I64 ST_ADD = 1;
+export const I64 SRC_ORIG = 0;
+export const I64 SRC_ADD = 1;
+export const I64 SPAN = 3;
+
+const I64 PF = 4;
+const I64 F_SRC = 0;
+const I64 F_OFF = 1;
+const I64 F_LEN = 2;
+const I64 F_LF = 3;
+const I64 MF = 3;
+const I64 M_N = 0;
+const I64 M_BYTES = 1;
+const I64 M_LF = 2;
+
+const I64 H_CAPB = 0;
+const I64 H_NB = 1;
+const I64 H_BYTES = 2;
+const I64 H_LF = 3;
+const I64 H_NFREE = 4;
+const I64 H_CHUNK = 5;
+const I64 H_META = 6;
+const I64 H_ORD = 7;
+const I64 H_FREE = 8;
+const I64 H_PC = 9;
+const I64 H_PIECES = 10;
+const I64 H_DIRTY = 11;     // CV-6: the lowest offset changed since clean(), for the highlighting
+const I64 HEAD = 16;
+
+// Elements of a buffer table of nb blocks.
+export I64 need(I64 nb) {
+    return HEAD + nb * (MF + 2) + nb * BLOCK * PF;
+}
+
+// An empty buffer: one block in use, the rest free.
+export void reset(inout I64[_] x, I64 nb, I64 chunk) {
+    assert(nb >= 2 && chunk >= 1 && len(x) >= need(nb));
+    for i in 0..HEAD {
+        x[i] = 0;
+    }
+    x[H_CAPB] = nb;
+    x[H_CHUNK] = chunk;
+    x[H_DIRTY] = 0;
+    x[H_META] = HEAD;
+    x[H_ORD] = HEAD + nb * MF;
+    x[H_FREE] = HEAD + nb * (MF + 1);
+    x[H_PC] = HEAD + nb * (MF + 2);
+    for i in 0..MF {
+        x[HEAD + i] = 0;
+    }
+    x[x[H_ORD]] = 0;
+    x[H_NB] = 1;
+    for j in 0..nb - 1 {
+        x[x[H_FREE] + j] = nb - 1 - j;
+    }
+    x[H_NFREE] = nb - 1;
+}
+
+export I64 total(in I64[_] x) {
+    return x[H_BYTES];
+}
+
+export I64 lines(in I64[_] x) {
+    return x[H_LF] + 1;
+}
+
+// Blocks in use and free, pieces in use (for the status of a full table and the tests).
+export I64 blocks(in I64[_] x) {
+    return x[H_NB];
+}
+
+export I64 spare(in I64[_] x) {
+    return x[H_NFREE];
+}
+
+// The longest piece: never above the chunk, so a line lookup scans at most a chunk.
+export I64 longest(in I64[_] x) {
+    I64 m = 0;
+    for li in 0..x[H_NB] {
+        I64 p = phys(x, li);
+        for k in 0..x[ma(x, p) + M_N] {
+            m = max(m, x[pa(x, p, k) + F_LEN]);
+        }
+    }
+    return m;
+}
+
+export I64 pieces(in I64[_] x) {
+    return x[H_PIECES];
+}
+
+export I64 piece_limit(in I64[_] x) { return (x[H_CAPB] - 1) * BLOCK - 2; }
+export I64 chunks(in I64[_] x, I64 n) { return (n + x[H_CHUNK] - 1) / x[H_CHUNK]; }
+
+// A contiguous append extends its existing piece without adding a history boundary.
+export I64 insert_cost(in I64[_] x, I64 pos, I64 off, I64 n) {
+    if (n == 0) { return 0; }
+    I64 v = locate(x, pos);
+    I64 p = phys(x, l_li(v));
+    if (x[ma(x,p) + M_N] > 0) {
+        I64 a = pa(x,p,l_k(v));
+        if (l_o(v) == x[a + F_LEN] && x[a + F_SRC] == SRC_ADD && x[a + F_OFF] + x[a + F_LEN] == off
+                && x[a + F_LEN] + n <= x[H_CHUNK]) { return 0; }
+    }
+    return chunks(x,n) + 2;
+}
+
+I64 ma(in I64[_] x, I64 p) {
+    return x[H_META] + p * MF;
+}
+
+I64 pa(in I64[_] x, I64 p, I64 k) {
+    return x[H_PC] + (p * BLOCK + k) * PF;
+}
+
+I64 phys(in I64[_] x, I64 li) {
+    return x[x[H_ORD] + li];
+}
+
+U8 src_byte(in U8[_] orig, in U8[_] add, I64 src, I64 i) {
+    if (src == SRC_ORIG) {
+        return orig[i];
+    }
+    return add[i];
+}
+
+I64 lf_in(in U8[_] orig, in U8[_] add, I64 src, I64 off, I64 n) {
+    I64 c = 0;
+    if (src == SRC_ORIG) {
+        for i in off..off + n {
+            if (orig[i] == '\n') {
+                c += 1;
+            }
+        }
+    } else {
+        for i in off..off + n {
+            if (add[i] == '\n') {
+                c += 1;
+            }
+        }
+    }
+    return c;
+}
+
+// The piece that holds pos, packed as (logical block * BLOCK + piece) * WORD + offset in the piece, the offset in
+// [0, length]. A position on a boundary is the end of the piece before it, but for 0, the first piece's start.
+const I64 WORD = 4294967296;
+
+I64 locate(in I64[_] x, I64 pos) {
+    I64 nb = x[H_NB];
+    I64 li = 0;
+    I64 rel = pos;
+    while (li < nb - 1) {
+        I64 b = x[ma(x, phys(x, li)) + M_BYTES];
+        if (rel <= b) {
+            break;
+        }
+        rel -= b;
+        li += 1;
+    }
+    I64 p = phys(x, li);
+    I64 n = x[ma(x, p) + M_N];
+    I64 k = 0;
+    while (k < n - 1) {
+        I64 l = x[pa(x, p, k) + F_LEN];
+        if (rel <= l) {
+            break;
+        }
+        rel -= l;
+        k += 1;
+    }
+    return (li * BLOCK + k) * WORD + rel;
+}
+
+I64 l_li(I64 v) {
+    return v / WORD / BLOCK;
+}
+
+I64 l_k(I64 v) {
+    return v / WORD % BLOCK;
+}
+
+I64 l_o(I64 v) {
+    return v % WORD;
+}
+
+void move_piece(inout I64[_] x, I64 from, I64 to) {
+    for f in 0..PF {
+        x[to + f] = x[from + f];
+    }
+}
+
+// Pieces k..n of physical block p move up by `step` slots.
+void open_gap(inout I64[_] x, I64 p, I64 k, I64 step) {
+    I64 i = x[ma(x, p) + M_N] - 1;
+    while (i >= k) {
+        move_piece(x, pa(x, p, i), pa(x, p, i + step));
+        i -= 1;
+    }
+}
+
+void set_piece(inout I64[_] x, I64 p, I64 k, I64 src, I64 off, I64 n, I64 lf) {
+    I64 a = pa(x, p, k);
+    x[a + F_SRC] = src;
+    x[a + F_OFF] = off;
+    x[a + F_LEN] = n;
+    x[a + F_LF] = lf;
+}
+
+void sum_block(inout I64[_] x, I64 p) {
+    I64 b = 0;
+    I64 lf = 0;
+    I64 n = x[ma(x, p) + M_N];
+    for k in 0..n {
+        b += x[pa(x, p, k) + F_LEN];
+        lf += x[pa(x, p, k) + F_LF];
+    }
+    x[ma(x, p) + M_BYTES] = b;
+    x[ma(x, p) + M_LF] = lf;
+}
+
+// Pack only when a split has exhausted the free blocks. Fill blocks from left to right.
+// This changes no span boundary and needs no allocation or text copy.
+void pack(inout I64[_] x) {
+    I64 li = 0;
+    while (li + 1 < x[H_NB]) {
+        I64 p = phys(x,li);
+        I64 q = phys(x,li + 1);
+        I64 pn = x[ma(x,p) + M_N];
+        I64 qn = x[ma(x,q) + M_N];
+        I64 take = min(BLOCK - pn, qn);
+        for k in 0..take { move_piece(x,pa(x,q,k),pa(x,p,pn+k)); }
+        for k in take..qn { move_piece(x,pa(x,q,k),pa(x,q,k-take)); }
+        x[ma(x,p) + M_N] = pn + take;
+        x[ma(x,q) + M_N] = qn - take;
+        sum_block(x,p); sum_block(x,q);
+        if (qn == take) {
+            for k in li + 2..x[H_NB] { x[x[H_ORD]+k-1] = x[x[H_ORD]+k]; }
+            x[H_NB] -= 1;
+            x[x[H_FREE]+x[H_NFREE]] = q;
+            x[H_NFREE] += 1;
+        } else { li += 1; }
+    }
+}
+
+// Room for two more pieces at pos, with a global spare block guaranteed by preflight.
+Bool room(inout I64[_] x, I64 pos) {
+    I64 li = l_li(locate(x,pos));
+    I64 p = phys(x,li);
+    I64 n = x[ma(x,p) + M_N];
+    if (n + 2 <= BLOCK) { return true; }
+    if (x[H_NFREE] == 0) {
+        pack(x);
+        li = l_li(locate(x,pos)); p = phys(x,li); n = x[ma(x,p) + M_N];
+        if (n + 2 <= BLOCK) { return true; }
+        if (x[H_NFREE] == 0) { return false; }
+    }
+    x[H_NFREE] -= 1;
+    I64 q = x[x[H_FREE] + x[H_NFREE]];
+    I64 h = n / 2;
+    for k in h..n { move_piece(x,pa(x,p,k),pa(x,q,k-h)); }
+    x[ma(x,p)+M_N] = h; x[ma(x,q)+M_N] = n-h;
+    sum_block(x,p); sum_block(x,q);
+    I64 ord = x[H_ORD]; I64 i = x[H_NB]-1;
+    while (i > li) { x[ord+i+1] = x[ord+i]; i -= 1; }
+    x[ord+li+1] = q; x[H_NB] += 1;
+    return true;
+}
+
+void grow(inout I64[_] x, I64 p, I64 dn, I64 bytes, I64 lf) {
+    x[ma(x, p) + M_N] += dn;
+    x[ma(x, p) + M_BYTES] += bytes;
+    x[ma(x, p) + M_LF] += lf;
+    x[H_PIECES] += dn;
+    x[H_BYTES] += bytes;
+    x[H_LF] += lf;
+}
+
+// A piece boundary at pos; false when no block is free.
+Bool split_at(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 pos) {
+    I64 v = locate(x, pos);
+    I64 li = l_li(v);
+    I64 k = l_k(v);
+    I64 o = l_o(v);
+    I64 p = phys(x, li);
+    if (x[ma(x, p) + M_N] == 0 || o == 0 || o == x[pa(x, p, k) + F_LEN]) {
+        return true;
+    }
+    if (!room(x, pos)) {
+        return false;
+    }
+    v = locate(x, pos);
+    li = l_li(v);
+    k = l_k(v);
+    o = l_o(v);
+    p = phys(x, li);
+    I64 a = pa(x, p, k);
+    I64 src = x[a + F_SRC];
+    I64 off = x[a + F_OFF];
+    I64 n = x[a + F_LEN];
+    I64 lf = x[a + F_LF];
+    I64 left = lf_in(orig, add, src, off, o);
+    open_gap(x, p, k + 1, 1);
+    set_piece(x, p, k, src, off, o, left);
+    set_piece(x, p, k + 1, src, off + o, n - o, lf - left);
+    x[ma(x, p) + M_N] += 1;
+    x[H_PIECES] += 1;
+    return true;
+}
+
+// One span of at most a chunk at pos; a typed byte after the last add extends that piece.
+Bool put_piece(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, I64 src, I64 off, I64 n, I64 lf) {
+    I64 v = locate(x, pos);
+    I64 li = l_li(v);
+    I64 k = l_k(v);
+    I64 o = l_o(v);
+    I64 p = phys(x, li);
+    if (x[ma(x, p) + M_N] > 0) {
+        I64 a = pa(x, p, k);
+        I64 l = x[a + F_LEN];
+        if (o == l && src == SRC_ADD && x[a + F_SRC] == SRC_ADD && x[a + F_OFF] + l == off
+                && l + n <= x[H_CHUNK]) {
+            x[a + F_LEN] = l + n;
+            x[a + F_LF] += lf;
+            grow(x, p, 0, n, lf);
+            return true;
+        }
+    }
+    if (!split_at(x, orig, add, pos)) {
+        return false;
+    }
+    v = locate(x, pos);
+    li = l_li(v);
+    k = l_k(v);
+    o = l_o(v);
+    if (!room(x, pos)) {
+        return false;
+    }
+    v = locate(x, pos);
+    li = l_li(v);
+    k = l_k(v);
+    o = l_o(v);
+    p = phys(x, li);
+    I64 at = 0;
+    if (x[ma(x, p) + M_N] > 0) {
+        at = k;
+        if (o > 0) {
+            at = k + 1;
+        }
+    }
+    open_gap(x, p, at, 1);
+    set_piece(x, p, at, src, off, n, lf);
+    grow(x, p, 1, n, lf);
+    return true;
+}
+
+// A spare block makes every local split possible after allocation-free packing.
+Bool fits(in I64[_] x, I64 m) {
+    return x[H_PIECES] + m <= (x[H_CAPB] - 1) * BLOCK;
+}
+
+// The span (src, off, n) of orig or add at pos, cut into chunks; false, with nothing changed, when it does not fit.
+// CV-6: the lowest byte offset any insert or delete touched since the last clean(), or past the end when none.
+export I64 dirty(in I64[_] x) { return x[H_DIRTY]; }
+export void clean(inout I64[_] x) { x[H_DIRTY] = 9223372036854775807; }
+
+export Bool put_span(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, I64 src, I64 off, I64 n) {
+    x[H_DIRTY] = min(x[H_DIRTY], pos);
+    I64 ch = x[H_CHUNK];
+    if (pos < 0 || pos > x[H_BYTES] || !fits(x, n / ch + 1)) {
+        return false;
+    }
+    I64 done = 0;
+    while (done < n) {
+        I64 c = min(ch, n - done);
+        I64 lf = lf_in(orig, add, src, off + done, c);
+        assert(put_piece(x, orig, add, pos + done, src, off + done, c, lf));
+        done += c;
+    }
+    return true;
+}
+
+// The file orig[off, off + n) as the whole text of an empty buffer.
+export Bool load(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 off, I64 n) {
+    return x[H_BYTES] == 0 && put_span(x, orig, add, 0, SRC_ORIG, off, n);
+}
+
+// s typed or pasted at pos: appended to add, then put as its span.
+export Bool insert(inout I64[_] x, inout I64[_] st, in U8[_] orig, inout U8[_] add, I64 pos, in U8[_] s) {
+    I64 n = len(s);
+    I64 a = st[ST_ADD];
+    if (a + n > len(add)) {
+        return false;
+    }
+    for i in 0..n {
+        add[a + i] = s[i];
+    }
+    if (!put_span(x, orig, add, pos, SRC_ADD, a, n)) {
+        return false;
+    }
+    st[ST_ADD] = a + n;
+    return true;
+}
+
+// The pieces that cover [pos, pos + n), at most `limit`; for the span check before a delete.
+export I64 cover(in I64[_] x, I64 pos, I64 n, I64 limit) {
+    if (n == 0) {
+        return 0;
+    }
+    I64 v = locate(x, pos);
+    I64 li = l_li(v);
+    I64 k = l_k(v);
+    I64 o = l_o(v);
+    I64 p = phys(x, li);
+    I64 c = 0;
+    I64 left = n;
+    while (left > 0 && c <= limit) {
+        if (k == x[ma(x, p) + M_N]) {
+            li += 1;
+            k = 0;
+            p = phys(x, li);
+        } else {
+            I64 take = min(left, x[pa(x,p,k)+F_LEN] - o);
+            if (take > 0) { left -= take; c += 1; }
+            k += 1; o = 0;
+        }
+    }
+    return c;
+}
+
+// n bytes at pos out of the text; each removed span goes to sp from span `at` on. The next free span, or -1 with
+// nothing changed when sp or the blocks are full.
+I64 cut(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, I64 n, inout I64[_] sp, I64 at, Bool keep) {
+    if (n == 0) {
+        return at;
+    }
+    if (pos < 0 || n < 0 || pos + n > x[H_BYTES]) {
+        return -1;
+    }
+    I64 free = len(sp) / SPAN - at;
+    if ((keep && cover(x, pos, n, free) > free) || !fits(x, 2)) {
+        return -1;
+    }
+    assert(split_at(x, orig, add, pos) && split_at(x, orig, add, pos + n));
+    I64 rem = n;
+    I64 s = at;
+    while (rem > 0) {
+        I64 v = locate(x, pos);
+        I64 li = l_li(v);
+        I64 k = l_k(v);
+        I64 o = l_o(v);
+        I64 p = phys(x, li);
+        if (o > 0) {
+            k += 1;
+            if (k == x[ma(x, p) + M_N]) {
+                li += 1;
+                k = 0;
+                p = phys(x, li);
+            }
+        }
+        I64 a = pa(x, p, k);
+        I64 l = x[a + F_LEN];
+        if (keep) {
+            sp[s * SPAN] = x[a + F_SRC];
+            sp[s * SPAN + 1] = x[a + F_OFF];
+            sp[s * SPAN + 2] = l;
+            s += 1;
+        }
+        I64 lf = x[a + F_LF];
+        I64 m = x[ma(x, p) + M_N];
+        for j in k + 1..m {
+            move_piece(x, pa(x, p, j), pa(x, p, j - 1));
+        }
+        grow(x, p, -1, 0 - l, 0 - lf);
+        if (m == 1 && x[H_NB] > 1) {
+            I64 ord = x[H_ORD];
+            for i in li + 1..x[H_NB] {
+                x[ord + i - 1] = x[ord + i];
+            }
+            x[H_NB] -= 1;
+            x[x[H_FREE] + x[H_NFREE]] = p;
+            x[H_NFREE] += 1;
+        }
+        rem -= l;
+    }
+    return s;
+}
+
+export I64 delete(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, I64 n, inout I64[_] sp, I64 at) {
+    x[H_DIRTY] = min(x[H_DIRTY], pos);
+    return cut(x, orig, add, pos, n, sp, at, true);
+}
+
+// Undo already owns the bytes in its record; removing them again must not allocate register spans.
+export Bool erase(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, I64 n) {
+    x[H_DIRTY] = min(x[H_DIRTY], pos);
+    I64[1] ignored;
+    return cut(x, orig, add, pos, n, ignored, 0, false) >= 0;
+}
+
+// The spans sp[from, to) put back at pos in order: the undo of the delete that recorded them.
+export Bool restore(inout I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, in I64[_] sp, I64 from, I64 to) {
+    I64 n = 0;
+    for s in from..to {
+        n += chunks(x, sp[s * SPAN + 2]);
+    }
+    if (!fits(x, n + 2)) {
+        return false;
+    }
+    I64 at = pos;
+    for s in from..to {
+        I64 l = sp[s * SPAN + 2];
+        assert(put_span(x, orig, add, at, sp[s * SPAN], sp[s * SPAN + 1], l));
+        at += l;
+    }
+    return true;
+}
+
+// len(dst) bytes from pos into dst.
+export void copy_out(in I64[_] x, in U8[_] orig, in U8[_] add, I64 pos, inout U8[_] dst) {
+    I64 n = len(dst);
+    assert(pos >= 0 && pos + n <= x[H_BYTES]);
+    if (n == 0) {
+        return;
+    }
+    I64 v = locate(x, pos);
+    I64 li = l_li(v);
+    I64 k = l_k(v);
+    I64 o = l_o(v);
+    I64 p = phys(x, li);
+    I64 done = 0;
+    while (done < n) {
+        if (k == x[ma(x, p) + M_N]) {
+            li += 1;
+            k = 0;
+            o = 0;
+            p = phys(x, li);
+        } else {
+            I64 a = pa(x, p, k);
+            I64 c = min(x[a + F_LEN] - o, n - done);
+            I64 src = x[a + F_SRC];
+            I64 off = x[a + F_OFF] + o;
+            for i in 0..c {
+                dst[done + i] = src_byte(orig, add, src, off + i);
+            }
+            done += c;
+            k += 1;
+            o = 0;
+        }
+    }
+}
+
+export U8 byte_at(in I64[_] x, in U8[_] orig, in U8[_] add, I64 pos) {
+    assert(pos >= 0 && pos < x[H_BYTES]);
+    I64 v = locate(x, pos + 1);
+    I64 li = l_li(v);
+    I64 k = l_k(v);
+    I64 o = l_o(v);
+    I64 a = pa(x, phys(x, li), k);
+    return src_byte(orig, add, x[a + F_SRC], x[a + F_OFF] + o - 1);
+}
+
+// The offset where line `line` (from 0) starts, or -1 past the last line.
+export I64 line_start(in I64[_] x, in U8[_] orig, in U8[_] add, I64 line) {
+    if (line == 0) {
+        return 0;
+    }
+    if (line < 0 || line > x[H_LF]) {
+        return -1;
+    }
+    I64 want = line;
+    I64 at = 0;
+    I64 li = 0;
+    I64 p = phys(x, 0);
+    while (want > x[ma(x, p) + M_LF]) {
+        want -= x[ma(x, p) + M_LF];
+        at += x[ma(x, p) + M_BYTES];
+        li += 1;
+        p = phys(x, li);
+    }
+    I64 k = 0;
+    while (want > x[pa(x, p, k) + F_LF]) {
+        want -= x[pa(x, p, k) + F_LF];
+        at += x[pa(x, p, k) + F_LEN];
+        k += 1;
+    }
+    I64 a = pa(x, p, k);
+    I64 src = x[a + F_SRC];
+    I64 off = x[a + F_OFF];
+    for i in 0..x[a + F_LEN] {
+        if (src_byte(orig, add, src, off + i) == '\n') {
+            want -= 1;
+            if (want == 0) {
+                return at + i + 1;
+            }
+        }
+    }
+    assert(false);
+    return -1;
+}
+
+// The line (from 0) that holds pos: the line feeds before it.
+export I64 line_of(in I64[_] x, in U8[_] orig, in U8[_] add, I64 pos) {
+    assert(pos >= 0 && pos <= x[H_BYTES]);
+    I64 lf = 0;
+    I64 at = 0;
+    I64 li = 0;
+    I64 nb = x[H_NB];
+    I64 p = phys(x, 0);
+    while (li < nb - 1 && at + x[ma(x, p) + M_BYTES] <= pos) {
+        lf += x[ma(x, p) + M_LF];
+        at += x[ma(x, p) + M_BYTES];
+        li += 1;
+        p = phys(x, li);
+    }
+    I64 n = x[ma(x, p) + M_N];
+    I64 k = 0;
+    while (k < n && at + x[pa(x, p, k) + F_LEN] <= pos) {
+        lf += x[pa(x, p, k) + F_LF];
+        at += x[pa(x, p, k) + F_LEN];
+        k += 1;
+    }
+    if (k < n && at < pos) {
+        I64 a = pa(x, p, k);
+        I64 src = x[a + F_SRC];
+        I64 off = x[a + F_OFF];
+        for i in 0..pos - at {
+            if (src_byte(orig, add, src, off + i) == '\n') {
+                lf += 1;
+            }
+        }
+    }
+    return lf;
+}
+
+// The spans that cover [pos, pos + n), written to sp from span `at` on with the text unchanged (CV-2a: a yank, which
+// the unnamed register keeps as spans as it keeps a delete's). The next free span, or -1 when sp is full.
+export I64 spans(in I64[_] x, I64 pos, I64 n, inout I64[_] sp, I64 at) {
+    if (n == 0) {
+        return at;
+    }
+    assert(pos >= 0 && n > 0 && pos + n <= x[H_BYTES]);
+    if (cover(x,pos,n,len(sp)/SPAN-at) > len(sp)/SPAN-at) { return -1; }
+    I64 v = locate(x, pos);
+    I64 li = l_li(v);
+    I64 k = l_k(v);
+    I64 o = l_o(v);
+    I64 p = phys(x, li);
+    I64 s = at;
+    I64 done = 0;
+    while (done < n) {
+        if (k == x[ma(x, p) + M_N]) {
+            li += 1;
+            k = 0;
+            o = 0;
+            p = phys(x, li);
+        } else {
+            I64 a = pa(x, p, k);
+            I64 c = min(x[a + F_LEN] - o, n - done);
+            if (c > 0) {
+                if ((s + 1) * SPAN > len(sp)) {
+                    return -1;
+                }
+                sp[s * SPAN] = x[a + F_SRC];
+                sp[s * SPAN + 1] = x[a + F_OFF] + o;
+                sp[s * SPAN + 2] = c;
+                s += 1;
+                done += c;
+            }
+            k += 1;
+            o = 0;
+        }
+    }
+    return s;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,26 @@
+{
+  "id": "enter-keeps-indent",
+  "rules": [
+    "KEY-4"
+  ],
+  "text": "  x",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    3,
+    3
+  ],
+  "chunks": [
+    "0d",
+    "79"
+  ],
+  "expect": {
+    "text": "  x\n  y",
+    "sel": [
+      7,
+      7
+    ]
+  }
+}

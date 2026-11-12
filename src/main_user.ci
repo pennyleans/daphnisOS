@@ -1,0 +1,224 @@
+// src/main_user.ci: U1-1 and U1-2, ring 3 (docs/user.md). Loads static ELF64 programs from the
+// embedded cpio image into their own address spaces and runs them in ring 3. U1-1: six alone,
+// two together under the timer, hello again on other frames, and once with a 1-bit canary (rbx
+// flipped), which must desync. U1-2: six static musl programs alone, an SSE program alone and then
+// beside a twin under the timer, mmalloc again on other frames, and mprintf with a bit of MXCSR
+// flipped, which must desync. Every process ends by exit or by a signal, its canonical state
+// digest printed, and gives back every frame it had; two runs of one program must not desync.
+
+import src.serial;
+import src.serialrx;
+import src.trap;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.pool;
+import src.acpi;
+import src.xhci;
+import src.surface;
+import src.input;
+
+// A desync is two runs of the same program from the same inputs that end in different canonical
+// states. None is the only passing answer.
+void report_desync[n](in U8[n] label, I64 a, I64 b) {
+    serial.serial_write(label);
+    if (proc.same_state(a, b)) {
+        serial.serial_write("none\n");
+    } else {
+        serial.serial_write("DESYNC\n");
+    }
+}
+
+void main() {
+    serialrx.serial_init_rx();   // not serial_init: its FIFO clear would drop the first byte of the input
+    serial.serial_write("Daphnis F: ring 3\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    acpi.init();              // HW-2: the firmware's tables, read only; S5 for daphnis.poweroff=1
+    _ = xhci.init();          // HW-4: a USB keyboard and mouse, when there is an xHCI (prints only then)
+    user.user_init();
+    fs.init();
+    // the surface (F-1): found and mapped once; /dev/fb0 exists only with one
+    if (user.fb_init() > 0) {
+        fs.set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        serial.serial_write("daphnis: framebuffer ");
+        proc.put_dec(user.fb_word(0) as I64);
+        serial.serial_write("x");
+        proc.put_dec(user.fb_word(1) as I64);
+        serial.serial_write(" stride ");
+        proc.put_dec(user.fb_word(2) as I64);
+        serial.serial_write("\n");
+    } else {
+        serial.serial_write("daphnis: no framebuffer\n");
+    }
+    pit.pic_remap();
+    pit.pit_start(11932);
+    // the keyboard and the mouse (F-2, F-3): their bytes arrive on IRQ 1 and IRQ 12 from here on;
+    // /dev/input/event0 exists
+    if (input.devices_on()) {
+        serial.serial_write("daphnis: keyboard and mouse on\n");
+    } else {
+        serial.serial_write("daphnis: keyboard on, no mouse\n");
+    }
+    fs.set_input(true);
+    // the image is the loader's first module (U1-5); the scripted input is read once, up to a
+    // byte 0x04 or two seconds without a byte, and every process reads it from its start
+    serial.serial_write("daphnis: image ");
+    proc.put_dec(user.initrd_size());
+    serial.serial_write(" bytes from the loader module\n");
+    Bool more = true;
+    I64 quiet = trap.timer_ticks();
+    while (more) {
+        I64 c = serialrx.serial_getc();
+        if (c == 4) {
+            more = false;
+        } else if (c >= 0) {
+            fs.stdin_push(c as U8);
+            quiet = trap.timer_ticks();
+        } else if (trap.timer_ticks() - quiet > 200) {
+            more = false;
+        }
+    }
+    serial.serial_write("daphnis: input ");
+    proc.put_dec(fs.stdin_len());
+    serial.serial_write(" bytes\n");
+    proc.run_alone(1, "hello");
+    proc.run_alone(2, "args");
+    proc.run_alone(3, "efault");
+    proc.run_alone(4, "nosys");
+    proc.run_alone(5, "segv");
+    proc.run_alone(6, "ud");
+    proc.run_together(7, 2, "spin");
+    // placement: hello again with 37 frames held, so its tables and pages land elsewhere; its
+    // canonical state must not change
+    I64 held = proc.hold_frames(37);
+    proc.run_alone(9, "hello");
+    proc.release_frames(held, 37);
+    report_desync("daphnis: desync hello pid 9 (other frames) against pid 1: ", 9, 1);
+    report_desync("daphnis: desync spin pid 8 (other schedule) against pid 7: ", 8, 7);
+    proc.run_canary(10, "hello", 13);
+    report_desync("daphnis: desync hello pid 10 (canary) against pid 1: ", 10, 1);
+    // U1-2: musl programs
+    proc.run_alone(11, "mprintf");
+    proc.run_alone(12, "mmalloc");
+    proc.run_alone(13, "mbrk");
+    proc.run_alone(14, "mprot");
+    proc.run_alone(0, "mlimit");    // M-1: the one limit, RLIMIT_AS; a 16 MiB map, a 40 MiB break, the pool to -ENOMEM
+    proc.run_alone(0, "mpoll");     // E-1: poll and ppoll on pipe ends, a file, bad descriptors; timeouts expire when all wait
+    proc.run_alone(15, "mclock");
+    proc.run_alone(16, "mtls");
+    proc.run_alone(17, "ssea");
+    // ssea beside sseb under the timer: a turn that leaked one's XMM registers into the other
+    // would change a sum
+    serial.serial_write("daphnis: together ssea sseb pids 18 to 19\n");
+    proc.start_held(18, "ssea", 1);
+    proc.start_held(19, "sseb", 2);
+    proc.run_range(18, 19);
+    proc.print_held(18, "ssea");
+    proc.print_held(19, "sseb");
+    proc.print_preempted(18);
+    proc.print_preempted(19);
+    report_desync("daphnis: desync ssea pid 18 (beside sseb) against pid 17: ", 18, 17);
+    held = proc.hold_frames(37);
+    proc.run_alone(20, "mmalloc");
+    proc.release_frames(held, 37);
+    report_desync("daphnis: desync mmalloc pid 20 (other frames) against pid 12: ", 20, 12);
+    proc.run_fx_canary(21, "mprintf");
+    report_desync("daphnis: desync mprintf pid 21 (MXCSR canary) against pid 11: ", 21, 11);
+    // U1-3: files, descriptors, the serial line as stdin; then what mlitter left behind is
+    // dropped by the reset and mcat must not see a difference
+    proc.run_alone(22, "mcat");
+    proc.run_alone(23, "mls");
+    proc.run_alone(24, "mwrite");
+    proc.run_alone(25, "mfd");
+    proc.run_alone(26, "mstdin");
+    proc.run_alone(27, "mlitter");
+    fs.reset();
+    serial.serial_write("daphnis: fs reset: the image's view again\n");
+    proc.run_alone(28, "mcat");
+    report_desync("daphnis: desync mcat pid 28 (after mlitter and the reset) against pid 22: ", 28, 22);
+    // U1-4: fork, pipes, execve, wait4; the pipeline run again on other frames must not desync
+    proc.run_alone(29, "mfork");
+    proc.run_alone(30, "mpipe");
+    proc.run_alone(31, "mexec");
+    proc.run_alone(32, "mpipeline");
+    held = proc.hold_frames(37);
+    proc.run_alone(33, "mpipeline");
+    proc.release_frames(held, 37);
+    report_desync("daphnis: desync mpipeline pid 33 (other frames) against pid 32: ", 33, 32);
+    // U1-5: busybox sh runs the scripted session, live, its children's output with it; then again
+    // with other frames
+    proc.run_alone(34, "sh");
+    held = proc.hold_frames(37);
+    proc.run_alone(35, "sh");
+    proc.release_frames(held, 37);
+    report_desync("daphnis: desync sh pid 35 (other frames) against pid 34: ", 35, 34);
+    // F-1: mfb draws the pattern on the surface; the digest is the surface's, then again with other
+    // frames: the same surface, no process desync
+    proc.run_device(36, "mfb");
+    surface.print();
+    held = proc.hold_frames(37);
+    proc.run_device(37, "mfb");
+    proc.release_frames(held, 37);
+    surface.print();
+    serial.serial_write("daphnis: desync surface pid 37 (other frames) against pid 36: ");
+    if (surface.same_as_previous()) {
+        serial.serial_write("none\n");
+    } else {
+        serial.serial_write("DESYNC\n");
+    }
+    report_desync("daphnis: desync mfb pid 37 (other frames) against pid 36: ", 37, 36);
+    // F-2: mkeys reads a, b, c pressed and released (the gate types them through QEMU's monitor once
+    // the run line shows), then again with other frames
+    proc.run_device(38, "mkeys");
+    held = proc.hold_frames(37);
+    proc.run_device(39, "mkeys");
+    proc.release_frames(held, 37);
+    report_desync("daphnis: desync mkeys pid 39 (other frames) against pid 38: ", 39, 38);
+    // F-3: mmouse reads a move by (10, -5), a left and a right click (the gate sends them through the
+    // monitor), then again with other frames
+    proc.run_device(40, "mmouse");
+    held = proc.hold_frames(37);
+    proc.run_device(41, "mmouse");
+    proc.release_frames(held, 37);
+    report_desync("daphnis: desync mmouse pid 41 (other frames) against pid 40: ", 41, 40);
+    // R-1: cint in ring 3. mci prints, reads its clock and overflows on purpose (the fault line and
+    // the status 1 are the runtime's, equal on Linux); again on other frames, one digest. msha digests
+    // 4 MiB in cint (the measure of the stage R chain). mcifb draws mfb's pattern through the
+    // runtime's rows: the surface digest must be the pin of pid 36.
+    proc.run_alone(42, "mci");
+    held = proc.hold_frames(37);
+    proc.run_alone(43, "mci");
+    proc.release_frames(held, 37);
+    report_desync("daphnis: desync mci pid 43 (other frames) against pid 42: ", 43, 42);
+    proc.run_alone(44, "msha");
+    proc.run_device(45, "mcifb");
+    surface.print();
+    serial.serial_write("daphnis: desync surface pid 45 (cint) against pid 37: ");
+    if (surface.same_as_previous()) {
+        serial.serial_write("none\n");
+    } else {
+        serial.serial_write("DESYNC\n");
+    }
+    // R-2a to R-2c: doom's checked run is in the doom flavor (src/main_doom.ci, pid 4), on check-doom.sh's
+    // budget; its bundle stays in this image, which that flavor's image extends
+    if (input.dropped() != 0) {
+        serial.serial_write("daphnis: input dropped ");
+        proc.put_dec(input.dropped());
+        serial.serial_write("\n");
+        input.say_dropped(0);
+    }
+    // P-0: directories. mdirs makes, walks, opens by a directory descriptor, moves and removes them,
+    // with the working directory through chdir, fchdir, fork and a removed directory; every result
+    // and errno is Linux's (the oracle), and it leaves the root as it found it
+    proc.run_alone(47, "mdirs");
+    // P-3: grant (GR-1 A) without arguments prints its usage and exits 2, as on Linux; its grant runs are in
+    // the disk and doom flavors, where a volume is mounted
+    proc.run_alone(46, "grant");
+    proc.report_pool();
+    serial.serial_write("user: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

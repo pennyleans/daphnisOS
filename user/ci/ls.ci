@@ -1,0 +1,421 @@
+// user/ci/ls.ci: ls [-aAdFilnRrStC1] [FILE...] (docs/specs/2026-11-06-c-core.md, CT-1; POSIX XCU ls). Each FILE that
+// is not a directory (every FILE with -d) is listed first, then each directory's names, under a `DIR:` line when
+// there are two or more FILEs or -R. No FILE means `.`. Names sort by their bytes; -t newest first, -S largest first
+// (ties by bytes); -r reverses. Names starting with `.` show with -a (and `.` and `..`) or -A. Output to a terminal
+// is in columns 80 wide (-C), else one name a line (-1); -l and -n give the long form; the last of -C, -1, -l and
+// -n given wins. The long form is busybox's: mode, links, owner and group as numbers (Daphnis has no user
+// database), size (or major, minor), the time modified (`Mon dd hh:mm` within six months, else `Mon dd  yyyy`, in
+// the machine's zone: RS-TZc), the name; a directory's list starts with `total N`, its blocks in 512-byte units
+// (XCU). -i puts the inode first; -F marks a directory /, an executable file *, a link @, a FIFO |, a socket =. -R
+// lists each directory under each one named, in the order shown. A symbolic link shows no target (no readlink row
+// yet).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.path;
+import user.ci.core.zonefile;
+import user.ci.kit.clocktext;
+
+const I64 ONE = 0;
+const I64 COLS = 1;
+const I64 LONG = 2;
+const I64 WIDTH = 80;
+
+Bool o_a = false;
+Bool o_A = false;
+Bool o_d = false;
+Bool o_F = false;
+Bool o_i = false;
+Bool o_R = false;
+Bool o_r = false;
+I64 o_key = 0;
+I64 style = ONE;
+I64 now = 0;
+I64 zone = -1;   // RS-TZc: the machine's zone, UTC without one
+
+I64[2048] files;   // operands listed as files, then those listed as directories (index into the operands)
+I64 nfiles = 0;
+I64[2048] dirs;
+I64 ndirs = 0;
+I64[2048] okey;    // each operand's sort key
+I64[8192] shown;   // the kids of the directory being listed that show
+I64 nshown = 0;
+Bool from_kids = false;
+I64[16] rec;
+U8[4096] nb;
+U8[4096] pb;
+Bool first = true;
+
+// The style after the last of -C, -1, -l, -n in a (XCU: the last one given wins).
+void last_style(in U8[_] a) {
+    I64 s = 0;
+    Bool going = true;
+    while (going && s < len(a)) {
+        I64 e = s;
+        while (a[e] != 0) { e = e + 1; }
+        if (e - s < 2 || a[s] != '-' || (e - s == 2 && a[s + 1] == '-')) {
+            going = false;
+        } else {
+            for k in s + 1..e {
+                U8 c = a[k];
+                if (c == 'C') { style = COLS; }
+                if (c == '1') { style = ONE; }
+                if (c == 'l' || c == 'n') { style = LONG; }
+            }
+        }
+        s = e + 1;
+    }
+}
+
+// Entry i of the list being shown: its name (as shown) into nb, its path into pb.
+I64 name_of(in U8[_] a, I64 i) {
+    if (from_kids) { return path.kid_name(shown[i], nb); }
+    if (files[i] < 0) {
+        nb[0] = '.';
+        return 1;
+    }
+    I64 s = args.op_start(files[i]);
+    I64 e = args.op_stop(a, files[i]);
+    for k in s..e { nb[k - s] = a[k]; }
+    return e - s;
+}
+
+I64 path_of(in U8[_] a, I64 i) {
+    if (from_kids) { return path.kid_path(shown[i], pb); }
+    if (files[i] < 0) {
+        pb[0] = '.';
+        return 1;
+    }
+    I64 s = args.op_start(files[i]);
+    I64 e = args.op_stop(a, files[i]);
+    for k in s..e { pb[k - s] = a[k]; }
+    return e - s;
+}
+
+I64 ftype() {
+    return rec[corectl.ST_MODE] & corectl.S_IFMT;
+}
+
+U8 mark() {
+    if (!o_F) { return 0; }
+    I64 t = ftype();
+    if (t == corectl.S_IFDIR) { return '/'; }
+    if (t == corectl.S_IFLNK) { return '@'; }
+    if (t == corectl.S_IFIFO) { return '|'; }
+    if (t == corectl.S_IFSOCK) { return '='; }
+    if (t == corectl.S_IFREG && (rec[corectl.ST_MODE] & 0x49) != 0) { return '*'; }
+    return 0;
+}
+
+void mode_text() {
+    I64 t = ftype();
+    I64 m = rec[corectl.ST_MODE];
+    U8 c = '?';
+    if (t == corectl.S_IFREG) { c = '-'; }
+    else if (t == corectl.S_IFDIR) { c = 'd'; }
+    else if (t == corectl.S_IFLNK) { c = 'l'; }
+    else if (t == corectl.S_IFCHR) { c = 'c'; }
+    else if (t == corectl.S_IFBLK) { c = 'b'; }
+    else if (t == corectl.S_IFIFO) { c = 'p'; }
+    else if (t == corectl.S_IFSOCK) { c = 's'; }
+    put.byte(c);
+    U8[9] rwx = b"rwxrwxrwx";
+    for k in 0..9 {
+        U8 b = '-';
+        if (((m >> (8 - k)) & 1) == 1) { b = rwx[k]; }
+        if (k == 2 && (m & 0x800) != 0) {
+            b = 'S';
+            if ((m & 0x40) != 0) { b = 's'; }
+        }
+        if (k == 5 && (m & 0x400) != 0) {
+            b = 'S';
+            if ((m & 0x8) != 0) { b = 's'; }
+        }
+        if (k == 8 && (m & 0x200) != 0) {
+            b = 'T';
+            if ((m & 0x1) != 0) { b = 't'; }
+        }
+        put.byte(b);
+    }
+}
+
+void left(I64 v, I64 width) {
+    I64 k = 1;
+    I64 x = v;
+    while (x >= 10) {
+        x = x / 10;
+        k = k + 1;
+    }
+    put.num(v, 0);
+    while (k < width) {
+        put.byte(' ');
+        k = k + 1;
+    }
+}
+
+void time_text() {
+    U8[16] b;
+    I64 n = clocktext.ls_time(b, 0, zone, rec[corectl.ST_MTIME], now);
+    put.bytes(b[0..n]);
+}
+
+// Writes entry i (rec holds its record when needed); the columns it took.
+I64 one_entry(in U8[_] a, I64 i) {
+    I64 cols = 0;
+    if (o_i) {
+        put.num(rec[corectl.ST_INO], 7);
+        put.byte(' ');
+        cols = 8;
+    }
+    if (style == LONG) {
+        mode_text();
+        put.byte(' ');
+        put.num(rec[corectl.ST_NLINK], 4);
+        put.byte(' ');
+        left(rec[corectl.ST_UID], 8);
+        put.byte(' ');
+        left(rec[corectl.ST_GID], 8);
+        put.byte(' ');
+        I64 t = ftype();
+        if (t == corectl.S_IFCHR || t == corectl.S_IFBLK) {
+            I64 rd = rec[corectl.ST_RDEV];
+            put.num(((rd >> 8) & 0xFFF) | ((rd >> 32) & 0xFFFFF000), 4);
+            put.bytes(b", ");
+            put.num((rd & 0xFF) | ((rd >> 12) & 0xFFFFFF00), 3);
+        } else {
+            put.num(rec[corectl.ST_SIZE], 9);
+        }
+        put.byte(' ');
+        time_text();
+        put.byte(' ');
+    }
+    I64 n = name_of(a, i);
+    put.bytes(nb[0..n]);
+    cols = cols + n;
+    U8 m = mark();
+    if (m != 0) {
+        put.byte(m);
+        cols = cols + 1;
+    }
+    return cols;
+}
+
+Bool need_stat() {
+    return o_i || o_F || style == LONG;
+}
+
+// Fills rec for entry i: true, or false after `ls: path: reason`.
+Bool stat_of(in U8[_] a, I64 i) {
+    if (!need_stat()) { return true; }
+    I64 pl = path_of(a, i);
+    I64 r = corectl.co_stat(pb[0..pl], 0, rec);
+    if (r < 0) {
+        msg.file(pb[0..pl], 0 - r);
+        return false;
+    }
+    return true;
+}
+
+// Lists the n entries of the current list in the current style.
+void show(in U8[_] a, I64 n) {
+    if (style == LONG && from_kids) {
+        I64 blocks = 0;
+        for i in 0..n {
+            I64 pl = path_of(a, i);
+            if (corectl.co_stat(pb[0..pl], 0, rec) == 0) { blocks = blocks + rec[corectl.ST_BLOCKS]; }
+        }
+        put.bytes(b"total ");
+        put.num(blocks, 0);
+        put.byte('\n');
+    }
+    if (style != COLS) {
+        for i in 0..n {
+            if (stat_of(a, i)) {
+                _ = one_entry(a, i);
+                put.byte('\n');
+            }
+        }
+        return;
+    }
+    I64 widest = 0;
+    for i in 0..n {
+        I64 k = name_of(a, i);
+        if (k > widest) { widest = k; }
+    }
+    I64 cw = widest + 2;
+    if (o_i) { cw = cw + 8; }
+    I64 ncols = WIDTH / cw;
+    I64 nrows = n;
+    if (ncols > 1) {
+        nrows = n / ncols;
+        if (nrows * ncols < n) { nrows = nrows + 1; }
+    } else {
+        ncols = 1;
+    }
+    for row in 0..nrows {
+        I64 column = 0;
+        I64 nexttab = 0;
+        for nc in 0..ncols {
+            I64 i = nc * nrows + row;
+            if (i < n) {
+                if (column > 0) {
+                    nexttab = nexttab - column;
+                    for k in 0..nexttab { put.byte(' '); }
+                    column = column + nexttab;
+                }
+                nexttab = column + cw;
+                if (stat_of(a, i)) { column = column + one_entry(a, i); }
+            }
+        }
+        put.byte('\n');
+    }
+}
+
+// Names of the directory of the last W_PRE that show, in order.
+void pick() {
+    nshown = 0;
+    I64 n = path.kids();
+    for i in 0..n {
+        I64 k = path.kid_name(i, nb);
+        if (k > 0 && (nb[0] != '.' || o_a || o_A)) {
+            shown[nshown] = i;
+            nshown = nshown + 1;
+        }
+    }
+    from_kids = true;
+}
+
+void header(in U8[_] p) {
+    if (!first) { put.byte('\n'); }
+    first = false;
+    put.bytes(p);
+    put.bytes(b":\n");
+}
+
+void list_dir(in U8[_] a, in U8[_] op, Bool named) {
+    path.walk_start(op, true, false, o_a);
+    Bool going = true;
+    while (going) {
+        I64 w = path.walk_next();
+        if (w == path.W_END) {
+            going = false;
+        } else if (w == path.W_ERR) {
+            I64 pl = path.walk_path(pb);
+            msg.file(pb[0..pl], path.walk_errno());
+        } else if (w == path.W_PRE) {
+            I64 pl = path.walk_path(pb);
+            I64 bs = path.base_start(pb[0..pl]);
+            if (path.walk_depth() > 1 && pb[bs] == '.' && !o_a && !o_A) {
+                path.walk_skip();
+            } else {
+                if (named || path.walk_depth() > 1) { header(pb[0..pl]); }
+                first = false;
+                pick();
+                show(a, nshown);
+                if (!o_R) { going = false; }
+            }
+        }
+    }
+}
+
+Bool op_before(in U8[_] a, I64 x, I64 y) {
+    if (o_r) { return op_after(a, x, y); }
+    if (o_key != path.BY_NAME && okey[x] != okey[y]) { return okey[x] > okey[y]; }
+    return bytes_less(a, x, y);
+}
+
+Bool op_after(in U8[_] a, I64 x, I64 y) {
+    if (o_key != path.BY_NAME && okey[x] != okey[y]) { return okey[x] < okey[y]; }
+    return bytes_less(a, y, x);
+}
+
+Bool bytes_less(in U8[_] a, I64 x, I64 y) {
+    I64 i = args.op_start(x);
+    I64 ie = args.op_stop(a, x);
+    I64 j = args.op_start(y);
+    I64 je = args.op_stop(a, y);
+    while (i < ie && j < je && a[i] == a[j]) {
+        i = i + 1;
+        j = j + 1;
+    }
+    if (i == ie) { return j < je; }
+    if (j == je) { return false; }
+    return a[i] < a[j];
+}
+
+void sort_ops(in U8[_] a, inout I64[_] v, I64 n) {
+    for i in 1..n {
+        I64 j = i;
+        while (j > 0 && op_before(a, v[j], v[j - 1])) {
+            I64 t = v[j];
+            v[j] = v[j - 1];
+            v[j - 1] = t;
+            j = j - 1;
+        }
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"ls");
+    args.parse(a, b"aAdFilnRrStC1", b"");
+    o_a = args.has('a');
+    o_A = args.has('A');
+    o_d = args.has('d');
+    o_F = args.has('F');
+    o_i = args.has('i');
+    o_R = args.has('R') && !o_d;
+    o_r = args.has('r');
+    if (args.has('t')) { o_key = path.BY_TIME; }
+    if (args.has('S')) { o_key = path.BY_SIZE; }
+    U8[64] tio;
+    if (shctl.sh_tcget(1, tio) >= 0) { style = COLS; }
+    last_style(a);
+    now = corectl.co_clock(0) / 1000000000;
+    zone = zonefile.city();
+    path.walk_order(o_key, o_r);
+    I64 n = args.operands();
+    if (n == 0 && o_d) {
+        files[0] = -1;   // `.` itself
+        nfiles = 1;
+    }
+    I64 follow = 1;
+    if (style == LONG || o_d || o_F) { follow = 0; }
+    for i in 0..n {
+        I64 s = args.op_start(i);
+        I64 e = args.op_stop(a, i);
+        I64 r = corectl.co_stat(a[s..e], follow, rec);
+        if (r < 0 && follow == 1) { r = corectl.co_stat(a[s..e], 0, rec); }
+        if (r < 0) {
+            msg.file(a[s..e], 0 - r);
+        } else {
+            okey[i] = 0;
+            if (o_key == path.BY_TIME) { okey[i] = rec[corectl.ST_MTIME]; }
+            if (o_key == path.BY_SIZE) { okey[i] = rec[corectl.ST_SIZE]; }
+            if (ftype() == corectl.S_IFDIR && !o_d) {
+                dirs[ndirs] = i;
+                ndirs = ndirs + 1;
+            } else {
+                files[nfiles] = i;
+                nfiles = nfiles + 1;
+            }
+        }
+    }
+    sort_ops(a, files, nfiles);
+    sort_ops(a, dirs, ndirs);
+    if (nfiles > 0) {
+        from_kids = false;
+        show(a, nfiles);
+        first = false;
+    }
+    Bool named = n > 1 || o_R;
+    if (n == 0 && !o_d) { list_dir(a, b".", o_R); }
+    for k in 0..ndirs {
+        I64 i = dirs[k];
+        list_dir(a, a[args.op_start(i)..args.op_stop(a, i)], named);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

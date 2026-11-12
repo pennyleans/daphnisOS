@@ -1,0 +1,23 @@
+// user/ci/kit/ondesk.ci: whether this program runs in a Daphnis desk terminal (AM-3). The desk starts each
+// terminal's shell with TERM_PROGRAM=daphnis, and the shell passes it down. A terminal program sends its OSC 7770
+// declaration only here: on a host Linux terminal the sequence means nothing and some print it.
+// shctl's host rows come with this module (build.sh picks the rows from a program's whole import closure).
+import user.ci.shctl;
+import user.ci.kit.deskenv;
+
+export Bool on_desk() {
+    U8[256] e;
+    I64 i = 0;
+    while (true) {
+        I64 n = shctl.sh_environ(i, e);
+        if (n == -7) {                 // E2BIG: an entry longer than any TERM_PROGRAM=daphnis
+            i = i + 1;
+            continue;
+        }
+        if (n < 0) { return false; }
+        if (deskenv.is_desk_entry(e, n)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+// SPDX-License-Identifier: Apache-2.0

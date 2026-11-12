@@ -1,0 +1,12 @@
+// src/surfsize.ci: RES-1 (amends HX-0 A, docs/specs/2026-11-05-h-hybrid.md section 4), the size a window's private
+// surface may ask (FBIO_TILE_WANT, src/tile.ci want), pure so the hosted tests reach it. The cap is the screen it
+// is shown on, not 1920 x 1080: a surface the size of the screen is taken, one pixel more on either side is not.
+// Its mapping is bounded by its own length (src/proc.ci sys_mmap, 4 w x h bytes, out of the process's quota, M-1),
+// as a mapping of /dev/fb0 is by the framebuffer's (HX-8).
+
+// True when a private surface of w x h fits a screen of fw x fh: each side at least 1 and at most the screen's.
+export Bool fits(I64 w, I64 h, I64 fw, I64 fh) {
+    return w >= 1 && h >= 1 && w <= fw && h <= fh;
+}
+
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,485 @@
+// user/ci/kit/stacct.ci: Settings' Accounts page (RS-SET2 of stage RS; frame 34, approved by DN-58, l 2026-11-11
+// 17:15Z), a page module on kit/stpage.ci. The title with Add Account at its right; the accounts, one 40 px pill a
+// row, each a disc with the name's initial, the name, the role and Signed In on the account in use; the chosen
+// account FILL. Under them the chosen account's section: Role (Parent | Child), Password (Change Password) and May
+// Use (Disk, Network, Sound), then Remove Account.
+//
+// The host feeds the accounts as the store holds them (accounts_clear, account); the page keeps only which one is
+// chosen, its focus and its scroll, and returns what a person asks as an action: ADD, ROLE (arg the account, arg2
+// PARENT or CHILD), PASSWORD (arg the account), CEILING (arg the account, arg2 the new ceiling word, disk 1, net 2,
+// audio 4 as user/ci/acct.ci keeps it) and REMOVE (arg the account). Every one goes to authd through the frame 17
+// prompt with a Parent's own password (RS-ROLE); the page decides no right. authd refuses to demote or remove the
+// last Parent; the page draws those two rows at 40 percent (DN-58 item 11), and the drawing is not the guard. A
+// Parent's ceiling is every grant, so a Parent's May Use is all checked at 40 percent.
+//
+// The discs are literal colors that never swap with the theme (design note 62): #9e4724 and #2f7a72 by the uid's
+// parity, the initial in #f3efe6. Remove Account's name is CADMIUM.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+
+export const I64 MAX = 16;             // user/ci/acct.ci's MAX
+export const I64 NAME_MAX = 32;
+export const I64 PARENT = 1;           // user/ci/acct.ci's roles
+export const I64 CHILD = 2;
+export const I64 DISK = 1;             // the ceiling word's bits (src/fs.ci GRANT_DISK, GRANT_NET, GRANT_AUDIO)
+export const I64 NET = 2;
+export const I64 AUDIO = 4;
+export const I64 ALL = 7;
+
+export const I64 ADD = 16;             // stpage.ACT + 0
+export const I64 ROLE = 17;
+export const I64 PASSWORD = 18;
+export const I64 CEILING = 19;
+export const I64 REMOVE = 20;
+
+export const I64 PILL = 40;            // an account's row, 2 apart (frame 34)
+export const I64 PILL_PITCH = 42;
+export const I64 DISC = 28;
+export const I64 TAIL = 283;           // what the page holds below the list: 24, the label's 17, three rows (138),
+                                       // 48, the button's 32, the 24 px foot
+
+// Focus stops, in the page's order.
+export const I64 F_NONE = 0;
+export const I64 F_ADD = 1;
+export const I64 F_LIST = 2;
+export const I64 F_ROLE = 3;
+export const I64 F_PASS = 4;
+export const I64 F_USE = 5;
+export const I64 F_REMOVE = 6;
+
+U32[2] DISCS = [0x009e4724, 0x002f7a72];
+const U32 INITIAL = 0x00f3efe6;
+I64[3] BIT = [1, 2, 4];
+
+I64 na = 0;
+U8[512] names;                         // NAME_MAX bytes an account
+I64[16] nlen;
+I64[16] uidv;
+I64[16] rolev;
+I64[16] ceilv;
+I64 me = -1;                           // the account signed in
+
+I64 sel = 0;                           // the account chosen
+I64 top = 0;                           // the first account shown
+I64 vis = 2;                           // accounts the list shows, from the last draw
+Bool follow = true;                    // the next draw brings the choice into view (the page opened)
+I64 fs = F_NONE;
+I64 fbox = 0;                          // May Use's box under the keyboard, 0 to 2
+Bool kbd = false;
+I64 a1 = 0;
+I64 a2 = 0;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- what the host tells ---
+
+export void accounts_clear() {
+    na = 0;
+    me = -1;
+}
+
+// The next account as the store lists it: its name, uid, role, ceiling word, and whether it is the one signed in.
+export Bool account(in U8[_] name, I64 n, I64 uid, I64 role, I64 ceil, Bool signed_in) {
+    if (na >= MAX) { return false; }
+    I64 m = min(n, NAME_MAX);
+    for k in 0..m { names[NAME_MAX * na + k] = name[k]; }
+    nlen[na] = m;
+    uidv[na] = uid;
+    rolev[na] = role;
+    ceilv[na] = ceil;
+    if (signed_in) { me = na; }
+    na = na + 1;
+    return true;
+}
+
+export I64 accounts() { return na; }
+export I64 chosen() { return sel; }
+export I64 arg() { return a1; }
+export I64 arg2() { return a2; }
+export I64 focused() { return fs; }
+export I64 first() { return top; }
+
+// Account k's disc color, the same word on both themes.
+export U32 disc_color(I64 k) { return DISCS[uidv[k] % 2]; }
+
+// Whether account k is the only Parent: its Role and Remove cannot work (DN-58 item 11).
+export Bool last_parent(I64 k) {
+    if (rolev[k] != PARENT) { return false; }
+    for j in 0..na {
+        if (j != k && rolev[j] == PARENT) { return false; }
+    }
+    return true;
+}
+
+// The page shown afresh: the account in use chosen, no focus.
+export void open() {
+    fs = F_NONE;
+    kbd = false;
+    sel = max(0, me);
+    top = 0;
+    follow = true;
+}
+
+// The keyboard moves in from the sidebar, at the first stop (Tab) or the last (Shift+Tab); whether a stop took it.
+export Bool enter() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(1);
+}
+
+export Bool enter_last() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(-1);
+}
+
+export I64 focused_box() { return fbox; }
+
+// After the host fed the accounts again (a removal): the choice stays in the list.
+export void refreshed() {
+    fit();
+    reveal();
+}
+
+void fit() {
+    if (sel >= na) { sel = max(0, na - 1); }
+}
+
+I64 act(I64 a, I64 x, I64 y) {
+    a1 = x;
+    a2 = y;
+    return a;
+}
+
+// --- geometry ---
+
+I64 add_w() { return stpage.bw(b"Add Account", 11, faces.NAME); }
+I64 list_y(I64 y0) { return y0 + stpage.BODY; }
+
+// Frame 48: the page's height from y0 with the list at its fewest, two; a box less tall scrolls it (kit/stbox.ci).
+export I64 tall() { return stpage.BODY + 2 * PILL_PITCH - 2 + TAIL; }
+
+// Frame 48: the keyboard's row, from the page's top (y0 = 0): its top and bottom, -1 while the keyboard is not in the
+// page. The host gives them to kit/stbox.ci reveal after each key, so the row stays whole under the head.
+export I64 focus_top() {
+    if (!kbd || fs == F_NONE) { return -1; }
+    if (fs == F_ADD) { return 18; }
+    if (fs == F_LIST) { return list_y(0) + PILL_PITCH * (sel - top); }
+    if (fs == F_REMOVE) { return remove_y(0); }
+    return stpage.row_y(rows_y(0), fs - F_ROLE);
+}
+
+export I64 focus_bottom() {
+    I64 t = focus_top();
+    if (t < 0) { return -1; }
+    if (fs == F_ADD || fs == F_REMOVE) { return t + stpage.BTN; }
+    if (fs == F_LIST) { return t + PILL; }
+    return t + stpage.ROW;
+}
+
+// Accounts the list shows between y0 and yb: what leaves room for the section, at least two.
+export I64 shown(I64 y0, I64 yb) { return max(2, (yb - y0 - stpage.BODY - TAIL + 2) / PILL_PITCH); }
+
+I64 rows_shown() { return min(vis, na); }
+I64 label_y(I64 y0) { return list_y(y0) + PILL_PITCH * rows_shown() - 2 + stpage.GAP; }
+I64 rows_y(I64 y0) { return label_y(y0) + stpage.LAB; }
+I64 remove_y(I64 y0) { return rows_y(y0) + stpage.ROW + 2 * stpage.PITCH + 2 * stpage.GAP; }
+I64 remove_w() { return stpage.bw(b"Remove Account", 14, faces.NAME); }
+
+// May Use's box k: its left, laid from the right, each a 16 px box, 8, the word, and 20 between.
+I64 box_x(I64 cr, I64 k) {
+    I64 x = cr;
+    for j in 0..3 {
+        I64 i = 2 - j;
+        x = x - box_w(i);
+        if (i == k) { return x; }
+        x = x - 20;
+    }
+    return x;
+}
+
+I64 box_w(I64 k) {
+    if (k == 0) { return 24 + stpage.tw(b"Disk", 4, faces.BODY); }
+    if (k == 1) { return 24 + stpage.tw(b"Network", 7, faces.BODY); }
+    return 24 + stpage.tw(b"Sound", 5, faces.BODY);
+}
+
+void reveal() {
+    if (sel < top) { top = sel; }
+    if (sel >= top + vis) { top = sel - vis + 1; }
+    if (top > na - vis) { top = na - vis; }
+    if (top < 0) { top = 0; }
+}
+
+export Bool scroll(I64 d) {
+    I64 t = top;
+    top = max(0, min(top + d, na - vis));
+    return t != top;
+}
+
+// --- drawing ---
+
+void pill(inout U32[_] row, I64 cx, I64 cr, I64 ry, I64 k, I64 y) {
+    Bool on_fill = k == sel;
+    if (kbd && fs == F_LIST && on_fill && stpage.on(y, ry - 4, PILL + 8)) {
+        stpage.focus(row, cx - 8, ry, cr + 8, ry + PILL, 20);
+    }
+    if (!stpage.on(y, ry, PILL)) { return; }
+    U32 fg = tok(tokens.INK);
+    U32 dim = tok(tokens.INK_DIM);
+    if (on_fill) {
+        pen.round(row, cx - 8, ry, cr + 8, ry + PILL, 20, tok(tokens.FILL));
+        fg = tok(tokens.ON_FILL);
+        dim = fg;
+    }
+    stpage.disc(row, cx - 2, ry + 6, DISC, disc_color(k));
+    U8[1] ini;
+    ini[0] = names[NAME_MAX * k];
+    if (ini[0] >= 'a' && ini[0] <= 'z') { ini[0] = ini[0] - 32; }
+    I64 e = pen.text_mid(row, cx - 2, DISC, stpage.base(ry, PILL), cx + 26, ini, 1, INITIAL, faces.NAME_BOLD);
+    I64 nx = cx + 36;
+    I64 sx = cr - 4;
+    if (k == me) { sx = sx - stpage.tw(b"Signed In", 9, faces.PATH) - 10; }
+    e = pen.text(row, nx, stpage.base(ry, PILL), sx, names[NAME_MAX * k..NAME_MAX * k + nlen[k]], nlen[k], fg, faces.NAME);
+    I64 rx = nx + stpage.tw(names[NAME_MAX * k..NAME_MAX * k + nlen[k]], nlen[k], faces.NAME) + 10;
+    if (rolev[k] == PARENT) {
+        e = pen.text(row, rx, stpage.base(ry, PILL), sx, b"Parent", 6, dim, faces.BODY);
+    } else {
+        e = pen.text(row, rx, stpage.base(ry, PILL), sx, b"Child", 5, dim, faces.BODY);
+    }
+    if (k == me) { stpage.value(row, cr - 4, ry, PILL, b"Signed In", 9, dim, faces.PATH); }
+}
+
+// The 1x row y of the page from (cx, y0) to (cr, yb), through the pen.
+export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
+    vis = shown(y0, yb);
+    fit();
+    if (follow) {                                              // else the wheel's place holds, clamped to the list
+        reveal();
+        follow = false;
+    }
+    top = max(0, min(top, na - vis));
+    stpage.title(row, cx, y0, cr, b"Accounts", 8, y);
+    I64 ax = cr - add_w();
+    if (stpage.on(y, y0 + 14, stpage.BTN + 8)) {
+        if (stpage.on(y, y0 + 18, stpage.BTN)) {
+            stpage.button(row, ax, y0 + 18, add_w(), stpage.BTN, b"Add Account", 11, tok(tokens.INK), faces.NAME);
+        }
+        if (kbd && fs == F_ADD) { stpage.focus(row, ax, y0 + 18, cr, y0 + 18 + stpage.BTN, stpage.R_CTRL); }
+    }
+    for i in 0..rows_shown() {
+        I64 k = top + i;
+        if (k >= na) { break; }
+        pill(row, cx, cr, list_y(y0) + PILL_PITCH * i, k, y);
+    }
+    if (na == 0) { return; }
+    U8[32] cap;
+    I64 cn = stpage.upper(names[NAME_MAX * sel..NAME_MAX * sel + nlen[sel]], nlen[sel], cap);
+    stpage.section(row, cx, label_y(y0), cr, cap, cn, y);
+    I64 top_r = rows_y(y0);
+    Bool parent = rolev[sel] == PARENT;
+    Bool last = last_parent(sel);
+
+    I64 ry = top_r;                                            // Role
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, cr - stpage.SEG_W - 8, b"Role", 4);
+        I64 part = 1;
+        if (parent) { part = 0; }
+        stpage.seg(row, cr - stpage.SEG_W, ry + 4, stpage.SEG_W, b"Parent|Child", 2, part);
+        if (kbd && fs == F_ROLE) { stpage.focus(row, cr - stpage.SEG_W, ry + 4, cr, ry + 36, 16); }
+        if (last && stpage.on(y, ry, stpage.ROW)) { stpage.fade(row, cx, cr); }
+    }
+    stpage.rule_before(row, cx, top_r, cr, 1);
+
+    ry = stpage.row_y(top_r, 1);                               // Password
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, cr - 160, b"Password", 8);
+        I64 px = stpage.row_button(row, cr, ry, b"Change Password", 15);
+        if (kbd && fs == F_PASS) { stpage.focus(row, px, ry + 4, cr, ry + 36, stpage.R_CTRL); }
+    }
+    stpage.rule_before(row, cx, top_r, cr, 2);
+
+    ry = stpage.row_y(top_r, 2);                               // May Use
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, box_x(cr, 0) - 8, b"May Use", 7);
+        I64 c = ceilv[sel];
+        if (parent) { c = ALL; }
+        for k in 0..3 {
+            I64 bx = box_x(cr, k);
+            if (stpage.on(y, ry + 12, stpage.BOX)) { stpage.check(row, bx, ry + 12, (c & BIT[k]) != 0); }
+            I64 e = 0;
+            if (stpage.on(y, ry, stpage.ROW)) {
+                if (k == 0) { e = pen.text(row, bx + 24, stpage.base(ry, stpage.ROW), cr, b"Disk", 4, tok(tokens.INK), faces.BODY); }
+                if (k == 1) { e = pen.text(row, bx + 24, stpage.base(ry, stpage.ROW), cr, b"Network", 7, tok(tokens.INK), faces.BODY); }
+                if (k == 2) { e = pen.text(row, bx + 24, stpage.base(ry, stpage.ROW), cr, b"Sound", 5, tok(tokens.INK), faces.BODY); }
+            }
+            if (kbd && fs == F_USE && fbox == k) { stpage.focus(row, bx, ry + 12, bx + stpage.BOX, ry + 28, 4); }
+        }
+        if (parent && stpage.on(y, ry, stpage.ROW)) { stpage.fade(row, cx, cr); }
+    }
+
+    ry = remove_y(y0);                                         // Remove Account
+    if (stpage.on(y, ry - 4, stpage.BTN + 8)) {
+        I64 rx = cr - remove_w();
+        if (stpage.on(y, ry, stpage.BTN)) {
+            stpage.button(row, rx, ry, remove_w(), stpage.BTN, b"Remove Account", 14, tok(tokens.CADMIUM), faces.NAME);
+            if (last) { stpage.fade(row, rx, cr); }
+        }
+        if (kbd && fs == F_REMOVE) { stpage.focus(row, rx, ry, cr, ry + stpage.BTN, stpage.R_CTRL); }
+    }
+}
+
+// --- the pointer ---
+
+// The account under (px, py), or -1.
+export I64 account_at(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    if (px < cx - 8 || px >= cr + 8) { return -1; }
+    I64 n = min(shown(y0, yb), na);
+    for i in 0..n {
+        I64 ry = list_y(y0) + PILL_PITCH * i;
+        if (top + i < na && py >= ry && py < ry + PILL) { return top + i; }
+    }
+    return -1;
+}
+
+// A press at (px, py).
+export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    kbd = false;
+    vis = shown(y0, yb);
+    fit();
+    if (py >= y0 + 18 && py < y0 + 18 + stpage.BTN && px >= cr - add_w() && px < cr) {
+        fs = F_ADD;
+        return act(ADD, 0, 0);
+    }
+    I64 k = account_at(cx, y0, cr, yb, px, py);
+    if (k >= 0) {
+        fs = F_LIST;
+        if (k == sel) { return stpage.NONE; }
+        sel = k;
+        return stpage.DRAW;
+    }
+    if (na == 0) { return stpage.NONE; }
+    Bool parent = rolev[sel] == PARENT;
+    Bool last = last_parent(sel);
+    I64 ry = rows_y(y0);
+    if (py >= ry + 4 && py < ry + 36 && !last) {
+        I64 p = stpage.seg_hit(cr - stpage.SEG_W, stpage.SEG_W, 2, px);
+        if (p < 0) { return stpage.NONE; }
+        fs = F_ROLE;
+        return role_to(p);
+    }
+    ry = stpage.row_y(rows_y(y0), 1);
+    if (py >= ry + 4 && py < ry + 36 && px >= cr - stpage.bw(b"Change Password", 15, faces.NAME) && px < cr) {
+        fs = F_PASS;
+        return act(PASSWORD, sel, 0);
+    }
+    ry = stpage.row_y(rows_y(y0), 2);
+    if (py >= ry + 8 && py < ry + 32 && !parent) {
+        for b in 0..3 {
+            I64 bx = box_x(cr, b);
+            if (px >= bx - 4 && px < bx + box_w(b)) {
+                fs = F_USE;
+                fbox = b;
+                return act(CEILING, sel, ceilv[sel] ^ BIT[b]);
+            }
+        }
+        return stpage.NONE;
+    }
+    ry = remove_y(y0);
+    if (py >= ry && py < ry + stpage.BTN && px >= cr - remove_w() && px < cr && !last) {
+        fs = F_REMOVE;
+        return act(REMOVE, sel, 0);
+    }
+    return stpage.NONE;
+}
+
+// The chosen account to role part p (0 Parent, 1 Child): ROLE when that changes it.
+I64 role_to(I64 p) {
+    I64 r = CHILD;
+    if (p == 0) { r = PARENT; }
+    if (r == rolev[sel]) { return stpage.DRAW; }
+    return act(ROLE, sel, r);
+}
+
+// --- the keyboard ---
+
+// The stops in reading order, 0 to 7: Add Account, the accounts (one list, at the chosen one), Role, Change Password,
+// May Use's three boxes, Remove Account; those that cannot work for the chosen account are passed.
+I64 stop() {
+    if (fs == F_NONE) { return -1; }
+    if (fs == F_USE) { return 4 + fbox; }
+    if (fs == F_REMOVE) { return 7; }
+    return fs - 1;
+}
+
+Bool tab(I64 d) {
+    I64 can = 1;
+    if (na > 0) {
+        can = 1 | 2 | 8;
+        if (works(F_ROLE)) { can = can | 4; }
+        if (works(F_USE)) { can = can | 16 | 32 | 64; }
+        if (works(F_REMOVE)) { can = can | 128; }
+    }
+    I64 t = stpage.tab_to(stop(), d, 8, can);
+    fbox = 0;
+    if (t < 0) {
+        fs = F_NONE;
+    } else if (t >= 4 && t <= 6) {
+        fs = F_USE;
+        fbox = t - 4;
+    } else if (t == 7) {
+        fs = F_REMOVE;
+    } else {
+        fs = t + 1;
+    }
+    if (fs == F_LIST) { reveal(); }
+    return t >= 0;
+}
+
+Bool works(I64 s) {
+    if (na == 0) { return s == F_ADD; }
+    if (s == F_ROLE || s == F_REMOVE) { return !last_parent(sel); }
+    if (s == F_USE) { return rolev[sel] != PARENT; }
+    return true;
+}
+
+// A key: Tab and Shift+Tab step through Add Account, the accounts, Role, Change Password, May Use's boxes and Remove
+// Account, past a row that cannot work, and past either end to the sidebar (BACK); Up and Down choose an account in
+// the list; Left and Right choose the role; Enter or Space presses a button or flips a box. An arrow with no stop
+// shows the ring on the first.
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
+    fit();
+    if (fs >= F_ROLE && !works(fs)) { fs = F_LIST; }
+    if (stpage.is_tab(code)) {
+        if (tab(stpage.tab_d(code))) { return stpage.DRAW; }
+        return stpage.BACK;
+    }
+    if (fs == F_NONE) {
+        if (stpage.is_arrow(code) && tab(1)) { return stpage.DRAW; }
+        return stpage.NONE;
+    }
+    if (fs == F_LIST && (code == stpage.K_UP || code == stpage.K_DOWN)) {
+        I64 k = sel - 1;
+        if (code == stpage.K_DOWN) { k = sel + 1; }
+        if (k >= 0 && k < na) {
+            sel = k;
+            reveal();
+        }
+        return stpage.DRAW;
+    }
+    if (fs == F_ROLE && (code == stpage.K_LEFT || code == stpage.K_RIGHT)) {
+        if (code == stpage.K_LEFT) { return role_to(0); }
+        return role_to(1);
+    }
+    if (stpage.is_arrow(code)) { return stpage.DRAW; }       // nothing to move inside the stop: the ring shows
+    if (!stpage.is_press(code)) { return stpage.NONE; }
+    if (fs == F_ADD) { return act(ADD, 0, 0); }
+    if (fs == F_PASS) { return act(PASSWORD, sel, 0); }
+    if (fs == F_USE) { return act(CEILING, sel, ceilv[sel] ^ BIT[fbox]); }
+    if (fs == F_REMOVE) { return act(REMOVE, sel, 0); }
+    return stpage.NONE;
+}
+// SPDX-License-Identifier: Apache-2.0

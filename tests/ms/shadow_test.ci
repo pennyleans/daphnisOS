@@ -1,0 +1,255 @@
+// tests/ms/shadow_test.ci: hosted model tests of the shadows (MS-3, user/ci/kit/shadow.ci from tools/shadow.py and
+// user/ci/kit/shade.ci; docs/specs/2026-11-10-ms-motion-shadows.md sections 3 and 5). Run by check.sh:
+// cint test --root . tests/ms/shadow_test.ci
+
+import user.ci.kit.shadow;
+import user.ci.kit.shade;
+
+test "a profile sums to its alpha: the full value inside, 0 past the cut, never rising outward" {
+    // dark, then light: (contact, ambient) of levels 1 to 3, the section 3 percents of 256, rounded half up
+    I64[12] full = [77, 90, 90, 115, 90, 115, 31, 31, 51, 61, 51, 72];
+    for si in 0..6 {
+        I64 s = si + 1;
+        for th in 0..2 {
+            for lv in 1..4 {
+                for k in 0..2 {
+                    I64 b = shadow.cut(lv, th, k) * s;
+                    assert(shadow.edge(si, lv, th, k, b, 0 - b - 1) == full[6 * th + 2 * (lv - 1) + k]);
+                    assert(shadow.edge(si, lv, th, k, b, 0 - b - 50) == full[6 * th + 2 * (lv - 1) + k]);
+                    assert(shadow.edge(si, lv, th, k, b, 0 - b) + 2 >= full[6 * th + 2 * (lv - 1) + k]);
+                    assert(shadow.edge(si, lv, th, k, b, b + 1) == 0);
+                    I64 d = 0 - b;
+                    while (d < b) {
+                        assert(shadow.edge(si, lv, th, k, b, d) >= shadow.edge(si, lv, th, k, b, d + 1));
+                        d = d + 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "the cut: within 2 of 255 at the last pixel, section 3's extents of 21, 43 and 55 px on the dark theme" {
+    for th in 0..2 {
+        for lv in 1..4 {
+            I64 c = shadow.cut(lv, th, 1);
+            assert(shadow.edge(0, lv, th, 1, c, c) <= 2 && shadow.edge(0, lv, th, 1, c, c) > 0);
+            assert(shadow.edge(0, lv, th, 1, c, c - 1) >= 2);
+            assert(shadow.cut(lv, th, 0) == 0);
+        }
+    }
+    assert(shadow.cut(1, 0, 1) == 15 && shadow.cut(2, 0, 1) == 31 && shadow.cut(3, 0, 1) == 39);
+    assert(shadow.cut(1, 1, 1) == 12 && shadow.cut(2, 1, 1) == 27 && shadow.cut(3, 1, 1) == 35);
+}
+
+test "a 2x ambient layer is the 1x shadow at finer pixels: logical pixel k lies between device pixels 2k - 1 and 2k" {
+    // each device pixel takes the 1x profile at its center's logical position, so the 2x profile brackets the 1x
+    // one (to a 256th either way, for rounding), not a kernel twice as wide on the 1x grid
+    for th in 0..2 {
+        for lv in 1..4 {
+            I64 b = shadow.cut(lv, th, 1);
+            for k in 1..(b + 1) {
+                I64 hi = shadow.edge(1, lv, th, 1, 2 * b, 2 * k - 1);
+                I64 mid = shadow.edge(0, lv, th, 1, b, k);
+                I64 lo = shadow.edge(1, lv, th, 1, 2 * b, 2 * k);
+                assert(hi + 1 >= mid && mid >= lo - 1);
+            }
+        }
+    }
+}
+
+test "the levels of section 3: offsets, blurs and reach" {
+    assert(shadow.dy(1, 0) == 1 && shadow.blur(1, 0) == 0 && shadow.dy(1, 1) == 6 && shadow.blur(1, 1) == 14);
+    assert(shadow.dy(2, 0) == 2 && shadow.blur(2, 0) == 0 && shadow.dy(2, 1) == 12 && shadow.blur(2, 1) == 28);
+    assert(shadow.dy(3, 0) == 2 && shadow.blur(3, 0) == 0 && shadow.dy(3, 1) == 16 && shadow.blur(3, 1) == 36);
+    // the extents of section 3 (edition 4): 21, 43 and 55 px below on the dark theme
+    assert(shade.reach_down(1, 0, 1) == 21 && shade.reach_down(2, 0, 1) == 43 && shade.reach_down(3, 0, 1) == 55);
+    assert(shade.reach_down(3, 0, 2) == 110 && shade.reach_down(1, 1, 1) == 18);
+    assert(shade.reach_up(1, 0, 1) == 9 && shade.reach_side(2, 0, 1) == 31 && shade.reach_side(3, 0, 2) == 78);
+}
+
+test "a contact corner counts 4 x 4 samples inside the arc, as cut_corners does" {
+    // radius 8, level 1, dark: the pixel at (7, 0) out from the arc's center is all inside, (5, 5) is 13 of 16
+    // samples (62 of 77), (6, 5) is 1 of 16, (6, 6) is past the arc; outside the 8 x 8 quarter is 0
+    assert(shadow.corner(0, 8, 1, 0, 0, 8, 7, 0) == 77);
+    assert(shadow.corner(0, 8, 1, 0, 0, 8, 5, 5) == 62);
+    assert(shadow.corner(0, 8, 1, 0, 0, 8, 6, 5) == 5);
+    assert(shadow.corner(0, 8, 1, 0, 0, 8, 6, 6) == 0);
+    assert(shadow.corner(0, 8, 1, 0, 0, 8, 8, 0) == 0);
+}
+
+test "an ambient corner falls off along the distance to the arc" {
+    // radius 8, level 2, dark, ambient (b 28, cut 31): a 39 x 39 quarter
+    assert(shadow.corner(0, 8, 2, 0, 1, 39, 0, 0) == 80);
+    assert(shadow.corner(0, 8, 2, 0, 1, 39, 5, 5) == 58);
+    assert(shadow.corner(0, 8, 2, 0, 1, 39, 8, 8) == 45);
+    assert(shadow.corner(0, 8, 2, 0, 1, 39, 20, 20) == 8);
+    assert(shadow.corner(0, 8, 2, 0, 1, 39, 38, 38) == 0);
+    for i in 0..38 {
+        assert(shadow.corner(0, 8, 2, 0, 1, 39, i, 3) >= shadow.corner(0, 8, 2, 0, 1, 39, i + 1, 3));
+    }
+}
+
+test "an ambient corner's row 0 is the straight edge's profile, 1x to 6x" {
+    // pixel (i, 0) lies a hair past i + 1/2 from the arc's center, so it is the edge's pixel i - r + 1 to a 256th;
+    // at the box's last pixel the corner is past the cut (0) where the edge keeps its last value (2 at most)
+    for si in 0..6 {
+        I64 s = si + 1;
+        for ri in 0..2 {
+            I64 r = 8 * s;
+            if (ri == 1) { r = 18 * s; }
+            for lv in 1..4 {
+                for th in 0..2 {
+                    I64 w = shadow.cut(lv, th, 1) * s;
+                    I64 n = r + w;
+                    I64 i = r;
+                    while (i < n) {
+                        I64 c = shadow.corner(si, r, lv, th, 1, n, i, 0);
+                        I64 e = shadow.edge(si, lv, th, 1, w, i - r + 1);
+                        I64 tol = 1;
+                        if (i == n - 1) { tol = 2; }
+                        assert(c - e <= tol && e - c <= tol);
+                        i = i + 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "shade_row: the shape's inside is left, its corners and the band around it are shaded, left mirrors right" {
+    for th in 0..2 {
+        U32[200] row;
+        for x in 0..200 { row[x] = 0xEAE6DF; }
+        // level 2 under [50, 150) x [60, 120), radius 8 at 1x; row 118 crosses the bottom corners (the shadow sits
+        // below the shape, so the top corners' arcs show less of it)
+        shade.shade_row(row, 0, 200, 118, 50, 60, 150, 120, 8, 2, th, 1);
+        assert(row[100] == 0xEAE6DF);        // the inside
+        assert(row[50] != 0xEAE6DF);         // under the bottom left corner's arc
+        assert(row[49] != 0xEAE6DF);         // the band
+        U32[200] top;
+        for x in 0..200 { top[x] = 0xEAE6DF; }
+        shade.shade_row(top, 0, 200, 61, 50, 60, 150, 120, 8, 2, th, 1);
+        assert((top[50] & 255) > (row[50] & 255));   // the top left corner's arc: lighter than the bottom one
+        for t in 0..50 {
+            assert(row[49 - t] == row[150 + t]);
+            assert(row[50 + t] == row[149 - t]);
+        }
+    }
+}
+
+test "shade_row draws nothing past the factors or the box bound, outside [lo, hi), or for a shape smaller than its corners" {
+    U32[200] row;
+    for x in 0..200 { row[x] = 0x808080; }
+    shade.shade_row(row, 0, 200, 125, 50, 60, 150, 120, 8, 2, 0, 7);   // no 7x
+    shade.shade_row(row, 0, 200, 125, 50, 60, 150, 120, 0, 2, 0, 1);   // no radius 0
+    shade.shade_row(row, 0, 200, 125, 50, 60, 150, 120, 200, 2, 0, 6); // a 1,434 px corner box at 6x
+    shade.shade_row(row, 0, 200, 125, 50, 60, 64, 120, 8, 2, 0, 1);    // 14 px wide, under 2 x 8
+    for x in 0..200 { assert(row[x] == 0x808080); }
+    shade.shade_row(row, 100, 120, 125, 50, 60, 150, 120, 8, 2, 0, 1);
+    assert(row[99] == 0x808080 && row[120] == 0x808080 && row[110] != 0x808080);
+    // MS-R2 B: any radius at 1x to 6x, while its corner box stays within 1,000 px a side
+    assert(shade.can(7, 1) && shade.can(8, 3) && shade.can(8, 1) && shade.can(12, 2) && shade.can(24, 6));
+    assert(shade.can(127, 6) && !shade.can(128, 6) && !shade.can(0, 1) && !shade.can(8, 7) && !shade.can(8, 0));
+}
+
+test "reaches: where it says no, shade_row changes nothing (MS-4's term_rows skips there)" {
+    // every factor, radius, level and theme; rows from 30 above to 70 below a shape, spans of 4 sliding across
+    for sc in 1..3 {
+        for ri in 0..4 {
+            I64 rad = 8;
+            if (ri == 1) { rad = 12; }
+            if (ri == 2) { rad = 16; }
+            if (ri == 3) { rad = 18; }
+            for lv in 1..4 {
+                for th in 0..2 {
+                    I64 x0 = 120;
+                    I64 y0 = 120;
+                    I64 x1 = x0 + 4 * rad * sc;
+                    I64 y1 = y0 + 3 * rad * sc;
+                    I64 y = y0 - 30 * sc;
+                    while (y < y1 + 70 * sc) {
+                        U32[400] row;
+                        for x in 0..400 { row[x] = 0x808080; }
+                        shade.shade_row(row, 0, 400, y, x0, y0, x1, y1, rad, lv, th, sc);
+                        I64 lo = 0;
+                        while (lo < 396) {
+                            if (!shade.reaches(y, lo, lo + 4, x0, y0, x1, y1, lv, th, sc)) {
+                                for x in lo..(lo + 4) { assert(row[x] == 0x808080); }
+                            }
+                            lo = lo + 4;
+                        }
+                        y = y + 3;
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "at the box bound (radius 127 at 6x) shade_row runs through every corner row without a fault" {
+    // the corner's squared distance times 2^40 is largest here; I64 holds it (shadow.fits)
+    for lv in 1..4 {
+        for th in 0..2 {
+            I64 y = 300 - 240;
+            while (y < 1900 + 240) {
+                U32[2200] row;
+                for x in 0..2200 { row[x] = 0x808080; }
+                shade.shade_row(row, 0, 2200, y, 300, 300, 1900, 1900, 127, lv, th, 6);
+                y = y + 97;
+            }
+        }
+    }
+    assert(shade.can(127, 6));
+}
+
+test "3x to 6x: a grid of factors, radii, levels, themes and rows equals the exact quarters (tools/shadow.py corner)" {
+    // MS-3b: the draw-time count against the thresholds; the sum is shade_row's with tools/shadow.py's exact
+    // corner quarters in place of the count, so the two paths agree at every pixel drawn here
+    I64 h = 0;
+    for sc in 3..7 {
+        for ri in 0..4 {
+            I64 rad = 8;
+            if (ri == 1) { rad = 12; }
+            if (ri == 2) { rad = 16; }
+            if (ri == 3) { rad = 18; }
+            for lv in 1..4 {
+                for th in 0..2 {
+                    I64 y = 0;
+                    while (y < 650) {
+                        U32[600] row;
+                        for x in 0..600 { row[x] = ((x * 40503 + y * 9973) & 0xFFFFFF) as U32; }
+                        shade.shade_row(row, 0, 600, y, 150, 150, 450, 400, rad, lv, th, sc);
+                        for x in 0..600 { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+                        y = y + 13;
+                    }
+                }
+            }
+        }
+    }
+    assert(h == 960090251);
+}
+
+test "a grid of scales, radii, levels, themes and rows equals the twin's (tools/check-hdesk.py shade_row)" {
+    I64 h = 0;
+    for sc in 1..3 {
+        for ri in 0..2 {
+            I64 rad = 8;
+            if (ri == 1) { rad = 12; }
+            for lv in 1..4 {
+                for th in 0..2 {
+                    I64 y = 0;
+                    while (y < 200) {
+                        U32[200] row;
+                        for x in 0..200 { row[x] = ((x * 40503 + y * 9973) & 0xFFFFFF) as U32; }
+                        shade.shade_row(row, 5, 190, y, 50, 60, 150, 120, rad, lv, th, sc);
+                        for x in 0..200 { h = (h * 31 + (row[x] as I64)) % 1000000007; }
+                        y = y + 3;
+                    }
+                }
+            }
+        }
+    }
+    assert(h == 221341811);
+}
+// SPDX-License-Identifier: Apache-2.0

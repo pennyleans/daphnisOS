@@ -1,0 +1,26 @@
+{
+  "id": "new-file-final-lf",
+  "rules": [
+    "TEXT-1"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "new": true,
+  "chunks": [
+    "6869"
+  ],
+  "expect": {
+    "text": "hi\n",
+    "sel": [
+      2,
+      2
+    ]
+  }
+}

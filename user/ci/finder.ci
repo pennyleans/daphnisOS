@@ -1,0 +1,2329 @@
+// user/ci/finder.ci: finder [DIR | --trash | --props PATH | --pick png | --trash-count | --trash-empty | --peek PATH],
+// the program of Index (FF-6b; DN-55, design notes 51 and 65; the FF spec, sections 3f and 3j): the file browser. It
+// asks an 880 x 640 surface, and after it a surface of each box the desk tells (RS-SURF, kit/surfask.ci: tiled,
+// maximized, a frame dragged; a box under 360 x 280 clips at the right and bottom; under 640 wide the narrow form of
+// DN-55, the sidebar folded behind its button and laid over the body by it, Esc or a click off it folding it again),
+// names the directory shown on the bar (FBIO_TILE_VAR), and draws at 1x: the chrome by user/ci/kit/indexui.ci (Back,
+// Forward, Up, the crumbs, the Grid and List switch, Sort, Search; the sidebar's places; the status bar) and the body
+// by user/ci/kit/indexbody.ci (the Grid of 112 x 104 cells or the List of NAME, TYPE, SIZE, MODIFIED). The model is
+// user/ci/kit/finder.ci; one directory is read at a time (getdents64, stat), no ring and no index; names that begin
+// with a dot are hidden (DN-57).
+// Keys: arrows move (Up and Down by a grid row or a list row), Enter opens (a folder: goes in), Backspace or Alt+Up
+// up, Alt+Left and Alt+Right back and forward, F5 reads the directory again, a printable key filters (Search shows
+// it), Esc clears the filter or ends, q ends when the filter is empty. Ctrl+L (or a click on the pill's space, or the
+// desk's bar path) gives the path pill the keyboard, its text selected; Enter goes to the directory typed. The
+// pointer: a click chooses an entry alone, Ctrl+click adds or takes it, Shift+click chooses the range from the
+// anchor; a second press on the one chosen entry within 400 ms opens it; a header sorts by its column; a crumb, a
+// place or a toolbar button goes there.
+// A file opens by the desk (FF-6c, FF-R8 A): Index asks it (call 1005) and the desk opens the path as the Super
+// plane does, by the open table, in a new terminal; `finder: open |PATH| with |PROG| (STATUS)`.
+// The right-click menu (DN-32, DN-33; user/ci/kit/ctxmenu.ci): the right button on an entry opens FILE or FOLDER
+// for it (choosing it alone unless it is chosen), on the body's empty space EMPTY; the Menu key or Shift+F10 opens it
+// at the selection with its first row selected. While it is up it has every key and press; the pointer hovers it.
+// `finder: menu LIST at X,Y`, `finder: menu chose |WORDS|`; what Index cannot do yet logs `finder: menu |WORDS| not
+// built` (Open opens; Open With opens by the file's own program). It opens over 160 ms and closes over 100 ms.
+// DN-35: EMPTY's View (Grid, Table: the List) and Sort By (Name, Type, Size; folders first) apply at once,
+// `finder: view grid|table`, `finder: sort name|type|size|modified`.
+// Frame 32 (kit/indexrename.ci): F2, the menu's Rename, or a slow second press on the one chosen entry's name (past
+// 400 ms; sooner opens it) renames it in place: the field takes every key until Enter commits (`finder: rename |NEW|
+// (R)`; a name that is there, or a refused rename, keeps the field open, all selected) or Esc cancels (`finder: rename
+// cancel`); a press outside commits a good name. Not in the Trash, not off the volume.
+// Frame 32 (kit/indexprops.ci): Properties (the menu's, or Alt+Enter on the chosen focus) opens Index's small window
+// for the entry: this program again as `finder --props PATH` (`finder: props |PATH| (PID)`), one window an entry, every
+// chosen one at most 8. It shows Type, Size or Contains, Location, Modified (blank until RS-TZb) and Opens With; a
+// click on its name field, or Tab, edits the name (Enter renames: `finder: props rename |NEW| (R)`); Esc closes it.
+// Frame 32 (kit/indexband.ci): a press on the body's space and a move past 4 px draws the band, choosing every entry it
+// touches (with Ctrl, added to what was chosen); `finder: band N`. Held near the body's top or foot, or past it, the
+// band scrolls the body a row at a time, quicker the deeper the pointer is. A press on a chosen entry and a move is a
+// drag: the folder under it that is not chosen takes the drop ring, and the release moves every chosen entry into it
+// (`finder: move |NAME| into |DIR| (R)`), never onto a name that is there (`STEM 2.EXT`). Ctrl+X or Cut cuts the chosen
+// entries (drawn at 40 percent; `finder: cut N`), all of them or, past the clip's 16,384 bytes or 1024 names, none (the
+// clip stays as it was; Copy alike); Ctrl+V or Paste moves them into the folder shown (`finder: paste |NAME| (R)`).
+// Ctrl+C or Copy makes them a copy (`finder: copy N`; no dim, and the clip stays after Paste): Paste then copies them
+// into the folder shown by kit/indexcopy.ci, its steps run in each frame's time (`finder: copy start N`, then `finder:
+// copy N (R)`); its wheel shows at the status bar's right end after 400 ms, Esc cancels while it shows, and a paste
+// that fails or is cancelled leaves the folder as it was. While it runs, this program holds its folder and each folder
+// inside it: a drop, Rename, Move to Trash and Restore into one or out of it are dimmed or do nothing until it ends
+// (another Index or a shell can still move a name into them, and the undo could then remove it with the copy). No band,
+// drag, cut, copy or paste in the Trash; no cut or paste off the volume (note 58).
+// Frame 32 (kit/indextrash.ci): in the Trash a chosen item's menu is TRASH: Restore (dimmed unless every chosen item
+// has a good record) and Delete Forever, then Properties; the toolbar's Sort slot holds Empty Trash (40 percent when
+// the Trash is empty). Delete Forever and Empty Trash ask first with frame 23's plate (`finder: ask delete forever N`,
+// `finder: ask empty trash N`); Enter takes the act, Esc cancels (`finder: ask cancel`), then `finder: delete forever
+// |NAME| (R)`, `finder: empty trash (N)`, `finder: restore |NAME| (R)`. DN-69: the Delete key is Delete Forever in
+// the Trash, Move to Trash elsewhere; it acts on the chosen entries only. A folder with nothing in it reads `Folder is
+// empty`. Note 58: an act that cannot work in the folder shown (a write off /home, Paste with nothing to paste, Pin to
+// Taskbar past the desk's 96 bytes) is drawn dimmed and takes no input, never hidden.
+// Choose Picture (`finder --pick png`, kit/indexpick.ci; DN-58 item 8, frame 33, note 70): the desk starts Index as
+// the account, at its home, as a picker: folders and PNG files only, links as Index lists them. Frame 23's Save As bar
+// without its name field stands at the foot in place of the status bar (kit/pickbar.ci): Choose, live on one chosen PNG
+// file, and Cancel. Choose, Enter while it is live, or opening a PNG file (a double click) writes its absolute path as
+// the account's desk.background (`finder: pick |PATH| (R)`) and ends 0 (1 when the write fails, the file then as it
+// was). Cancel, Esc or q with no filter, or the window closed, writes nothing and ends 1 (`finder: pick cancel`). Tab
+// steps the list, Choose and Cancel (DN-69). The picker writes nothing else: no menu, and note 58 dims every write
+// (Rename, Move to Trash, Cut, Paste, a drop, Empty Trash); Delete and Properties do nothing. It opens no picture: the
+// desk reads the chosen one through bgread, as the account.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.tilewin;
+import user.ci.tilesurf;        // RS-SURF: the surface follows the box the desk tells
+import user.ci.kit.appmenu;   // AM-3: the app menu's About
+import user.ci.tilepoint;
+import user.ci.opencall;
+import user.ci.kit.face;
+import user.ci.kit.face2;
+import user.ci.kit.mark;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;  // FONT-1: the chrome's text, after faces
+import user.ci.kit.icons;
+import user.ci.kit.shape;  // DN-7: the toolbar's pills
+import user.ci.kit.symbols;   // DN-55: the toolbar's and the sidebar's symbols
+import user.ci.kit.indexui;   // DN-55: the toolbar, the sidebar and the status bar
+import user.ci.kit.surfask;   // RS-SURF: the box to ask next, and when
+import user.ci.kit.fileicons;   // DN-9: the rows' 16 px file icons
+import user.ci.kit.match;
+import user.ci.kit.opener;
+import user.ci.kit.openas;    // RG-1: --peek opens a regular file only
+import user.ci.kit.finder;
+import user.ci.kit.indexbody;   // DN-55: the Grid and the List
+import user.ci.kit.ctxmenu;   // DN-32 and DN-33: the right-click menu
+import user.ci.kit.taskbar;   // DN-46 (c): the desk's pins, as the desk sends them
+import user.ci.kit.indextrash;   // frame 32: the Trash's rows, Empty Trash, the ask, the empty folder, note 58
+import user.ci.kit.indexrename;  // frame 32: rename in place
+import user.ci.kit.indexband;    // frame 32: the rubber band, the drop ring, the cut dim
+import user.ci.kit.indexprops;   // frame 32: Properties, Index's small window (finder --props PATH)
+import user.ci.kit.indexcopy;    // frame 32: Copy and Paste, a step at a time
+import user.ci.kit.apps;         // Opens With's words: the app's name for its program
+import user.ci.kit.anim;
+import user.ci.wall;
+import user.ci.trash;   // FF 3h: the Trash store (design note 52's rules)
+import user.ci.trashfs; // DN-55: HOME, for the Home place and crumbs
+import user.ci.dirctl;  // FF 3h: the store's names (build.sh reads this file's imports for CI_ROWS_DIR)
+import user.ci.fdctl;   // FS-5: fd_stat, the record of a file the copy opened (CI_ROWS_FD)
+import user.ci.kit.indexpick;   // Choose Picture: what the picker lists and takes, and its write (kit/setfile.ci)
+import user.ci.kit.pickbar;     // and its bar: Choose and Cancel at the foot (note 70)
+
+const I64 EV_KEY = 1;
+const I64 EV_ABS = 3;
+const I64 EV_WIN_RESIZE = 5;
+const I64 KEY_ESC = 1;
+const I64 KEY_BACKSPACE = 14;
+const I64 KEY_Q = 16;
+const I64 KEY_ENTER = 28;
+const I64 KEY_LEFTCTRL = 29;
+const I64 KEY_L = 38;
+const I64 KEY_RIGHTCTRL = 97;
+const I64 KEY_LEFTSHIFT = 42;
+const I64 KEY_RIGHTSHIFT = 54;
+const I64 KEY_LEFTALT = 56;
+const I64 KEY_RIGHTALT = 100;
+const I64 KEY_F5 = 63;
+const I64 KEY_UP = 103;
+const I64 KEY_LEFT = 105;
+const I64 KEY_RIGHT = 106;
+const I64 KEY_DOWN = 108;
+const I64 BTN_LEFT = 272;
+const I64 BTN_RIGHT = 273;
+const I64 KEY_COMPOSE = 127;    // the Menu key
+const I64 KEY_F10 = 68;
+const I64 KEY_DELETE = 111;     // DN-69: in the Trash Delete Forever (it asks), elsewhere Move to Trash
+const I64 KEY_F2 = 60;          // frame 32: rename in place
+const I64 KEY_SPACE = 57;
+const I64 KEY_TAB = 15;
+const I64 KEY_X = 45;           // Ctrl+X cuts the chosen entries, Ctrl+V pastes them here (frame 32)
+const I64 KEY_V = 47;
+const I64 KEY_C = 46;           // Ctrl+C copies them
+const I64 O_COPY_SRC = 0x20800;    // O_RDONLY | O_NONBLOCK | O_NOFOLLOW: a paste's source file
+const I64 O_COPY_DST = 0xC1;       // O_WRONLY | O_CREAT | O_EXCL: its copy
+const I64 COPY_NS = 8000000;       // a frame's time for a paste's steps, idle
+const I64 COPY_BUSY_NS = 2000000;  // and after an event
+const I64 WHEEL_NS = 50000000;     // the wheel's next frame
+
+const I64 HEAD_H = 48;      // DN-55: indexui.BAR_H, the toolbar under the window bar
+const I64 STATUS_H = 28;    // indexui.STATUS_H
+const I64 PLACES = 6;       // DN-55: Home, Documents, Downloads, Pictures, Daphnis, Trash
+const I64 SURF_W = 880;     // the surface: half of a 1920 x 1080 screen holds it at 1x, as the full width of 1080 x 1920
+const I64 SURF_H = 640;     // (asked at the open; each box the desk tells after takes a surface of its size, RS-SURF)
+const I64 MIN_W = 360;      // the least box laid out (DN-63): a smaller surface clips at the right and bottom
+const I64 MIN_H = 280;
+const I64 CAP_W = 1920;     // the widest surface the rows hold
+const I64 CAP_H = 1080;
+
+U32[1920] row;              // one row of the widest surface (1920), a word a pixel (D-ROW)
+U8[7680] obuf;              // the row as /dev/fb0 takes it, 4 bytes a pixel
+U8[24] ev;
+U8[65536] nb;               // a directory's names
+U8[4096] pb;                // a path
+U8[4096] tb;                // a text
+U8[512] head;               // a file's first bytes
+U8[16] st;
+I64 sw = 0;                 // the box laid out: the surface, at least MIN_W x MIN_H
+I64 sh = 0;
+I64 fw = 0;                 // the surface (fb_word), what is drawn of the box
+I64 fh = 0;
+I64 px_x = -1;
+I64 px_y = -1;
+Bool alt = false;
+Bool shift = false;
+Bool ctrl = false;
+Bool pf = false;            // DN-7: the path pill has the keyboard (Ctrl+L, a click, or the desk's bar path)
+Bool pick = false;          // Choose Picture: `finder --pick png`
+U8[4096] pk;                // the path Choose would write
+Bool pf_all = false;        // and its text is selected: the next key replaces it
+U8[256] pf_text;
+I64 pf_len = 0;
+
+U8[1536] pl_text;           // the sidebar's places: up to PLACES paths of 256 bytes
+I64[6] pl_len;
+I64[6] pl_kind;             // indexui.HOME .. indexui.TRASH
+I64 pl_n = 0;
+U8[256] home;               // HOME, when it names a folder other than /
+I64 home_n = 0;
+U8[256] tdir;               // the Trash's items folder (FF 3h), or none
+I64 tdir_n = 0;
+
+
+Bool tview = false;         // DN-35: View Table (every kept entry in the table, no grid); else Grid, as before
+
+// DN-32: the right-click menu
+Bool cm_up = false;         // drawn (open, or closing)
+anim.Anim cm_an;                 // its openness, 0 to 1000
+I64 cm_entry = -1;          // the entry it was opened for (an index of entries), or -1
+I64 cm_k = -1;              // and its kept index
+I64 cm_a0 = 0;              // the rows it last drew over
+I64 cm_a1 = 0;
+I64 cm_last = -1;           // the openness last drawn
+U8[64] cm_w;
+
+// Frame 32: rename in place (kit/indexrename.ci)
+I64 rn_i = -1;              // the entry being renamed, or -1
+I64 last_k = -1;            // the kept entry of the last press, and when (a slow second click renames)
+I64 last_ns = 0;
+
+// Frame 32: the cut, kept across folders in this window: the folder it was made in and its names, each ended by 0
+U8[4096] cut_dir;
+I64 cut_dn = 0;
+U8[16384] cut_names;        // indexcopy.CLIP_BYTES
+U8[16384] clip_new;         // a clip being taken, before it replaces the one there
+I64 cut_at = 0;
+I64 cut_n = 0;
+Bool cut_copy = false;      // the clip is a copy: drawn without the dim, kept after Paste
+I64 copy_ns = 0;            // when the paste began, and when its wheel was drawn
+I64 wheel_ns = 0;
+U8[65536] cp_names;         // a paste's folder listing, its bytes in transit, its path and a link's target
+U8[65536] cp_blk;
+U8[4096] cp_path;
+U8[4096] cp_link;
+I64 cp_ln = 0;
+I64 cp_fi = 0 - 1;          // its source and copy descriptors, -1 when closed
+I64 cp_fo = 0 - 1;
+I64[16] cp_rec;
+Bool held = false;          // the left button is down (a band or a drag may follow)
+Bool drag_on = false;       // that press was on a chosen entry: a drag may follow
+I64[8] kids;                // Properties windows started from this one (finder --props), reaped when they end
+I64 n_kids = 0;
+I64 pend_k = -1;            // and one of several: it is chosen alone at the release, unless the press was a drag
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- reading ---
+
+Bool is_dir_mode(I64 m) { return (m & 0xF000) == 0x4000; }
+
+// stat of pb[0..n]: the mode, the size into *size by st; -1 when it fails.
+I64 stat_at(I64 n) {
+    I64 r = shctl.sh_stat(pb[0..n], 1, st);
+    if (r < 0) { return -1; }
+    return (st[0] as I64) | ((st[1] as I64) << 8) | ((st[2] as I64) << 16) | ((st[3] as I64) << 24);
+}
+
+// lstat of pb[0..n]: the mode, the size into st, a link itself; -1 when it fails.
+I64 lstat_at(I64 n) {
+    I64 r = shctl.sh_stat(pb[0..n], 0, st);
+    if (r < 0) { return -1; }
+    return (st[0] as I64) | ((st[1] as I64) << 8) | ((st[2] as I64) << 16) | ((st[3] as I64) << 24);
+}
+
+I64 st_size() {
+    I64 v = 0;
+    for k in 0..8 { v = v | ((st[4 + k] as I64) << (8 * k)); }
+    return v;
+}
+
+// The entries of directory pb[0..n] Index shows (DN-57: no name that begins with a dot), or -1 when it does not read.
+I64 count_in(I64 n) {
+    U8[16384] cb;
+    I64 got = shctl.sh_dirents(pb[0..n], cb);
+    if (got < 0) { return -1; }
+    I64 c = 0;
+    I64 s = 0;
+    while (s < got) {
+        I64 e = s;
+        while (e < got && cb[e] != 0) { e = e + 1; }
+        I64 l = e - s;
+        if (l > 0 && !finder.hidden(cb[s..e])) { c = c + 1; }
+        s = e + 1;
+    }
+    return c;
+}
+
+// The path shown, read into the model: its entries offered, ordered, filtered.
+void list() {
+    I64 dn = finder.path_of(pb);
+    finder.begin();
+    I64 got = shctl.sh_dirents(pb[0..dn], nb);
+    if (got < 0) {
+        "finder: ";
+        I64 w0 = shctl.fd_write(1, pb[0..dn]);
+        ": does not read ({0 - got})\n";
+    }
+    I64 s = 0;
+    I64 base = dn;
+    if (dn > 1) {
+        pb[dn] = '/';
+        base = dn + 1;
+    }
+    while (s < got) {
+        I64 e = s;
+        while (e < got && nb[e] != 0) { e = e + 1; }
+        I64 l = e - s;
+        if (l > 0 && base + l <= finder.PATH) {
+            for k in 0..l { pb[base + k] = nb[s + k]; }
+            I64 m = stat_at(base + l);
+            if (m < 0) { m = lstat_at(base + l); }   // a link to nothing is listed as itself
+            if (m >= 0 && pick && !indexpick.shows(nb[s..e], m)) { m = -1; }   // the picker: folders and PNG files
+            if (m >= 0) {
+                Bool d = is_dir_mode(m);
+                I64 items = -1;
+                I64 bytes = st_size();
+                if (d) { items = count_in(base + l); }
+                I64 hn = 0;
+                if (!d && opener.ext_start(nb[s..e]) < 0) {
+                    I64 fd = shctl.sh_open(pb[0..base + l], 0, 0);
+                    if (fd >= 0) {
+                        hn = shctl.fd_read(fd, head);
+                        if (hn < 0) { hn = 0; }
+                        _ = shctl.fd_close(fd);
+                    }
+                }
+                Bool kept = finder.add(nb[s..e], d, bytes, items, opener.kind_of(nb[s..e], d, head[0..hn]), (m & 0x49) != 0);
+                I64[16] rec;                // DN-55: the modified time, for MODIFIED and its sort (design note 68)
+                Bool st_ok = kept && corectl.co_stat(pb[0..base + l], 1, rec) == 0;
+                if (kept && !st_ok) { st_ok = corectl.co_stat(pb[0..base + l], 0, rec) == 0; }   // a link to nothing
+                if (st_ok) { finder.stamp(rec[corectl.ST_MTIME]); }
+            }
+        }
+        s = e + 1;
+    }
+    finder.end();
+    indexbody.scroll_top();
+    dn = finder.path_of(pb);
+    _ = tilewin.win_var(pb[0..dn]);
+    "finder: dir |";
+    I64 w1 = shctl.fd_write(1, pb[0..dn]);
+    "| items {finder.entries()} folders {finder.folders()} files {finder.files()}\n";
+    if (finder.cut_short()) { "finder: more entries than {finder.ENTRIES}, the first shown\n"; }
+}
+
+// DN-55: the sidebar's places: Home (HOME), the Documents, Downloads and Pictures folders in it when they are there
+// (Index makes none), Daphnis (/), and the Trash (FF 3h), the one way into .trash (DN-57).
+void place(I64 kind, in U8[_] p) {
+    if (pl_n == PLACES || len(p) > 256) { return; }
+    for k in 0..len(p) { pl_text[256 * pl_n + k] = p[k]; }
+    pl_len[pl_n] = len(p);
+    pl_kind[pl_n] = kind;
+    pl_n = pl_n + 1;
+}
+
+void home_place(I64 kind, in U8[_] name) {
+    if (home_n == 0 || home_n + 1 + len(name) > 256) { return; }
+    for k in 0..home_n { pb[k] = home[k]; }
+    pb[home_n] = '/';
+    for k in 0..len(name) { pb[home_n + 1 + k] = name[k]; }
+    I64 n = home_n + 1 + len(name);
+    I64 m = stat_at(n);
+    if (m >= 0 && is_dir_mode(m)) { place(kind, pb[0..n]); }
+}
+
+void places() {
+    pl_n = 0;
+    home_n = trashfs.home(home);
+    if (home_n >= 256) { home_n = 0; }   // a HOME that fills the buffer may be cut: no Home place (Index audit)
+    while (home_n > 1 && home[home_n - 1] == '/') { home_n = home_n - 1; }
+    if (home_n > 0) {
+        for k in 0..home_n { pb[k] = home[k]; }
+        I64 m = stat_at(home_n);
+        if (home_n == 1 || m < 0 || !is_dir_mode(m)) { home_n = 0; }
+    }
+    if (home_n > 0) {
+        place(indexui.HOME, home[0..home_n]);
+        home_place(indexui.DOCUMENTS, b"Documents");
+        home_place(indexui.DOWNLOADS, b"Downloads");
+        home_place(indexui.PICTURES, b"Pictures");
+    }
+    place(indexui.DISK, b"/");
+    tdir_n = trash.items_dir(tdir);
+    if (tdir_n < 0 || tdir_n > 256) { tdir_n = 0; }
+    if (tdir_n > 0) { place(indexui.TRASH, tdir[0..tdir_n]); }
+    indexui.places_clear();
+    for k in 0..pl_n { tell_place(pl_kind[k]); }
+}
+
+void tell_place(I64 kind) {
+    if (kind == indexui.HOME) { indexui.place(kind, b"Home"); }
+    if (kind == indexui.DOCUMENTS) { indexui.place(kind, b"Documents"); }
+    if (kind == indexui.DOWNLOADS) { indexui.place(kind, b"Downloads"); }
+    if (kind == indexui.PICTURES) { indexui.place(kind, b"Pictures"); }
+    if (kind == indexui.DISK) { indexui.place(kind, b"Daphnis"); }
+    if (kind == indexui.TRASH) { indexui.place(kind, b"Trash"); }
+}
+
+// Whether the path shown is p[0..n] or inside it.
+Bool shown_in(in U8[_] p, I64 n) {
+    I64 dn = finder.path_of(pb);
+    if (n == 1 && p[0] == '/') { return true; }
+    if (dn < n) { return false; }
+    for k in 0..n {
+        if (pb[k] != p[k]) { return false; }
+    }
+    return dn == n || pb[n] == '/';
+}
+
+// Frame 32: whether the folder shown is the Trash's own (its items; a folder inside one of them is not).
+Bool at_trash() {
+    if (tdir_n == 0) { return false; }
+    I64 dn = finder.path_of(pb);
+    return dn == tdir_n && shown_in(tdir[0..tdir_n], tdir_n);
+}
+
+// Note 58: the facts of the folder shown for indextrash.state: on the volume (/home) it is taken as writable (no
+// rights probe yet; the write's own answer still holds); the image tree is read only. Nothing waits to be pasted.
+I64 here_facts() {
+    I64 dn = finder.path_of(pb);
+    Bool vol = dn >= 5 && pb[0] == '/' && pb[1] == 'h' && pb[2] == 'o' && pb[3] == 'm' && pb[4] == 'e'
+               && (dn == 5 || pb[5] == '/');
+    I64 f = 0;
+    if (vol) { f = indextrash.ON_VOLUME | indextrash.WRITABLE; }
+    if (pick) { f = f & (0 - 1 - indextrash.WRITABLE); }   // the picker writes nothing in a folder: every write dims
+    if (finder.entries() > 0) { f = f | indextrash.HAS_ITEMS; }
+    if (cut_n > 0) { f = f | indextrash.HAS_CLIP; }
+    return f;
+}
+
+// Whether act a (a ctxmenu or indextrash action) is dimmed in the folder shown (note 58).
+Bool dim_here(I64 a) { return indextrash.state(a, here_facts()) == indextrash.DIM; }
+
+// The place the path shown is in: the longest place path that holds it.
+I64 place_here() {
+    I64 best = -1;
+    I64 bn = -1;
+    for k in 0..pl_n {
+        if (pl_len[k] > bn && shown_in(pl_text[256 * k..256 * k + pl_len[k]], pl_len[k])) {
+            best = k;
+            bn = pl_len[k];
+        }
+    }
+    return best;
+}
+
+// DN-55: the crumbs of the path shown: under the Trash, Trash and the names past its folder; under HOME, Home and the
+// names past it; else Daphnis and every name. cr_root and cr_skip say where crumb 0 is, for a click.
+I64 cr_skip = 1;            // the bytes of the path crumb 0 stands for
+
+void crumbs_set() {
+    I64 dn = finder.path_of(pb);
+    I64 r = indexui.DISK;
+    cr_skip = 1;
+    if (tdir_n > 0 && shown_in(tdir[0..tdir_n], tdir_n)) {
+        r = indexui.TRASH;
+        cr_skip = tdir_n;
+    } else if (home_n > 0 && shown_in(home[0..home_n], home_n)) {
+        r = indexui.HOME;
+        cr_skip = home_n;
+    }
+    if (r == indexui.TRASH) { indexui.crumbs(r, b"Trash"); }
+    if (r == indexui.HOME) { indexui.crumbs(r, b"Home"); }
+    if (r == indexui.DISK) { indexui.crumbs(r, b"Daphnis"); }
+    I64 s0 = cr_skip;
+    while (s0 < dn) {
+        while (s0 < dn && pb[s0] == '/') { s0 = s0 + 1; }
+        I64 e = s0;
+        while (e < dn && pb[e] != '/') { e = e + 1; }
+        if (e > s0) { indexui.crumb(pb[s0..e]); }
+        s0 = e;
+    }
+}
+
+// Crumb k's path into pb: crumb 0 the root's, crumb k the path through its k-th name past the root; its length.
+I64 crumb_path(I64 k) {
+    I64 dn = finder.path_of(pb);
+    I64 at = cr_skip;
+    if (k == 0) { return at; }
+    I64 want = k + indexui.dropped();   // a deep path's first names are not crumbs (indexui keeps the last)
+    I64 c = 0;
+    while (at < dn) {
+        while (at < dn && pb[at] == '/') { at = at + 1; }
+        I64 e = at;
+        while (e < dn && pb[e] != '/') { e = e + 1; }
+        c = c + 1;
+        at = e;
+        if (c == want) { return at; }
+    }
+    return dn;
+}
+
+// --- the geometry, at 1x in the surface ---
+
+// The selection kept in view: the rows scroll to hold it.
+void keep_in_view() { indexbody.keep(finder.selected()); }
+
+// --- painting ---
+
+// The foot's height: the status bar's, or the picker's bar.
+I64 foot() {
+    if (pick) { return pickbar.H; }
+    return STATUS_H;
+}
+
+// DN-55: the chrome's state for indexui, set before a paint.
+void chrome() {
+    indexui.set_size(sw, sh);
+    indexbody.set_box(indexui.body_x(), HEAD_H, sw, sh - foot());
+    indexbody.set_list(tview);
+    indexui.set_nav(finder.can_step(-1), finder.can_step(1), finder.path_len() > 1);
+    crumbs_set();
+    indexui.set_edit(pf, pf_all, pf_text[0..pf_len]);
+    I64 sk = finder.sort_key();
+    if (sk == finder.BY_TYPE) {
+        indexui.set_view(tview, b"Type");
+    } else if (sk == finder.BY_SIZE) {
+        indexui.set_view(tview, b"Size");
+    } else if (sk == finder.BY_MODIFIED) {
+        indexui.set_view(tview, b"Modified");
+    } else {
+        indexui.set_view(tview, b"Name");
+    }
+    I64 qn = finder.filter(tb);
+    if (qn > 160) { qn = 160; }
+    indexui.set_query(tb[0..qn]);
+    indexui.set_place(place_here());
+    indexui.set_status(finder.kept(), finder.picks());
+    indexui.set_trash(at_trash(), finder.entries() > 0 && !pick);   // frame 32: Empty Trash in Sort's slot
+    pickbar.place(sw, sh);                                // Choose Picture: Choose live on one PNG file
+    pickbar.set_live(pick_path() >= 0);
+    indextrash.place(0, 0, sw, sh);                       // the ask, centered on the surface
+    band_geom();
+    cut_marks();
+    indexbody.set_drop(indexband.drop());                 // PR 337: the drop target's SURF1 under its icon
+}
+
+// Frame 32: the band's boxes from the Grid or the List after the scroll, clipped to the body.
+void band_geom() {
+    if (tview) {
+        indexband.set_list(indexbody.origin_x(), indexbody.origin_y(), indexbody.row_x1(), finder.kept());
+    } else {
+        indexband.set_grid(indexbody.origin_x(), indexbody.origin_y(), indexbody.cols(), finder.kept());
+    }
+    indexband.set_clip(indexui.body_x(), HEAD_H, sw, sh - foot());
+}
+
+// The cut entries of the folder shown drawn at 40 percent: the cut's names when it was made here.
+void cut_marks() {
+    indexband.cut_clear();
+    if (cut_n == 0 || cut_copy) { return; }
+    I64 dn = finder.path_of(pb);
+    if (!same(pb, dn, cut_dir, cut_dn)) { return; }
+    for k in 0..finder.kept() {
+        I64 n = finder.name_of(finder.kept_at(k), tb);
+        I64 s0 = 0;
+        while (s0 < cut_at) {
+            I64 e = s0;
+            while (cut_names[e] != 0) { e = e + 1; }
+            if (same(tb, n, cut_names[s0..e], e - s0)) { indexband.cut_mark(k); }
+            s0 = e + 1;
+        }
+    }
+}
+
+void status_row(I64 y) {
+    indexui.status_row(row, y);
+    indexcopy.wheel_row(row, y, sw, sh, tokens.theme(), copy_ms(), true);   // DN-37: a paste's wheel
+}
+
+// DN-32: the menu's openness now.
+I64 cm_v() {
+    if (!cm_up) { return 0; }
+    return anim.value(cm_an, wall.wall_ns());
+}
+
+void paint() { paint_rows(0, sh); }
+
+// Rows [y0, y1) of the surface, the menu over them while it is up.
+void paint_rows(I64 y0, I64 y1) {
+    chrome();
+    U32 paper = tok(tokens.PAPER);
+    I64 cv = cm_v();
+    I64 a = y0;
+    I64 b = y1;
+    if (a < 0) { a = 0; }
+    if (b > min(sh, fh)) { b = min(sh, fh); }
+    for y in a..b {
+        draw.paint(row, 0, sw, paper);
+        if (y < HEAD_H) {
+            indexui.toolbar_row(row, y);
+        } else if (y >= sh - foot() && pick) {
+            pickbar.row_at(row, y);
+        } else if (y >= sh - foot()) {
+            status_row(y);
+        } else {
+            if (!indexui.narrow()) { indexui.side_row(row, y); }
+            indexbody.body_row(row, y);
+            if (finder.entries() == 0) { indextrash.empty_row(row, y, indexui.body_x(), HEAD_H, sw, sh - foot()); }
+            indexband.over_row(row, y);   // the cut at 40 percent, the drop ring, the band
+            indexrename.row_at(row, y);   // the name field, while renaming
+            indexui.laid_row(row, y);     // narrow: the sidebar laid over the body, while it is
+        }
+        if (cm_up) { ctxmenu.row_at(row, y, 1, tokens.theme(), cv); }
+        indextrash.row_at(row, y);     // frame 23's ask over everything while it is up
+        for x in 0..fw {
+            U32 v = row[x];
+            for k in 0..4 { obuf[4 * x + k] = ((v >> ((8 * k) as U32)) & 255) as U8; }
+        }
+        dev.fb_row(y, obuf[0..4 * fw]);
+    }
+}
+
+// The surface's size from fb_word, and the box laid out: at least MIN_W x MIN_H, at most the rows (CAP_W).
+void sized() {
+    fw = min(dev.fb_word(0) as I64, CAP_W);
+    fh = dev.fb_word(1) as I64;
+    sw = max(fw, MIN_W);
+    sh = max(fh, MIN_H);
+}
+
+// RS-SURF: the surface taken to the box the desk told, laid out for the size it got and drawn whole. The menu
+// closes; a wide box folds the laid sidebar away (indexui.set_size).
+void resize(I64 now) {
+    I64 r = tilesurf.fb_resize(surfask.want_w(), surfask.want_h());
+    sized();
+    surfask.answered(r, fw, fh, now);
+    "finder: resize {fw}x{fh} ({r})\n";
+    if (fw == 0) { return; }
+    if (ctxmenu.is_open() || cm_up) {
+        ctxmenu.close();
+        cm_up = false;
+    }
+    chrome();
+    keep_in_view();
+    paint();
+}
+
+// --- acting ---
+
+void say_sel() {
+    I64 i = finder.selected_entry();
+    if (i < 0) { return; }
+    I64 n = finder.name_of(i, tb);
+    "finder: sel {finder.selected()} |";
+    I64 w = shctl.fd_write(1, tb[0..n]);
+    "|\n";
+}
+
+void went() {
+    places();                  // a Documents, Downloads or Pictures folder made meanwhile shows (Index audit)
+    list();
+    paint();
+}
+
+// Enter or a second click: a folder goes in; a file is asked of the desk (FF-6c).
+// FF 3h: entry i moved to the Trash (user/ci/trash.ci, a rename into $HOME/.trash), then the folder read again.
+// Whether the menu acts on every chosen entry: its entry is chosen and so are others (Index audit: with several
+// chosen the menu acted on one).
+Bool cm_all() { return cm_k >= 0 && finder.picked(cm_k) && finder.picks() > 1; }
+
+U8[65536] tq;               // the chosen entries' paths, each ended by a 0 byte, gathered before any moves
+
+// Move to Trash on the menu's entry, or on every chosen entry when the menu's is one of them; the folder read once.
+void trash_chosen() {
+    if (!cm_all()) {
+        to_trash(cm_entry);
+        return;
+    }
+    trash_picked();
+}
+
+// The chosen entries' paths gathered into tq, each ended by a 0 byte, before anything moves; the bytes used.
+I64 gather() {
+    I64 at = 0;
+    for k in 0..finder.kept() {
+        if (finder.picked(k)) {
+            I64 n = finder.entry_path(finder.kept_at(k), pb);
+            if (n > 0 && at + n + 1 <= 65536) {
+                for q in 0..n { tq[at + q] = pb[q]; }
+                tq[at + n] = 0;
+                at = at + n + 1;
+            }
+        }
+    }
+    return at;
+}
+
+// The chosen entries' names (a Trash item's stored name is its name) gathered into tq the same way.
+I64 gather_names() {
+    I64 at = 0;
+    for k in 0..finder.kept() {
+        if (finder.picked(k)) {
+            I64 n = finder.name_of(finder.kept_at(k), pb);
+            if (n > 0 && at + n + 1 <= 65536) {
+                for q in 0..n { tq[at + q] = pb[q]; }
+                tq[at + n] = 0;
+                at = at + n + 1;
+            }
+        }
+    }
+    return at;
+}
+
+// Move to Trash on every chosen entry, never asking (frame 28); the folder read once.
+void trash_picked() {
+    if (held_here()) { return; }
+    I64 at = gather();
+    I64 s = 0;
+    while (s < at) {
+        I64 e = s;
+        while (tq[e] != 0) { e = e + 1; }
+        I64 r = trash.put(tq[s..e], e - s);
+        "finder: trash |";
+        I64 w0 = shctl.fd_write(1, tq[s..e]);
+        "| ({r})\n";
+        s = e + 1;
+    }
+    list();
+    paint();
+}
+
+// Frame 32: Restore on every chosen Trash item, each to where it was (the store never writes over a name).
+void restore_picked() {
+    if (restore_held()) { return; }
+    I64 at = gather_names();
+    I64 s = 0;
+    while (s < at) {
+        I64 e = s;
+        while (tq[e] != 0) { e = e + 1; }
+        I64 r = trash.restore(tq[s..e], e - s);
+        "finder: restore |";
+        I64 w0 = shctl.fd_write(1, tq[s..e]);
+        "| ({r})\n";
+        s = e + 1;
+    }
+    list();
+    paint();
+}
+
+// Whether every chosen Trash item has a good record (Restore is dimmed otherwise).
+Bool records_ok() {
+    U8[4096] p;
+    for k in 0..finder.kept() {
+        if (finder.picked(k)) {
+            I64 n = finder.name_of(finder.kept_at(k), pb);
+            if (n < 1 || trash.info(pb[0..n], n, p) < 0) { return false; }
+        }
+    }
+    return true;
+}
+
+// DN-69: frame 23's ask before Delete Forever on the chosen Trash items: "Remove NAME permanently?" for one,
+// "Remove N items permanently?" for more.
+void ask_delete() {
+    I64 n = finder.picks();
+    if (n < 1) { return; }
+    I64 nn = 0;
+    for k in 0..finder.kept() {
+        if (finder.picked(k) && n == 1) { nn = finder.name_of(finder.kept_at(k), tb); }
+    }
+    indextrash.ask(indextrash.DELETE_FOREVER, n, tb[0..nn]);
+    "finder: ask delete forever {n}\n";
+    paint();
+}
+
+// Frame 32: Empty Trash asks first (frame 23), over every item.
+void ask_empty() {
+    I64 n = trash.items();
+    if (n < 0) { n = finder.entries(); }
+    if (n < 1) { return; }
+    indextrash.ask(indextrash.EMPTY_TRASH, n, b"");
+    "finder: ask empty trash {n}\n";
+    paint();
+}
+
+// The ask's answer r (indextrash.GO, CANCEL or STAY). Enter takes the blue button (the act: the ask only confirms
+// the command), Esc cancels, wherever the focus is (DN-69).
+void ask_answer(I64 r) {
+    if (r == indextrash.STAY) {
+        paint();
+        return;
+    }
+    I64 a = indextrash.asked();
+    if (r == indextrash.CANCEL) {
+        "finder: ask cancel\n";
+        paint();
+        return;
+    }
+    if (a == indextrash.EMPTY_TRASH) {
+        I64 f = trash.empty();
+        "finder: empty trash ({f})\n";
+        list();
+        paint();
+        return;
+    }
+    I64 at = gather_names();
+    I64 s = 0;
+    while (s < at) {
+        I64 e = s;
+        while (tq[e] != 0) { e = e + 1; }
+        I64 d = trash.delete_forever(tq[s..e], e - s);
+        "finder: delete forever |";
+        I64 w0 = shctl.fd_write(1, tq[s..e]);
+        "| ({d})\n";
+        s = e + 1;
+    }
+    list();
+    paint();
+}
+
+// DN-69: the Delete key on the chosen entries: in the Trash Delete Forever, which always asks; elsewhere Move to
+// Trash, which asks nothing (frame 28) and is dimmed off the volume (note 58). An un-chosen focus takes nothing.
+void delete_key() {
+    if (finder.picks() < 1 || pick) { return; }
+    I64 a = indextrash.delete_act(at_trash());
+    if (indextrash.confirms(a)) {
+        ask_delete();
+        return;
+    }
+    if (dim_here(a)) { return; }
+    trash_picked();
+}
+
+// --- the cut, the paste and the drop (frame 32) ---
+
+// Ctrl+X or the strip's Cut: the chosen entries are the cut (drawn at 40 percent until pasted); a new cut replaces it.
+void cut_picked() {
+    if (finder.picks() < 1 || at_trash() || dim_here(ctxmenu.CUT) || !clip_picked()) { return; }
+    cut_copy = false;
+    "finder: cut {cut_n}\n";
+    paint();
+}
+
+// Ctrl+C or the strip's Copy: the chosen entries are the clip as a copy (no dim; Paste copies them, the clip stays).
+void copy_picked() {
+    if (finder.picks() < 1 || at_trash() || !clip_picked()) { return; }
+    cut_copy = true;
+    "finder: copy {cut_n}\n";
+    paint();
+}
+
+// The chosen entries' names and their folder as the clip, every one of them or none: past indexcopy's CLIP_NAMES
+// names or CLIP_BYTES bytes nothing is taken and the clip stays as it was (false), so a paste acts on the whole set
+// asked for.
+Bool clip_picked() {
+    I64 at = 0;
+    I64 n = 0;
+    for k in 0..finder.kept() {
+        if (finder.picked(k)) {
+            I64 m = finder.name_of(finder.kept_at(k), tb);
+            if (m < 0) { return false; }
+            at = indexcopy.clip_put(clip_new, at, n, tb[0..m]);
+            if (at < 0) { return false; }
+            n = n + 1;
+        }
+    }
+    cut_dn = finder.path_of(cut_dir);
+    for q in 0..at { cut_names[q] = clip_new[q]; }
+    cut_at = at;
+    cut_n = n;
+    return true;
+}
+
+// Name nm[0..nn] from folder src[0..sn] moved into folder dst[0..dn] under the first free name candidate() gives
+// (`NAME`, `STEM 2.EXT`, ...); 0 or -errno.
+I64 move_into(in U8[_] src, I64 sn, in U8[_] nm, I64 nn, in U8[_] dst, I64 dn) {
+    U8[4096] a;
+    U8[4096] b;
+    I64 an = 0;
+    for k in 0..sn { a[k] = src[k]; }
+    an = sn;
+    if (an > 1) {
+        a[an] = '/';
+        an = an + 1;
+    }
+    if (an + nn > finder.PATH) { return 0 - 36; }
+    for k in 0..nn { a[an + k] = nm[k]; }
+    an = an + nn;
+    I64 bb = dn;
+    for k in 0..dn { b[k] = dst[k]; }
+    if (bb > 1) {
+        b[bb] = '/';
+        bb = bb + 1;
+    }
+    U8[256] c;
+    for t in 1..100 {
+        I64 cn = indexband.candidate(nm, nn, t, c);
+        if (cn < 0 || bb + cn > finder.PATH) { return 0 - 36; }
+        for k in 0..cn { b[bb + k] = c[k]; }
+        I64[16] rec;
+        if (corectl.co_stat(b[0..bb + cn], 0, rec) != 0) { return corectl.co_rename(a[0..an], b[0..bb + cn]); }
+    }
+    return 0 - 17;
+}
+
+// Whether a paste fills the folder shown, or a folder above it: nothing moves into it or out of it until the paste
+// ends, so the paste's undo never removes what was moved in.
+Bool held_here() {
+    U8[4096] p;
+    I64 n = finder.path_of(p);
+    return n > 0 && indexcopy.touches(p[0..n]);
+}
+
+// Whether the drag's ring is on a folder a paste holds (no drop there until it ends).
+Bool drop_held() {
+    I64 k = indexband.drop();
+    if (k < 0) { return false; }
+    U8[4096] p;
+    I64 n = finder.entry_path(finder.kept_at(k), p);
+    return n > 0 && indexcopy.touches(p[0..n]);
+}
+
+// Whether a chosen Trash item would come back into a folder a paste holds (Restore is dimmed until it ends).
+Bool restore_held() {
+    if (!indexcopy.busy()) { return false; }
+    U8[4096] p;
+    for k in 0..finder.kept() {
+        if (finder.picked(k)) {
+            I64 n = finder.name_of(finder.kept_at(k), pb);
+            I64 m = trash.info(pb[0..n], n, p);
+            if (m > 0 && indexcopy.touches(p[0..m])) { return true; }
+        }
+    }
+    return false;
+}
+
+// Note 58: Paste is dimmed with nothing to paste or off the volume (indextrash's rule), while a paste runs, and for a
+// copy that start() would refuse (can_start(): into a folder of the clip or one inside it, or past a bound).
+Bool paste_dim() {
+    if (dim_here(ctxmenu.PASTE) || indexcopy.busy()) { return true; }
+    if (!cut_copy) { return false; }
+    I64 hn = finder.path_of(pb);
+    return !indexcopy.can_start(cut_dir[0..cut_dn], cut_names[0..cut_at], pb[0..hn]);
+}
+
+// Ctrl+V or Paste: the cut moved into the folder shown (a name there gets the next free one); the cut is then gone. A
+// copy starts copying into it instead (copy_tick runs it), and stays.
+void paste_here() {
+    if (cut_n == 0 || at_trash() || paste_dim()) { return; }
+    U8[4096] here;
+    I64 hn = finder.path_of(here);
+    if (cut_copy) {
+        Bool began = indexcopy.start(cut_dir[0..cut_dn], cut_names[0..cut_at], here[0..hn]);
+        assert(began);                 // paste_dim() let it through, so can_start() holds and start() takes it
+        copy_ns = wall.wall_ns();
+        wheel_ns = 0;
+        "finder: copy start {cut_n}\n";
+        return;
+    }
+    if (!same(here, hn, cut_dir, cut_dn)) {
+        I64 s0 = 0;
+        while (s0 < cut_at) {
+            I64 e = s0;
+            while (cut_names[e] != 0) { e = e + 1; }
+            I64 r = move_into(cut_dir, cut_dn, cut_names[s0..e], e - s0, here, hn);
+            "finder: paste |";
+            I64 w = shctl.fd_write(1, cut_names[s0..e]);
+            "| ({r})\n";
+            s0 = e + 1;
+        }
+    }
+    cut_n = 0;
+    cut_at = 0;
+    list();
+    paint();
+}
+
+// --- a paste's copy (kit/indexcopy.ci): the step it asks for, made and answered ---
+
+I64 copy_ms() { return (wall.wall_ns() - copy_ns) / 1000000; }
+
+// At most 64 KiB from the source to the copy: the bytes moved, 0 at the source's end, or -errno.
+I64 copy_bytes() {
+    I64 got = shctl.fd_read(cp_fi, cp_blk);
+    if (got <= 0) { return got; }
+    I64 at = 0;
+    while (at < got) {
+        I64 w = shctl.fd_write(cp_fo, cp_blk[at..got]);
+        if (w < 0) { return w; }
+        if (w == 0) { return 0 - 5; }   // EIO: a write that takes nothing
+        at = at + w;
+    }
+    return got;
+}
+
+I64 opened(I64 fd) {
+    if (fd < 0) { return fd; }
+    return 0;
+}
+
+void copy_step() {
+    I64 o = indexcopy.next();
+    I64 n = indexcopy.path(cp_path);
+    if (o == indexcopy.STAT || o == indexcopy.FSTAT) {
+        I64 r = 0;
+        if (o == indexcopy.STAT) {
+            r = corectl.co_stat(cp_path[0..n], 0, cp_rec);
+        } else {
+            r = fdctl.fd_stat(cp_fi, cp_rec);
+        }
+        indexcopy.stated(r, cp_rec[corectl.ST_DEV], cp_rec[corectl.ST_INO], cp_rec[corectl.ST_MODE],
+                         cp_rec[corectl.ST_SIZE]);
+    } else if (o == indexcopy.LIST) {
+        indexcopy.listed(cp_names, shctl.sh_dirents(cp_path[0..n], cp_names));
+    } else if (o == indexcopy.MKDIR) {
+        indexcopy.done(corectl.co_mkdir(cp_path[0..n], indexcopy.mode()));
+    } else if (o == indexcopy.OPEN_SRC) {
+        cp_fi = shctl.sh_open(cp_path[0..n], O_COPY_SRC, 0);
+        indexcopy.done(opened(cp_fi));
+    } else if (o == indexcopy.OPEN_DST) {
+        cp_fo = shctl.sh_open(cp_path[0..n], O_COPY_DST, indexcopy.mode());
+        indexcopy.done(opened(cp_fo));
+    } else if (o == indexcopy.BYTES) {
+        indexcopy.moved(copy_bytes());
+    } else if (o == indexcopy.CLOSE) {
+        I64 r = 0;
+        if (cp_fi >= 0) { _ = shctl.fd_close(cp_fi); }
+        if (cp_fo >= 0) { r = shctl.fd_close(cp_fo); }
+        cp_fi = 0 - 1;
+        cp_fo = 0 - 1;
+        indexcopy.done(r);
+    } else if (o == indexcopy.READLINK) {
+        cp_ln = corectl.co_readlink(cp_path[0..n], cp_link);
+        indexcopy.done(cp_ln);
+    } else if (o == indexcopy.SYMLINK) {
+        indexcopy.done(corectl.co_symlink(cp_link[0..cp_ln], cp_path[0..n]));
+    } else if (o == indexcopy.UNLINK) {
+        indexcopy.done(corectl.co_unlink(cp_path[0..n]));
+    } else if (o == indexcopy.RMDIR) {
+        indexcopy.done(corectl.co_rmdir(cp_path[0..n]));
+    }
+}
+
+// A frame of a paste: its steps for the frame's time (less after an event), its wheel each WHEEL_NS once it shows,
+// and at its end the folder listed again.
+void copy_tick(Bool idle) {
+    I64 t0 = wall.wall_ns();
+    I64 budget = COPY_BUSY_NS;
+    if (idle) { budget = COPY_NS; }
+    while (indexcopy.busy() && wall.wall_ns() - t0 < budget) { copy_step(); }
+    if (!indexcopy.busy()) {
+        "finder: copy {cut_n} ({indexcopy.failed()})\n";
+        list();
+        paint();
+        return;
+    }
+    I64 now = wall.wall_ns();
+    if (indexcopy.shows(copy_ms()) && now - wheel_ns >= WHEEL_NS) {
+        wheel_ns = now;
+        paint_rows(sh - foot(), sh);
+    }
+}
+
+// A drop on kept folder k: every chosen entry moved into it (frame 32; never onto a name that is there).
+void drop_into(I64 k) {
+    I64 fi = finder.kept_at(k);
+    U8[4096] here;
+    I64 hn = finder.path_of(here);
+    U8[4096] dst;
+    I64 dn = finder.entry_path(fi, dst);
+    if (dn < 0 || held_here() || indexcopy.touches(dst[0..dn])) { return; }
+    I64 at = 0;
+    for j in 0..finder.kept() {
+        if (finder.picked(j)) {
+            I64 n = finder.name_of(finder.kept_at(j), pb);
+            if (n > 0 && at + n + 1 <= 65536) {
+                for q in 0..n { tq[at + q] = pb[q]; }
+                tq[at + n] = 0;
+                at = at + n + 1;
+            }
+        }
+    }
+    I64 s0 = 0;
+    while (s0 < at) {
+        I64 e = s0;
+        while (tq[e] != 0) { e = e + 1; }
+        I64 r = move_into(here, hn, tq[s0..e], e - s0, dst, dn);
+        "finder: move |";
+        I64 w = shctl.fd_write(1, tq[s0..e]);
+        "| into |";
+        I64 w2 = shctl.fd_write(1, dst[0..dn]);
+        "| ({r})\n";
+        s0 = e + 1;
+    }
+    list();
+    paint();
+}
+
+// The pointer moved with the left button down: the band chooses what it touches; a drag moves the drop ring.
+void held_move() {
+    if (drag_on) {
+        if (indexband.drag_move(px_x, px_y)) {
+            if (dim_here(indextrash.MOVE) || held_here() || drop_held()) { indexband.no_drop(); }   // note 58
+            paint();
+        }
+        return;
+    }
+    if (indexband.move(px_x, px_y)) {
+        for k in 0..finder.kept() { finder.set_pick(k, indexband.picks(k)); }
+        paint();
+    }
+}
+
+// Frame 32: a band held near the body's top or foot scrolls it a row each wait (kit/indexband.ci's tick), choosing
+// as it goes; each loop pass asks, so a still pointer keeps it going.
+void band_tick() {
+    if (drag_on || !indexband.banding()) { return; }
+    I64 d = indexband.tick(wall.wall_ns() / 1000000);
+    if (d == 0 || !indexbody.scroll(d)) { return; }
+    band_geom();
+    for k in 0..finder.kept() { finder.set_pick(k, indexband.picks(k)); }
+    paint();
+}
+
+// The left button let go: a band ends where it is; a drag drops on its ring's folder.
+void held_up() {
+    held = false;
+    if (drag_on) {
+        drag_on = false;
+        Bool dragged = indexband.dragging_now();
+        I64 k = indexband.drag_release();
+        if (k >= 0) {
+            drop_into(k);
+        } else if (!dragged && pend_k >= 0) {
+            finder.select(pend_k);            // a press and release on one of several chosen: it alone
+            last_k = pend_k;
+            last_ns = wall.wall_ns();
+            keep_in_view();
+            say_sel();
+            paint();
+        } else {
+            paint();
+        }
+        pend_k = -1;
+        return;
+    }
+    if (indexband.release()) {
+        "finder: band {finder.picks()}\n";
+        paint();
+    }
+}
+
+// --- rename in place (frame 32) ---
+
+// Kept entry k renamed in place: the field over its cell or row, the stem selected. Not in the Trash (an item's
+// name is its record's key) and not off the volume (note 58).
+void rename_begin(I64 k) {
+    if (k < 0 || k >= finder.kept() || at_trash() || dim_here(ctxmenu.RENAME) || held_here()) { return; }
+    finder.select(k);
+    keep_in_view();
+    rn_i = finder.kept_at(k);
+    I64 n = finder.name_of(rn_i, tb);
+    indexrename.begin(tb[0..n], finder.is_dir(rn_i));
+    if (tview) {
+        indexrename.at_list(indexbody.spot_x(k), indexbody.name_end(), indexbody.spot_y(k) - indexbody.ROW_H / 2);
+    } else {
+        indexrename.at_grid(indexbody.spot_x(k) - 12, indexbody.spot_y(k) - indexbody.CELL_H / 2);
+    }
+    "finder: rename |";
+    I64 w = shctl.fd_write(1, tb[0..n]);
+    "|\n";
+    paint();
+}
+
+// What the field answered: STAY (drawn again), CANCEL (the old name stays) or COMMIT (renamed when new; a name
+// taken, or a rename refused, keeps the field open with all selected).
+void rename_answer(I64 r) {
+    if (r == indexrename.STAY || r == indexrename.PASS) {
+        paint();
+        return;
+    }
+    if (r == indexrename.CANCEL || indexrename.verdict() == indexrename.SAME || rn_i < 0) {
+        indexrename.end();
+        rn_i = -1;
+        "finder: rename cancel\n";
+        paint();
+        return;
+    }
+    U8[256] nn;
+    I64 tn = indexrename.text(nn);
+    I64 on = finder.entry_path(rn_i, pb);
+    U8[4096] np;
+    I64 dn = finder.path_of(np);
+    I64 at = dn;
+    if (dn > 1) {
+        np[dn] = '/';
+        at = dn + 1;
+    }
+    I64 r2 = 0 - 36;                   // ENAMETOOLONG
+    if (on > 0 && at + tn <= finder.PATH) {
+        for k in 0..tn { np[at + k] = nn[k]; }
+        I64[16] rec;
+        if (corectl.co_stat(np[0..at + tn], 0, rec) == 0) {
+            r2 = 0 - 17;               // EEXIST: never over a name that is there
+        } else {
+            r2 = corectl.co_rename(pb[0..on], np[0..at + tn]);
+        }
+    }
+    "finder: rename |";
+    I64 w0 = shctl.fd_write(1, nn[0..tn]);
+    "| ({r2})\n";
+    if (r2 != 0) {
+        indexrename.refuse();
+        paint();
+        return;
+    }
+    indexrename.end();
+    rn_i = -1;
+    list();
+    for k in 0..finder.kept() {        // the renamed entry stays chosen under its new name
+        I64 n = finder.name_of(finder.kept_at(k), tb);
+        if (same(tb, n, nn, tn)) { finder.select(k); }
+    }
+    keep_in_view();
+    paint();
+}
+
+void to_trash(I64 i) {
+    if (held_here()) { return; }
+    I64 n = finder.entry_path(i, pb);
+    if (n < 0) { return; }
+    I64 r = trash.put(pb[0..n], n);
+    "finder: trash |";
+    I64 w0 = shctl.fd_write(1, pb[0..n]);
+    "| ({r})\n";
+    if (r == 0) {
+        list();
+        paint();
+    }
+}
+
+// Choose Picture: the one chosen entry when Choose takes it (indexpick.chooses, by the mode list() lists it by: a stat
+// that follows a link as the account, else the link's own), outside the Trash; its path in pk, the length, or -1.
+I64 pick_path() {
+    if (!pick || finder.picks() != 1 || at_trash()) { return -1; }
+    I64 i = -1;
+    for k in 0..finder.kept() {
+        if (finder.picked(k)) { i = finder.kept_at(k); }
+    }
+    if (i < 0 || finder.is_dir(i)) { return -1; }
+    I64 n = finder.entry_path(i, pk);
+    if (n < 0) { return -1; }
+    I64 r = shctl.sh_stat(pk[0..n], 1, st);
+    if (r < 0) { r = shctl.sh_stat(pk[0..n], 0, st); }
+    if (r < 0) { return -1; }
+    I64 m = (st[0] as I64) | ((st[1] as I64) << 8) | ((st[2] as I64) << 16) | ((st[3] as I64) << 24);
+    I64 nn = finder.name_of(i, tb);
+    if (!indexpick.chooses(tb[0..nn], m)) { return -1; }
+    return n;
+}
+
+// Choose: the chosen PNG file's path as the account's desk.background, then the end (0; 1 when the write fails, the
+// file as it was). Nothing when Choose cannot take the entry.
+void pick_go() {
+    I64 n = pick_path();
+    if (n < 0) { return; }
+    U8[512] h;
+    I64 hn = trashfs.home(h);
+    I64 r = 0 - 2;                     // ENOENT: no HOME
+    if (hn > 0 && hn < 512) { r = indexpick.choose(h[0..hn], pk[0..n]); }
+    "finder: pick |";
+    I64 w = shctl.fd_write(1, pk[0..n]);
+    "| ({r})\n";
+    if (r == 0) { dev.exit_now(0); }
+    dev.exit_now(1);
+}
+
+// Cancel: nothing written, the end (1).
+void pick_cancel() {
+    "finder: pick cancel\n";
+    dev.exit_now(1);
+}
+
+// Enter: the focus opens when it is chosen; an un-chosen focus (Ctrl+click took it out) opens nothing (Index audit).
+void open_sel() {
+    I64 k = finder.selected();
+    if (k < 0 || !finder.picked(k)) { return; }
+    open_entry(finder.kept_at(k));
+}
+
+// Entry i opened: a folder goes in; a file is asked of the desk (FF-6c).
+void open_entry(I64 i) {
+    if (i < 0) { return; }
+    I64 n = finder.entry_path(i, pb);
+    if (n < 0) { return; }
+    if (finder.is_dir(i)) {
+        if (finder.go(pb[0..n])) { went(); }
+        return;
+    }
+    if (pick) {                        // the picker opens no file: opening a PNG chooses it
+        pick_go();
+        return;
+    }
+    I64 on = finder.open_text(i, tb);
+    I64 asked = 0 - 36;            // ENAMETOOLONG: the desk takes 256 bytes
+    if (n <= 256) { asked = opencall.open_ask(pb[0..n]); }
+    "finder: open |";
+    I64 w0 = shctl.fd_write(1, pb[0..n]);
+    "| with |";
+    I64 w1 = shctl.fd_write(1, tb[0..on]);
+    "| ({asked})\n";
+}
+
+void moved(I64 d) {
+    I64 was = finder.selected();
+    finder.move(d);
+    if (finder.selected() == was) { return; }
+    keep_in_view();
+    say_sel();
+    paint();
+}
+
+void filtered() {
+    I64 qn = finder.filter(tb);
+    "finder: filter |";
+    I64 w = shctl.fd_write(1, tb[0..qn]);
+    "| items {finder.kept()}\n";
+    indexbody.scroll_top();
+    keep_in_view();
+    paint();
+}
+
+// A key pressed: true while Finder runs.
+// DN-7: the path pill takes the keyboard with its text selected (Ctrl+L, a click on it, the desk's bar path).
+void pf_take() {
+    pf_len = finder.path_of(pb);
+    if (pf_len > 256) { pf_len = 256; }
+    for k in 0..pf_len { pf_text[k] = pb[k]; }
+    pf = true;
+    pf_all = true;
+    "finder: path field\n";
+    paint();
+}
+
+// DN-7: a key while the path pill has the keyboard: a byte replaces a selected text or is added, Backspace erases,
+// Enter goes to the directory typed (`finder: path |P| (ok)` or `(no)`), Esc gives the keyboard back.
+void pf_key(I64 c) {
+    if (c == KEY_ESC) {
+        pf = false;
+    } else if (c == KEY_ENTER) {
+        I64 rn = finder.resolve(pf_text[0..pf_len], pb);   // a relative path against the folder shown
+        I64 m = -1;
+        if (rn > 0) { m = stat_at(rn); }   // only a directory that is there (go takes any path)
+        if (pf_len > 0 && m >= 0 && is_dir_mode(m) && finder.go(pb[0..rn])) {
+            "finder: path |";
+            I64 w0 = shctl.fd_write(1, pf_text[0..pf_len]);
+            "| (ok)\n";
+            pf = false;
+            went();
+            return;
+        }
+        "finder: path |";
+        I64 w1 = shctl.fd_write(1, pf_text[0..pf_len]);
+        "| (no)\n";
+    } else if (c == KEY_BACKSPACE) {
+        if (pf_all) { pf_len = 0; }
+        if (pf_len > 0) { pf_len = pf_len - 1; }
+        pf_all = false;
+    } else {
+        U8 b = typed_byte(c);
+        if (b == 0) { return; }
+        if (pf_all) { pf_len = 0; }
+        pf_all = false;
+        if (pf_len < 256) {
+            pf_text[pf_len] = b;
+            pf_len = pf_len + 1;
+        }
+    }
+    paint();
+}
+
+Bool key(I64 c) {
+    if (c == KEY_LEFTALT || c == KEY_RIGHTALT || c == KEY_LEFTSHIFT || c == KEY_RIGHTSHIFT) { return true; }
+    if (c == KEY_LEFTCTRL || c == KEY_RIGHTCTRL) { return true; }
+    if (indextrash.is_up()) {
+        ask_answer(indextrash.key(c));   // frame 23: the ask has the keyboard while it is up
+        return true;
+    }
+    if (indexrename.active()) {          // frame 32: the name field has the keyboard while it is up
+        U8 b = typed_byte(c);
+        if (c == KEY_SPACE) { b = ' '; }
+        if (b != 0 && !ctrl) {
+            _ = indexrename.typed(b);
+            rename_answer(indexrename.STAY);
+        } else {
+            rename_answer(indexrename.key(c, shift, ctrl));
+        }
+        return true;
+    }
+    if (ctxmenu.is_open()) {
+        cm_choose(ctxmenu.key(c));     // DN-32: the menu has the keyboard while it is up
+        return true;
+    }
+    if (c == KEY_ESC && indexui.is_laid()) {   // narrow: Esc folds the laid sidebar first
+        indexui.set_laid(false);
+        paint();
+        return true;
+    }
+    if (c == KEY_ESC && indexcopy.shows(copy_ms())) {   // Esc cancels a paste while its wheel shows
+        indexcopy.cancel();
+        return true;
+    }
+    if (c == KEY_COMPOSE || (shift && c == KEY_F10)) {
+        cm_keyed();
+        return true;
+    }
+    if (ctrl && c == KEY_L) {
+        pf_take();
+        return true;
+    }
+    if (ctrl && c == KEY_X && !pf) {
+        cut_picked();
+        return true;
+    }
+    if (ctrl && c == KEY_C && !pf) {
+        copy_picked();
+        return true;
+    }
+    if (ctrl && c == KEY_V && !pf) {
+        paste_here();
+        return true;
+    }
+    if (pf) {
+        pf_key(c);
+        return true;
+    }
+    if (pick && !alt && !ctrl) {       // Choose Picture: the bar's keys (DN-69); Esc and q stay Index's, which end it
+        I64 was = pickbar.focus();
+        I64 pa = pickbar.key(c, shift);
+        if (pa == pickbar.GO) { pick_go(); }
+        if (pa == pickbar.CANCEL) { pick_cancel(); }
+        if (pa != pickbar.PASS || pickbar.focus() != was) { paint_rows(sh - foot(), sh); }
+        if (pa != pickbar.PASS) { return true; }
+    }
+    if (alt && c == KEY_LEFT) {
+        if (finder.step(-1)) { went(); }
+    } else if (alt && c == KEY_RIGHT) {
+        if (finder.step(1)) { went(); }
+    } else if ((alt && c == KEY_UP) || c == KEY_BACKSPACE) {
+        if (c == KEY_BACKSPACE && finder.erase()) {
+            filtered();
+        } else if (finder.up()) {
+            went();
+        }
+    } else if (c == KEY_LEFT) {
+        moved(-1);
+    } else if (c == KEY_RIGHT) {
+        moved(1);
+    } else if (c == KEY_UP) {
+        moved(0 - indexbody.down_step());   // a grid row, or a list row
+    } else if (c == KEY_DOWN) {
+        moved(indexbody.down_step());
+    } else if (c == KEY_ENTER && alt) {
+        I64 k = finder.selected();             // frame 32: Alt+Enter, Properties of the chosen focus
+        if (k >= 0 && finder.picked(k) && !at_trash()) { props_open(finder.kept_at(k)); }
+    } else if (c == KEY_ENTER) {
+        open_sel();
+    } else if (c == KEY_DELETE) {
+        delete_key();
+    } else if (c == KEY_F2) {
+        I64 k = finder.selected();
+        if (finder.picks() == 1 && k >= 0 && finder.picked(k)) { rename_begin(k); }
+    } else if (c == KEY_F5) {
+        went();
+    } else if (c == KEY_ESC) {
+        if (!finder.clear_filter()) { return false; }
+        filtered();
+    } else {
+        U8 b = typed_byte(c);
+        if (b == 0) { return true; }
+        if (b == 'q' && finder.filter(tb) == 0) { return false; }
+        if (finder.typed(b)) { filtered(); }
+    }
+    return true;
+}
+
+// The byte of key c, as US QWERTY types it (letters, digits, `.`, `-`, `_`), or 0.
+U8 typed_byte(I64 c) {
+    U8[64] top;
+    for k in 0..64 { top[k] = 0; }
+    U8[10] num = b"1234567890";
+    for k in 0..10 { top[2 + k] = num[k]; }
+    U8[10] q1 = b"qwertyuiop";
+    for k in 0..10 { top[16 + k] = q1[k]; }
+    U8[9] a1 = b"asdfghjkl";
+    for k in 0..9 { top[30 + k] = a1[k]; }
+    U8[7] z1 = b"zxcvbnm";
+    for k in 0..7 { top[44 + k] = z1[k]; }
+    top[12] = '-';
+    top[52] = '.';
+    top[53] = '/';
+    if (c < 0 || c >= 64) { return 0; }
+    U8 b = top[c];
+    if (shift && b >= 'a' && b <= 'z') { return b - 32; }
+    if (shift && b == '-') { return '_'; }
+    return b;
+}
+
+// A click at the pointer.
+void click() {
+    I64 x = px_x;
+    I64 y = px_y;
+    if (x < 0 || y < 0) { return; }
+    chrome();
+    if (pick && pickbar.on_bar(y)) {   // note 70: the picker's bar; its ground takes a press
+        I64 pa = pickbar.click(x, y);
+        if (pa == pickbar.GO) { pick_go(); }
+        if (pa == pickbar.CANCEL) { pick_cancel(); }
+        return;
+    }
+    if (pick && pickbar.focus() != pickbar.LIST) {
+        pickbar.to_list();             // a press off the bar gives the list the keyboard back
+        paint_rows(sh - foot(), sh);
+    }
+    I64 h = indexui.hit(x, y);
+    if (h == indexui.SIDEBAR) {
+        indexui.set_laid(!indexui.is_laid());   // narrow: the button lays the sidebar over the body, or folds it
+        paint();
+        return;
+    }
+    if (indexui.is_laid() && h < indexui.PLACE) {
+        indexui.set_laid(false);       // a press off the laid sidebar folds it, and does nothing else
+        paint();
+        return;
+    }
+    if (pf && h != indexui.PILL) {
+        pf = false;                    // DN-7: a click elsewhere gives the keyboard back
+        paint();
+    }
+    if (h == indexui.BACK || h == indexui.FORWARD || h == indexui.UP) {
+        Bool g = false;
+        if (h == indexui.BACK) { g = finder.step(-1); }
+        if (h == indexui.FORWARD) { g = finder.step(1); }
+        if (h == indexui.UP) { g = finder.up(); }
+        if (g) { went(); }
+        return;
+    }
+    if (h == indexui.PILL) {
+        if (!pf) { pf_take(); }        // DN-7, DN-55: the pill's space past the crumbs edits the path
+        return;
+    }
+    if (h >= indexui.CRUMB && h < indexui.PLACE) {
+        I64 n = crumb_path(h - indexui.CRUMB);   // DN-55: a crumb goes there
+        if (n > 0 && finder.go(pb[0..n])) { went(); }
+        return;
+    }
+    if (h == indexui.GRID || h == indexui.LIST) {
+        Bool t = h == indexui.LIST;
+        if (t != tview) {
+            tview = t;                 // DN-35's View, from the switch
+            indexbody.scroll_top();
+            keep_in_view();
+            if (tview) { "finder: view table\n"; } else { "finder: view grid\n"; }
+            paint();
+        }
+        return;
+    }
+    if (h == indexui.EMPTY_TRASH) {
+        if (finder.entries() > 0 && !pick) { ask_empty(); }   // at 40 percent when empty or the picker: no press
+        return;
+    }
+    if (h == indexui.SORT) {
+        I64 nk = (finder.sort_key() + 1) % finder.KEYS;   // DN-55: Sort steps Name, Type, Size, Modified
+        finder.sort_by(nk);
+        keep_in_view();
+        said_sort(nk);
+        paint();
+        return;
+    }
+    if (h >= indexui.PLACE) {
+        I64 p = h - indexui.PLACE;
+        if (p < pl_n) {
+            // FF 3h: the Trash is made on first use, as the person; the picker writes nothing, so it makes none
+            if (pl_kind[p] == indexui.TRASH && !pick) { _ = trash.ready(); }
+            indexui.set_laid(false);   // narrow: a place chosen folds the sidebar
+            if (finder.go(pl_text[256 * p..256 * p + pl_len[p]])) { went(); } else { paint(); }
+        }
+        return;
+    }
+    if (h != indexui.BODY) { return; }
+    I64 k = indexbody.hit(x, y);
+    held = true;
+    band_geom();
+    if (k == indexbody.EMPTY) {
+        indexband.press(x, y, ctrl);          // frame 32: a press on the body's space may become a band
+        return;
+    }
+    pend_k = -1;
+    if (k >= 0 && finder.picked(k) && !ctrl && !shift && !at_trash()) {
+        indexband.drag_press(x, y);           // a press on a chosen entry may become a move
+        drag_on = true;
+        if (finder.picks() > 1) {             // the selection holds for the drag; a plain click chooses it alone
+            pend_k = k;
+            return;
+        }
+    }
+    if (k <= indexbody.HEAD) {
+        I64 col = indexbody.HEAD - k;          // DN-55: a column's header sorts by it
+        finder.sort_by(col);
+        keep_in_view();
+        said_sort(col);
+        paint();
+        return;
+    }
+    if (k < 0) { return; }
+    if (ctrl) {
+        finder.toggle(k);                      // DN-55: Ctrl+click in or out of the selection
+    } else if (shift) {
+        finder.extend(k);                      // DN-55: Shift+click a range from the anchor
+    } else if (k == finder.selected() && finder.picks() == 1 && finder.picked(k)) {
+        I64 now = wall.wall_ns();              // frame 32: a second press sooner than 400 ms opens; later, on the
+        I64 dt = -1;                           // name, renames; later elsewhere does nothing
+        if (last_k == k) { dt = (now - last_ns) / 1000000; }
+        last_k = k;
+        last_ns = now;
+        I64 s2 = indexrename.second(dt, on_name(k, x, y));
+        if (s2 == indexrename.OPEN) { open_sel(); }
+        if (s2 == indexrename.RENAME) { rename_begin(k); }
+        return;
+    } else {
+        finder.select(k);
+    }
+    last_k = k;
+    last_ns = wall.wall_ns();
+    keep_in_view();
+    say_sel();
+    paint();
+}
+
+// Whether (x, y) is on kept entry k's name where it is shown.
+Bool on_name(I64 k, I64 x, I64 y) {
+    I64 n = finder.name_of(finder.kept_at(k), tb);
+    if (tview) {
+        return indexrename.on_name_list(x, y, indexbody.spot_x(k), indexbody.name_end(),
+                                        indexbody.spot_y(k) - indexbody.ROW_H / 2, tb[0..n]);
+    }
+    return indexrename.on_name_grid(x, y, indexbody.spot_x(k) - 12, indexbody.spot_y(k) - indexbody.CELL_H / 2,
+                                    tb[0..n]);
+}
+
+void said_sort(I64 col) {
+    if (col == finder.BY_NAME) { "finder: sort name\n"; }
+    if (col == finder.BY_TYPE) { "finder: sort type\n"; }
+    if (col == finder.BY_SIZE) { "finder: sort size\n"; }
+    if (col == finder.BY_MODIFIED) { "finder: sort modified\n"; }
+}
+
+// --- the right-click menu (DN-32, DN-33) ---
+
+// The kept entry under (x, y); -1 on the body's empty space (or a header); -2 elsewhere.
+I64 kept_at_point(I64 x, I64 y) {
+    I64 k = indexbody.hit(x, y);
+    if (k == indexbody.OUTSIDE) { return -2; }
+    if (k < 0) { return -1; }
+    return k;
+}
+
+void cm_paint() {
+    I64 t = ctxmenu.area_top(1, tokens.theme());
+    I64 b = ctxmenu.area_bottom(1, tokens.theme());
+    I64 lo = t;
+    I64 hi = b;
+    if (cm_a1 > cm_a0) {
+        if (cm_a0 < lo) { lo = cm_a0; }
+        if (cm_a1 > hi) { hi = cm_a1; }
+    }
+    cm_last = cm_v();
+    paint_rows(lo, hi);
+    cm_a0 = t;
+    cm_a1 = b;
+    if (!cm_up) {
+        cm_a0 = 0;
+        cm_a1 = 0;
+    }
+}
+
+// The motion's frame: drawn again when the openness moved; down when it has closed.
+void cm_tick() {
+    I64 t = wall.wall_ns();
+    I64 v = anim.value(cm_an, t);
+    if (v != cm_last) { cm_paint(); }
+    if (!anim.running(cm_an, t) && v == 0 && !ctxmenu.is_open()) {
+        cm_up = false;
+        cm_paint();
+    }
+}
+
+Bool same(in U8[_] a, I64 an, in U8[_] b, I64 bn) {
+    if (an != bn) { return false; }
+    for k in 0..an {
+        if (a[k] != b[k]) { return false; }
+    }
+    return true;
+}
+
+// Open With's submenu: each program of the open table once (an action SUB + its first rule).
+void open_with_rows() {
+    U8[32] p;
+    U8[32] q;
+    I64 n = 0;
+    for r in 0..opener.rules() {
+        I64 pl = opener.prog_of(r, p);
+        Bool seen = pl <= 0;
+        for r2 in 0..r {
+            I64 ql = opener.prog_of(r2, q);
+            if (same(p, pl, q, ql)) { seen = true; }
+        }
+        if (!seen && n < 8) {
+            _ = ctxmenu.sub_row(ctxmenu.OPEN_WITH, p[0..pl], pl, ctxmenu.SUB + r);
+            n = n + 1;
+        }
+    }
+}
+
+// The menu for kept entry k (-1: the empty space) at (px, py); keyed: by the Menu key or Shift+F10.
+void cm_open(I64 px, I64 py, I64 k, Bool keyed) {
+    I64 l = ctxmenu.EMPTY;
+    cm_entry = -1;
+    cm_k = k;
+    Bool tr = at_trash();
+    if (k >= 0) {
+        cm_entry = finder.kept_at(k);
+        l = ctxmenu.FILE;
+        if (finder.is_dir(cm_entry)) { l = ctxmenu.FOLDER; }
+        if (tr) { l = ctxmenu.TRASHED; }   // frame 32: Restore, Delete Forever, Properties; no strip
+    }
+    I64 pn = 0;
+    if (cm_entry >= 0) {
+        pn = finder.entry_path(cm_entry, pb);
+        ctxmenu.taskbar(pn > 0 && taskbar.has(taskbar.key(pb[0..pn])));   // DN-46 (c): every pin, wherever made
+    }
+    ctxmenu.taskbar_full(taskbar.full());   // DN-49: at 28 pins Pin to Taskbar dims
+    I64 f = here_facts();
+    ctxmenu.begin(l, false);
+    if (pn > taskbar.PATH) { ctxmenu.row_dim(ctxmenu.PIN_TASKBAR); }   // note 58: past the desk's 96 bytes, dimmed
+    if (l == ctxmenu.TRASHED) {
+        U8[16] w;
+        I64 wn = indextrash.words(indextrash.RESTORE, w);
+        _ = ctxmenu.app_row(w[0..wn], wn, indextrash.RESTORE, false);
+        wn = indextrash.words(indextrash.DELETE_FOREVER, w);
+        _ = ctxmenu.app_row(w[0..wn], wn, indextrash.DELETE_FOREVER, false);
+        if (records_ok()) { f = f | indextrash.RECORD_OK; }
+        if (indextrash.state(indextrash.RESTORE, f) == indextrash.DIM || restore_held()) {
+            ctxmenu.row_dim(indextrash.RESTORE);
+        }
+    }
+    for q in 0..ctxmenu.slots() {      // note 58: an act that cannot work here is dimmed, never hidden
+        I64 sa = ctxmenu.slot_act(q);
+        if (indextrash.state(sa, f) == indextrash.DIM) { ctxmenu.slot_off(sa); }
+    }
+    if (paste_dim()) {                 // a paste running, or a copy into itself
+        ctxmenu.slot_off(ctxmenu.PASTE);
+        ctxmenu.row_dim(ctxmenu.PASTE);
+    }
+    if (held_here()) {                 // a paste fills this folder: nothing moves in or out until it ends
+        ctxmenu.slot_off(ctxmenu.RENAME);
+        ctxmenu.slot_off(ctxmenu.TRASH);
+    }
+    if (l == ctxmenu.FILE) { open_with_rows(); }
+    if (l == ctxmenu.EMPTY) {         // DN-35: the current view and sort carry the dot
+        if (tview) { ctxmenu.current(ctxmenu.VIEW_TABLE); } else { ctxmenu.current(ctxmenu.VIEW_GRID); }
+        ctxmenu.current(ctxmenu.SORT_NAME + finder.sort_key());
+    }
+    ctxmenu.open_at(px, py, 0, 0, sw, sh, keyed);
+    cm_an = anim.toward(cm_an, wall.wall_ns(), 1000, anim.ms(160), anim.OUT, true);
+    cm_up = true;
+    U8[6] nm = b"FILE  ";
+    I64 nn = 4;
+    if (l == ctxmenu.FOLDER) {
+        nm = b"FOLDER";
+        nn = 6;
+    }
+    if (l == ctxmenu.EMPTY) {
+        nm = b"EMPTY ";
+        nn = 5;
+    }
+    if (l == ctxmenu.TRASHED) {
+        nm = b"TRASH ";
+        nn = 5;
+    }
+    "finder: menu ";
+    I64 w = shctl.fd_write(1, nm[0..nn]);
+    " at {ctxmenu.left()},{ctxmenu.top()}\n";
+    cm_paint();
+}
+
+void cm_close() {
+    ctxmenu.close();
+    cm_an = anim.toward(cm_an, wall.wall_ns(), 0, anim.ms(100), anim.IN, true);
+    cm_paint();
+}
+
+// DN-46 (c): Pin to Taskbar or Unpin from Taskbar on the menu's entry, asked of the desk through the open ask (a first
+// byte of 1 pins, 2 unpins); the desk owns the pins and sends every Index the new set (kit/taskbar.ci).
+void cm_taskbar(Bool on) {
+    if (cm_entry < 0) { return; }
+    I64 n = finder.entry_path(cm_entry, pb);
+    if (n < 1 || n > 255) { return; }
+    U8[256] q;
+    q[0] = 2;
+    if (on) { q[0] = 1; }
+    for k in 0..n { q[k + 1] = pb[k]; }
+    I64 asked = opencall.open_ask(q[0..n + 1]);
+    "finder: taskbar {on as I64} |";
+    I64 w = shctl.fd_write(1, pb[0..n]);
+    "| ({asked})\n";
+}
+
+// The words of action a: its row's, or its slot's.
+I64 cm_words(I64 a) {
+    I64 n = ctxmenu.label(a, cm_w);   // a row's own words (Open With's programs), else the kit's one table
+    if (n > 0) { return n; }
+    return ctxmenu.words(a, cm_w);
+}
+
+// What the menu answered: an action chosen, STAY (drawn again) or CLOSE.
+void cm_choose(I64 a) {
+    if (a == ctxmenu.STAY) {
+        cm_paint();
+        return;
+    }
+    if (a == ctxmenu.CLOSE) {
+        cm_close();
+        return;
+    }
+    I64 n = cm_words(a);
+    "finder: menu chose |";
+    I64 w0 = shctl.fd_write(1, cm_w[0..n]);
+    "|\n";
+    cm_close();
+    if (a == ctxmenu.OPEN) {           // the menu's entry, not the focus (Index audit); with several chosen and a
+        if (cm_entry >= 0 && !finder.is_dir(cm_entry) && cm_all()) {   // file's menu, every chosen file
+            for k in 0..finder.kept() {
+                if (finder.picked(k) && !finder.is_dir(finder.kept_at(k))) { open_entry(finder.kept_at(k)); }
+            }
+        } else {
+            open_entry(cm_entry);
+        }
+        return;
+    }
+    if (a == indextrash.RESTORE && cm_entry >= 0) {   // frame 32: every chosen item, back where it was
+        restore_picked();
+        return;
+    }
+    if (a == indextrash.DELETE_FOREVER && cm_entry >= 0) {   // DN-69: always asks first
+        ask_delete();
+        return;
+    }
+    if (a == ctxmenu.PROPERTIES && cm_entry >= 0) {   // frame 32: a window an entry; every chosen one, at most 8
+        if (cm_all()) {
+            I64 m = 0;
+            for k in 0..finder.kept() {
+                if (finder.picked(k) && m < 8) {
+                    props_open(finder.kept_at(k));
+                    m = m + 1;
+                }
+            }
+        } else {
+            props_open(cm_entry);
+        }
+        return;
+    }
+    if (a == ctxmenu.CUT && cm_entry >= 0) {   // frame 32: the chosen entries (the menu's is one of them)
+        cut_picked();
+        return;
+    }
+    if (a == ctxmenu.COPY && cm_entry >= 0) {
+        copy_picked();
+        return;
+    }
+    if (a == ctxmenu.PASTE) {
+        paste_here();
+        return;
+    }
+    if (a == ctxmenu.RENAME && cm_k >= 0) {   // frame 32: the menu's entry, in place
+        rename_begin(cm_k);
+        return;
+    }
+    if (a == ctxmenu.TRASH && cm_entry >= 0) {   // FF 3h: Move to Trash, never asking (frame 28); every chosen entry
+        trash_chosen();
+        return;
+    }
+    if (a == ctxmenu.PIN_TASKBAR || a == ctxmenu.UNPIN_TASKBAR) {
+        if (cm_all()) {
+            I64 keep = cm_entry;
+            for k in 0..finder.kept() {
+                if (finder.picked(k)) {
+                    cm_entry = finder.kept_at(k);
+                    cm_taskbar(a == ctxmenu.PIN_TASKBAR);
+                }
+            }
+            cm_entry = keep;
+        } else {
+            cm_taskbar(a == ctxmenu.PIN_TASKBAR);
+        }
+        return;
+    }
+    if (a == ctxmenu.VIEW_GRID || a == ctxmenu.VIEW_TABLE) {   // DN-35: applied at once
+        tview = a == ctxmenu.VIEW_TABLE;
+        indexbody.scroll_top();
+        keep_in_view();
+        if (tview) { "finder: view table\n"; } else { "finder: view grid\n"; }
+        paint();
+        return;
+    }
+    if (a >= ctxmenu.SORT_NAME && a <= ctxmenu.SORT_SIZE) {
+        finder.sort_by(a - ctxmenu.SORT_NAME);
+        keep_in_view();
+        if (a == ctxmenu.SORT_NAME) { "finder: sort name\n"; }
+        if (a == ctxmenu.SORT_TYPE) { "finder: sort type\n"; }
+        if (a == ctxmenu.SORT_SIZE) { "finder: sort size\n"; }
+        paint();
+        return;
+    }
+    if (a >= ctxmenu.SUB && cm_entry >= 0 && !finder.is_dir(cm_entry)) {   // Open With: the file's own program
+        U8[32] p;
+        U8[32] q;
+        I64 pl = opener.prog_of(a - ctxmenu.SUB, p);
+        I64 r = finder.open_of(cm_entry);
+        I64 ql = -1;
+        if (r >= 0) { ql = opener.prog_of(r, q); }
+        if (pl > 0 && same(p, pl, q, ql)) {
+            open_entry(cm_entry);
+            return;
+        }
+    }
+    "finder: menu |";
+    I64 w1 = shctl.fd_write(1, cm_w[0..n]);
+    "| not built\n";
+}
+
+// The right button at the pointer: an entry is selected and gets FILE or FOLDER, the empty space EMPTY.
+void right() {
+    if (pick) { return; }              // the picker has no menu
+    if (ctxmenu.is_open()) { ctxmenu.close(); }
+    I64 k = kept_at_point(px_x, px_y);
+    if (k == -2) {
+        if (cm_up) { cm_close(); }
+        return;
+    }
+    if (pf) { pf = false; }
+    if (k >= 0 && !finder.picked(k)) {
+        finder.select(k);
+        say_sel();
+        paint();
+    }
+    cm_open(px_x, px_y, k, false);
+}
+
+// The Menu key or Shift+F10: the menu at the selection (its card, or its table row when the card is scrolled away),
+// its first row selected; with nothing selected, EMPTY at the grid's corner.
+void cm_keyed() {
+    if (pick) { return; }
+    I64 k = finder.selected();
+    I64 x = indexbody.corner_x();
+    I64 y = indexbody.corner_y();
+    if (k >= 0 && k < finder.kept() && finder.picked(k)) {   // an un-chosen focus gets EMPTY (Index audit)
+        keep_in_view();
+        x = indexbody.spot_x(k);
+        y = indexbody.spot_y(k);
+    } else {
+        k = -1;
+    }
+    cm_open(x, y, k, true);
+}
+
+// --- Properties (frame 32, kit/indexprops.ci) ---
+
+// Entry i's Properties in its own window: this program again as `finder --props PATH` (one window an entry, so two
+// can be compared); `finder: props |PATH| (PID)`.
+void props_open(I64 i) {
+    if (pick) { return; }              // its name field renames: the picker writes nothing
+    I64 n = finder.entry_path(i, pb);
+    if (n < 1 || n > 4000) { return; }
+    U8[4096] av;
+    U8[15] w0 = b"finder\x00--props\x00";
+    for k in 0..15 { av[k] = w0[k]; }
+    for k in 0..n { av[15 + k] = pb[k]; }
+    av[15 + n] = 0;
+    I64 pid = shctl.sh_fork();
+    if (pid == 0) {
+        I64 x = shctl.sh_exec(b"/bin/finder", av[0..16 + n], b"");
+        dev.exit_now(127);
+    }
+    "finder: props |";
+    I64 w = shctl.fd_write(1, pb[0..n]);
+    "| ({pid})\n";
+    if (pid > 0 && n_kids < 8) {
+        kids[n_kids] = pid;
+        n_kids = n_kids + 1;
+    }
+}
+
+// The Properties windows that ended, reaped.
+void reap() {
+    I64 k = 0;
+    while (k < n_kids) {
+        if (shctl.sh_wait(kids[k], 1) != 0) {
+            kids[k] = kids[n_kids - 1];
+            n_kids = n_kids - 1;
+        } else {
+            k = k + 1;
+        }
+    }
+}
+
+U8[4096] pp_dir;            // --props: the folder that holds the entry, and the entry's name
+I64 pp_dn = 0;
+U8[256] pp_nm;
+I64 pp_nn = 0;
+
+// --props: the entry's rows read as Index reads its folder: Type, Size (a folder's Contains), Location, Modified
+// (blank until RS-TZb's words, as the List's column), Opens With (the app's name, Index for a folder); false when
+// it is not there.
+Bool props_rows() {
+    if (!finder.go(pp_dir[0..pp_dn])) { return false; }
+    list();
+    I64 i = -1;
+    for k in 0..finder.entries() {
+        I64 n = finder.name_of(k, tb);
+        if (same(tb, n, pp_nm, pp_nn)) { i = k; }
+    }
+    if (i < 0) { return false; }
+    Bool d = finder.is_dir(i);
+    indexprops.set_width(indexprops.W);
+    indexprops.set_entry(pp_nm[0..pp_nn], d, fileicons.kind(pp_nm, pp_nn, d));
+    I64 n = finder.kind_text(i, tb);
+    indexprops.set_row(indexprops.TYPE, tb[0..n]);
+    n = finder.size_text(i, tb);
+    indexprops.set_row(indexprops.SIZE, tb[0..n]);
+    indexprops.set_row(indexprops.LOCATION, pp_dir[0..pp_dn]);
+    if (d) {
+        indexprops.set_row(indexprops.OPENS_WITH, b"Index");
+    } else {
+        n = finder.open_text(i, tb);
+        I64 ap = apps.by_program(tb[0..n]);
+        if (ap >= 0) { n = apps.field(ap, 0, tb); }
+        indexprops.set_row(indexprops.OPENS_WITH, tb[0..n]);
+    }
+    n = indexprops.title(tb);
+    _ = tilewin.win_var(tb[0..n]);     // the bar names the entry
+    return true;
+}
+
+void props_paint() {
+    U32 paper = tok(tokens.PAPER);
+    for y in 0..sh {
+        draw.paint(row, 0, sw, paper);
+        indexprops.row_at(row, y);
+        for x in 0..sw {
+            U32 v = row[x];
+            for k in 0..4 { obuf[4 * x + k] = ((v >> ((8 * k) as U32)) & 255) as U8; }
+        }
+        dev.fb_row(y, obuf[0..4 * sw]);
+    }
+}
+
+// --props: what the name field answered. A new name renames the entry in its folder, never over a name that is
+// there (the field stays open, all selected); `finder: props rename |NEW| (R)`.
+void props_answer(I64 r) {
+    if (r == indexrename.COMMIT && indexrename.verdict() == indexrename.NEW) {
+        U8[256] nn;
+        I64 tn = indexrename.text(nn);
+        U8[4096] a;
+        U8[4096] b;
+        I64 an = 0;
+        for k in 0..pp_dn { a[k] = pp_dir[k]; }
+        an = pp_dn;
+        if (an > 1) {
+            a[an] = '/';
+            an = an + 1;
+        }
+        for k in 0..an { b[k] = a[k]; }
+        I64 r2 = 0 - 36;
+        if (an + tn <= finder.PATH && an + pp_nn <= finder.PATH) {
+            for k in 0..pp_nn { a[an + k] = pp_nm[k]; }
+            for k in 0..tn { b[an + k] = nn[k]; }
+            I64[16] rec;
+            r2 = 0 - 17;
+            if (corectl.co_stat(b[0..an + tn], 0, rec) != 0) {
+                r2 = corectl.co_rename(a[0..an + pp_nn], b[0..an + tn]);
+            }
+        }
+        "finder: props rename |";
+        I64 w = shctl.fd_write(1, nn[0..tn]);
+        "| ({r2})\n";
+        if (r2 != 0) {
+            indexrename.refuse();
+        } else {
+            for k in 0..tn { pp_nm[k] = nn[k]; }
+            pp_nn = tn;
+            indexrename.end();
+            Bool ok = props_rows();
+        }
+    } else if (r == indexrename.COMMIT || r == indexrename.CANCEL) {
+        indexrename.end();
+    }
+    props_paint();
+}
+
+// `finder --props PATH`: Properties for the entry at PATH in a window W wide; Esc closes it while its name field
+// does not have the keyboard; a click on the field, or Tab, gives it the keyboard.
+void props_main(in U8[_] p) {
+    I64 e = len(p);
+    while (e > 1 && p[e - 1] == '/') { e = e - 1; }
+    I64 b = e;
+    while (b > 0 && p[b - 1] != '/') { b = b - 1; }
+    if (b == e || e - b > 255 || p[0] != '/') {
+        "finder: usage: finder --props PATH\n";
+        dev.exit_now(2);
+    }
+    pp_dn = b - 1;
+    if (pp_dn == 0) { pp_dn = 1; }
+    for k in 0..pp_dn { pp_dir[k] = p[k]; }
+    pp_nn = e - b;
+    for k in 0..pp_nn { pp_nm[k] = p[b + k]; }
+    if (!props_rows()) {
+        "finder: props: not there\n";
+        dev.exit_now(1);
+    }
+    _ = tilewin.win_want(indexprops.W, indexprops.height());
+    I64 s = dev.fb_open();
+    if (s < 0) {
+        "finder: no surface ({0 - s})\n";
+        dev.exit_now(3);
+    }
+    _ = tilepoint.win_point(1);
+    sw = dev.fb_word(0) as I64;
+    sh = dev.fb_word(1) as I64;
+    if (sw > 1920) { sw = 1920; }
+    indexprops.set_width(sw);
+    props_paint();
+    Bool going = true;
+    while (going) {
+        I64 got = dev.ev_read(ev);
+        if (got < 0) {
+            going = false;
+        } else if (got == 0) {
+            _ = corectl.co_sleep(20000000);
+        } else {
+            I64 t = (ev[16] as I64) | ((ev[17] as I64) << 8);
+            I64 c = (ev[18] as I64) | ((ev[19] as I64) << 8);
+            I64 v = (ev[20] as I64) | ((ev[21] as I64) << 8) | ((ev[22] as I64) << 16) | ((ev[23] as I64) << 24);
+            if (v >= 0x80000000) { v = v - 0x100000000; }
+            if (t == EV_KEY && (c == KEY_LEFTSHIFT || c == KEY_RIGHTSHIFT)) { shift = v != 0; }
+            if (t == EV_KEY && (c == KEY_LEFTCTRL || c == KEY_RIGHTCTRL)) { ctrl = v != 0; }
+            if (t == EV_ABS && c == 0) { px_x = v; }
+            if (t == EV_ABS && c == 1) { px_y = v; }
+            if (t == EV_KEY && v == 1 && c == BTN_LEFT) {
+                if (indexrename.active()) {
+                    props_answer(indexprops.click(px_x, px_y, shift));
+                } else if (indexprops.hit(px_x, px_y) == indexprops.FIELD) {
+                    indexprops.edit();
+                    props_paint();
+                }
+            } else if (t == EV_KEY && v != 0 && c != BTN_LEFT && c != BTN_RIGHT && !shift_or_ctrl(c)) {
+                if (indexrename.active()) {
+                    U8 tb1 = typed_byte(c);
+                    if (c == KEY_SPACE) { tb1 = ' '; }
+                    if (tb1 != 0 && !ctrl) {
+                        _ = indexrename.typed(tb1);
+                        props_paint();
+                    } else {
+                        props_answer(indexrename.key(c, shift, ctrl));
+                    }
+                } else if (c == KEY_TAB) {
+                    indexprops.edit();
+                    props_paint();
+                } else if (c == KEY_ESC) {
+                    going = false;
+                }
+            }
+        }
+    }
+    "finder: props ended\n";
+}
+
+Bool shift_or_ctrl(I64 c) {
+    return c == KEY_LEFTSHIFT || c == KEY_RIGHTSHIFT || c == KEY_LEFTCTRL || c == KEY_RIGHTCTRL || c == KEY_LEFTALT
+           || c == KEY_RIGHTALT;
+}
+
+// RG-1: `finder --peek PATH`, run as the account by the desk (user/ci/runas.h RUN_PEEK): what the desk's open
+// needs from a path it cannot stat with its own rights, as data on stdout. 0, or 1 when the path cannot be stat'd.
+I64 peek(in U8[_] p) {
+    I64[16] ps;
+    if (corectl.co_stat(p, 1, ps) < 0) { return 1; }
+    I64 kd = openas.of_mode(ps[corectl.ST_MODE]);
+    if (kd == openas.OTHER) { return 1; }   // a device or a pipe is never opened: it could hold the run
+    U8[513] o;
+    o[0] = 'd';
+    I64 n = 1;
+    if (kd == openas.FILE) {
+        o[0] = 'f';
+        I64 fd = shctl.sh_open(p, openas.O_NONBLOCK, 0);
+        if (fd >= 0) {
+            I64[16] fs;
+            Bool reg = fdctl.fd_stat(fd, fs) >= 0 && openas.of_mode(fs[corectl.ST_MODE]) == openas.FILE;
+            I64 g = 0;
+            if (reg) { g = shctl.fd_read(fd, o[1..513]); }
+            _ = shctl.fd_close(fd);
+            if (!reg) { return 1; }             // swapped for a device between the stat and the open
+            if (g > 0) { n = 1 + g; }
+        }
+    }
+    I64 w = shctl.fd_write(1, o[0..n]);
+    return 0;
+}
+
+void main(in U8[_] a) {
+    I64 e = 0;
+    while (e < len(a) && a[e] != 0) { e = e + 1; }
+    I64 rr = opener.load_default();
+    Bool ok = false;
+    if (e == 7 && same(a, 7, b"--props", 7)) {   // frame 32: Properties, its own small window
+        I64 q = e + 1;
+        while (q < len(a) && a[q] != 0) { q = q + 1; }
+        if (e + 1 < q) { props_main(a[e + 1..q]); } else { "finder: usage: finder --props PATH\n"; }
+        dev.exit_now(0);
+    }
+    if (e == 6 && same(a, 6, b"--peek", 6)) {   // RG-1: an open the desk cannot stat, peeked as the account
+        I64 q = e + 1;                    // (user/ci/runas.h RUN_PEEK): d for a folder, f and a file's first 512
+        while (q < len(a) && a[q] != 0) { q = q + 1; }   // bytes; status 1 when the account cannot stat it either
+        if (e + 1 < q) { dev.exit_now(peek(a[e + 1..q])); }
+        dev.exit_now(1);
+    }
+    if (e == 13 && same(a, 13, b"--trash-count", 13)) {   // the desk's Storage page, run as the account
+        I64 tc = trash.items();           // (user/ci/runas.h RUN_TRASH_COUNT): the Trash's entries, or -errno
+        "{tc}\n";
+        dev.exit_now(0);
+    }
+    if (e == 13 && same(a, 13, b"--trash-empty", 13)) {   // Empty Trash from the Storage page, after frame 23's ask,
+        I64 fr = trash.empty();           // run as the account (RUN_TRASH_EMPTY): the items freed, or -errno
+        "{fr}\n";
+        dev.exit_now(0);
+    }
+    if (e == 6 && same(a, 6, b"--pick", 6)) {   // Choose Picture: Index as a picker of PNG files, at the home
+        I64 q = e + 1;
+        while (q < len(a) && a[q] != 0) { q = q + 1; }
+        U8[512] h0;
+        I64 hn0 = trashfs.home(h0);
+        pick = q - e - 1 == 3 && same(a[e + 1..q], 3, b"png", 3) && hn0 > 0 && hn0 < 512;
+        if (!pick) {
+            "finder: usage: finder --pick png\n";
+            dev.exit_now(2);
+        }
+        ok = finder.go(h0[0..hn0]);
+    } else if (e == 7 && same(a, 7, b"--trash", 7)) {   // FF 3h: the plane's Trash opens Index at the Trash place
+        _ = trash.ready();
+        U8[256] t;
+        I64 tn = trash.items_dir(t);
+        if (tn > 0) { ok = finder.go(t[0..tn]); }
+    } else if (e > 0 && a[0] != '/') {
+        I64 cn = shctl.sh_getcwd(pb);     // `finder notes`: against the directory it starts in (review on PR 287)
+        if (cn > 0 && cn + 1 + e <= finder.PATH) {
+            pb[cn] = '/';
+            for k in 0..e { pb[cn + 1 + k] = a[k]; }
+            ok = finder.go(pb[0..cn + 1 + e]);
+        }
+    } else if (e > 0) { ok = finder.go(a[0..e]); } else { ok = finder.go(b"/home"); }
+    if (!ok) {
+        "finder: usage: finder [DIR | --trash | --pick png]\n";
+        dev.exit_now(2);
+    }
+    _ = tilewin.win_want(SURF_W, SURF_H);
+    _ = tilewin.win_resize(1);         // RS-SURF: asked before the open, so the desk's first box is told
+    I64 s = dev.fb_open();
+    U8[516] am_rec;                    // AM-3: About in the app menu (FBIO_TILE_MENU)
+    I64 am_n = appmenu.record(am_rec, b"Index", b"0.1.0", b"The file explorer: folders, then files.", -1);
+    I64 am_m = tilewin.win_menu(am_rec[0..am_n]);
+    if (s < 0) {
+        "finder: no surface ({0 - s})\n";
+        dev.exit_now(3);
+    }
+    _ = tilepoint.win_point(1);
+    sized();
+    places();
+    list();
+    paint();
+    Bool going = true;
+    while (going) {
+        I64 got = dev.ev_read(ev);
+        if (got < 0) {
+            going = false;
+        } else if (got == 0) {
+            I64 nap = 20000000;
+            if (cm_up) { nap = 10000000; }   // DN-32: a frame each 10 ms while the menu moves
+            if (n_kids > 0) { reap(); }
+            I64 now = wall.wall_ns();
+            if (surfask.due(now)) {
+                resize(now);
+            } else if (!indexcopy.busy()) {
+                _ = corectl.co_sleep(nap);
+            }
+        } else {
+            I64 t = (ev[16] as I64) | ((ev[17] as I64) << 8);
+            I64 c = (ev[18] as I64) | ((ev[19] as I64) << 8);
+            I64 v = (ev[20] as I64) | ((ev[21] as I64) << 8) | ((ev[22] as I64) << 16) | ((ev[23] as I64) << 24);
+            if (v >= 0x80000000) { v = v - 0x100000000; }
+            if (t == EV_KEY && (c == KEY_LEFTALT || c == KEY_RIGHTALT)) { alt = v != 0; }
+            if (t == EV_KEY && (c == KEY_LEFTSHIFT || c == KEY_RIGHTSHIFT)) { shift = v != 0; }
+            if (t == EV_KEY && (c == KEY_LEFTCTRL || c == KEY_RIGHTCTRL)) { ctrl = v != 0; }
+            if (t == EV_WIN_RESIZE) {
+                surfask.told(c, v, CAP_W, CAP_H, fw, fh);   // RS-SURF: the latest box, asked once the queue is empty
+            } else if (t == EV_KEY && v == 1 && c == BTN_LEFT) {
+                if (indextrash.is_up()) {
+                    ask_answer(indextrash.click(px_x, px_y));   // a press off the plate does nothing
+                } else if (indexrename.active()) {
+                    rename_answer(indexrename.click(px_x, px_y, shift));   // outside: a good name commits
+                } else if (ctxmenu.is_open()) {
+                    cm_choose(ctxmenu.click(px_x, px_y));
+                } else {
+                    click();
+                }
+            } else if (t == EV_KEY && v == 0 && c == BTN_LEFT) {
+                if (held) { held_up(); }
+            } else if (t == EV_KEY && v == 1 && c == BTN_RIGHT) {
+                if (indexrename.active()) { rename_answer(indexrename.leave()); }
+                if (!indextrash.is_up()) { right(); }
+            } else if (t == EV_KEY && v != 0 && c != BTN_LEFT && c != BTN_RIGHT) {
+                going = key(c);
+            } else if (t == taskbar.EV_PIN) {
+                taskbar.apply(c, v);           // DN-46 (c): the desk's pins
+            } else if (t == EV_ABS) {
+                if (c == 0) { px_x = v; }
+                if (c == 1) { px_y = v; }
+                if (ctxmenu.is_open() && ctxmenu.hover(px_x, px_y)) { cm_paint(); }
+                if (held && !ctxmenu.is_open() && !indextrash.is_up() && !indexrename.active()) { held_move(); }
+            }
+        }
+        if (cm_up) { cm_tick(); }
+        if (held) { band_tick(); }
+        if (indexcopy.busy()) { copy_tick(got == 0); }
+    }
+    if (indexcopy.busy()) {            // a paste is undone before Index ends
+        indexcopy.cancel();
+        while (indexcopy.busy()) { copy_step(); }
+        "finder: copy {cut_n} ({indexcopy.failed()})\n";
+    }
+    if (pick) { pick_cancel(); }       // Esc, q or the window closed: nothing written
+    "finder: ended\n";
+}
+// SPDX-License-Identifier: Apache-2.0

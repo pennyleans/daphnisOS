@@ -1,0 +1,28 @@
+{
+  "id": "find-empty-restores",
+  "rules": [
+    "FIND-3"
+  ],
+  "text": "abc abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    2,
+    0
+  ],
+  "chunks": [
+    "06",
+    "6263",
+    "7f7f",
+    "1b"
+  ],
+  "expect": {
+    "text": "abc abc",
+    "sel": [
+      2,
+      0
+    ]
+  }
+}

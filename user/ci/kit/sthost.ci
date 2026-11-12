@@ -1,0 +1,299 @@
+// user/ci/kit/sthost.ci: the desk's host of the Settings window (frame 48, DN-66; the host contract of the desk's
+// Tab order). One place for what the desk does with a key, a press and a row of Settings, so tests/rs/sthost_test.ci
+// runs it hosted: every key to kit/stbox.ci first (Shift folded into Tab as stpage.K_BACKTAB), then to the page shown;
+// ENTER and ENTER_LAST move the keyboard into the page at its first stop or its last, and a page with no stop sends
+// it back to the sidebar; a page's BACK is stbox.back(); after a key the page takes, the frame reveals its focus.
+// The eight kit pages (Desk, Keyboard, Network, Date and Time, Storage, Accounts, Grants and About) are driven here.
+// Display and Sound are the desk's own rows (hdesk.ci): for them key and click answer DESK_ENTER, DESK_ENTER_LAST,
+// DESK_KEY or DESK_CLICK, the desk runs its page, and entered() or answered() finishes as for a kit page. A page's
+// own action (stpage.ACT and up) comes back to the desk, which does what it asks with the rights it has. Pure: no
+// file, no kernel entry.
+import user.ci.kit.stpage;
+import user.ci.kit.stside;
+import user.ci.kit.stbox;
+import user.ci.kit.stdesk;
+import user.ci.kit.stacct;
+import user.ci.kit.stnet;
+import user.ci.kit.sttime;
+import user.ci.kit.stkeys;
+import user.ci.kit.ststore;
+import user.ci.kit.stgrant;
+import user.ci.kit.stabout;
+
+export const I64 NONE = 0;
+export const I64 DRAW = 1;             // draw Settings again
+export const I64 PAGE = 2;             // the page shown changed (stbox.page())
+export const I64 CLOSE = 3;            // Esc that nothing took: the desk closes Settings
+export const I64 DESK_ENTER = 4;       // the keyboard into a desk page at its first stop: the desk's, then entered()
+export const I64 DESK_ENTER_LAST = 5;  // at its last stop
+export const I64 DESK_KEY = 6;         // a desk page's key (fold()): the desk's, then answered()
+export const I64 DESK_CLICK = 7;       // a desk page's press, with stbox.y0_at and yb_at: the desk's, then answered()
+
+// Whether page p is the desk's own (no kit): Display, Sound.
+export Bool desk_page(I64 p) { return p == stside.DISPLAY || p == stside.SOUND; }
+
+// Key code as the pages read it: Shift+Tab is stpage.K_BACKTAB.
+export I64 fold(I64 code, Bool shift) {
+    if (code == stpage.K_TAB && shift) { return stpage.K_BACKTAB; }
+    return code;
+}
+
+// Settings opened in the box (x0, y0) to (xr, yb) on page p: stbox.open decides where the keyboard starts (wide:
+// the sidebar; narrow: the page; the ring hidden); a kit page opened at its top.
+export void open(I64 x0, I64 y0, I64 xr, I64 yb, I64 p) {
+    stbox.open(x0, y0, xr, yb, p);
+    opened(stbox.page());
+}
+
+// Page p shown by the desk (a panel's link), a kit page opened at its top with no focus (a desk page is the desk's).
+export void show(I64 p) {
+    stbox.show(p);
+    opened(stbox.page());
+}
+
+void opened(I64 q) {
+    if (q == stside.DESK) { stdesk.open(); }
+    if (q == stside.KEYBOARD) { stkeys.open(); }
+    if (q == stside.NETWORK) { stnet.open(); }
+    if (q == stside.DATETIME) { sttime.open(); }
+    if (q == stside.STORAGE) { ststore.open(); }
+    if (q == stside.ACCOUNTS) { stacct.open(); }
+    if (q == stside.GRANTS) { stgrant.open(); }
+    if (q == stside.ABOUT) { stabout.open(); }
+    if (!desk_page(q)) { stbox.set_tall(tall(q)); }
+}
+
+// --- the kit pages, by number ---
+
+export Bool enter(I64 p, Bool last) {
+    if (p == stside.DESK && last) { return stdesk.enter_last(); }
+    if (p == stside.DESK) { return stdesk.enter(); }
+    if (p == stside.KEYBOARD && last) { return stkeys.enter_last(); }
+    if (p == stside.KEYBOARD) { return stkeys.enter(); }
+    if (p == stside.NETWORK && last) { return stnet.enter_last(); }
+    if (p == stside.NETWORK) { return stnet.enter(); }
+    if (p == stside.DATETIME && last) { return sttime.enter_last(); }
+    if (p == stside.DATETIME) { return sttime.enter(); }
+    if (p == stside.STORAGE && last) { return ststore.enter_last(); }
+    if (p == stside.STORAGE) { return ststore.enter(); }
+    if (p == stside.ACCOUNTS && last) { return stacct.enter_last(); }
+    if (p == stside.ACCOUNTS) { return stacct.enter(); }
+    if (p == stside.GRANTS && last) { return stgrant.enter_last(); }
+    if (p == stside.GRANTS) { return stgrant.enter(); }
+    if (p == stside.ABOUT && last) { return stabout.enter_last(); }
+    if (p == stside.ABOUT) { return stabout.enter(); }
+    return false;
+}
+
+export I64 page_key(I64 p, I64 code) {
+    if (p == stside.DESK) { return stdesk.key(code); }
+    if (p == stside.KEYBOARD) { return stkeys.key(code); }
+    if (p == stside.NETWORK) { return stnet.key(code); }
+    if (p == stside.DATETIME) { return sttime.key(code); }
+    if (p == stside.STORAGE) { return ststore.key(code); }
+    if (p == stside.ACCOUNTS) { return stacct.key(code); }
+    if (p == stside.GRANTS) { return stgrant.key(code); }
+    if (p == stside.ABOUT) { return stabout.key(code); }
+    return stpage.NONE;
+}
+
+export I64 page_click(I64 p, I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    if (p == stside.DESK) { return stdesk.click(cx, y0, cr, yb, px, py); }
+    if (p == stside.KEYBOARD) { return stkeys.click(cx, y0, cr, yb, px, py); }
+    if (p == stside.NETWORK) { return stnet.click(cx, y0, cr, yb, px, py); }
+    if (p == stside.DATETIME) { return sttime.click(cx, y0, cr, yb, px, py); }
+    if (p == stside.STORAGE) { return ststore.click(cx, y0, cr, yb, px, py); }
+    if (p == stside.ACCOUNTS) { return stacct.click(cx, y0, cr, yb, px, py); }
+    if (p == stside.GRANTS) { return stgrant.click(cx, y0, cr, yb, px, py); }
+    if (p == stside.ABOUT) { return stabout.click(cx, y0, cr, yb, px, py); }
+    return stpage.NONE;
+}
+
+export I64 tall(I64 p) {
+    if (p == stside.DESK) { return stdesk.tall(); }
+    if (p == stside.KEYBOARD) { return stkeys.tall(); }
+    if (p == stside.NETWORK) { return stnet.tall(); }
+    if (p == stside.DATETIME) { return sttime.tall(); }
+    if (p == stside.STORAGE) { return ststore.tall(); }
+    if (p == stside.ACCOUNTS) { return stacct.tall(); }
+    if (p == stside.GRANTS) { return stgrant.tall(); }
+    if (p == stside.ABOUT) { return stabout.tall(); }
+    return 0;
+}
+
+export I64 focus_top(I64 p) {
+    if (p == stside.DESK) { return stdesk.focus_top(); }
+    if (p == stside.KEYBOARD) { return stkeys.focus_top(); }
+    if (p == stside.NETWORK) { return stnet.focus_top(); }
+    if (p == stside.DATETIME) { return sttime.focus_top(); }
+    if (p == stside.STORAGE) { return ststore.focus_top(); }
+    if (p == stside.ACCOUNTS) { return stacct.focus_top(); }
+    if (p == stside.GRANTS) { return stgrant.focus_top(); }
+    if (p == stside.ABOUT) { return stabout.focus_top(); }
+    return -1;
+}
+
+export I64 focus_bottom(I64 p) {
+    if (p == stside.DESK) { return stdesk.focus_bottom(); }
+    if (p == stside.KEYBOARD) { return stkeys.focus_bottom(); }
+    if (p == stside.NETWORK) { return stnet.focus_bottom(); }
+    if (p == stside.DATETIME) { return sttime.focus_bottom(); }
+    if (p == stside.STORAGE) { return ststore.focus_bottom(); }
+    if (p == stside.ACCOUNTS) { return stacct.focus_bottom(); }
+    if (p == stside.GRANTS) { return stgrant.focus_bottom(); }
+    if (p == stside.ABOUT) { return stabout.focus_bottom(); }
+    return -1;
+}
+
+// --- what the desk feeds the kit pages ---
+
+// Storage's volume from statfs's answer r and record rec (user/ci/factsctl.ci's SF_ words, KF-1): capacity and free
+// in KiB under the name Daphnis; a kernel without the call (r below 0) gives no volume, and the page shows none.
+export void volume(I64 r, in I64[_] rec) {
+    if (r != 0 || len(rec) < 8 || rec[1] <= 0 || rec[2] < 0 || rec[4] < 0) {
+        ststore.no_volume();
+        return;
+    }
+    I64 bs = rec[1];                   // SF_BSIZE, then SF_BLOCKS and SF_BAVAIL
+    ststore.set_volume(b"Daphnis", 7, kib(rec[2], bs), kib(rec[4], bs));
+}
+
+// n blocks of bs bytes in KiB, rounded down, without overflow for a block of a whole number of KiB.
+I64 kib(I64 n, I64 bs) {
+    if (bs % 1024 == 0) { return n * (bs / 1024); }
+    return n / 1024 * bs + n % 1024 * bs / 1024;
+}
+
+// Network's record from facts kind 3 (KF-3c, PR 349): r the call's answer (the record's size, or -errno on a kernel
+// without the kind), b its 64 bytes: link up, the MAC, the address, mask, gateway and DNS in network order, and where
+// they came from. No record (the title alone, Copy Details faded) for anything short of it.
+export void network(I64 r, in U8[_] b) {
+    if (r < 64 || len(b) < 64) {
+        stnet.no_record();
+        return;
+    }
+    I64 src = 0;
+    for k in 0..8 { src = src | ((b[32 + k] as I64) << (8 * k)); }
+    if (src < 0 || src > 2) { src = 0; }
+    stnet.set_record(b[0] != 0, b[8..14], b[16..20], b[20..24], b[24..28], b[28..32], src);
+}
+
+// Keyboard's repeat from EVIOCGREP's answer r and v (delay, period in ms): live with its values when the request
+// answers; faded and inert (stkeys.set_live false, no caption) on a kernel without it.
+export void key_repeat(I64 r, in I64[_] v) {
+    if (r != 0 || len(v) < 2 || v[1] <= 0) {
+        stkeys.set_live(false);
+        return;
+    }
+    stkeys.set_live(true);
+    stkeys.set_delay(v[0]);
+    stkeys.set_rate(1000 / v[1]);
+}
+
+// The number a run as the account printed on its line l[0..n] (finder --trash-count's), or -1 for anything else.
+export I64 count_of(in U8[_] l, I64 n) {
+    if (n < 1 || n > 18) { return -1; }
+    I64 v = 0;
+    for k in 0..n {
+        if (l[k] < '0' || l[k] > '9') { return -1; }
+        v = v * 10 + (l[k] as I64 - 48);
+    }
+    return v;
+}
+
+// --- the contract ---
+
+// A key in Settings: PAGE, DRAW, CLOSE, a DESK_ answer for a desk page, or a kit page's action.
+export I64 key(I64 code, Bool shift) {
+    I64 c = fold(code, shift);
+    I64 p = stbox.page();
+    I64 r = stbox.key(c);
+    if (r == stbox.PAGE) {
+        show(stbox.page());
+        return PAGE;
+    }
+    if (r == stbox.ENTER || r == stbox.ENTER_LAST) {
+        Bool last = r == stbox.ENTER_LAST;
+        if (desk_page(p) && last) { return DESK_ENTER_LAST; }
+        if (desk_page(p)) { return DESK_ENTER; }
+        entered(enter(p, last), focus_top(p), focus_bottom(p));
+        return DRAW;
+    }
+    if (r != stbox.NONE) { return DRAW; }
+    if (desk_page(p)) { return DESK_KEY; }
+    return answered(page_key(p, c), code, tall(p), focus_top(p), focus_bottom(p));
+}
+
+// A printable byte typed in Settings (the host's keymap, no Ctrl): while Date and Time's zone plate is open its find
+// field takes it and the list narrows (frame 47, note 63); NONE anywhere else, so the host goes on with the key.
+export I64 typed(U8 c) {
+    I64 p = stbox.page();
+    if (p != stside.DATETIME || !sttime.picking()) { return NONE; }
+    if (sttime.typed(c) == stpage.NONE) { return NONE; }
+    return answered(stpage.DRAW, -1, tall(p), focus_top(p), focus_bottom(p));
+}
+
+// The keyboard moved into the page: took says a stop took it (a page with none sends it back to the sidebar); t and b
+// the focused rows from the page's top, revealed.
+export void entered(Bool took, I64 t, I64 b) {
+    if (!took) {
+        stbox.back();
+        return;
+    }
+    Bool m = stbox.reveal(t, b);
+}
+
+// A page's answer a to key code (-1 for a press): CLOSE for an Esc nothing took; BACK returns the keyboard to the
+// sidebar, any other answer keeps the page's focused rows t to b revealed; the page's height h kept; its own action
+// as it is, else DRAW.
+export I64 answered(I64 a, I64 code, I64 h, I64 t, I64 b) {
+    if (a == stpage.NONE && code == stpage.K_ESC) { return CLOSE; }
+    stbox.set_tall(h);
+    if (a == stpage.BACK) {
+        stbox.back();
+    } else {
+        Bool m = stbox.reveal(t, b);
+    }
+    if (a >= stpage.ACT) { return a; }
+    return DRAW;
+}
+
+// A press at 1x (px, py) in the box: the frame's (the sidebar, the narrow form's button), else the page's.
+export I64 click(I64 px, I64 py) {
+    I64 p = stbox.page();
+    I64 r = stbox.click(px, py);
+    if (r == stbox.PAGE) {
+        show(stbox.page());
+        return PAGE;
+    }
+    if (r != stbox.NONE) { return DRAW; }
+    if (desk_page(p)) { return DESK_CLICK; }
+    I64 a = page_click(p, stbox.cx(), stbox.y0_at(py), stbox.cr(), stbox.yb_at(py), px, py);
+    return answered(a, -1, tall(p), -1, -1);
+}
+
+// --- drawing, through kit/pen.ci (the host has called pen.at for the row) ---
+
+// Row y under the page: the frame's ground and, wide, the sidebar.
+export void ground_row(inout U32[_] row, I64 y) { stbox.under_row(row, y, stbox.keyed()); }
+
+// Row y of the kit page shown (a desk page is the desk's to draw), at the frame's y0_at and yb_at.
+export void page_row(inout U32[_] row, I64 y) {
+    I64 p = stbox.page();
+    I64 cx = stbox.cx();
+    I64 y0 = stbox.y0_at(y);
+    I64 cr = stbox.cr();
+    I64 yb = stbox.yb_at(y);
+    if (p == stside.DESK) { stdesk.row_at(row, cx, y0, cr, yb, y); }
+    if (p == stside.KEYBOARD) { stkeys.row_at(row, cx, y0, cr, yb, y); }
+    if (p == stside.NETWORK) { stnet.row_at(row, cx, y0, cr, yb, y); }
+    if (p == stside.DATETIME) { sttime.row_at(row, cx, y0, cr, yb, y); }
+    if (p == stside.STORAGE) { ststore.row_at(row, cx, y0, cr, yb, y); }
+    if (p == stside.ACCOUNTS) { stacct.row_at(row, cx, y0, cr, yb, y); }
+    if (p == stside.GRANTS) { stgrant.row_at(row, cx, y0, cr, yb, y); }
+    if (p == stside.ABOUT) { stabout.row_at(row, cx, y0, cr, yb, y); }
+}
+
+// Row y over the page: the laid sidebar and its shadow; lo and hi bound the pen's row in device pixels.
+export void top_row(inout U32[_] row, I64 lo, I64 hi, I64 y) { stbox.over_row(row, lo, hi, y, stbox.keyed()); }
+// SPDX-License-Identifier: Apache-2.0

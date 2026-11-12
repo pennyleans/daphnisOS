@@ -1,0 +1,35 @@
+Daphnis W: the desk
+daphnis: framebuffer 640x480 stride 2560
+daphnis: keyboard and mouse on
+daphnis: image 21327748 bytes from the loader module
+daphnis: desk
+daphnis: run tiler --cols 1 --rows 2 --desk pid 1 (device)
+tiler: tile 0,0 at 0,0 inside 639x239
+tiler: tile 0,1 at 0,240 inside 639x239
+tiler: surface 640x480 stride 2560 sha256 e87b9b267f5995e0cb71952565d36a90c5e104e58e912e2e8f916aaee174ceed
+tiler: desk terminal 79x13 in tile 0,0 at 2,21
+tiler: desk tile 1 at 159,269 inside 320x200 for the next client (0)
+tiler: desk shell first output
+daphnis: tile surface 320x200 at 159,269 sha256 6ac198568f4dfbb9440321c357fe61b2cd1a22b67bd074ea59e5c0b839b54c7a
+tiler: desk shell ended, status 0
+tiler: term bytes 31082 sha256 8d741c3b9d2674c2f9b873cd489b8f6c327bd2cb191e4c058916bfddfef8b6de
+tiler: term 00 |doom: tic 346 sha256 21d7d32004276922bb80b0fe21fa48fd5209798ba3e20e50513cc2d9b6|
+tiler: term 01 |c5366f|
+tiler: term 02 |doom: tic 347 sha256 82da2c0f7773522ffb0c111b2b51cf1f3af57c83a72ea682fe059e91e5|
+tiler: term 03 |ec1c21|
+tiler: term 04 |doom: tic 348 sha256 6c16fcf437aeea988bfdcd692e12373a9319c2d15dec185c86c4b06e46|
+tiler: term 05 |bbfcc7|
+tiler: term 06 |doom: tic 349 sha256 3c07044a27313a878e6d647d853b9d65340ff5a59e786e558427e8cde8|
+tiler: term 07 |d86fec|
+tiler: term 08 |doom: tic 350 sha256 42cf14b2a5882df3750d3c434455d19879f4d496efdf74c15bd8739b01|
+tiler: term 09 |e68fa6|
+tiler: term 10 |doom: thinkers 396 of 1023 slots ever used|
+tiler: term 11 |doom: end tics 350|
+tiler: term 12 ||
+daphnis: state 77871d499d9d08136fefd9e3cc083e380ed09fa9a5ffa78c56168564f7a6e671
+daphnis: exit 0
+daphnis: pid 1 forked 1
+daphnis: surface 640x480 stride 2560 sha256 939ed2435650a1b45420832327e224971edfaa8fd048bb736402866c7eaf846f
+daphnis: fs tables 19 frames held
+daphnis: pool frames free 16364 of 16383
+daphnis: done

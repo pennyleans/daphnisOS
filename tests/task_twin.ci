@@ -1,0 +1,99 @@
+// tests/task_twin.ci: the hosted twin of a kernel task. The block between the markers is
+// byte-for-byte the one in src/main_tasks.ci (check.sh compares them), so this program runs
+// the same service code on the hosted runtime: `console.read_line` and `console.write` with
+// the grants given on the command line. Arguments: the task number and the rounds, e.g.
+//   task_twin RECORD --grant console.input --arg 1 --arg 6 < one-line-input
+// The kernel's grants, given here as hosted grants: task 1 console.input, task 2 console.raw
+// (not input: so its read is denied), task 3 both. The hosted runtime cannot be given an empty
+// grant set (no --grant grants the whole manifest, an empty line is refused), so a task that
+// is to be denied the read holds a grant that does not cover it.
+
+import console;
+import src.text;
+import src.taskwork;
+
+requires console.input;
+requires console.raw;
+
+// BEGIN service block (identical in tests/task_twin.ci)
+// The byte count of one line read from the console, -1 if the call returned denied, -2 for
+// any other error. Whether a call is covered is decided at run time from the grants of the
+// context; a call no grant covers returns `denied`, a value of the error union, never a fault
+// (SPEC-07 SEC-CAP-13).
+I64 probe_read(Grants g) {
+    U8[16] buf;
+    I64 n = console.read_line(g, buf) catch (e) { return e == console.ConsoleError.denied ? -1 : -2; };
+    return n;
+}
+
+// Raw mode off: 0 when a grant covers it (console.raw), -1 if the call returned denied, -2 for
+// any other error. The program never needs raw mode; the call shows that a grant is checked per
+// capability: a task with console.input and no console.raw is denied here and allowed to read.
+I64 probe_raw(Grants g) {
+    console.raw(g, false) catch (e) { return e == console.ConsoleError.denied ? -1 : -2; };
+    return 0;
+}
+
+// Writes one byte with the service; 0, or -1 denied, -2 another error.
+I64 put(Grants g, U8 c) {
+    U8[1] one;
+    one[0] = c;
+    console.write(g, one) catch (e) { return e == console.ConsoleError.denied ? -1 : -2; };
+    return 0;
+}
+
+void put_text(Grants g, in U8[_] s) {
+    for i in 0..len(s) {
+        _ = put(g, s[i]);
+    }
+}
+
+void put_dec(Grants g, I64 v) {
+    U8[20] digits;
+    I64 k = 0;
+    if (v < 0) {
+        _ = put(g, 45);
+        k = text.dec_digits(0 - v, digits);
+    } else {
+        k = text.dec_digits(v, digits);
+    }
+    for i in 0..k {
+        _ = put(g, digits[i]);
+    }
+}
+
+// "task N total S read R raw W\n": R is the console read's byte count, W the raw call's status;
+// -1 in either means denied.
+void report(Grants g, I64 me, I64 total, I64 got, I64 raw) {
+    put_text(g, "task ");
+    put_dec(g, me);
+    put_text(g, " total ");
+    put_dec(g, total);
+    put_text(g, " read ");
+    put_dec(g, got);
+    put_text(g, " raw ");
+    put_dec(g, raw);
+    put_text(g, "\n");
+}
+// END service block
+
+// The number whose digits start at args[at].
+I64 number_at(in U8[_] args, I64 at) {
+    I64 v = 0;
+    I64 k = at;
+    while (k < len(args) && args[k] != 0) {
+        v = v * 10 + (args[k] as I64) - 48;
+        k += 1;
+    }
+    return v;
+}
+
+void main(Grants g, in U8[_] args) {
+    I64 me = number_at(args, 0);
+    I64 rounds = number_at(args, 2);
+    I64 total = taskwork.work(me, rounds);
+    I64 got = probe_read(g);
+    I64 raw = probe_raw(g);
+    report(g, me, total, got, raw);
+}
+// SPDX-License-Identifier: Apache-2.0

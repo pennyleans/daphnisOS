@@ -1,0 +1,60 @@
+// user/ci/hdeskctl.ci: the hybrid desk's rows of user/ci/host.c (H-3a), built only into a program that imports this
+// file (CI_ROWS_HDESK), so the tiler's bytes do not change:
+//   tile_ask(req, a, b, buf): ioctl(req) on /dev/fb0 with the u32 words a and b in a 64-byte argument, what the kernel
+//     wrote there copied into buf (FBIO_TILE_INFO); 0, or -errno
+//   pty_winsize(fd, cols, rows): TIOCSWINSZ on a master; 0, or -errno
+//   pty_nonblock(fd): O_NONBLOCK on a master; 0, or -errno
+//   pty_sigsess(fd, sig): Daphnis's TIOCSIGSESS on a master, sig to the pair's whole session (WB-4); 0, or -errno
+//   fb_remap(): /dev/fb0 mapped again at its size now (HX-13, after FBIO_TILE_MODE); 0, or -errno
+//   power(how): FF-4, reboot(2), 1 shut down, 2 restart; returns only when it did not take, -errno
+export extern unrestricted I64 tile_ask(I64 req, I64 a, I64 b, out U8[_] buf);
+export extern unrestricted I64 pty_winsize(I64 fd, I64 cols, I64 rows);
+export extern unrestricted I64 pty_nonblock(I64 fd);
+export extern unrestricted I64 pty_sigsess(I64 fd, I64 sig);
+export extern unrestricted I64 fb_remap();
+export extern unrestricted I64 power(I64 how);
+//   spawn_as(path, env, master, uid, gid, ceil): AC-1c, pty_spawn with Daphnis's login (call 1003) in the child before
+//     execve, and a chdir to env's HOME; the pid, or -errno
+//   auth_start(req): AC-1c, /bin/authd forked with req on its input (AC-D8); 0, or -errno (-EBUSY while one runs)
+//   auth_poll(buf): authd's answer so far: the count, -EAGAIN while it works, 0 at its end, -ENOENT with none
+export extern unrestricted I64 spawn_as(in U8[_] path, in U8[_] env, I64 master, I64 uid, I64 gid, I64 c);
+export extern unrestricted I64 auth_start(in U8[_] req);
+export extern unrestricted I64 auth_poll(out U8[_] buf);
+//   home(path, uid, gid): FS-3, Daphnis's call 1006: the account's home made 0700 as uid and gid, or checked; 0, or
+//     -errno (the kernel's sys_home). RS-HOME: after a 0 the home holds Documents, Downloads and Pictures, made 0700
+//     by a child that runs as the account; a name already there is left alone, and no folder changes the answer
+export extern unrestricted I64 home(in U8[_] path, I64 uid, I64 gid);
+//   fb_hold(on): RS-SHOT, the screen held as it is now (on 1) for fb_peek and shot_as, or zeroed and freed (on 0)
+//   fb_peek(x, y, px): pixels of row y from x, held or live, 4 bytes each as the framebuffer holds them; the count
+//   shot_as(x, y, w, h, uid, gid, ceil, home): the rectangle to /bin/shot, run by a child that logs in as the account
+//     (call 1003) in home and writes the file itself; the child's pid (reap it, then shot_end), or -errno
+//   shot_end(pid, name): the file name that shot printed, plain "Screenshot ... .png" in Pictures; its length, or
+//     -errno
+export extern unrestricted I64 fb_hold(I64 on);
+export extern unrestricted I64 fb_peek(I64 x, I64 y, out U8[_] px);
+export extern unrestricted I64 shot_as(I64 x, I64 y, I64 w, I64 h, I64 uid, I64 gid, I64 c, in U8[_] home);
+export extern unrestricted I64 shot_end(I64 pid, out U8[_] name);
+//   run_session(uid, gid, ceil, home): the session's login record for the runs as the account (user/ci/runas.h),
+//     given when the session starts, cleared with uid -1 (any run is stopped); 0, or -EPERM (uid 0), -EINVAL (home)
+//   run_start(job, arg): job of runas.h's fixed table as that record's account (RUN_SET's arg "KEY\0VALUE",
+//     RUN_PICTURE's "PATH\0W\0H", RUN_PEEK's PATH, else empty: RUN_PREFS too); 0, or -EPERM (no record), -EINVAL,
+//     -EBUSY (one runs)
+//   run_poll(buf): what the run wrote since the last poll: the count (0 none yet); RUN_END (-4096) less its exit
+//     status once it ended and was reaped; -E2BIG past the cap or -ETIMEDOUT past the time (killed and reaped);
+//     -ENOENT with none
+//   run_stop(): whatever runs killed and reaped
+export extern unrestricted I64 run_session(I64 uid, I64 gid, I64 c, in U8[_] home);
+export extern unrestricted I64 run_start(I64 job, in U8[_] arg);
+export extern unrestricted I64 run_poll(out U8[_] buf);
+export extern unrestricted I64 run_stop();
+//   rep_get(v): RS-KR, the key repeat's delay and period in ms into v[0] and v[1] (EVIOCGREP on the event device);
+//     0, or -errno (-ENOTTY or -EINVAL on a kernel without the request)
+//   rep_set(delay, period): RS-KR, the key repeat set (EVIOCSREP; the desk alone); 0, or -errno
+export extern unrestricted I64 rep_get(out I64[_] v);
+export extern unrestricted I64 rep_set(I64 delay, I64 period);
+//   seat(uid): LO-1, Daphnis's call 1009: the account whose processes may take the offered tile, -1 for none; 0, or
+//     -errno (the kernel's sys_seat)
+//   sweep(uid): LO-1, Daphnis's call 1010: every process of uid ends as SIGKILL ends it; the count, or -errno
+export extern unrestricted I64 seat(I64 uid);
+export extern unrestricted I64 sweep(I64 uid);
+// SPDX-License-Identifier: Apache-2.0

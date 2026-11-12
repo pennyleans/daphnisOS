@@ -1,0 +1,41 @@
+// tests/hw/hosted/src/pit.ci: src/pit.ci's face for the hosted I219-V tests (tests/hw/i219_test.ci), over a model
+// clock. The clock moves only when the driver looks: 12 input cycles (about 10 us) a latched() read, one cycle (about
+// 0.8 us) a register access (mmio.ci calls advance). now_us() is the model's time, which mmio.ci judges waits by.
+
+export const I64 USER_DIVISOR = 11932;
+export const I64 INPUT_HZ = 1193182;
+
+I64 cycles = 0;
+Bool running = true;
+Bool frozen = false;                   // programmed, but the count does not move
+
+export void reset_clock(Bool run) {
+    cycles = 0;
+    running = run;
+    frozen = false;
+}
+
+export void freeze() {
+    frozen = true;
+}
+
+export void advance(I64 c) {
+    cycles += c;
+}
+
+export I64 now_us() {
+    return cycles * 1000000 / INPUT_HZ;
+}
+
+// Channel 0's count: it runs down from USER_DIVISOR to 1 once a tick, as src/pit.ci's latched() reads it.
+export I64 latched() {
+    if (running && !frozen) {
+        cycles += 12;
+    }
+    return USER_DIVISOR - (cycles % USER_DIVISOR);
+}
+
+export Bool pit_is_programmed(I64 divisor) {
+    return running && divisor == USER_DIVISOR;
+}
+// SPDX-License-Identifier: Apache-2.0

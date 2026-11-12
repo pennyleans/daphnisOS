@@ -1,0 +1,25 @@
+// user/ci/core/zonefile.ci: RS-TZc, the machine's time zone for programs (docs/specs/2026-11-11-rs-tzc.md section 3).
+//   The file, /home/.daphnis-zone, holds the city's zone name on one line (tz.name), beside the kernel's
+//     /home/.daphnis-mode. The desk's Settings path writes it (FS-R3 C: one time for the whole system); every session
+//     reads it. TZ-R1 A: it is not in /home/.daphnis, the account store AC-1c keeps from every account session.
+//   city(): the city of the file's zone name, or -1 for UTC. The name is opened without following a link
+//     (O_NOFOLLOW) and without waiting on a pipe put in its place (O_NONBLOCK), and at most clocktext.ZONE_READ bytes
+//     are read, which clocktext.zone_of takes.
+// A missing, unreadable, empty, oversized or unknown file is UTC, never an error, so no program stops on it.
+// user/ci/build.sh picks host.c's call rows from a program's whole import closure, so a program that imports this
+// module gets shctl's rows without importing it itself.
+import user.ci.shctl;
+import user.ci.kit.clocktext;
+
+const I64 O_READ = 0x20800;            // O_RDONLY | O_NONBLOCK | O_NOFOLLOW
+
+export I64 city() {
+    I64 fd = shctl.sh_open(b"/home/.daphnis-zone", O_READ, 0);
+    if (fd < 0) { return -1; }
+    U8[64] b;                          // clocktext.ZONE_READ
+    I64 n = shctl.fd_read(fd, b);
+    I64 c = shctl.fd_close(fd);
+    if (n <= 0) { return -1; }
+    return clocktext.zone_of(b[0..n]);
+}
+// SPDX-License-Identifier: Apache-2.0

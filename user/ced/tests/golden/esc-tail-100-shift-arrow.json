@@ -1,0 +1,29 @@
+{
+  "id": "esc-tail-100-shift-arrow",
+  "rules": [
+    "KEY-2",
+    "KEY-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    1,
+    1
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "",
+    "5b313b3243"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      1,
+      2
+    ]
+  }
+}

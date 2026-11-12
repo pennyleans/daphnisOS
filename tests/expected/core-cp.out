@@ -1,0 +1,181 @@
+$ text.txt t2
+-- tree
++ t2 f 0644 47 4eb69a7d087144a6
+status 0
+$ text.txt box
+-- tree
++ box/text.txt f 0644 47 4eb69a7d087144a6
+status 0
+$ text.txt nonl.txt box/in
+-- tree
++ box/in/nonl.txt f 0644 21 e421985de8560d2d
++ box/in/text.txt f 0644 47 4eb69a7d087144a6
+status 0
+$ long.txt bin.dat empty box/
+-- tree
++ box/bin.dat f 0644 512 110009dcee21620b
++ box/empty f 0644 0 e3b0c44298fc1c14
++ box/long.txt f 0644 20825 ae561fe9f91467bb
+status 0
+$ text.txt box/in/deep/c.txt
+-- tree
+~ box/in/deep/c.txt f 0644 47 4eb69a7d087144a6
+status 0
+$ text.txt nonl.txt empty
+-- stderr
+cp: empty: Not a directory
+status 1
+$ text.txt text.txt
+-- stderr
+cp: text.txt: same file
+status 1
+$ text.txt ./text.txt
+-- stderr
+cp: text.txt: same file
+status 1
+$ box/a.txt box
+-- stderr
+cp: box/a.txt: same file
+status 1
+$ missing t2
+-- stderr
+cp: missing: No such file or directory
+status 1
+$ text.txt nodir/t2
+-- stderr
+cp: nodir/t2: No such file or directory
+status 1
+$ text.txt box/in/deep/c.txt/x
+-- stderr
+cp: box/in/deep/c.txt/x: Not a directory
+status 1
+$ box b2
+-- stderr
+cp: box: is a directory (no -R)
+status 1
+$ -R box b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+status 0
+$ -r box b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+status 0
+$ -R box/ b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+status 0
+$ -R box/in .
+-- tree
++ in d 0755
++ in/b.txt f 0644 4 f288623ee73a16eb
++ in/deep d 0755
++ in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+status 0
+$ -R box/in box/a.txt
+-- stderr
+cp: box/a.txt: Not a directory
+status 1
+$ -R box text.txt box/in
+-- stderr
+cp: box: would copy into itself
+-- tree
++ box/in/text.txt f 0644 47 4eb69a7d087144a6
+status 1
+$ -RL box b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+status 0
+$ -RH box b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+status 0
+$ -RP box b2
+-- tree
++ b2 d 0755
++ b2/a.txt f 0644 2 87428fc522803d31
++ b2/in d 0755
++ b2/in/b.txt f 0644 4 f288623ee73a16eb
++ b2/in/deep d 0755
++ b2/in/deep/c.txt f 0644 6 7cc744f8a470f6b2
+status 0
+$ -HLP text.txt t2
+-- tree
++ t2 f 0644 47 4eb69a7d087144a6
+status 0
+$ -i text.txt nonl.txt < yes.txt
+-- stderr
+cp: nonl.txt: overwrite? -- tree
+~ nonl.txt f 0644 47 4eb69a7d087144a6
+status 0
+$ -i text.txt nonl.txt < empty
+-- stderr
+cp: nonl.txt: overwrite? status 0
+$ -i text.txt t2 < empty
+-- tree
++ t2 f 0644 47 4eb69a7d087144a6
+status 0
+$ -Ri box/in box < yes.txt
+-- stderr
+cp: box/in: would copy into itself
+status 1
+$ -f text.txt nonl.txt
+-- tree
+~ nonl.txt f 0644 47 4eb69a7d087144a6
+status 0
+$ -fi text.txt nonl.txt < empty
+-- stderr
+cp: nonl.txt: overwrite? status 0
+$ -- text.txt t2
+-- tree
++ t2 f 0644 47 4eb69a7d087144a6
+status 0
+$ -R box box/in
+-- stderr
+cp: box: would copy into itself
+status 1
+$ -R box box
+-- stderr
+cp: box: would copy into itself
+status 1
+$ -p text.txt t2
+-- stderr
+cp: not supported: -p
+status 2
+$ -n text.txt t2
+-- stderr
+cp: not supported: -n
+status 2
+$ 
+-- stderr
+cp: missing operand
+status 2
+$ text.txt
+-- stderr
+cp: missing operand
+status 2

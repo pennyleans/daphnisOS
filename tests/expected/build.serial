@@ -1,0 +1,82 @@
+Daphnis P: the block device
+daphnis: input 473 bytes
+daphnis: disk virtio-blk, 262144 sectors, 5 frames held
+daphnis: disk 262144 sha256 26773668168a1787e56d48c1627b388914d8507036aae8216e87febe4457dc33
+daphnis: disk write probe: the pattern read back equal, the sectors restored
+daphnis: /home mounted, ext2, block 4096, cache 64 frames, writes need the disk grant
+daphnis: run hello pid 1
+hello from ring 3
+daphnis: state 5c6d6d6e0a037abbcfa5d73c0498412515e00277227de3571ad7b498c263099d
+daphnis: exit 0
+daphnis: run sh pid 2
+cib msha: 0
+cib mci: 0
+061ccfb0f7c819a8389360ee4769dc3b057ad2a371d7373df10fecff95778c11  msha
+e5de392f3ebf8d535ec0e400ab4e5f519ff4157f0a52da811d14212783cdcae1  msha.cib/e/MANIFEST.ref
+894a3ce271809e2312c81645c358ff9151c8b6b6ccfbd4bd339b498e89dd2ce2  msha.cib/e.stage-0/MANIFEST
+1ecaf60724e7e678f0c79e6ed297838088c37dd122f07656c2e20093301b7253  msha.cib/e.stage-0/cint-program.sites
+90ac70e5ae2e9670df48db3a60dacd38ed06a0ce1a458a6f6f2faf87877694f2  msha.cib/e.stage-0/cint-program.ssa
+9ee355ea748b7aa3b23d70893528de15abc4d42c12f71f43a52a88db3e14aac7  msha.cib/e.stage-0/src/sha256.sites
+0c2d84c13106583ffb6cccb8f6315ce2590500d3d3e2898a3ec8f1e74d411c4c  msha.cib/e.stage-0/src/sha256.ssa
+a0d339efecbf16ec5e07a386ffb7a3c9b6384c25270a366655159860d038759e  msha.cib/e.stage-0/user/ci/msha.sites
+033bf7d204b3f5de5b8be4836dec36e5acbc947ced7e0f5010bcd970696ef0ad  msha.cib/e.stage-0/user/ci/msha.ssa
+d1ff98eac946ff3ab335ad4e2eb4b5a70a305c6d4a822a8dd61c184850dca1e5  msha.cib/p.ssa
+5b90b2a58304107bf3357584f0d9051eec8a0c1f3a2dee2d73424a5300894f14  msha.cib/0.s
+2016874a4614df55ada6a0e59991a69760a4c11fd8c4bbb5bfea0f067a31033c  msha.cib/1.s
+3f7d29f32a68a432bc9bc091e5bb4f47056eb473e78d337c3a9680caecc0b548  msha.cib/2.s
+d4e1ead718d040d29b1a137a0e75adf9e9d0651c8f0aef17650f7b7f5869baab  msha.cib/0.o
+649663d958e5e0e1a1518376ffd9042399a03ee4bdc4c708760d75b2139def2a  msha.cib/1.o
+fa4e74618b2a0569972891a4cc468a086e7d20f924a84a007f3660f2daf810c4  msha.cib/2.o
+c8c5327cf74285ec27a2677ebec0370a4a35892ce4350b737d5af1de06cde2b9  msha.cib/m.a
+68a5f63f1653d1e187b88416f76cdc21cef4cc914cff60484add60245ef6847a  mci
+fe8f58d9867b1f68709dffbac97acdf2a97a20e6fd87de67eb5958bb0bc064db  mci.cib/e/MANIFEST.ref
+51d5c7f9235cf4079ad735ada44c5404e4ac7de0577eb7bea018e99c2efa79e8  mci.cib/e.stage-0/MANIFEST
+219520016fb4b3ca29c486b07a2a7bfa032f7225896d0cfab5ba52d9a4731b34  mci.cib/e.stage-0/cint-program.sites
+3e330846eb90d2007f8d42664c22e98a6c408efc93b984ececdc690a45229cee  mci.cib/e.stage-0/cint-program.ssa
+b888792b3a06915caacbefb8f4f6345e57a13460d70b1e0b87cf0af43b85da4b  mci.cib/e.stage-0/user/ci/dev.sites
+7bfec39a9536d0da2cbac9c9089d5132f56b6017160877498b8d453dd309c225  mci.cib/e.stage-0/user/ci/dev.ssa
+844059ffd3bc1a57bb4aab448b78abebb5e8b5c4baf3cbcf757e0bd72d9cf109  mci.cib/e.stage-0/user/ci/mci.sites
+b3bda78e4957ef1395ce4a2efc1d36d113c2a6cb61bfed1543b0094d0c1aa54d  mci.cib/e.stage-0/user/ci/mci.ssa
+7f60487debe536eb219646de698d383d7466188094a678a0c05c2859299bf348  mci.cib/p.ssa
+9b1aba41c8a1d26d1e3811f0b0a3511d151efb8dfa4a036a425770e3dba7be6f  mci.cib/0.s
+cc9546fe31e7d2f4774e3450264b64cf3b5acb41e22b31610c3453bf52c48c0a  mci.cib/1.s
+94494ea131f195e83b7a3cb3ea046ddc9ba2d617ad0c77464ace084121729686  mci.cib/2.s
+1b429e1da13ef8cf8ced8d00615abf52ebe1cdd7869d43df63c9fee7f9949618  mci.cib/0.o
+516e013a91e2c70d1368d3c24f06b636084b72d341ef1cd4fb881b92668324e2  mci.cib/1.o
+e1b51f864e89c57078e4c83f3239c5c34e895c352e6431c14b34810175bf4a77  mci.cib/2.o
+dc7af8a981798e890484db11dac3f13cf627a8c5a0f1bbf554bca6cb33577381  mci.cib/m.a
+grant: 0
+daphnis: state 51b74b4eca60bca2a9f1489436da7660414372a7caba5c9a28476adacda0c7d2
+daphnis: exit 0
+daphnis: pid 2 forked 1
+daphnis: run /home/out/msha pid 5
+msha: 4 MiB sha256 04ac01bf62aafda524b0e948f4c2f2d7448e3f2c8cf9e73d0b50c57bb84dae52
+daphnis: state 8ff90d57a72031aa9c2eee833d3f50b7d05f28c0eba02f82059d3c00ce538169
+daphnis: exit 0
+daphnis: run /home/out/msha pid 6
+msha: 4 MiB sha256 04ac01bf62aafda524b0e948f4c2f2d7448e3f2c8cf9e73d0b50c57bb84dae52
+daphnis: state 8ff90d57a72031aa9c2eee833d3f50b7d05f28c0eba02f82059d3c00ce538169
+daphnis: exit 0
+daphnis: run /home/out/mci pid 7
+mci: hello from cint in ring 3
+mci: fib(90) = 2880067194370816120
+mci: the clock does not go back
+mci: surface words before fb_open: 0
+mci: now fib(93), which does not fit
+fault[E_OVERFLOW]: add.checked.i64 at user/ci/mci.ci:10:19
+daphnis: state 78d456c403b097d9e6e474951c64093ea9a85b04d0bb7e4e3e795b7a89823ada
+daphnis: exit 1
+daphnis: run /home/out/mci pid 8
+mci: hello from cint in ring 3
+mci: fib(90) = 2880067194370816120
+mci: the clock does not go back
+mci: surface words before fb_open: 0
+mci: now fib(93), which does not fit
+fault[E_OVERFLOW]: add.checked.i64 at user/ci/mci.ci:10:19
+daphnis: state 78d456c403b097d9e6e474951c64093ea9a85b04d0bb7e4e3e795b7a89823ada
+daphnis: exit 1
+daphnis: disk 262144 sha256 3817cc39bf809735ae7ea1ac11af4585df66bd13184dd72ee238d4b8b99d03e6
+daphnis: disk requests 79970
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16297 of 16383
+daphnis: done

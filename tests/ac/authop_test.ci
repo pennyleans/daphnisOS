@@ -1,0 +1,671 @@
+// tests/ac/authop_test.ci: hosted tests of authd's store operations (RS-ROLE, docs/specs/2026-11-11-rs-role.md;
+// RS-R3 and RS-R4, docs/specs/2026-11-11-rs-accounts-ops.md): user/ci/authop.ci, acctio.ci, acctput.ci, authreq.ci,
+// authver.ci and acct.ci as they are, Argon2id at 8 KiB and one pass, over the volume of tests/ac/vol_shctl.ci. Run
+// by tools/check-authop.py (check.sh), which copies the volume over user/ci/shctl.ci and corectl.ci in an isolated
+// root; `cint test` on the tree itself does not compile.
+import user.ci.acct;
+import user.ci.authop;
+import user.ci.authreq;
+import user.ci.authver;
+import user.ci.shctl;
+
+U64[1024] mem;
+U8[640] req;
+U8[16] fresh;                         // the salt run takes for a passphrase it sets
+U8[4096] tb;
+U8[256] vers;                          // four accounts' verifiers, 64 hex digits each
+Bool have = false;
+
+const I64 CI = 0;
+const I64 PAT = 1;
+const I64 SAM = 2;
+const I64 LEE = 3;
+
+void salt_of(I64 k, inout U8[_] raw, inout U8[_] hex) {
+    for j in 0..16 {
+        raw[j] = (16 * k + j) as U8;
+        hex[2 * j] = b"0123456789abcdef"[k];
+        hex[2 * j + 1] = b"0123456789abcdef"[j];
+    }
+}
+
+void verifier_of(I64 k, in U8[_] pass, I64 n) {
+    U8[16] raw;
+    U8[32] hex;
+    U8[32] ver;
+    salt_of(k, raw, hex);
+    authver.verifier(pass, n, 8, 1, raw, mem, ver);
+    for j in 0..32 {
+        vers[64 * k + 2 * j] = b"0123456789abcdef"[(ver[j] / 16) as I64];
+        vers[64 * k + 2 * j + 1] = b"0123456789abcdef"[(ver[j] % 16) as I64];
+    }
+}
+
+void put_acct(I64 k, in U8[_] name, I64 role, U64 c) {
+    U8[16] raw;
+    U8[32] hex;
+    U8[64] ver;
+    salt_of(k, raw, hex);
+    for j in 0..64 { ver[j] = vers[64 * k + j]; }
+    assert(acct.add(name, len(name), role, 1000 + k, 1000 + k, 8, 1, hex, ver, c, hex) >= 0);
+}
+
+// The store on the volume: ci (and pat, with two) parents; sam a child with a short passphrase, ceiling disk; lee
+// a child whose passphrase was accepted under a parent's rule, ceiling disk and net.
+void store(I64 parents) {
+    if (!have) {
+        verifier_of(CI, "correct horse", 13);
+        verifier_of(PAT, "battery staple", 14);
+        verifier_of(SAM, "kid4", 4);
+        verifier_of(LEE, "a longer password", 17);
+        have = true;
+    }
+    shctl.reset();
+    acct.clear();
+    put_acct(CI, "ci", acct.PARENT, 7);
+    if (parents == 2) { put_acct(PAT, "pat", acct.PARENT, 7); }
+    put_acct(SAM, "sam", acct.CHILD, 1);
+    put_acct(LEE, "lee", acct.CHILD, 3);
+    acct.pass_len(acct.find("lee", 3), 17);
+    I64 n = acct.write_text(tb);
+    shctl.set(b"/home/.daphnis/accounts", tb, n);
+    acct.clear();
+    shctl.keep();
+}
+
+// The store as the volume holds it now, parsed; the account count, or -1.
+I64 reload() {
+    I64 n = shctl.size_of(b"/home/.daphnis/accounts");
+    if (n < 0) { return -1; }
+    for k in 0..n { tb[k] = shctl.byte_of(b"/home/.daphnis/accounts", k); }
+    return acct.parse(tb, n);
+}
+
+I64 set_role(in U8[_] who, in U8[_] name, I64 role, in U8[_] pass) {
+    I64 n = authreq.role(req, who, len(who), name, len(name), role, pass, len(pass));
+    assert(n > 0);
+    return authop.run(req, n, mem, fresh, 16, 8, 1);
+}
+
+I64 set_ceil(in U8[_] who, in U8[_] name, I64 c, in U8[_] pass) {
+    I64 n = authreq.ceil(req, who, len(who), name, len(name), c, pass, len(pass));
+    assert(n > 0);
+    return authop.run(req, n, mem, fresh, 16, 8, 1);
+}
+
+I64 remove(in U8[_] who, in U8[_] name, in U8[_] pass) {
+    I64 n = authreq.remove(req, who, len(who), name, len(name), pass, len(pass));
+    assert(n > 0);
+    return authop.run(req, n, mem, fresh, 16, 8, 1);
+}
+
+I64 send(in U8[_] text) {
+    for k in 0..len(text) { req[k] = text[k]; }
+    return authop.run(req, len(text), mem, fresh, 16, 8, 1);
+}
+
+I64 role_of(in U8[_] name) { return acct.role_of(acct.find(name, len(name))); }
+
+// 16 bytes of salt for the next passphrase set, different for each k.
+void salt(I64 k) {
+    for j in 0..16 { fresh[j] = (160 + 5 * k + j) as U8; }
+}
+
+I64 add_acct(in U8[_] who, in U8[_] name, I64 role, in U8[_] pass, in U8[_] np) {
+    I64 n = authreq.add(req, who, len(who), name, len(name), role, pass, len(pass), np, len(np));
+    assert(n > 0);
+    return authop.run(req, n, mem, fresh, 16, 8, 1);
+}
+
+I64 set_pass(in U8[_] who, in U8[_] name, in U8[_] pass, in U8[_] np) {
+    I64 n = authreq.passwd(req, who, len(who), name, len(name), pass, len(pass), np, len(np));
+    assert(n > 0);
+    return authop.run(req, n, mem, fresh, 16, 8, 1);
+}
+
+I64 at_of(in U8[_] name) { return acct.find(name, len(name)); }
+
+// A passphrase one character short of a parent's (AC-D3): acct.PARENT_MIN - 1 letters at shortp[0..]; that length.
+U8[64] shortp;
+I64 short_len() {
+    for k in 0..64 { shortp[k] = (97 + k % 26) as U8; }
+    return acct.PARENT_MIN - 1;
+}
+
+test "a parent's passphrase sets a role, a ceiling and removes; the store is written whole" {
+    store(2);
+    assert(set_ceil("ci", "sam", 5, "correct horse") == authreq.DONE);
+    assert(reload() == 4 && acct.ceil_of(acct.find("sam", 3)) == 5 && role_of("sam") == acct.CHILD);
+    assert(shctl.files() == 2 && shctl.size_of(b"/home/.daphnis/accounts.prev") > 0);
+    assert(shctl.mode_of(b"/home/.daphnis/accounts") == 384);
+    assert(shctl.calls_of(shctl.K_SYNC) == 1);
+    assert(set_role("pat", "lee", acct.PARENT, "battery staple") == authreq.DONE);
+    assert(reload() == 4 && role_of("lee") == acct.PARENT && acct.ceil_of(acct.find("lee", 3)) == 7);
+    assert(acct.parents() == 3);
+    assert(set_role("lee", "pat", acct.CHILD, "a longer password") == authreq.DONE);
+    assert(reload() == 4 && role_of("pat") == acct.CHILD && acct.ceil_of(acct.find("pat", 3)) == 7);
+    assert(acct.parent_pass(acct.find("pat", 3)));
+    assert(remove("ci", "sam", "correct horse") == authreq.DONE);
+    assert(reload() == 3 && acct.find("sam", 3) < 0 && acct.parents() == 2);
+    assert(shctl.files() == 2);
+}
+
+test "a wrong passphrase changes nothing" {
+    store(2);
+    assert(set_role("ci", "pat", acct.CHILD, "correct horsf") == authreq.WRONG && shctl.kept());
+    assert(set_role("ci", "lee", acct.PARENT, "correct hors") == authreq.WRONG && shctl.kept());
+    assert(set_ceil("ci", "sam", 7, "x") == authreq.WRONG && shctl.kept());
+    assert(remove("ci", "sam", "correct horse ") == authreq.WRONG && shctl.kept());
+    assert(shctl.calls_of(shctl.K_OPEN_W) == 0 && shctl.calls_of(shctl.K_RENAME) == 0);
+    assert(shctl.calls_of(shctl.K_UNLINK) == 0);
+}
+
+test "the passphrase is the approver's, never the target's or another parent's" {
+    store(2);
+    assert(remove("ci", "sam", "kid4") == authreq.WRONG && shctl.kept());
+    assert(set_role("ci", "lee", acct.PARENT, "a longer password") == authreq.WRONG && shctl.kept());
+    assert(remove("ci", "sam", "battery staple") == authreq.WRONG && shctl.kept());
+}
+
+test "only a parent approves: a child's own right passphrase is refused, and so is no account" {
+    store(2);
+    assert(set_ceil("sam", "sam", 7, "kid4") == authreq.R_APPROVER && shctl.kept());
+    assert(set_role("lee", "lee", acct.PARENT, "a longer password") == authreq.R_APPROVER && shctl.kept());
+    assert(remove("lee", "ci", "a longer password") == authreq.R_APPROVER && shctl.kept());
+    assert(remove("nobody", "sam", "correct horse") == authreq.R_APPROVER && shctl.kept());
+    assert(remove("ci", "nobody", "correct horse") == authreq.R_ACCOUNT && shctl.kept());
+}
+
+test "the last parent is neither demoted nor removed, by itself or after the others went" {
+    store(1);
+    assert(set_role("ci", "ci", acct.CHILD, "correct horse") == authreq.R_LAST && shctl.kept());
+    assert(remove("ci", "ci", "correct horse") == authreq.R_LAST && shctl.kept());
+    store(2);
+    assert(set_role("pat", "ci", acct.CHILD, "battery staple") == authreq.DONE);
+    assert(set_role("pat", "pat", acct.CHILD, "battery staple") == authreq.R_LAST);
+    assert(remove("pat", "pat", "battery staple") == authreq.R_LAST);
+    assert(set_role("ci", "pat", acct.CHILD, "correct horse") == authreq.R_APPROVER);
+    assert(reload() == 4 && acct.parents() == 1 && role_of("pat") == acct.PARENT);
+    store(2);
+    assert(remove("ci", "ci", "correct horse") == authreq.DONE);
+    assert(remove("pat", "pat", "battery staple") == authreq.R_LAST);
+    assert(set_role("pat", "pat", acct.CHILD, "battery staple") == authreq.R_LAST);
+    assert(reload() == 3 && acct.parents() == 1);
+}
+
+test "a promotion needs a passphrase accepted under a parent's rule" {
+    store(1);
+    assert(set_role("ci", "sam", acct.PARENT, "correct horse") == authreq.R_PASS && shctl.kept());
+    assert(set_role("ci", "lee", acct.PARENT, "correct horse") == authreq.DONE);
+    assert(reload() == 3 && acct.parents() == 2);
+}
+
+test "a parent's ceiling is every grant; asking what holds writes nothing" {
+    store(2);
+    assert(set_ceil("ci", "pat", 1, "correct horse") == authreq.R_PARENT && shctl.kept());
+    assert(set_ceil("ci", "sam", 1, "correct horse") == authreq.DONE && shctl.kept());
+    assert(set_role("ci", "sam", acct.CHILD, "correct horse") == authreq.DONE && shctl.kept());
+    assert(set_role("ci", "pat", acct.PARENT, "correct horse") == authreq.DONE && shctl.kept());
+}
+
+test "a process that cannot read the store reaches no operation" {
+    store(2);
+    shctl.deny(true);
+    assert(set_role("ci", "pat", acct.CHILD, "correct horse") == authreq.E_STORE);
+    assert(remove("ci", "sam", "correct horse") == authreq.E_STORE);
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.E_STORE);
+    assert(shctl.kept() && shctl.calls_of(shctl.K_OPEN_W) == 0 && shctl.calls_of(shctl.K_RENAME) == 0);
+    shctl.reset();
+    assert(remove("ci", "sam", "correct horse") == authreq.E_STORE && shctl.files() == 0);
+    shctl.set(b"/home/.daphnis/accounts", "daphnis-accounts 1\nacct broken\n", 31);
+    shctl.keep();
+    assert(remove("ci", "sam", "correct horse") == authreq.E_STORE && shctl.kept());
+}
+
+test "an unreadable store with a whole previous copy: the operation works from the copy" {
+    store(2);
+    I64 n = shctl.size_of(b"/home/.daphnis/accounts");
+    for k in 0..n { tb[k] = shctl.byte_of(b"/home/.daphnis/accounts", k); }
+    shctl.set(b"/home/.daphnis/accounts.prev", tb, n);
+    shctl.set(b"/home/.daphnis/accounts", "daphnis-accounts 1\nacct broken\n", 31);
+    assert(remove("ci", "sam", "correct horse") == authreq.DONE);
+    assert(reload() == 3 && acct.parents() == 2 && shctl.files() == 2);
+}
+
+// The store's two files as a recovery finds them: the file in place broken, the previous copy whole (n bytes).
+I64 recovered() {
+    store(2);
+    I64 n = shctl.size_of(b"/home/.daphnis/accounts");
+    for k in 0..n { tb[k] = shctl.byte_of(b"/home/.daphnis/accounts", k); }
+    shctl.set(b"/home/.daphnis/accounts.prev", tb, n);
+    shctl.set(b"/home/.daphnis/accounts", "daphnis-accounts 1\nacct broken\n", 31);
+    shctl.keep();
+    return n;
+}
+
+Bool prev_is(I64 n) {
+    if (shctl.size_of(b"/home/.daphnis/accounts.prev") != n) { return false; }
+    for k in 0..n {
+        if (shctl.byte_of(b"/home/.daphnis/accounts.prev", k) != tb[k]) { return false; }
+    }
+    return true;
+}
+
+test "a store read from its previous copy: a write that fails leaves the copy whole, and so does one that works" {
+    I64 n = recovered();                                       // a ceiling: the store's renames alone (no home)
+    shctl.fail(shctl.K_RENAME, 1, -5);                         // the new file does not take the name
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.E_WRITE && shctl.kept());
+    assert(prev_is(n) && shctl.files() == 2);
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.DONE);             // and the copy still approves
+    n = recovered();
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.DONE);
+    assert(shctl.calls_of(shctl.K_RENAME) == 1 && prev_is(n));   // the broken file never takes the copy's name
+    assert(reload() == 4 && acct.ceil_of(acct.find("sam", 3)) == 7 && shctl.files() == 2);
+}
+
+test "a store that cannot be written reads as before" {
+    store(2);
+    shctl.fail(shctl.K_OPEN_W, 1, -30);                        // no disk grant: -EROFS
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_WRITE, 1, -28);                         // half the text, then -ENOSPC
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_CLOSE, 2, -5);                          // the new file's close (the store's read closes first)
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_RENAME, 1, -5);                         // the file in place does not move
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_RENAME, 2, -5);                         // the new file does not take the name
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.E_WRITE && shctl.kept());
+    assert(shctl.files() == 1 && reload() == 4 && acct.ceil_of(at_of("sam")) == 1);
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.DONE && reload() == 4);
+    assert(acct.ceil_of(at_of("sam")) == 7);
+}
+
+test "a new file left by an ended process of the same pid is replaced, another's is left alone" {
+    store(2);
+    shctl.set(b"/home/.daphnis/accounts.new.77", "left over", 9);
+    shctl.set(b"/home/.daphnis/accounts.new.78", "another's", 9);
+    assert(set_ceil("ci", "sam", 7, "correct horse") == authreq.DONE);
+    assert(reload() == 4 && acct.ceil_of(acct.find("sam", 3)) == 7);
+    assert(shctl.size_of(b"/home/.daphnis/accounts.new.77") == -1);
+    assert(shctl.size_of(b"/home/.daphnis/accounts.new.78") == 9);
+}
+
+test "a request that is not one of the forms opens nothing" {
+    store(2);
+    assert(send("role ci sam parent") == authreq.E_REQUEST);                        // no LF, no passphrase
+    assert(send("role ci sam parent\n") == authreq.E_REQUEST);                      // an empty passphrase
+    assert(send("role ci sam\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("role ci sam owner\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("role ci sam parent x\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("role  ci sam parent\ncorrect horse") == authreq.E_REQUEST);        // two spaces
+    assert(send("role ci Sam parent\ncorrect horse") == authreq.E_REQUEST);         // a name the store cannot hold
+    assert(send("role ci -sam parent\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("ceil ci sam 8\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("ceil ci sam 17\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("ceil ci sam\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("remove ci sam now\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("remove ci\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("remove ci sam correct horse") == authreq.E_REQUEST);
+    assert(send("delete ci sam\ncorrect horse") == authreq.E_REQUEST);
+    assert(send("remove ci abcdefghijklmnopqrstuvwxyz0123456\ncorrect horse") == authreq.E_REQUEST);   // 33
+    assert(shctl.kept() && shctl.calls_of(shctl.K_OPEN_R) == 0);
+    assert(!authop.is_op("verify 8 1 00 00\nx", 17) && !authop.is_op("role", 4) && authop.is_op("role x", 6));
+    for k in 0..300 { req[k] = 120; }
+    for k in 0..14 { req[k] = b"remove ci sam\n"[k]; }
+    assert(authop.run(req, 14 + 257, mem, fresh, 16, 8, 1) == authreq.E_REQUEST);       // a passphrase past 256
+    assert(authop.run(req, 641, mem, fresh, 16, 8, 1) == authreq.E_REQUEST);            // a length past the request
+}
+
+test "the request, which holds the passphrase, is wiped whatever the answer" {
+    store(2);
+    assert(remove("ci", "sam", "correct horse") == authreq.DONE);
+    for k in 0..640 { assert(req[k] == 0); }
+    assert(remove("ci", "sam", "wrong") == authreq.WRONG);
+    for k in 0..640 { assert(req[k] == 0); }
+    assert(send("remove ci\ncorrect horse") == authreq.E_REQUEST);
+    for k in 0..640 { assert(req[k] == 0); }
+}
+
+test "the answer's words and codes agree both ways" {
+    U8[19] w;
+    I64[14] codes;
+    codes[0] = authreq.DONE; codes[1] = authreq.WRONG; codes[2] = authreq.E_REQUEST; codes[3] = authreq.E_STORE;
+    codes[4] = authreq.E_WRITE; codes[5] = authreq.R_APPROVER; codes[6] = authreq.R_ACCOUNT; codes[7] = authreq.R_LAST;
+    codes[8] = authreq.R_PARENT; codes[9] = authreq.R_PASS; codes[10] = authreq.R_TAKEN; codes[11] = authreq.R_FULL;
+    codes[12] = authreq.R_HOME; codes[13] = authreq.E_RANDOM;
+    for k in 0..14 {
+        I64 n = authreq.line(codes[k], w);
+        assert(n >= 2 && n <= authreq.LINE_MAX && authreq.code_of(w, n) == codes[k]);
+        for j in 0..k { assert(codes[j] != codes[k]); }
+    }
+    assert(authreq.status(authreq.DONE) == 0 && authreq.status(authreq.WRONG) == 1);
+    assert(authreq.status(authreq.E_WRITE) == 2 && authreq.status(authreq.R_LAST) == 3);
+    assert(authreq.status(authreq.E_RANDOM) == 2 && authreq.status(authreq.R_HOME) == 3);
+    assert(authreq.status(authreq.R_TAKEN) == 3 && authreq.status(authreq.R_FULL) == 3);
+    assert(authreq.code_of("ok\n", 3) == authreq.DONE && authreq.code_of("okay", 4) == authreq.E_REQUEST);
+    assert(authreq.code_of("error passphrase length\n", 24) == authreq.E_REQUEST);
+    assert(authreq.code_of("", 0) == authreq.E_REQUEST);
+    U8[600] big;
+    U8[256] p;
+    for k in 0..256 { p[k] = 112; }
+    I64 n = authreq.role(big, "abcdefghijklmnopqrstuvwxyz012345", 32, "abcdefghijklmnopqrstuvwxyz012345", 32,
+                         acct.PARENT, p, 256);
+    assert(n == 334);
+    n = authreq.add(big, "abcdefghijklmnopqrstuvwxyz012345", 32, "abcdefghijklmnopqrstuvwxyz012345", 32,
+                    acct.PARENT, p, 256, p, 256);
+    assert(n == authreq.REQ_MAX);
+    n = authreq.passwd(big, "ci", 2, "sam", 3, "correct horse", 13, "abcd", 4);
+    assert(n == 34);
+    for k in 0..34 { assert(big[k] == b"passwd ci sam 13\ncorrect horseabcd"[k]); }
+    n = authreq.add(big, "ci", 2, "eve", 3, acct.CHILD, p, 100, "abcd", 4);
+    for k in 0..19 { assert(big[k] == b"add ci eve child 100"[k]); }
+    assert(n == 20 + 1 + 100 + 4 && big[20] == 10);
+    assert(authreq.role(big, "ci", 2, "sam", 3, 3, p, 4) == -1 && authreq.ceil(big, "ci", 2, "sam", 3, 8, p, 4) == -1);
+    assert(authreq.remove(big, "ci", 0, "sam", 3, p, 4) == -1 && authreq.remove(big, "ci", 2, "sam", 3, p, 257) == -1);
+    assert(authreq.add(big, "ci", 2, "eve", 3, 0, p, 4, p, 4) == -1);
+    assert(authreq.add(big, "ci", 2, "eve", 3, 1, p, 4, p, 0) == -1);
+    assert(authreq.passwd(big, "ci", 2, "sam", 3, p, 4, p, 257) == -1);
+    assert(authreq.passwd(big, "ci", 2, "sam", 3, p, 0, p, 4) == -1);
+    U8[400] small;
+    assert(authreq.remove(small, "ci", 2, "sam", 3, p, 4) == -1);
+}
+
+test "a parent adds an account: a new uid, its role's ceiling, a passphrase that then approves" {
+    store(2);
+    salt(1);
+    assert(add_acct("ci", "eve", acct.CHILD, "correct horse", "four") == authreq.DONE);
+    assert(reload() == 5);
+    I64 e = at_of("eve");
+    assert(e == 4 && acct.role_of(e) == acct.CHILD && acct.ceil_of(e) == 0 && !acct.parent_pass(e));
+    assert(acct.uid_of(e) == 1004 && acct.gid_of(e) == 1004 && acct.m_of(e) == 8 && acct.t_of(e) == 1);
+    for j in 0..16 {
+        assert(acct.salt_byte(e, 2 * j) == b"0123456789abcdef"[((160 + 5 + j) / 16) as I64]);
+        assert(acct.salt_byte(e, 2 * j + 1) == b"0123456789abcdef"[((160 + 5 + j) % 16) as I64]);
+    }
+    assert(shctl.files() == 2 && shctl.size_of(b"/home/eve") == -1);                // the home comes at the first login
+    salt(2);
+    assert(add_acct("pat", "max", acct.PARENT, "battery staple", "a parent's pass") == authreq.DONE);
+    assert(reload() == 6 && role_of("max") == acct.PARENT && acct.ceil_of(at_of("max")) == 7);
+    assert(acct.uid_of(at_of("max")) == 1005 && acct.parents() == 3);
+    assert(set_ceil("max", "eve", 3, "a parent's pass") == authreq.DONE);            // the new parent approves
+    assert(set_ceil("max", "eve", 1, "a parent's pasS") == authreq.WRONG);
+    salt(3);
+    assert(set_pass("eve", "eve", "four", "five5") == authreq.DONE);                 // the new child's own passphrase
+    salt(4);
+    assert(add_acct("ci", "kay", acct.CHILD, "correct horse", "long enough for a parent") == authreq.DONE);
+    assert(reload() == 7 && acct.parent_pass(at_of("kay")) && acct.ceil_of(at_of("kay")) == 0);
+    assert(set_role("ci", "kay", acct.PARENT, "correct horse") == authreq.DONE);     // RS-R1 A: the mark was noted
+}
+
+test "an add that is refused changes nothing" {
+    store(2);
+    salt(1);
+    assert(add_acct("ci", "eve", acct.CHILD, "correct horsE", "four") == authreq.WRONG && shctl.kept());
+    assert(add_acct("sam", "eve", acct.CHILD, "kid4", "four") == authreq.R_APPROVER && shctl.kept());
+    assert(add_acct("eve", "eve", acct.CHILD, "four", "four") == authreq.R_APPROVER && shctl.kept());
+    assert(add_acct("ci", "sam", acct.CHILD, "correct horse", "four") == authreq.R_TAKEN && shctl.kept());
+    assert(add_acct("ci", "ci", acct.PARENT, "correct horse", "another long one") == authreq.R_TAKEN && shctl.kept());
+    assert(add_acct("ci", "eve", acct.CHILD, "correct horse", "abc") == authreq.R_PASS && shctl.kept());
+    I64 sl = short_len();
+    assert(add_acct("ci", "eve", acct.PARENT, "correct horse", shortp[0..sl]) == authreq.R_PASS && shctl.kept());
+    assert(add_acct("ci", "eve", acct.CHILD, "correct horse", "tab\there") == authreq.R_PASS && shctl.kept());
+    I64 n = authreq.add(req, "ci", 2, "eve", 3, acct.CHILD, "correct horse", 13, "four", 4);
+    assert(authop.run(req, n, mem, fresh, 0, 8, 1) == authreq.E_RANDOM && shctl.kept());
+    n = authreq.add(req, "ci", 2, "eve", 3, acct.CHILD, "correct horse", 13, "four", 4);
+    assert(authop.run(req, n, mem, fresh, 16, 16, 1) == authreq.E_REQUEST && shctl.kept());   // memory for 8 KiB only
+    shctl.fail(shctl.K_OPEN_W, 1, -30);
+    assert(add_acct("ci", "eve", acct.CHILD, "correct horse", "four") == authreq.E_WRITE && shctl.kept());
+    assert(shctl.calls_of(shctl.K_RENAME) == 0 && shctl.calls_of(shctl.K_STAT) == 0);
+}
+
+test "a removed uid is never given to an added account; the store fills at 16" {
+    store(2);
+    assert(remove("ci", "lee", "correct horse") == authreq.DONE);                    // uid 1003, the highest
+    salt(1);
+    assert(add_acct("ci", "lee", acct.CHILD, "correct horse", "four") == authreq.DONE);
+    assert(reload() == 4 && acct.uid_of(at_of("lee")) == 1004);
+    U8[2] nm2;
+    nm2[0] = 107;
+    for k in 0..12 {
+        nm2[1] = (97 + k) as U8;
+        salt(2 + k);
+        assert(add_acct("ci", nm2, acct.CHILD, "correct horse", "four") == authreq.DONE);
+    }
+    assert(reload() == 16 && acct.uid_of(15) == 1016);
+    shctl.keep();
+    assert(add_acct("ci", "one-more", acct.CHILD, "correct horse", "four") == authreq.R_FULL && shctl.kept());
+}
+
+test "a passphrase is set by a parent or by the account itself, and the old one ends" {
+    store(2);
+    salt(1);
+    assert(set_pass("ci", "sam", "correct horse", "new kid pass") == authreq.DONE);  // a parent, for a child
+    assert(reload() == 4 && acct.parent_pass(at_of("sam")) && acct.ceil_of(at_of("sam")) == 1);
+    assert(acct.uid_of(at_of("sam")) == 1002 && acct.m_of(at_of("sam")) == 8);
+    salt(2);
+    assert(set_pass("sam", "sam", "kid4", "abcd") == authreq.WRONG);                 // the old one is no one's now
+    assert(set_pass("sam", "sam", "new kid pass", "abcd") == authreq.DONE);          // the account, for itself
+    assert(reload() == 4 && !acct.parent_pass(at_of("sam")));
+    assert(set_role("ci", "sam", acct.PARENT, "correct horse") == authreq.R_PASS);   // the mark went with the length
+    salt(3);
+    assert(set_pass("ci", "ci", "correct horse", "a new parent pass") == authreq.DONE);   // a parent, its own
+    assert(set_ceil("ci", "sam", 3, "correct horse") == authreq.WRONG);
+    assert(set_ceil("ci", "sam", 3, "a new parent pass") == authreq.DONE);
+    salt(4);
+    assert(set_pass("ci", "pat", "a new parent pass", "pat's new passphrase") == authreq.DONE);   // another parent's
+    assert(set_ceil("pat", "sam", 5, "battery staple") == authreq.WRONG);
+    assert(set_ceil("pat", "sam", 5, "pat's new passphrase") == authreq.DONE);
+    assert(reload() == 4 && acct.parents() == 2 && role_of("pat") == acct.PARENT);
+}
+
+test "a passphrase that is refused changes nothing" {
+    store(2);
+    salt(1);
+    assert(set_pass("sam", "lee", "kid4", "whatever") == authreq.R_APPROVER && shctl.kept());   // a child, another's
+    assert(set_pass("sam", "sam", "correct horse", "abcd") == authreq.WRONG && shctl.kept());   // not its own
+    assert(set_pass("zed", "zed", "anything", "abcd") == authreq.R_APPROVER && shctl.kept());
+    assert(set_pass("ci", "zed", "correct horse", "abcd") == authreq.R_ACCOUNT && shctl.kept());
+    assert(set_pass("ci", "sam", "correct horse", "abc") == authreq.R_PASS && shctl.kept());
+    I64 sl = short_len();
+    assert(set_pass("ci", "pat", "correct horse", shortp[0..sl]) == authreq.R_PASS && shctl.kept());
+    assert(set_pass("ci", "ci", "correct horse", "short") == authreq.R_PASS && shctl.kept());
+    assert(set_pass("sam", "sam", "kid4", "no\ttab") == authreq.R_PASS && shctl.kept());
+    I64 n = authreq.passwd(req, "sam", 3, "sam", 3, "kid4", 4, "abcd", 4);
+    assert(authop.run(req, n, mem, fresh, 15, 8, 1) == authreq.E_RANDOM && shctl.kept());
+    shctl.fail(shctl.K_WRITE, 1, -28);
+    assert(set_pass("sam", "sam", "kid4", "abcd") == authreq.E_WRITE && shctl.kept());
+    assert(set_pass("sam", "sam", "kid4", "abcd") == authreq.DONE);
+}
+
+test "a request with two passphrases is read by its count and nothing else" {
+    store(2);
+    salt(1);
+    assert(send("add ci eve child\ncorrect horsefour") == authreq.E_REQUEST);       // no count
+    assert(send("add ci eve child 0\nfour") == authreq.E_REQUEST);
+    assert(send("add ci eve child 013\ncorrect horsefour") == authreq.E_REQUEST);   // a leading 0
+    assert(send("add ci eve child 257\ncorrect horsefour") == authreq.E_REQUEST);
+    assert(send("add ci eve child 1000\ncorrect horsefour") == authreq.E_REQUEST);
+    assert(send("add ci eve child 13x\ncorrect horsefour") == authreq.E_REQUEST);
+    assert(send("add ci eve child -13\ncorrect horsefour") == authreq.E_REQUEST);
+    assert(send("add ci eve child 13 \ncorrect horsefour") == authreq.E_REQUEST);
+    assert(send("add ci eve child 17\ncorrect horsefour") == authreq.E_REQUEST);    // the count is all there is
+    assert(send("add ci eve child 18\ncorrect horsefour") == authreq.E_REQUEST);    // the count is past the end
+    assert(send("add ci eve 13\ncorrect horsefour") == authreq.E_REQUEST);          // no role
+    assert(send("add ci eve boss 13\ncorrect horsefour") == authreq.E_REQUEST);
+    assert(send("add ci Eve child 13\ncorrect horsefour") == authreq.E_REQUEST);    // a name the store cannot hold
+    assert(send("add ci .removed child 13\ncorrect horsefour") == authreq.E_REQUEST);
+    assert(send("passwd ci sam\ncorrect horseabcd") == authreq.E_REQUEST);
+    assert(send("passwd ci sam child 13\ncorrect horseabcd") == authreq.E_REQUEST);
+    assert(send("passwd ci sam 13\ncorrect horse") == authreq.E_REQUEST);           // no new passphrase
+    assert(send("passwd ci 13\ncorrect horseabcd") == authreq.E_REQUEST);
+    assert(shctl.kept() && shctl.calls_of(shctl.K_OPEN_R) == 0);
+    for k in 0..300 { req[k] = 120; }
+    for k in 0..16 { req[k] = b"passwd ci sam 4\n"[k]; }
+    assert(authop.run(req, 16 + 4 + 257, mem, fresh, 16, 8, 1) == authreq.E_REQUEST);   // a new one past 256
+    assert(shctl.kept() && shctl.calls_of(shctl.K_OPEN_R) == 0);
+    // the count parts the two: an LF and a space inside either are bytes of it
+    assert(send("passwd ci sam 13\ncorrect horseab\ncd") == authreq.R_PASS && shctl.kept());   // LF is not typeable
+    assert(send("passwd ci sam 12\ncorrect horseabcd") == authreq.WRONG && shctl.kept());      // `correct hors`
+    assert(send("passwd ci sam 13\ncorrect horse abcd") == authreq.DONE);                      // ` abcd`
+    assert(set_pass("sam", "sam", " abcd", "abcd") == authreq.DONE);
+    assert(authop.wants_salt("add x", 5) && authop.wants_salt("passwd x", 8) && !authop.wants_salt("role x", 6));
+    assert(!authop.wants_salt("remove x", 8) && !authop.wants_salt("verify 8 1 00 00\nx", 17));
+    assert(authop.is_op("add x", 5) && authop.is_op("passwd x", 8) && !authop.is_op("add", 3));
+}
+
+test "both passphrases are wiped whatever the answer" {
+    store(2);
+    salt(1);
+    assert(add_acct("ci", "eve", acct.CHILD, "correct horse", "four") == authreq.DONE);
+    for k in 0..640 { assert(req[k] == 0); }
+    assert(set_pass("eve", "eve", "wrong", "abcd") == authreq.WRONG);
+    for k in 0..640 { assert(req[k] == 0); }
+    assert(set_pass("ci", "eve", "correct horse", "abc") == authreq.R_PASS);
+    for k in 0..640 { assert(req[k] == 0); }
+    assert(send("passwd ci sam 99\ncorrect horseabcd") == authreq.E_REQUEST);
+    for k in 0..640 { assert(req[k] == 0); }
+}
+
+test "a removed account's home is set aside under a dot name, and the name added again has none" {
+    store(2);
+    shctl.set(b"/home/sam", "sam's home", 10);
+    assert(remove("ci", "sam", "correct horse") == authreq.DONE);
+    assert(shctl.size_of(b"/home/sam") == -1 && shctl.size_of(b"/home/.removed.sam.1002") == 10);
+    assert(shctl.byte_of(b"/home/.removed.sam.1002", 0) == 115);
+    assert(reload() == 3 && at_of("sam") < 0 && shctl.files() == 3);
+    assert(shctl.calls_of(shctl.K_STAT) == 1 && shctl.calls_of(shctl.K_RENAME) == 3);
+    salt(1);
+    assert(add_acct("ci", "sam", acct.CHILD, "correct horse", "four") == authreq.DONE);
+    assert(reload() == 4 && acct.uid_of(at_of("sam")) == 1004);
+    assert(shctl.size_of(b"/home/sam") == -1 && shctl.size_of(b"/home/.removed.sam.1002") == 10);
+    shctl.set(b"/home/sam", "new", 3);                                              // the desk's home call, at login
+    assert(remove("pat", "sam", "battery staple") == authreq.DONE);                 // removed again: another uid
+    assert(shctl.size_of(b"/home/.removed.sam.1004") == 3 && shctl.size_of(b"/home/.removed.sam.1002") == 10);
+}
+
+test "a store that is not written puts the home back" {
+    store(2);
+    shctl.set(b"/home/sam", "sam's home", 10);
+    shctl.keep();
+    shctl.fail(shctl.K_OPEN_W, 1, -30);
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_WRITE, 1, -28);
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_CLOSE, 2, -5);
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_RENAME, 2, -5);                         // the home moved; the file in place does not
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE && shctl.kept());
+    shctl.fail(shctl.K_RENAME, 3, -5);                         // the new file does not take the name
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE && shctl.kept());
+    assert(shctl.size_of(b"/home/sam") == 10 && shctl.size_of(b"/home/.removed.sam.1002") == -1);
+    assert(reload() == 4 && at_of("sam") >= 0);
+    assert(remove("ci", "sam", "correct horse") == authreq.DONE && reload() == 3);
+    assert(shctl.size_of(b"/home/.removed.sam.1002") == 10);
+}
+
+test "a name already where the home would go refuses the remove whole" {
+    store(2);
+    shctl.set(b"/home/sam", "sam's home", 10);
+    shctl.set(b"/home/.removed.sam.1002", "earlier", 7);
+    shctl.keep();
+    assert(remove("ci", "sam", "correct horse") == authreq.R_HOME && shctl.kept());
+    assert(shctl.calls_of(shctl.K_RENAME) == 0 && shctl.calls_of(shctl.K_OPEN_W) == 0);
+    assert(reload() == 4 && at_of("sam") >= 0);
+}
+
+test "no home is no failure; a home that does not move, or cannot be looked for, refuses the remove" {
+    store(2);
+    assert(remove("ci", "sam", "correct horse") == authreq.DONE);
+    assert(reload() == 3 && shctl.files() == 2 && shctl.calls_of(shctl.K_STAT) == 1);
+    store(2);
+    shctl.set(b"/home/sam", "sam's home", 10);
+    shctl.keep();
+    shctl.fail(shctl.K_RENAME, 1, -13);
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE && shctl.kept());
+    assert(shctl.calls_of(shctl.K_OPEN_W) == 0);
+    shctl.fail(shctl.K_STAT, 1, -5);
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE && shctl.kept());
+    assert(shctl.calls_of(shctl.K_RENAME) == 1 && shctl.calls_of(shctl.K_OPEN_W) == 0);
+}
+
+test "a home that cannot be put back stays aside, and the store still reads as before" {
+    store(2);
+    shctl.set(b"/home/sam", "sam's home", 10);
+    shctl.fail(shctl.K_OPEN_W, 1, -30);
+    shctl.fail(shctl.K_RENAME, 2, -5);                         // the home's way back
+    assert(remove("ci", "sam", "correct horse") == authreq.E_WRITE);
+    assert(reload() == 4 && at_of("sam") >= 0 && acct.uid_of(at_of("sam")) == 1002);
+    assert(shctl.size_of(b"/home/sam") == -1 && shctl.size_of(b"/home/.removed.sam.1002") == 10);
+    assert(remove("ci", "sam", "correct horse") == authreq.R_HOME);                 // until the aside name is cleared
+}
+
+test "the last parent's home never moves" {
+    store(1);
+    shctl.set(b"/home/ci", "ci's home", 9);
+    shctl.keep();
+    assert(remove("ci", "ci", "correct horse") == authreq.R_LAST && shctl.kept());
+    assert(shctl.calls_of(shctl.K_STAT) == 0 && shctl.calls_of(shctl.K_RENAME) == 0);
+}
+
+// A draw of 0..n-1 from the test's own generator.
+I64 seed = 20261111;
+I64 draw(I64 n) {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return (seed / 65536) % n;
+}
+
+I64 one(I64 who, I64 name, I64 what, Bool right) {
+    I64 n = 0;
+    I64 wl = 2;
+    I64 nl = 2;
+    if (who > 0) { wl = 3; }
+    if (name > 0) { nl = 3; }
+    U8[3] w;
+    U8[3] t;
+    for k in 0..3 {
+        w[k] = b"ci patsamlee"[3 * who + k];
+        t[k] = b"ci patsamlee"[3 * name + k];
+    }
+    U8[17] p;
+    I64 pl = 13;
+    if (who == PAT) { pl = 14; }
+    if (who == SAM) { pl = 4; }
+    if (who == LEE) { pl = 17; }
+    for k in 0..pl {
+        if (who == CI) { p[k] = b"correct horse"[k]; }
+        if (who == PAT) { p[k] = b"battery staple"[k]; }
+        if (who == SAM) { p[k] = b"kid4"[k]; }
+        if (who == LEE) { p[k] = b"a longer password"[k]; }
+    }
+    if (!right) { p[0] = 63; }
+    if (what == 0) { n = authreq.role(req, w, wl, t, nl, acct.PARENT, p, pl); }
+    if (what == 1) { n = authreq.role(req, w, wl, t, nl, acct.CHILD, p, pl); }
+    if (what == 2) { n = authreq.remove(req, w, wl, t, nl, p, pl); }
+    if (what >= 3) { n = authreq.ceil(req, w, wl, t, nl, what - 3, p, pl); }
+    assert(n > 0);
+    return authop.run(req, n, mem, fresh, 16, 8, 1);
+}
+
+test "in any order of operations a parent remains, and what is not done leaves the store's bytes" {
+    I64 done = 0;
+    I64 last = 0;
+    for round in 0..60 {
+        store(2);
+        for step in 0..30 {
+            shctl.keep();
+            Bool right = draw(8) != 0;
+            I64 who = b"\x00\x00\x00\x01\x01\x01\x02\x03"[draw(8)] as I64;       // the parents ask most
+            I64 what = b"\x00\x00\x01\x01\x01\x02\x02\x03"[draw(8)] as I64;      // promote, demote, remove, ceiling
+            if (what == 3) { what = 3 + draw(8); }
+            I64 code = one(who, draw(4), what, right);
+            if (code == authreq.DONE) { done = done + 1; } else { assert(shctl.kept()); }
+            if (code == authreq.R_LAST) { last = last + 1; }
+            if (!right) { assert(code == authreq.WRONG || code == authreq.R_APPROVER); }
+            assert(code != authreq.E_REQUEST && code != authreq.E_STORE && code != authreq.E_WRITE);
+            assert(reload() >= 1 && acct.parents() >= 1);
+            assert(shctl.files() <= 2);
+        }
+    }
+    assert(done > 300 && last > 50);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,366 @@
+// user/ci/kit/indexbody.ci: Index's body (DN-55, design notes 51 and 65): the Grid and the List of kit/finder.ci's kept
+// entries, a row at a time at 1x, scrolled by whole rows, and what a point is on. It reads no file and no device, so
+// tests/ff/indexbody_test.ci and tests/ff/index_proof.ci use it hosted. Every place is a function of the box it is
+// given (design note 65: parts never scale; a larger box shows more).
+//
+// Grid (frame 4): cells 112 x 104, 8 apart, from 16 in and 12 down; as many columns as fit, left aligned, the slack at
+// the right. A cell: the 48 px file icon 16 down, its name in SMALL centered under it, one line, cut with an ellipsis
+// at 100 px; a chosen cell FILL (radius 12) with its name in ON_FILL. List (frame 3): from 8 in and 4 down, a 28 px
+// header of NAME, TYPE, SIZE and MODIFIED in LABEL, dim, a caret after the sort's column (down for MODIFIED: newest
+// first), then 28 px pill rows 2 apart (radius 14, 10 in): the 16 px icon, 10 to the name in BODY, TYPE in BODY dim,
+// SIZE in PATH dim at the right of its column; a chosen row FILL, its name in NAME_BOLD and every text ON_FILL.
+// NAME takes the slack; TYPE 112, SIZE 80, MODIFIED 128 wide, 12 apart. When NAME would be under 120 px, MODIFIED
+// drops, then TYPE (DN-55's narrow form). MODIFIED shows nothing until RS-TZb gives the local time's words.
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.fileicons;
+import user.ci.kit.finder;
+
+export const I64 CELL_W = 112;
+export const I64 CELL_H = 104;
+export const I64 GAP = 8;
+const I64 GX = 16;                  // the grid's padding, across and down
+const I64 GY = 12;
+const I64 LX = 8;                   // the list's padding
+const I64 LY = 4;
+export const I64 ROW_H = 28;        // a list row, and the header
+const I64 RGAP = 2;
+const I64 CPAD = 10;                // a row's own padding
+const I64 CGAP = 12;                // between columns
+export const I64 TYPE_W = 112;
+export const I64 SIZE_W = 80;
+export const I64 MOD_W = 128;       // until RS-TZb's words say otherwise
+const I64 NAME_MIN = 120;
+const I64 NAME_W = 100;             // a cell's name at most
+
+// What a point is on (hit), besides a kept entry's number (0 and up).
+export const I64 EMPTY = -1;        // the body's space
+export const I64 OUTSIDE = -2;
+export const I64 HEAD = -100;       // HEAD - key: the header of finder's sort key (BY_NAME .. BY_MODIFIED)
+
+I64 bx0 = 0;
+I64 by0 = 0;
+I64 bx1 = 0;
+I64 by1 = 0;
+Bool listing = false;
+I64 top = 0;                        // the first row shown: a grid row, or a list row
+I64 drop_k = -1;                    // the kept entry a drag would drop on (PR 337's index band), -1 for none
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// The body's box [x0, x1) x [y0, y1), in the surface.
+export void set_box(I64 x0, I64 y0, I64 x1, I64 y1) {
+    bx0 = x0;
+    by0 = y0;
+    bx1 = x1;
+    by1 = y1;
+}
+
+// The List (true) or the Grid; the view starts at its top.
+export void set_list(Bool on) {
+    if (on != listing) { top = 0; }
+    listing = on;
+}
+
+export void scroll_top() { top = 0; }
+
+// PR 337 (the index band): kept entry k drawn as the drop's target, SURF1 under it before its icon (radius 12 in the
+// Grid, 14 in the List); -1 for none, which leaves every pixel as it was.
+export void set_drop(I64 k) { drop_k = k; }
+
+// The Grid's columns: as many as fit, at least one.
+export I64 cols() {
+    I64 c = (bx1 - bx0 - 2 * GX + GAP) / (CELL_W + GAP);
+    if (c < 1) { return 1; }
+    return c;
+}
+
+// The rows wholly shown: grid rows, or list rows under the header; at least one.
+export I64 rows() {
+    I64 r = (by1 - by0 - GY) / (CELL_H + GAP);
+    if (listing) { r = (by1 - by0 - LY - ROW_H - RGAP) / (ROW_H + RGAP); }
+    if (r < 1) { return 1; }
+    return r;
+}
+
+// The kept entries a step of the arrows moves by: across 1; up and down a grid row (cols) or a list row (1).
+export I64 down_step() {
+    if (listing) { return 1; }
+    return cols();
+}
+
+// The rows scrolled by d (a band held at the body's top or foot, kit/indexband.ci's tick), no further than the first
+// row or than the last row wholly shown: false when the view did not move.
+export Bool scroll(I64 d) {
+    I64 all = finder.kept();
+    if (!listing) { all = (all + cols() - 1) / cols(); }
+    I64 most = all - rows();
+    if (most < 0) { most = 0; }
+    I64 t = top + d;
+    if (t > most) { t = most; }
+    if (t < 0) { t = 0; }
+    if (t == top) { return false; }
+    top = t;
+    return true;
+}
+
+// Kept entry k shown: the rows scroll the least to hold it.
+export void keep(I64 k) {
+    if (k < 0) { return; }
+    I64 r = k;
+    if (!listing) { r = k / cols(); }
+    if (r < top) { top = r; }
+    if (r >= top + rows()) { top = r - rows() + 1; }
+}
+
+// --- the List's columns ---
+
+Bool show_mod() { return name_w(true, true) >= NAME_MIN; }
+Bool show_type() { return name_w(show_mod(), true) >= NAME_MIN; }
+
+I64 name_w(Bool m, Bool t) {
+    I64 w = bx1 - bx0 - 2 * LX - 2 * CPAD - (SIZE_W + CGAP);
+    if (m) { w = w - (MOD_W + CGAP); }
+    if (t) { w = w - (TYPE_W + CGAP); }
+    return w;
+}
+
+I64 right() { return bx1 - LX - CPAD; }
+I64 mod_x() { return right() - MOD_W; }
+I64 size_x1() {
+    if (show_mod()) { return mod_x() - CGAP; }
+    return right();
+}
+I64 size_x() { return size_x1() - SIZE_W; }
+I64 type_x() { return size_x() - CGAP - TYPE_W; }
+I64 name_x() { return bx0 + LX + CPAD; }
+I64 name_x1() {
+    if (show_type()) { return type_x() - CGAP; }
+    return size_x() - CGAP;
+}
+
+// --- drawing ---
+
+// Text s[0..n] in face f from x0, cut to end before x1 with an ellipsis when it does not fit; its pen's end.
+I64 fit(inout U32[_] row, I64 y, I64 x0, I64 base, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    if (ctext.width(s, n, f, 1) <= x1 - x0) { return ctext.text(row, y, x0, base, x1, s, n, c, f, 1); }
+    U8[3] e = [0xe2, 0x80, 0xa6];
+    I64 ew = ctext.width(e, 3, f, 1);
+    I64 k = n;
+    while (k > 0 && (ctext.width(s, k, f, 1) + ew > x1 - x0 || (s[k - 1] & 0xc0) == 0x80)) { k = k - 1; }
+    I64 at = ctext.text(row, y, x0, base, x1, s, k, c, f, 1);
+    if (at + ew > x1) { return at; }       // a column narrower than the ellipsis: none (Index audit, low 1)
+    return ctext.text(row, y, at, base, x1, e, 3, c, f, 1);
+}
+
+// The baseline of a line of face f centered in a box of height h from top t.
+I64 base_in(I64 t, I64 h, I64 f) {
+    I64 a = ctext.ascent(f, 1);
+    I64 d = ctext.descent(f, 1);
+    return t + (h - a - d) / 2 + a;
+}
+
+I64 icon_of(I64 i, inout U8[_] nb) {
+    I64 n = finder.name_of(i, nb);
+    return fileicons.kind(nb, n, finder.is_dir(i));
+}
+
+void grid_row(inout U32[_] row, I64 y) {
+    I64 dy = y - by0 - GY;
+    if (dy < 0) { return; }
+    I64 r = dy / (CELL_H + GAP) + top;
+    I64 cy = by0 + GY + (r - top) * (CELL_H + GAP);
+    if (y >= cy + CELL_H) { return; }
+    U8[256] nb;
+    for c in 0..cols() {
+        I64 k = r * cols() + c;
+        if (k < finder.kept()) {
+            I64 i = finder.kept_at(k);
+            I64 x = bx0 + GX + c * (CELL_W + GAP);
+            I64 t = tokens.INK;
+            if (finder.picked(k)) {
+                shape.rounded(row, y, x, cy, x + CELL_W, cy + CELL_H, 12, tok(tokens.FILL));
+                t = tokens.ON_FILL;
+            } else if (k == drop_k) {
+                shape.rounded(row, y, x, cy, x + CELL_W, cy + CELL_H, 12, tok(tokens.SURF1));
+            }
+            fileicons.icon_at(row, y, x + (CELL_W - 48) / 2, cy + 16, icon_of(i, nb), 48, 1);
+            I64 n = finder.name_of(i, nb);
+            I64 w = ctext.width(nb, n, faces.SMALL, 1);
+            if (w > NAME_W) { w = NAME_W; }
+            I64 nx = x + (CELL_W - w) / 2;
+            I64 e = fit(row, y, nx, base_in(cy + 74, 15, faces.SMALL), nx + NAME_W, nb, n, tok(t), faces.SMALL);
+        }
+    }
+}
+
+// The caret after the sort's column: an 8 px chevron up (down for MODIFIED), stroked 1.5, round ends, in eighths.
+void caret(inout U32[_] row, I64 y, I64 x0, I64 y0, Bool down, U32 c) {
+    if (y < y0 || y >= y0 + 8) { return; }
+    I64 py = y - y0;
+    I64 ay = 44;
+    I64 my = 24;
+    if (down) {
+        ay = 20;
+        my = 40;
+    }
+    for px in 0..8 {
+        I64 n = 0;
+        for j in 0..4 {
+            for i in 0..4 {
+                I64 sx = 8 * px + 2 * i + 1;
+                I64 sy = 8 * py + 2 * j + 1;
+                if (near(sx, sy, 12, ay, 32, my) || near(sx, sy, 32, my, 52, ay)) { n = n + 1; }
+            }
+        }
+        if (n > 0 && x0 + px >= 0 && x0 + px < len(row)) { row[x0 + px] = blend.mix_px(row[x0 + px], c, n * 16); }
+    }
+}
+
+Bool near(I64 px, I64 py, I64 ux, I64 uy, I64 vx, I64 vy) {
+    I64 dx = vx - ux;
+    I64 dy = vy - uy;
+    I64 wx = px - ux;
+    I64 wy = py - uy;
+    I64 c1 = wx * dx + wy * dy;
+    I64 c2 = dx * dx + dy * dy;
+    if (c1 <= 0) { return wx * wx + wy * wy <= 36; }
+    if (c1 >= c2) { return (px - vx) * (px - vx) + (py - vy) * (py - vy) <= 36; }
+    return (wx * wx + wy * wy) * c2 - c1 * c1 <= 36 * c2;
+}
+
+void head_label(inout U32[_] row, I64 y, I64 x, I64 x1, in U8[_] s, I64 key, Bool at_right) {
+    I64 hy = by0 + LY;
+    I64 w = ctext.width(s, len(s), faces.LABEL, 1);
+    I64 lx = x;
+    if (at_right) { lx = x1 - w; }
+    U32 c = tok(tokens.INK_DIM);
+    I64 e = ctext.text(row, y, lx, base_in(hy, ROW_H, faces.LABEL), x1, s, len(s), c, faces.LABEL, 1);
+    if (finder.sort_key() == key) {
+        I64 cx = lx + w + 6;
+        if (at_right) { cx = lx - 6 - 8; }
+        caret(row, y, cx, hy + 10, key == finder.BY_MODIFIED, c);
+    }
+}
+
+void list_row(inout U32[_] row, I64 y) {
+    I64 hy = by0 + LY;
+    if (y >= hy && y < hy + ROW_H) {
+        head_label(row, y, name_x(), name_x1(), b"NAME", finder.BY_NAME, false);
+        if (show_type()) { head_label(row, y, type_x(), type_x() + TYPE_W, b"TYPE", finder.BY_TYPE, false); }
+        head_label(row, y, size_x(), size_x1(), b"SIZE", finder.BY_SIZE, true);
+        if (show_mod()) { head_label(row, y, mod_x(), right(), b"MODIFIED", finder.BY_MODIFIED, false); }
+        return;
+    }
+    I64 dy = y - (hy + ROW_H + RGAP);
+    if (dy < 0) { return; }
+    I64 k = dy / (ROW_H + RGAP) + top;
+    I64 ry = hy + ROW_H + RGAP + (k - top) * (ROW_H + RGAP);
+    if (y >= ry + ROW_H || k >= finder.kept()) { return; }
+    I64 i = finder.kept_at(k);
+    Bool on = finder.picked(k);
+    I64 tn = tokens.INK;
+    I64 td = tokens.INK_DIM;
+    I64 fn = faces.BODY;
+    if (on) {
+        shape.rounded(row, y, bx0 + LX, ry, bx1 - LX, ry + ROW_H, 14, tok(tokens.FILL));
+        tn = tokens.ON_FILL;
+        td = tokens.ON_FILL;
+        fn = faces.NAME_BOLD;
+    } else if (k == drop_k) {
+        shape.rounded(row, y, bx0 + LX, ry, bx1 - LX, ry + ROW_H, 14, tok(tokens.SURF1));
+    }
+    U8[256] nb;
+    fileicons.icon_at(row, y, name_x(), ry + 6, icon_of(i, nb), 16, 1);
+    I64 n = finder.name_of(i, nb);
+    I64 e = fit(row, y, name_x() + 26, base_in(ry, ROW_H, fn), name_x1(), nb, n, tok(tn), fn);
+    if (show_type()) {
+        n = finder.kind_text(i, nb);
+        e = fit(row, y, type_x(), base_in(ry, ROW_H, faces.BODY), type_x() + TYPE_W, nb, n, tok(td), faces.BODY);
+    }
+    n = finder.size_text(i, nb);
+    I64 w = ctext.width(nb, n, faces.PATH, 1);
+    if (w > SIZE_W) { w = SIZE_W; }        // cut to its column, never into TYPE (Index audit)
+    e = fit(row, y, size_x1() - w, base_in(ry, ROW_H, faces.PATH), size_x1(), nb, n, tok(td), faces.PATH);
+}
+
+// The body's row y across its box, on PAPER.
+export void body_row(inout U32[_] row, I64 y) {
+    if (y < by0 || y >= by1) { return; }
+    draw.paint(row, bx0, bx1, tok(tokens.PAPER));
+    if (listing) { list_row(row, y); } else { grid_row(row, y); }
+}
+
+// A point inside kept entry k where it is shown (the keyed menu opens there), or -1 when it is scrolled away.
+export I64 spot_x(I64 k) {
+    if (!shown_k(k)) { return -1; }
+    if (listing) { return name_x() + 26; }
+    return bx0 + GX + (k % cols()) * (CELL_W + GAP) + 12;
+}
+
+export I64 spot_y(I64 k) {
+    if (!shown_k(k)) { return -1; }
+    if (listing) { return by0 + LY + ROW_H + RGAP + (k - top) * (ROW_H + RGAP) + ROW_H / 2; }
+    return by0 + GY + (k / cols() - top) * (CELL_H + GAP) + CELL_H / 2;
+}
+
+Bool shown_k(I64 k) {
+    if (k < 0 || k >= finder.kept()) { return false; }
+    I64 r = k;
+    if (!listing) { r = k / cols(); }
+    return r >= top && r < top + rows();
+}
+
+// Kept entry 0's box's top left on the surface after the scroll, shown or not (kit/indexband.ci's set_grid and
+// set_list), and a List row's right end.
+export I64 origin_x() {
+    if (listing) { return bx0 + LX; }
+    return bx0 + GX;
+}
+export I64 origin_y() {
+    if (listing) { return by0 + LY + ROW_H + RGAP - top * (ROW_H + RGAP); }
+    return by0 + GY - top * (CELL_H + GAP);
+}
+export I64 row_x1() { return bx1 - LX; }
+
+// The List's NAME column end (kit/indexrename.ci's field ends there).
+export I64 name_end() { return name_x1(); }
+
+// The body's corner where the keyed menu opens with nothing chosen.
+export I64 corner_x() { return bx0 + GX; }
+export I64 corner_y() { return by0 + GY; }
+
+// --- where a point is ---
+
+// What (x, y) is on: a kept entry's number, EMPTY (the body's space), HEAD - key (a column's header) or OUTSIDE.
+export I64 hit(I64 x, I64 y) {
+    if (x < bx0 || x >= bx1 || y < by0 || y >= by1) { return OUTSIDE; }
+    if (listing) {
+        I64 hy = by0 + LY;
+        if (y >= hy && y < hy + ROW_H) {
+            if (x >= name_x() && x < name_x1()) { return HEAD - finder.BY_NAME; }
+            if (show_type() && x >= type_x() && x < type_x() + TYPE_W) { return HEAD - finder.BY_TYPE; }
+            if (x >= size_x() && x < size_x1()) { return HEAD - finder.BY_SIZE; }
+            if (show_mod() && x >= mod_x() && x < right()) { return HEAD - finder.BY_MODIFIED; }
+            return EMPTY;
+        }
+        I64 dy = y - (hy + ROW_H + RGAP);
+        if (dy < 0 || dy % (ROW_H + RGAP) >= ROW_H || x < bx0 + LX || x >= bx1 - LX) { return EMPTY; }
+        I64 k = dy / (ROW_H + RGAP) + top;
+        if (k < finder.kept()) { return k; }
+        return EMPTY;
+    }
+    I64 dx = x - bx0 - GX;
+    I64 dy = y - by0 - GY;
+    if (dx < 0 || dy < 0 || dx % (CELL_W + GAP) >= CELL_W || dy % (CELL_H + GAP) >= CELL_H) { return EMPTY; }
+    I64 c = dx / (CELL_W + GAP);
+    if (c >= cols()) { return EMPTY; }
+    I64 k = (dy / (CELL_H + GAP) + top) * cols() + c;
+    if (k < finder.kept()) { return k; }
+    return EMPTY;
+}
+// SPDX-License-Identifier: Apache-2.0

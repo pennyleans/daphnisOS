@@ -1,0 +1,670 @@
+{
+  "cases": [
+    {
+      "case": "html5lib/test-yahoo-jp.dat:0",
+      "index_base": 0,
+      "input_bytes": 478,
+      "input_sha256": "27d1b2d471be5ba48eaabe35cfb20738f4677f029e6e9d438017d8c1e87a9d46",
+      "expected": "euc-jp",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:0",
+      "index_base": 0,
+      "input_bytes": 137,
+      "input_sha256": "236edad85f1449354288ae09b422917640ba51d8dc44af3a992b062b881f98e5",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:1",
+      "index_base": 0,
+      "input_bytes": 43,
+      "input_sha256": "2f265d00fa500c4c9dc96afe4d6bac40fc8b3047d87d48d9f986af4e58c562ed",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:2",
+      "index_base": 0,
+      "input_bytes": 42,
+      "input_sha256": "651b82733d3dc043158425dcfbf878d8fa588b8b05a29e8e660eb2e02214f48e",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:3",
+      "index_base": 0,
+      "input_bytes": 42,
+      "input_sha256": "5268d531195ad9569c06312163b5be0ca3acc185bed70cd00bc9d43c58a4221d",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:4",
+      "index_base": 0,
+      "input_bytes": 40,
+      "input_sha256": "57aee219f4ba1d3351ed6cda585e56477ec1afeb12e0f79ff3b383f67bfce274",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:5",
+      "index_base": 0,
+      "input_bytes": 40,
+      "input_sha256": "89ef3cb9aa3231bc11c2f6abb8441bf3c5d0461e68504847500131ee4537d6bb",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:6",
+      "index_base": 0,
+      "input_bytes": 39,
+      "input_sha256": "0b74b7b93bdca305aa6796c251624f9160861551f686995d4a735e3a6db29962",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:7",
+      "index_base": 0,
+      "input_bytes": 193,
+      "input_sha256": "861ee45a39fe1c212c2814c0d0bc5fedd9136fa196044c7c0c2a10e870bb1a60",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:8",
+      "index_base": 0,
+      "input_bytes": 193,
+      "input_sha256": "498c7db7113d5c84b36c7bad1375cda7035a2874150903ccef502b42e2731b2c",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:9",
+      "index_base": 0,
+      "input_bytes": 85,
+      "input_sha256": "de021a354ee2ab174cff69ff89bc6fb1bf5e0b54353081d7295a5056cfe8b0bb",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:10",
+      "index_base": 0,
+      "input_bytes": 86,
+      "input_sha256": "67e9036092995cec5bbfe9fd436e6056c6857eacbb821d90c8267bac5b7ac97a",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:11",
+      "index_base": 0,
+      "input_bytes": 88,
+      "input_sha256": "0adf33caba70611d783f66b0b07a791c4844d27f1e7ad76fd2c9ab4e59cd89a9",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:12",
+      "index_base": 0,
+      "input_bytes": 88,
+      "input_sha256": "f05b6ef9b03a1a1c1d4c34ec5a3fa4b9e392e74efcb5853904af117c60496513",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:13",
+      "index_base": 0,
+      "input_bytes": 88,
+      "input_sha256": "eb7b3f0ce3221cef6e4aa6daf3fec6cadaa40cafd8d82e7a743ec667d0c4b0ad",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:14",
+      "index_base": 0,
+      "input_bytes": 88,
+      "input_sha256": "26d4e2207870ea63c334d9ebbb30d7b4af10184639839573c3ee7dc79859eeb6",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:15",
+      "index_base": 0,
+      "input_bytes": 93,
+      "input_sha256": "3a2b196d0bdb7bbde4415e071f3f8ab0e4ec6917af58752245f417314ad8960d",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:16",
+      "index_base": 0,
+      "input_bytes": 93,
+      "input_sha256": "ff7e299e218cf13458320bd895cbbb4ecb6524cb33f5f07fb390acd9f513b4b3",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:17",
+      "index_base": 0,
+      "input_bytes": 87,
+      "input_sha256": "8d4c89cb14da470ddd0c8ed0f66f1a3a122814168714ec35903665575cd6b4a2",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:18",
+      "index_base": 0,
+      "input_bytes": 87,
+      "input_sha256": "7b12f7c94070201ef9d93fa7a462f706040ffe2d0dfb7a53b5b928562ac10645",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:19",
+      "index_base": 0,
+      "input_bytes": 61,
+      "input_sha256": "b49b474b1d1e335602dc225408f8a123faf7bda9850e4449cdbc65b52d530aba",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:20",
+      "index_base": 0,
+      "input_bytes": 65,
+      "input_sha256": "b2fb3e02421ee5350c60a467fc67cfb53394e488fc2724c12ed2c567d1fd3a6b",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:21",
+      "index_base": 0,
+      "input_bytes": 89,
+      "input_sha256": "7b3103ffd68a170506995a33320cb13cbe10b60f32922234bf9921cea49caa96",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:22",
+      "index_base": 0,
+      "input_bytes": 44,
+      "input_sha256": "6a95e8c4b727abc106518003488f8148b276b7d62bb82b8ed1e94d214692d589",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:23",
+      "index_base": 0,
+      "input_bytes": 42,
+      "input_sha256": "799fb4a85d89d4180777f8d7374cb6029e27a03a6b2c0219d22a073eb9d63eb5",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:24",
+      "index_base": 0,
+      "input_bytes": 50,
+      "input_sha256": "b27ca7bff156077c18c09d864a74753c6b52036ffe99563447bbefbeb80bc98b",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:25",
+      "index_base": 0,
+      "input_bytes": 50,
+      "input_sha256": "5c59008063402d6ab21dc383a090e2ec5fd95993278a7e4d0ec55ba1eff1f074",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:26",
+      "index_base": 0,
+      "input_bytes": 51,
+      "input_sha256": "aa67ac2a29701cade2e3da7fa7b21ea77100c7b71dd98e9460b39c44e54c04b6",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:27",
+      "index_base": 0,
+      "input_bytes": 55,
+      "input_sha256": "a4b6a02c736faae3bed7f0af987c7b9d594979e49ddb9e58f875b1fdce717df0",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:28",
+      "index_base": 0,
+      "input_bytes": 56,
+      "input_sha256": "25d5f5147fdd458e15dd5f5a33f79022e247087dd7615860d9f775bf99800627",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:29",
+      "index_base": 0,
+      "input_bytes": 58,
+      "input_sha256": "9bffa450238e642b250035bc9ce98b88913ee2f681bf88c1bd060561f68462ae",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:30",
+      "index_base": 0,
+      "input_bytes": 58,
+      "input_sha256": "9803901eaf24300b42ec92053d1365f0c1f4097c8609426298beaa3466d4485b",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:31",
+      "index_base": 0,
+      "input_bytes": 48,
+      "input_sha256": "79551858b5ad345fd0f78f6b4c06dc449d98dad95c272be0ee0e01c5108e1cf1",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:32",
+      "index_base": 0,
+      "input_bytes": 57,
+      "input_sha256": "24b39b2b02987a9663574bbc8acf585bc963611f151629755e8b9dea57f3f221",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:33",
+      "index_base": 0,
+      "input_bytes": 83,
+      "input_sha256": "8a86982130663b17bbd0836435b12012750c3813c58f53222ec03391116a944e",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:34",
+      "index_base": 0,
+      "input_bytes": 82,
+      "input_sha256": "92b48736433e56d96588904bb917daab1537ef15fefa59e6805119b159a54d38",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:35",
+      "index_base": 0,
+      "input_bytes": 75,
+      "input_sha256": "3a799f090be248a829b318551eee353dc18346c74271c60fd4cca89656710955",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:36",
+      "index_base": 0,
+      "input_bytes": 77,
+      "input_sha256": "021229df64bdf899aaa85c29e9598bba6ebd7e00f6588fb2908c6be42c9a5f5e",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:37",
+      "index_base": 0,
+      "input_bytes": 70,
+      "input_sha256": "c30ee5942f2f02d7e8d16c712b959d91de98bb47bcd7347b5d53007d293cb1bd",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:38",
+      "index_base": 0,
+      "input_bytes": 70,
+      "input_sha256": "eaa4d97d284f6ae45552e2ba99f2106df1bda2ad0e34e08cdc5a2a7191b1dbfb",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:39",
+      "index_base": 0,
+      "input_bytes": 77,
+      "input_sha256": "faaac41a087cf27fd6a9f8725d0eac246ec5ccbdbeeac674c034ddf2b4e24b93",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:40",
+      "index_base": 0,
+      "input_bytes": 77,
+      "input_sha256": "8db7b52646bb869dbfde06fcf8779885070d718b42352277e55069a1b6239a2f",
+      "expected": "Windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:41",
+      "index_base": 0,
+      "input_bytes": 49,
+      "input_sha256": "cbb8d9c1970c281fe4bd176e9987e0fb28921f02ece561bbef66bdfb573b954c",
+      "expected": "UTF-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:42",
+      "index_base": 0,
+      "input_bytes": 77,
+      "input_sha256": "9c15a0eedb8345815fffeaae9c21e234e3ea2ddc2a888d253e78d87633c96024",
+      "expected": "UTF-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:43",
+      "index_base": 0,
+      "input_bytes": 511,
+      "input_sha256": "d0c42ca517946b007d5fc97801298d918750e13392dc24fe67788ae471e90962",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:44",
+      "index_base": 0,
+      "input_bytes": 510,
+      "input_sha256": "087318df8fb872cd68c1be612af80b4c527f2763437d63bd88c4fd66311c7d6a",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:45",
+      "index_base": 0,
+      "input_bytes": 1022,
+      "input_sha256": "985d2fb10a56a09aba34782e91347122d6328ab52b09c4f0b7278ca3c7617ca4",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:46",
+      "index_base": 0,
+      "input_bytes": 1023,
+      "input_sha256": "8220b274021571e52166a3456980b2cf57ed64235dc81ff5967cf80afdaf6278",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:47",
+      "index_base": 0,
+      "input_bytes": 2046,
+      "input_sha256": "a7dcadfbf35d78c549e1d775084f7f7d19d3848d32ad826a0e0357be5cb1cfee",
+      "expected": "iso-8859-2",
+      "projection": "not applicable: original late-meta expectation beyond 1024-byte prescan"
+    },
+    {
+      "case": "html5lib/tests1.dat:48",
+      "index_base": 0,
+      "input_bytes": 2047,
+      "input_sha256": "8d5f276e1dfc85402fe5ea16125bd67d2d0faa5d09d0f9db823707000cfc8a93",
+      "expected": "iso-8859-2",
+      "projection": "not applicable: original late-meta expectation beyond 1024-byte prescan"
+    },
+    {
+      "case": "html5lib/tests1.dat:49",
+      "index_base": 0,
+      "input_bytes": 4094,
+      "input_sha256": "ae724d8943dcbee2b80070748a6aa5425c3c3b4e92c2032fba38f7ddd72884cb",
+      "expected": "iso-8859-2",
+      "projection": "not applicable: original late-meta expectation beyond 1024-byte prescan"
+    },
+    {
+      "case": "html5lib/tests1.dat:50",
+      "index_base": 0,
+      "input_bytes": 4095,
+      "input_sha256": "8620f06e001454a9b0f707d9269795148ac87b64c184683bc65e27d4f0965c3b",
+      "expected": "iso-8859-2",
+      "projection": "not applicable: original late-meta expectation beyond 1024-byte prescan"
+    },
+    {
+      "case": "html5lib/tests1.dat:51",
+      "index_base": 0,
+      "input_bytes": 8190,
+      "input_sha256": "d8e3e0087609f55866c63a3d9403d3c90a2e5b637bb54b140683683a26351c10",
+      "expected": "iso-8859-2",
+      "projection": "not applicable: original late-meta expectation beyond 1024-byte prescan"
+    },
+    {
+      "case": "html5lib/tests1.dat:52",
+      "index_base": 0,
+      "input_bytes": 8191,
+      "input_sha256": "2549c43f1c3f5f26d3e84b3357bd84398537011c110149e1e9138608253817e5",
+      "expected": "iso-8859-2",
+      "projection": "not applicable: original late-meta expectation beyond 1024-byte prescan"
+    },
+    {
+      "case": "html5lib/tests1.dat:53",
+      "index_base": 0,
+      "input_bytes": 8387,
+      "input_sha256": "5dae9dbfb6aad975a81dfe136e8562a5afa94619b8208e70aac86e720947430a",
+      "expected": "iso-8859-2",
+      "projection": "not applicable: original late-meta expectation beyond 1024-byte prescan"
+    },
+    {
+      "case": "html5lib/tests1.dat:54",
+      "index_base": 0,
+      "input_bytes": 77,
+      "input_sha256": "e140f2189716033a57f3a66592d8ecb14071182761c7fe24db409f2f506dd5f5",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:55",
+      "index_base": 0,
+      "input_bytes": 77,
+      "input_sha256": "6fe936ef237f58e4deb4c93c7497887903d9f55f3b1bcef040c2f4bdefddb373",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:56",
+      "index_base": 0,
+      "input_bytes": 75,
+      "input_sha256": "ba6cd629e4990a2311177f6e0d9d78fb704db6d94f7113a4b8afb9d0f9c69601",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:57",
+      "index_base": 0,
+      "input_bytes": 49,
+      "input_sha256": "acd4033a28cde16e6ccf3348bc8f4d23fdfb2e5bdef333b887f315114c26b1da",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests1.dat:58",
+      "index_base": 0,
+      "input_bytes": 65,
+      "input_sha256": "18ecfc402c94551beec32859cd496cf8ae887db0a5ce52c790b16460c5eb0b31",
+      "expected": "iso-8859-2",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:0",
+      "index_base": 0,
+      "input_bytes": 5,
+      "input_sha256": "a3f58e9549abafb5d5411cdf21d7eea094a262f0d0344b35a5a6f33621871152",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:1",
+      "index_base": 0,
+      "input_bytes": 1,
+      "input_sha256": "dabd3aff769f07eb2965401eb029974ebba3407afd02b26ddb564ea5f8efae72",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:2",
+      "index_base": 0,
+      "input_bytes": 2,
+      "input_sha256": "b484cba221e554178839c38dbf98f58d9a777dfbb9d27f9b6ac05ae22480eaac",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:3",
+      "index_base": 0,
+      "input_bytes": 17,
+      "input_sha256": "1b9d69e29dbe3d46114ea7daca25b4735bb66724441212f60080c05bf7e2b72b",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:4",
+      "index_base": 0,
+      "input_bytes": 20,
+      "input_sha256": "c564181c659e0f125f613c983ccf9cf4840f8c2a1f009ae2b7185c7879482f07",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:5",
+      "index_base": 0,
+      "input_bytes": 29,
+      "input_sha256": "c74f0e901a32484ce3a3d15513d9a15c7186429e7a242dbb85c07d79a3673245",
+      "expected": "euc-jp",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:6",
+      "index_base": 0,
+      "input_bytes": 38,
+      "input_sha256": "1c30c82ae574342d14b9ee73bdaca6348a91917657b29f154f9a05e84db3277b",
+      "expected": "euc-jp",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:7",
+      "index_base": 0,
+      "input_bytes": 76,
+      "input_sha256": "5061c87ec1870c8e9b4ac280d614978aebff423b324a3b66ff4385e88323c91e",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:8",
+      "index_base": 0,
+      "input_bytes": 72,
+      "input_sha256": "7ee626681dd4c80a44fa5315e258cd9b2201752e7664cebc208dbe746dbd497a",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:9",
+      "index_base": 0,
+      "input_bytes": 52,
+      "input_sha256": "7c366dfd2b12532ac6eb5c318a7903d7907072c686f096d95d96862f4b515e00",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:10",
+      "index_base": 0,
+      "input_bytes": 69,
+      "input_sha256": "2562351925a6e42df59359160fa0f9d6f9f699127b6ee3e4a8919fd131505311",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:11",
+      "index_base": 0,
+      "input_bytes": 68,
+      "input_sha256": "b6af3fe4041490b8819616e0216da7854cead50ab7c9ba57a2f665b597e970af",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:12",
+      "index_base": 0,
+      "input_bytes": 614,
+      "input_sha256": "0f3a375d04f5d4dc1140be48d6508b5f70ad5dd790702790345d2a441d8bcc1f",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:13",
+      "index_base": 0,
+      "input_bytes": 622,
+      "input_sha256": "19663354c8105b458b260fbd9f9fe16d7f6efcb3394bebde75777abed7476528",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:14",
+      "index_base": 0,
+      "input_bytes": 625,
+      "input_sha256": "7e03c899069cee51ed711fe9a12c1a73507abd8f9a466e86701b08f442bdbb28",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:15",
+      "index_base": 0,
+      "input_bytes": 27,
+      "input_sha256": "51d630ed71163089ce4f7fc1fd672e5d3517e7a78a8f3df7165a6460d89d6f2d",
+      "expected": "windows-1252",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:16",
+      "index_base": 0,
+      "input_bytes": 23,
+      "input_sha256": "c68f36b5b59316aaf573ce69845137a613446ebf8d43c02dd42955922635cd6a",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:17",
+      "index_base": 0,
+      "input_bytes": 25,
+      "input_sha256": "9ab8aefd18a50ca3651879f8785a0508522106bcc2f42fa53f041342b7e4d3b7",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:18",
+      "index_base": 0,
+      "input_bytes": 25,
+      "input_sha256": "c0cdd443dae96f34be53de3752ba00ac4e33c8ceb0711cf008c74ffd2162fb31",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:19",
+      "index_base": 0,
+      "input_bytes": 34,
+      "input_sha256": "8312867e6e55a8b185a732b6e81a2794b8878ded49364d4250a110937bda6f94",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:20",
+      "index_base": 0,
+      "input_bytes": 32,
+      "input_sha256": "bf1bf84c6cd2426589b94cafcb916313e66bf15a51e69153056bf3ebff61bb54",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    },
+    {
+      "case": "html5lib/tests2.dat:21",
+      "index_base": 0,
+      "input_bytes": 31,
+      "input_sha256": "fa6768805111c8c7d8b2e4f1159eecf1f8bb344cc164278bbb91e9d16d52e451",
+      "expected": "utf-8",
+      "projection": "direct encoding only; source not specified by original"
+    }
+  ],
+  "excluded_contexts": [
+    {
+      "path": "encoding/chardet/",
+      "reason": "heuristic detector not exposed by this API"
+    },
+    {
+      "path": "encoding/scripted/",
+      "reason": "script execution and later encoding changes not exposed by this API"
+    }
+  ]
+}

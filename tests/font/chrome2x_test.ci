@@ -1,0 +1,344 @@
+// tests/font/chrome2x_test.ci: hosted tests of FONT-2 A (docs/specs/2026-11-07-k-kit2.md section 3i), the desk's
+// chrome drawn natively at 2x through user/ci/kit/pen.ci. hdesk.ci is a program (it imports the tiler's externs), so
+// cint test cannot import it: the calendar, the system panel and the tray's chevron below are hdesk.ci's cal_row,
+// panel_row and chevron line for line, their state fixed, and the sums are tools/check-hdesk.py's cal_row, panel_row
+// and chevron (the twin) over the same frames at zoom 1 and 2. Run by check.sh: cint test --root . tests/font/chrome2x_test.ci
+// DN-6 frame 9 redrew hdesk.ci's panel (tests/dn6/panel_test.ci); the panel here is SP-1's as it stood, kept as a
+// test of the pen at 2x. RS-CAL (kit/calpop.ci, frame 44) redraws the calendar, and the twin's cal_row went with
+// it (tests/rs/calpop_twin_test.ci); the calendar here is K-6's as it stood, its sums the retired twin's, kept the
+// same way.
+
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.draw;
+import user.ci.kit.pen;
+
+const I64 TBASE = 13;       // hdesk.ci TBASE
+const I64 CAL_W = 240;      // hdesk.ci's calendar
+const I64 CAL_H = 196;
+const I64 CAL_CW = 32;
+const I64 MR = 20;
+const I64 SP_W = 360;       // hdesk.ci's system panel
+const I64 SP_H = 368;
+
+U32[800] row;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+I64 ptxt(I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text(row, x0, y0 + TBASE, x1, s, n, c, f);
+}
+
+I64 ptxt_mid(I64 x0, I64 span, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 f) {
+    return pen.text_mid(row, x0, span, y0 + TBASE, x1, s, n, c, f);
+}
+
+// K-6's hdesk.ci cal_row at x0 = y0 = 0, showing January 2026 (first weekday 4, 31 days) on its first day.
+void cal_row(I64 y) {
+    U32 ink = tok(tokens.INK);
+    U32 rule = tok(tokens.RULE);
+    pen.frame(row, 0, 0, CAL_W, CAL_H, 2, rule);
+    I64 r = (y - 8) / MR;
+    if (y < 8 || r > 8) { return; }
+    I64 ry = 8 + MR * r;
+    if (r == 0) {
+        I64 a = ptxt(12, ry + 2, CAL_W - 64, b"JANUARY 2026", 12, ink, faces.LABEL);
+        pen.frame(row, CAL_W - 64, ry, CAL_W - 40, ry + MR - 2, 1, rule);
+        pen.frame(row, CAL_W - 36, ry, CAL_W - 12, ry + MR - 2, 1, rule);
+        I64 b = ptxt_mid(CAL_W - 64, 24, ry + 2, CAL_W - 40, b"<", 1, ink, faces.BODY);
+        I64 c = ptxt_mid(CAL_W - 36, 24, ry + 2, CAL_W - 12, b">", 1, ink, faces.BODY);
+        return;
+    }
+    U8[2] t;
+    if (r == 1) {
+        for d in 0..7 {
+            t[0] = b"SuMoTuWeThFrSa"[2 * d];
+            t[1] = b"SuMoTuWeThFrSa"[2 * d + 1];
+            I64 cx = 8 + CAL_CW * d;
+            I64 a = ptxt_mid(cx, CAL_CW, ry + 2, cx + CAL_CW, t, 2, tok(tokens.INK_DIM), faces.BODY);
+        }
+        return;
+    }
+    if (r == 8) {
+        I64 a = ptxt(12, ry + 2, CAL_W - 12, b"Today Thu Jan 1", 15, ink, faces.PATH);
+        return;
+    }
+    for d in 0..7 {
+        I64 day = 7 * (r - 2) + d - 4 + 1;
+        if (day >= 1 && day <= 31) {
+            I64 cx = 8 + CAL_CW * d;
+            U32 fg = ink;
+            if (day == 1) {
+                pen.round(row, cx + 2, ry, cx + CAL_CW - 2, ry + MR, 6, tok(tokens.FILL));
+                fg = tok(tokens.ON_FILL);
+            }
+            I64 n = 1;
+            t[0] = (48 + day % 10) as U8;
+            if (day >= 10) {
+                t[0] = (48 + day / 10) as U8;
+                t[1] = (48 + day % 10) as U8;
+                n = 2;
+            }
+            I64 a = ptxt_mid(cx, CAL_CW, ry + 2, cx + CAL_CW, t, n, fg, faces.PATH);
+        }
+    }
+}
+
+// hdesk.ci sp_text and sp_mid.
+void sp_text(I64 x, I64 ty, in U8[_] t, I64 n, I64 tk, Bool right, I64 f) {
+    I64 e = 0;
+    if (right) {
+        e = pen.text_right(row, x, ty + TBASE, t, n, tok(tk), f);
+    } else {
+        e = pen.text_dev(row, pen.x(x), ty + TBASE, t, n, tok(tk), f);
+    }
+}
+
+void sp_mid(I64 x, I64 span, I64 ty, in U8[_] t, I64 n, I64 tk, I64 f) {
+    I64 e = ptxt_mid(x, span, ty, x + span, t, n, tok(tk), f);
+}
+
+void sp_track(I64 cy, I64 l) {
+    if (l < 0) {
+        for d in 0..40 { pen.rect(row, 20 + 8 * d, cy + 30, 24 + 8 * d, cy + 34, tok(tokens.RULE)); }
+        return;
+    }
+    I64 at = 20 + 320 * l / 100;
+    pen.rect(row, 20, cy + 30, at, cy + 36, tok(tokens.ULTRAMARINE));
+    pen.rect(row, at, cy + 30, 340, cy + 36, tok(tokens.RULE));
+    pen.rect(row, at - 3, cy + 26, at + 3, cy + 40, tok(tokens.INK));
+}
+
+// hdesk.ci panel_row at x0 = y0 = 0 with an audio device at level 85, bin/cat playing as pid 42, the network up at
+// 10.0.2.15 and animations off.
+void panel_row(I64 y) {
+    pen.frame(row, 0, 0, SP_W, SP_H, 1, tok(tokens.ULTRAMARINE));
+    I64 r = y;
+    if (r >= 12 && r < 28) {
+        sp_text(12, 12, b"SYSTEM PANEL", 12, tokens.INK, false, faces.LABEL);
+        sp_text(SP_W - 12, 12, b"Settings >", 10, tokens.ULTRAMARINE, true, faces.BODY);
+        return;
+    }
+    if (r >= 40 && r < 104) {
+        for c in 0..2 {
+            I64 cx = 8 + 176 * c;
+            pen.round(row, cx, 40, cx + 168, 104, 8, tok(tokens.SURF1));
+            pen.ring(row, cx + 120, 44, cx + 160, 64, 6, 1, tok(tokens.RULE));
+            sp_mid(cx + 120, 40, 46, b"N/A", 3, tokens.INK_DIM, faces.BODY);
+            if (c == 0) {
+                sp_text(cx + 10, 46, b"Wi-Fi", 5, tokens.INK_DIM, false, faces.BODY);
+                sp_text(cx + 10, 82, b"Wi-Fi Settings >", 16, tokens.INK_DIM, false, faces.BODY);
+            } else {
+                sp_text(cx + 10, 46, b"Bluetooth", 9, tokens.INK_DIM, false, faces.BODY);
+                sp_text(cx + 10, 82, b"BT Settings >", 13, tokens.INK_DIM, false, faces.BODY);
+            }
+            sp_text(cx + 10, 64, b"no driver", 9, tokens.INK_DIM, false, faces.BODY);
+        }
+        return;
+    }
+    if (r >= 112 && r < 144) {
+        pen.round(row, 8, 112, SP_W - 8, 144, 8, tok(tokens.SURF1));
+        sp_text(18, 120, b"NETWORK", 7, tokens.INK_DIM, false, faces.LABEL);
+        sp_text(SP_W - 18, 120, b"wired  10.0.2.15", 16, tokens.INK, true, faces.PATH);
+        return;
+    }
+    if (r >= 152 && r < 208) {
+        pen.round(row, 8, 152, SP_W - 8, 208, 8, tok(tokens.SURF1));
+        sp_text(18, 158, b"NOW PLAYING", 11, tokens.INK_DIM, false, faces.LABEL);
+        I64 nx = pen.x(18) + pen.width(b"NOW PLAYING  ", 13, faces.LABEL);
+        I64 ne = pen.text_dev(row, nx, 158 + TBASE, b"AU-6 PCM 48 kHz", 15, tok(tokens.INK_DIM), faces.BODY);
+        sp_text(18, 180, b"bin/cat", 7, tokens.INK, false, faces.NAME);
+        sp_text(SP_W - 18, 180, b"pid 42", 6, tokens.INK_DIM, true, faces.PATH);
+        return;
+    }
+    if (r >= 216 && r < 264) {
+        pen.round(row, 8, 216, SP_W - 8, 264, 8, tok(tokens.SURF1));
+        sp_text(18, 222, b"SOUND VOLUME", 12, tokens.INK, false, faces.LABEL);
+        sp_text(SP_W - 18, 222, b"85%", 3, tokens.INK, true, faces.PATH);
+        sp_track(216, 85);
+        return;
+    }
+    if (r >= 272 && r < 320) {
+        pen.round(row, 8, 272, SP_W - 8, 320, 8, tok(tokens.SURF1));
+        sp_text(18, 278, b"SCREEN BRIGHTNESS", 17, tokens.INK_DIM, false, faces.LABEL);
+        sp_text(SP_W - 18, 278, b"N/A", 3, tokens.INK_DIM, true, faces.BODY);
+        sp_track(272, -1);
+        return;
+    }
+    if (r >= 328 && r < 360) {
+        pen.round(row, 8, 328, SP_W - 8, 360, 8, tok(tokens.SURF1));
+        sp_text(18, 336, b"UI ANIMATIONS", 13, tokens.INK, false, faces.LABEL);
+        pen.round(row, SP_W - 58, 334, SP_W - 18, 354, 6, tok(tokens.SURF2));
+        pen.ring(row, SP_W - 58, 334, SP_W - 18, 354, 6, 1, tok(tokens.RULE));
+        sp_mid(SP_W - 58, 40, 336, b"OFF", 3, tokens.INK, faces.BODY);
+    }
+}
+
+// hdesk.ci chevron, near_v, seg_d2, sin_d and cos_d (DN-14): the tray's chevron turned a degrees about (cx, cy),
+// sampled at the pen's zoom.
+I64[91] tsin = [0, 71, 143, 214, 286, 357, 428, 499, 570, 641, 711, 782, 852, 921, 991, 1060, 1129, 1198, 1266, 1334, 1401, 1468, 1534, 1600, 1666, 1731, 1796, 1860, 1923, 1986, 2048, 2110, 2171, 2231, 2290, 2349, 2408, 2465, 2522, 2578, 2633, 2687, 2741, 2793, 2845, 2896, 2946, 2996, 3044, 3091, 3138, 3183, 3228, 3271, 3314, 3355, 3396, 3435, 3474, 3511, 3547, 3582, 3617, 3650, 3681, 3712, 3742, 3770, 3798, 3824, 3849, 3873, 3896, 3917, 3937, 3956, 3974, 3991, 4006, 4021, 4034, 4046, 4056, 4065, 4074, 4080, 4086, 4090, 4094, 4095, 4096];   // DN-14: sin of 0 to 90 degrees, times 4096
+
+I64 seg_d2(I64 u, I64 v, I64 ax, I64 ay, I64 ex, I64 ey) {
+    I64 dx = ex - ax;
+    I64 dy = ey - ay;
+    I64 l2 = dx * dx + dy * dy;
+    I64 t = (u - ax) * dx + (v - ay) * dy;
+    if (t <= 0) { return (u - ax) * (u - ax) + (v - ay) * (v - ay); }
+    if (t >= l2) { return (u - ex) * (u - ex) + (v - ey) * (v - ey); }
+    I64 px = u - ax;
+    I64 py = v - ay;
+    return px * px + py * py - t * t / l2;
+}
+
+Bool near_v(I64 u, I64 v, I64 z) {   // DN-14: (2.5, 4.25), (6, 7.75), (9.5, 4.25) from the box's center, 0.875 wide
+    return seg_d2(u, v, -28 * z, -14 * z, 0, 14 * z) <= 49 * z * z || seg_d2(u, v, 28 * z, -14 * z, 0, 14 * z) <= 49 * z * z;
+}
+
+I64 chan(in U32[_] b, I64 k, I64 c) { return ((b[k] >> ((8 * c) as U32)) & 255) as I64; }
+
+I64 sin_d(I64 a) {
+    if (a <= 90) { return tsin[a]; }
+    return tsin[180 - a];
+}
+
+I64 cos_d(I64 a) {
+    if (a <= 90) { return tsin[90 - a]; }
+    return 0 - tsin[a - 90];
+}
+
+void chevron(I64 y, I64 cx, I64 cy, I64 a, U32 ink) {
+    if (y < cy - 6 || y >= cy + 6) { return; }
+    U32[1] ic;
+    ic[0] = ink;
+    I64 z = pen.zoom();
+    I64 ox = pen.x(cx);
+    I64 oy = pen.y(cy);
+    I64 c = cos_d(a);
+    I64 s = sin_d(a);
+    for px in pen.x(cx - 6)..pen.x(cx + 6) {
+        I64 cov = 0;
+        for i in 0..4 {
+            for j in 0..4 {
+                I64 x8 = 8 * (px - ox) + 2 * i + 1;
+                I64 y8 = 8 * (pen.row_y() - oy) + 2 * j + 1;
+                I64 u = (x8 * c + y8 * s) / 4096;   // the sample turned back by the angle
+                I64 v = (y8 * c - x8 * s) / 4096;
+                if (near_v(u, v, z)) { cov = cov + 1; }
+            }
+        }
+        if (cov > 0) {
+            I64 o = 0;
+            for ch in 0..3 {
+                I64 q = (cov * chan(ic, 0, ch) + (16 - cov) * chan(row, px, ch) + 8) / 16;
+                o = o | (q << (8 * ch));
+            }
+            draw.put(row, px, o as U32);
+        }
+    }
+}
+
+// The sum of the chevron at nine angles, 0 to 180 by 22.5 rounded down, at zoom z, each on a 28 px square of the
+// bar's ground, centered at (14, 14).
+I64 chevron_sum(I64 z) {
+    I64[9] ang = [0, 22, 45, 67, 90, 112, 135, 157, 180];
+    I64 s = 0;
+    for k in 0..9 {
+        for dy in 0..28 * z {
+            for x in 0..28 * z { row[x] = tok(tokens.BAR); }
+            pen.at(0, 0, z, dy);
+            chevron(dy / z, 14, 14, ang[k], tok(tokens.INK));
+            for x in 0..28 * z { s = (s * 31 + (row[x] as I64)) % 1000000007; }
+        }
+    }
+    return s;
+}
+
+
+// The sum of a w x h frame at 1x drawn at zoom z on the paper, row by row (what the twin sums): which 0 the
+// calendar, 1 the panel.
+I64 frame_sum(I64 which, I64 w, I64 h, I64 z) {
+    I64 s = 0;
+    for dy in 0..h * z {
+        for x in 0..w * z { row[x] = tok(tokens.PAPER); }
+        pen.at(0, 0, z, dy);
+        if (which == 0) { cal_row(dy / z); } else { panel_row(dy / z); }
+        for x in 0..w * z { s = (s * 31 + (row[x] as I64)) % 1000000007; }
+    }
+    return s;
+}
+
+test "at zoom 1 the pen is the 1x draw, from any origin" {
+    pen.at(37, 11, 1, 20);
+    assert(pen.x(50) == 50 && pen.y(9) == 9);
+    for x in 0..200 { row[x] = 0; }
+    pen.rect(row, 40, 15, 60, 25, 0x123456);
+    pen.frame(row, 70, 20, 90, 30, 1, 0xABCDEF);
+    I64 e = pen.text(row, 100, 33, 200, b"pid 7", 5, 0xFFFFFF, faces.PATH);
+    U32[200] want;
+    for x in 0..200 { want[x] = 0; }
+    draw.rect(want, 20, 40, 15, 60, 25, 0x123456);
+    draw.frame(want, 20, 70, 20, 90, 30, 1, 0xABCDEF);
+    I64 f = ctext.text(want, 20, 100, 33, 200, b"pid 7", 5, 0xFFFFFF, faces.PATH, 1);
+    assert(e == f);
+    for x in 0..200 { assert(row[x] == want[x]); }
+}
+
+test "at zoom 2 a 1x rectangle and frame cover their 1x pixels spread by 2, from the origin" {
+    for dy in 0..80 {
+        pen.at(10, 4, 2, dy);
+        for x in 0..120 { row[x] = 0; }
+        pen.rect(row, 12, 6, 20, 9, 0x111111);
+        pen.frame(row, 30, 5, 50, 30, 1, 0x222222);
+        for x in 0..120 {
+            I64 ux = 10 + (x - 10) / 2;          // the 1x pixel this device pixel spreads
+            I64 uy = 4 + (dy - 4) / 2;
+            U32 c = 0;
+            if (x >= 10 && dy >= 4) {
+                if (ux >= 30 && ux < 50 && uy >= 5 && uy < 30 && (ux == 30 || ux == 49 || uy == 5 || uy == 29)) {
+                    c = 0x222222;
+                }
+                if (ux >= 12 && ux < 20 && uy >= 6 && uy < 9) { c = 0x111111; }
+            }
+            assert(row[x] == c);
+        }
+    }
+}
+
+test "text at zoom 2 is the 2x tables' and centers by its own width" {
+    pen.at(0, 0, 2, 40);
+    assert(pen.width(b"Thu Jan 1  00:00", 16, faces.PATH) == ctext.width(b"Thu Jan 1  00:00", 16, faces.PATH, 2));
+    for x in 0..400 { row[x] = 0; }
+    I64 e = pen.text_mid(row, 44, 59, 19, 44 + 59, b"bin/cat", 7, 0xFFFFFF, faces.NAME);
+    I64 w = ctext.width(b"bin/cat", 7, faces.NAME, 2);
+    assert(e == 88 + (118 - w) / 2 + w);    // the App pill's title whole at 2x (cut at the slot's end, not 8 in)
+    I64 r = pen.text_right(row, 180, 19, b"pid 42", 6, 0xFFFFFF, faces.PATH);
+    assert(r == 360);
+}
+
+test "K-6's calendar at zoom 1 and 2 equals the retired twin's (cal_row), both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(frame_sum(0, CAL_W, CAL_H, 1) == 180997791);
+    assert(frame_sum(0, CAL_W, CAL_H, 2) == 881700585);
+    tokens.set_theme(tokens.LIGHT);
+    assert(frame_sum(0, CAL_W, CAL_H, 1) == 636866235);
+    assert(frame_sum(0, CAL_W, CAL_H, 2) == 343034503);
+    tokens.set_theme(tokens.DARK);
+}
+
+test "the system panel at zoom 1 and 2 equals the twin's (tools/check-hdesk.py panel_row), both themes" {
+    tokens.set_theme(tokens.DARK);
+    assert(frame_sum(1, SP_W, SP_H, 1) == 304705164);
+    assert(frame_sum(1, SP_W, SP_H, 2) == 650077984);
+    tokens.set_theme(tokens.LIGHT);
+    assert(frame_sum(1, SP_W, SP_H, 1) == 606099440);
+    assert(frame_sum(1, SP_W, SP_H, 2) == 112200860);
+    tokens.set_theme(tokens.DARK);
+}
+
+test "the tray's chevron (DN-14) at nine angles at zoom 1 and 2 equals the twin's (tools/check-hdesk.py chevron)" {
+    tokens.set_theme(tokens.DARK);
+    assert(chevron_sum(1) == 99492216);
+    assert(chevron_sum(2) == 307177489);
+}
+// SPDX-License-Identifier: Apache-2.0

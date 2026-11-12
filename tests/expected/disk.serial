@@ -1,0 +1,70 @@
+Daphnis P: the block device
+daphnis: input 397 bytes
+daphnis: disk virtio-blk, 8192 sectors, 5 frames held
+daphnis: disk 8192 sha256 a14c408710f4ef0073ec388bf9a2dcdbecab2ba12ae115a7552a22b0c6fd3f48
+daphnis: disk write probe: the pattern read back equal, the sectors restored
+daphnis: /home mounted, ext2, block 4096, cache 64 frames, writes need the disk grant
+daphnis: run hello pid 1
+hello from ring 3
+daphnis: state 5c6d6d6e0a037abbcfa5d73c0498412515e00277227de3571ad7b498c263099d
+daphnis: exit 0
+daphnis: run sh pid 2
+a
+big
+hello.txt
+link
+lost+found
+sparse
+home:
+a
+big
+hello.txt
+link
+lost+found
+sparse
+
+home/a:
+b.txt
+
+home/lost+found:
+hello from the disk
+a file one directory down
+a file one directory down
+bf171ac7e89dab424c00b5f64257908b  home/big
+9cd7225f290de3d7ceaa58444389d007  home/sparse
+b03916b18f580750e5f4642c07f4a61a  home/hello.txt
+  1048576 home/big
+  6291456 home/sparse
+  7340032 total
+the end of a sparse file, past the single indirect map, read through the double one.
+...............home
+home/a
+home/a/b.txt
+home/big
+home/hello.txt
+home/link
+home/lost+found
+home/sparse
+/home/a
+a file one directory down
+/home
+a file one directory down
+/
+stat home 2 41ed 4 0 0 4096 8 1 1 1
+stat home/a 12 41ed 2 0 0 4096 8 1 1 1
+stat home/a/b.txt 13 81a4 1 0 0 26 8 1 1 1
+stat home/big 14 81a4 1 0 0 1048576 2056 1 1 1
+stat home/hello.txt 15 81a4 1 0 0 20 8 1 1 1
+stat home/link 16 a1ff 1 0 0 7 0 1 1 1
+stat home/lost+found 11 41c0 2 0 0 16384 32 1 1 1
+stat home/sparse 17 81a4 1 0 0 6291456 32 1 1 1
+statL home/link 13 81a4 1 0 0 26 8 1 1 1
+cat: can't open 'home/nothere': No such file or directory
+daphnis: state f42ebacd70e9b5d86d287310dcd78c829caedbd24dee07bc40f04e1d34fe999e
+daphnis: exit 0
+daphnis: pid 2 forked 16
+daphnis: disk 8192 sha256 a14c408710f4ef0073ec388bf9a2dcdbecab2ba12ae115a7552a22b0c6fd3f48
+daphnis: disk requests 2616
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16297 of 16383
+daphnis: done

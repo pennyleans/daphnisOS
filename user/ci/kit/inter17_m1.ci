@@ -1,0 +1,91 @@
+// user/ci/kit/inter17_m1.ci: Inter 17 px at 1x (FONT-1; Calc's keys, 17 px 500 (frame 39)), coverage 0 to 15 a pixel;
+// written by tools/glyphs.py from tools/fonts/inter/Inter-Medium.ttf; do not edit. OFL-1.1: tools/fonts/inter/LICENSE.txt.
+
+export const I64 SIZE = 17;
+export const I64 ASCENT = 17;
+export const I64 DESCENT = 5;
+export const I64 N = 20;
+export const I64 MISSING = 15;   // '?'
+
+U32[20] codes = [
+    0x0028, 0x0029, 0x002b, 0x002e, 0x0030, 0x0031, 0x0032, 0x0033, 0x0034, 0x0035, 0x0036, 0x0037,
+    0x0038, 0x0039, 0x003d, 0x003f, 0x0043, 0x00d7, 0x00f7, 0x2212,
+];
+
+U64[20] box = [
+    0x0000000005108273, 0x0000000505108173, 0x0000000a09098277, 0x000000100304827d,
+    0x000000110a0e8173, 0x0000001a060c8174, 0x0000001f0a0d8173, 0x000000280a0e8173,
+    0x000000310a0c8174, 0x000000390a0d8174, 0x000000420a0e8173, 0x0000004b090c8174,
+    0x000000520a0e8173, 0x0000005b0a0e8173, 0x0000006409068278, 0x00000068080e8173,
+    0x0000006f0c0e8173, 0x0000007a09098277, 0x0000008009098277, 0x000000860903827a,
+];
+
+U8[20] adv = [
+    6, 6, 11, 5, 11, 7, 10, 11, 11, 10, 11, 10, 11, 11, 11, 9, 12, 11, 11, 11,
+];
+
+U64[136] cov = [
+    0x007b102fb008f500, 0xdf102fb005f8007f, 0x6008f5008f5007f6, 0x005f8001fc000bf2,
+    0x005f8000de100241, 0x4b5001ed0009f400, 0x4f9000ed000cf100, 0x9f4008f5008f5009,
+    0xf400cf201fd006f8, 0x00bf203f90024100, 0x0004a30000006f40, 0x000006f4000588af,
+    0x9884afffffff8000, 0x6f40000006f40000, 0x006f400000014100, 0x0000000000000000,
+    0x130bf6af50100000, 0x0000120000003cff, 0xe80002ef87cf900a, 0xf5001df21fd00006,
+    0xf73fa00003fa5f80, 0x0002fb5f800002fb, 0x3fa00003fa1fd000, 0x06f80bf5001df303,
+    0xef87cf90003cffe8, 0x0000001200000000, 0x007ff72bfdf77e57, 0xf74207f70007f700,
+    0x07f70007f70007f7, 0x0007f70007f70007, 0xf70007f700000000, 0x0000220000007eff,
+    0xe60007fc67df600e, 0xe1002fc00860000e, 0xe00000003fa00000, 0x01de2000001cf500,
+    0x0001cf5000001cf6, 0x000001cf6000000c, 0xfd8888811fffffff, 0xf200000000000000,
+    0x0000220000006dff, 0xe80007fd76cf800e, 0xe1001ee00220000d, 0xf00000006fa00002,
+    0xdef81000029aee70, 0x0000001cf3121000, 0x07f73fc0000af50b, 0xfc77bfd1018effe9,
+    0x1000002200000000, 0x000004ff6000001d, 0xff6000009fbf6000, 0x04f97f60001dd17f,
+    0x60008f507f6003fa, 0x007f600ce1007f60, 0x5fedddefed3aaaaa, 0xcfca0000007f6000,
+    0x00007f6000000000, 0x07ffffff7008fa88, 0x88400af10000000c, 0xf00000000dd7cda2,
+    0x000ffdabfe300240, 0x006fb00000000df0, 0x1210000cf13fb000, 0x3fc00bfb67ef5001,
+    0x9effd50000002100, 0x0000000000000000, 0x0000121000002bff, 0xf91001df97bfb009,
+    0xf5000bf40ed00001, 0x213f93adb6004fbf, 0xbaef905ff6001df3, 0x4fd00006f72fc000,
+    0x05f70cf3000bf404, 0xfe86bfb0004cffe9, 0x1000001200000000, 0x8fffffffa488888b,
+    0xfa000000bf400000, 0x3fb000000bf30000, 0x04fa000000cf3000, 0x005fa000000cf200,
+    0x0005f9000000df20, 0x00006f9000000000, 0x0000220000006dff, 0xe80006fd66cf900c,
+    0xf2000ef00cf0000d, 0xf007f8006f90007f, 0xeef91005ee99df70, 0x1ee2001cf34fa000,
+    0x07f73fc00009f60b, 0xfb65afd1018efffa, 0x2000002200000000, 0x0000220000007eff,
+    0xd60008fd77df701f, 0xe1001de14f900008, 0xf54f900009f71ee3, 0x003ff806feabfbf7,
+    0x004bdb56f6021000, 0x09f21fd1002ec008, 0xfc78ef30008effd4, 0x0000002200000000,
+    0x2555555517ffffff, 0xf524444444100000, 0x00005aaaaaaa36dd, 0xddddd40000000000,
+    0x0001200004dffe80, 0x2fe76cf78f6001fc, 0x120001fd00001af8, 0x0003df90000cf500,
+    0x000fb00000064000, 0x00021000004fe000, 0x003fd00000010000, 0x0000022100000007,
+    0xdfffb30000afe98b, 0xff4007fb10004fd0, 0x0ef2000009d33fb0, 0x000000004f900000,
+    0x00004f9000000000, 0x3fb0000000000ef2, 0x000009d307fb1000, 0x4fd000bfe98bfe40,
+    0x0007dfffb3000000, 0x0221000000000000, 0x0600001606fa001c, 0xf408fb2cf70008ff,
+    0xf600002efd10002d, 0xfafc102df506fc14, 0xe50006e301000001, 0x0000000000000000,
+    0x0008f6000000af80, 0x0000014000048888, 0x88838fffffff7111, 0x1111100005b30000,
+    0x00bf900000038200, 0x0000000000000000, 0x4888888838ffffff, 0xf711111111000000,
+];
+
+// The glyph of code point cp, or the stand-in's.
+export I64 index(I64 cp) {
+    I64 lo = 0;
+    I64 hi = N;
+    while (lo < hi) {
+        I64 mid = (lo + hi) / 2;
+        if ((codes[mid] as I64) < cp) { lo = mid + 1; } else { hi = mid; }
+    }
+    if (lo < N && (codes[lo] as I64) == cp) { return lo; }
+    return MISSING;
+}
+
+// Glyph g's advance in whole pixels.
+export I64 advance(I64 g) { return adv[g] as I64; }
+
+// Glyph g's ink box: left and top from the pen on the baseline (y down), width and height.
+export I64 left(I64 g) { return ((box[g] >> 8) & 255) as I64 - 128; }
+export I64 top(I64 g) { return (box[g] & 255) as I64 - 128; }
+export I64 width(I64 g) { return ((box[g] >> 24) & 255) as I64; }
+export I64 height(I64 g) { return ((box[g] >> 16) & 255) as I64; }
+
+// Coverage 0 to 15 of pixel (x, y) of glyph g's box, 0 <= x < width(g), 0 <= y < height(g).
+export I64 at(I64 g, I64 x, I64 y) {
+    I64 bit = (y * width(g) + x) * 4;
+    U64 word = cov[(box[g] >> 32) as I64 + bit / 64];
+    return ((word >> ((60 - bit % 64) as U64)) & 15) as I64;
+}
+// SPDX-License-Identifier: OFL-1.1

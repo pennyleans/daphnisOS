@@ -1,0 +1,80 @@
+// user/ci/core/cal.ci: the proleptic Gregorian calendar, pure (RS-TZa, docs/specs/2026-11-11-rs-tza.md). H. Hinnant's
+// days_from_civil and civil_from_days, as CT-1's user/ci/core/when.ci had them; when.ci also wrote (it imported
+// put), so a hosted test could not import it, and user/ci/core/tz.ci needs the calendar alone. RS-TZc retired
+// when.ci. cint's / and % floor (-1 / 86400 is -1, -1 % 86400 is 86399), so a time before 1970 splits with no
+// correction.
+//   days(y, m, d): days from 1970-01-01 to y-m-d, m 1 to 12 (d past the month's end runs into the next).
+//   month_days(y, m): the days of month m of year y.
+//   year_of(t): the year of t seconds from 1970-01-01 00:00:00.
+//   at(t): t split into the fields read by year(), month(), day(), hour(), minute(), second(), weekday() (0 is
+//     Sunday) and yearday() (0 is January 1).
+
+I64 y = 1970;
+I64 mo = 1;
+I64 d = 1;
+I64 h = 0;
+I64 mi = 0;
+I64 s = 0;
+I64 wd = 4;
+I64 yd = 0;
+
+export I64 days(I64 yy, I64 mm, I64 dd) {
+    I64 yr = yy;
+    if (mm <= 2) { yr = yr - 1; }
+    I64 era = yr / 400;
+    I64 yoe = yr - era * 400;
+    I64 mp = mm + 9;
+    if (mm > 2) { mp = mm - 3; }
+    I64 doy = (153 * mp + 2) / 5 + dd - 1;
+    I64 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+export I64 month_days(I64 yy, I64 mm) {
+    if (mm == 12) { return 31; }
+    return days(yy, mm + 1, 1) - days(yy, mm, 1);
+}
+
+// Day z (days from 1970-01-01) as 512 * year + 32 * month + day.
+I64 civil(I64 z) {
+    I64 zz = z + 719468;
+    I64 era = zz / 146097;
+    I64 doe = zz - era * 146097;
+    I64 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    I64 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    I64 mp = (5 * doy + 2) / 153;
+    I64 dd = doy - (153 * mp + 2) / 5 + 1;
+    I64 mm = mp + 3;
+    if (mp >= 10) { mm = mp - 9; }
+    I64 yy = yoe + era * 400;
+    if (mm <= 2) { yy = yy + 1; }
+    return 512 * yy + 32 * mm + dd;
+}
+
+export I64 year_of(I64 t) {
+    return civil(t / 86400) / 512;
+}
+
+export void at(I64 t) {
+    I64 z = t / 86400;
+    I64 r = t - z * 86400;
+    h = r / 3600;
+    mi = (r / 60) % 60;
+    s = r % 60;
+    wd = (z + 4) % 7;
+    I64 c = civil(z);
+    y = c / 512;
+    mo = (c - 512 * y) / 32;
+    d = c - 512 * y - 32 * mo;
+    yd = z - days(y, 1, 1);
+}
+
+export I64 year() { return y; }
+export I64 month() { return mo; }
+export I64 day() { return d; }
+export I64 hour() { return h; }
+export I64 minute() { return mi; }
+export I64 second() { return s; }
+export I64 weekday() { return wd; }
+export I64 yearday() { return yd; }
+// SPDX-License-Identifier: Apache-2.0

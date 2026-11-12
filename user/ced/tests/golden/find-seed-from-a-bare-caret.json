@@ -1,0 +1,31 @@
+{
+  "id": "find-seed-from-a-bare-caret",
+  "rules": [
+    "FIND-2",
+    "FIND-1"
+  ],
+  "text": "ab ab",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "6162",
+    "0d",
+    "1b5b48",
+    "06",
+    "0d"
+  ],
+  "expect": {
+    "text": "ab ab",
+    "sel": [
+      0,
+      2
+    ]
+  }
+}

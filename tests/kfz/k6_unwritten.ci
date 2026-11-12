@@ -1,0 +1,132 @@
+// tests/kfz/k6_unwritten.ci: bytes no one wrote (G2 of the kernel read of PR 344). On a board the pool holds what the
+// firmware left (rt/boot.c does not clear it), so a call that copies out a byte it never wrote leaks it. The hosted
+// machine reads such a byte as its POISON, and kz_call stops on any that reaches a page of the caller's. These cases
+// take the paths that hand out bytes from frames the kernel took for itself: a pipe's frame (fs.ci sys_pipe, not
+// zeroed, its bytes guarded by pcount), and a file that grows past what was written to it, or shrinks and grows again
+// (Linux reads 0 there).
+
+const U64 NR_READ = 0;
+const U64 NR_WRITE = 1;
+const U64 NR_CLOSE = 3;
+const U64 NR_LSEEK = 8;
+const U64 NR_FTRUNCATE = 77;
+const U64 NR_PIPE2 = 293;
+
+// n bytes of p at va, each the low byte of its index plus v.
+void kz_pattern(I64 p, U64 va, I64 n, I64 v) {
+    kz_own(p, va, n as U64);
+    U8[4096] b;
+    for k in 0..n {
+        b[k] = ((k + v) % 256) as U8;
+    }
+    assert(uvm.poke(p, va, b[0..n], n, false) == n);
+}
+
+// True when p's n bytes at va are the pattern of v from index first on.
+Bool kz_is_pattern(I64 p, U64 va, I64 n, I64 first, I64 v) {
+    U8[4096] b;
+    assert(uvm.peek(p, va, b[0..n], n) == n);
+    for k in 0..n {
+        if (b[k] != ((first + k + v) % 256) as U8) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// True when p's n bytes at va are all 0.
+Bool kz_zero(I64 p, U64 va, I64 n) {
+    U8[4096] b;
+    assert(uvm.peek(p, va, b[0..n], n) == n);
+    for k in 0..n {
+        if (b[k] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test "unwritten: a pipe's reads give the bytes written and no more, across its frame's end, into a promise or not" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_own(p, PATHS, 4096);                              // descriptors and input on PATHS, which no check reads
+    assert(kz_call(p, NR_PIPE2, PATHS, 0, 0, 0, 0, 0) == 0);
+    U64 r = kz_u64(p, PATHS) & 0xFFFFFFFF;
+    U64 w = kz_u64(p, PATHS) >> 32;
+    // 5 bytes in, 4,096 asked for, into the promise: 5, the page's rest as backed (0)
+    kz_pattern(p, PATHS + 64, 5, 1);
+    assert(kz_call(p, NR_WRITE, w, PATHS + 64, 5, 0, 0, 0) == 5);
+    assert(kz_call(p, NR_READ, r, KZ_LZ, 4096, 0, 0, 0) == 5);
+    assert(kz_is_pattern(p, KZ_LZ, 5, 0, 1) && kz_zero(p, KZ_LZ + 5, 4091));
+    // 4,000 in and out, then 200 that run past the frame's end, read with room for 4,096: 200, nothing past them
+    kz_fill(p);
+    kz_pattern(p, PATHS + 64, 4000, 7);
+    assert(kz_call(p, NR_WRITE, w, PATHS + 64, 4000, 0, 0, 0) == 4000);
+    assert(kz_call(p, NR_READ, r, KZ_RW + 8192, 4000, 0, 0, 0) == 4000);
+    assert(kz_is_pattern(p, KZ_RW + 8192, 4000, 0, 7));
+    kz_fill(p);
+    kz_pattern(p, PATHS + 64, 200, 3);
+    assert(kz_call(p, NR_WRITE, w, PATHS + 64, 200, 0, 0, 0) == 200);
+    kz_own(p, KZ_RW + 8192, 4096);
+    assert(kz_call(p, NR_READ, r, KZ_RW + 8192, 4096, 0, 0, 0) == 200);
+    assert(kz_is_pattern(p, KZ_RW + 8192, 200, 0, 3) && kz_kept_outside(p, KZ_RW + 8192, KZ_RW + 8392));
+    // the writer gone: the end, nothing written
+    kz_fill(p);
+    assert(kz_call(p, NR_CLOSE, w, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(p, NR_READ, r, KZ_LZ, 4096, 0, 0, 0) == 0);
+    assert(kz_kept_outside(p, KZ_LZ, KZ_LZ));
+    kz_end(p);
+}
+
+test "unwritten: a file grown by ftruncate or by a write past its end reads 0 there, as Linux; also one cut and grown" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    _ = kz_tpath(r, 0, t, "d/g");
+    I64 fd = kz_call(r, NR_OPEN, kz_at(0), 0x42, 0x1A4, 0, 0, 0);          // O_RDWR|O_CREAT
+    assert(fd >= 3);
+    U64 f = fd as U64;
+    // grown by ftruncate to 10,000: every byte 0
+    assert(kz_call(r, NR_FTRUNCATE, f, 10000, 0, 0, 0, 0) == 0);
+    assert(kz_size(r, t, "d/g") == 10000);
+    for q in 0..3 {
+        I64 at = 4096 * q;
+        I64 n = 10000 - at;
+        if (n > 4096) { n = 4096; }
+        assert(kz_call(r, NR_LSEEK, f, at as U64, 0, 0, 0, 0) == at);
+        assert(kz_call(r, NR_READ, f, KZ_LZ, 4096, 0, 0, 0) == n);
+        assert(kz_zero(r, KZ_LZ, n));
+        kz_fill(r);
+    }
+    // a write at 20,000: 10,000 to 20,000 reads 0, the byte written after it
+    kz_pattern(r, PATHS + 1024, 1, 9);
+    assert(kz_call(r, NR_LSEEK, f, 20000, 0, 0, 0, 0) == 20000);
+    assert(kz_call(r, NR_WRITE, f, PATHS + 1024, 1, 0, 0, 0) == 1);
+    assert(kz_size(r, t, "d/g") == 20001);
+    assert(kz_call(r, NR_LSEEK, f, 16384, 0, 0, 0, 0) == 16384);
+    assert(kz_call(r, NR_READ, f, KZ_LZ, 4096, 0, 0, 0) == 3617);
+    assert(kz_zero(r, KZ_LZ, 3616) && kz_is_pattern(r, KZ_LZ + 3616, 1, 0, 9));
+    kz_fill(r);
+    // 3,000 bytes written, cut to 100, grown to 3,000 again: 100 to 3,000 reads 0
+    kz_pattern(r, PATHS + 1024, 3000, 5);
+    assert(kz_call(r, NR_LSEEK, f, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_WRITE, f, PATHS + 1024, 3000, 0, 0, 0) == 3000);
+    assert(kz_call(r, NR_FTRUNCATE, f, 100, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_FTRUNCATE, f, 3000, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_LSEEK, f, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_READ, f, KZ_LZ, 4096, 0, 0, 0) == 3000);
+    assert(kz_is_pattern(r, KZ_LZ, 100, 0, 5) && kz_zero(r, KZ_LZ + 100, 2900));
+    kz_fill(r);
+    // the same by a write past the cut: 100 to 2,999 reads 0
+    kz_pattern(r, PATHS + 1024, 3000, 5);
+    assert(kz_call(r, NR_LSEEK, f, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_WRITE, f, PATHS + 1024, 3000, 0, 0, 0) == 3000);
+    assert(kz_call(r, NR_FTRUNCATE, f, 100, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_LSEEK, f, 2999, 0, 0, 0, 0) == 2999);
+    assert(kz_call(r, NR_WRITE, f, PATHS + 1024 + 2999, 1, 0, 0, 0) == 1);
+    assert(kz_call(r, NR_LSEEK, f, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(r, NR_READ, f, KZ_LZ, 4096, 0, 0, 0) == 3000);
+    assert(kz_is_pattern(r, KZ_LZ, 100, 0, 5) && kz_zero(r, KZ_LZ + 100, 2899));
+    assert(kz_is_pattern(r, KZ_LZ + 2999, 1, 2999, 5));
+    assert(kz_call(r, NR_CLOSE, f, 0, 0, 0, 0, 0) == 0);
+    kz_end(r);
+}
+// SPDX-License-Identifier: Apache-2.0

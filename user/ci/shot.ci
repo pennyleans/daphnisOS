@@ -1,0 +1,211 @@
+// user/ci/shot.ci: shot, the screenshot writer (stage RS, RS-SHOT; docs/specs/2026-11-11-rs-rel-s1-units.md, RS-SHOT).
+// The desk runs as uid 0, so it never writes the picture: hdeskctl.shot_as forks a child of the desk that logs in as
+// the account (call 1003), goes to the account's home and runs this program with no arguments and no environment,
+// the shot on its input. A link planted in Pictures gains nothing: every call here has the account's rights only.
+// The input is a header of three u32 and a u64, little-endian: width, height and stride (the bytes of a row, 4 x
+// width), then the seconds since 1970 the desk's bar read when the key came, each checked before any buffer is
+// taken; then the rows, top first, 4 bytes a pixel as the framebuffer holds them (blue, green, red, unused). Up to
+// 3840 x 2160, the largest screen of RES-1. The picture goes to Pictures as 8-bit RGB PNG (core/png.ci), named here,
+// never by the desk: `Screenshot YYYY-MM-DD HH.MM.SS.png` for the header's seconds in the machine's zone, as the bar
+// shows them (core/zonefile.ci, /home/.daphnis-zone; none: UTC; kit/clocktext.ci local_s, RG-1; not this program's
+// CLOCK_REALTIME, which on Daphnis starts at the boot's second for every new process), then ` 2`, ` 3` and on to
+// ` 9999` before `.png` while the name is taken, so a boot that never read a date (the fixed epoch, every shot one
+// second) still takes 9999 shots.
+// Pictures is made 0700 if missing; the file is made new at 0644 with O_EXCL and O_NOFOLLOW, so nothing is ever
+// written over or through a link. The name goes to descriptor 1, the desk's name pipe, as the only line.
+// Status 0 written; 1 a call failed (nothing is left behind); 2 a bad or short input (no file).
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.msg;
+import user.ci.core.put;
+import user.ci.core.png;
+import src.civil;
+import user.ci.kit.clocktext;
+import user.ci.core.zonefile;
+
+const I64 MAX_W = 3840;
+const I64 MAX_H = 2160;
+const I64 SMALL_PX = 2304000;           // 1920 x 1200: the small buffers, 20 MiB; past it the large, 75 MiB
+const I64 O_WRONLY = 1;
+const I64 O_CREAT = 0x40;
+const I64 O_EXCL = 0x80;
+const I64 O_NOFOLLOW = 0x20000;
+const I64 O_CLOEXEC = 0x80000;
+const I64 EEXIST = 17;
+const I64 TRIES = 9999;                 // the most names tried for one second
+
+U8[65536] chunk;                        // a read: an extern's view is staged whole, so reads go through this
+I64 c_at = 0;                           // the next unread byte of chunk
+I64 c_n = 0;                            // its bytes held
+U8[80] path;                            // "Pictures/" and the name
+I64 path_n = 0;
+I64 shot_w = 0;
+I64 shot_h = 0;
+
+// dst filled with the next len(dst) bytes of the input; whether they all came.
+Bool take(inout U8[_] dst) {
+    I64 k = 0;
+    while (k < len(dst)) {
+        if (c_at == c_n) {
+            c_n = shctl.fd_read(0, chunk);
+            c_at = 0;
+            if (c_n <= 0) {
+                c_n = 0;
+                return false;
+            }
+        }
+        I64 m = min(len(dst) - k, c_n - c_at);
+        for i in 0..m { dst[k + i] = chunk[c_at + i]; }
+        k = k + m;
+        c_at = c_at + m;
+    }
+    return true;
+}
+
+I64 u32_at(in U8[_] b, I64 at) {
+    return (b[at] as I64) | ((b[at + 1] as I64) << 8) | ((b[at + 2] as I64) << 16) | ((b[at + 3] as I64) << 24);
+}
+
+// The shot's pixels into px as RGB, row by row; whether every row came and nothing came after the last.
+Bool pixels(inout U8[_] px) {
+    U8[15360] line;                     // one row of the widest shot, 4 bytes a pixel
+    for y in 0..shot_h {
+        if (!take(line[0..4 * shot_w])) { return false; }
+        I64 o = 3 * shot_w * y;
+        for x in 0..shot_w {
+            px[o + 3 * x] = line[4 * x + 2];
+            px[o + 3 * x + 1] = line[4 * x + 1];
+            px[o + 3 * x + 2] = line[4 * x];
+        }
+    }
+    U8[1] more;
+    return !take(more);
+}
+
+I64 two(I64 at, I64 v) {
+    path[at] = ((v / 10) as U8) + 48;
+    path[at + 1] = ((v % 10) as U8) + 48;
+    return at + 2;
+}
+
+// k's decimal digits at path[at], k from 1; the end.
+I64 digits(I64 at, I64 k) {
+    I64 d = 1;
+    while (d * 10 <= k) { d = d * 10; }
+    I64 e = at;
+    while (d > 0) {
+        path[e] = ((k / d % 10) as U8) + 48;
+        e = e + 1;
+        d = d / 10;
+    }
+    return e;
+}
+
+// path: "Pictures/Screenshot YYYY-MM-DD HH.MM.SS" for t seconds since 1970, then " k" for k past 1, then ".png".
+void name(I64 t, I64 k) {
+    for i in 0..20 { path[i] = b"Pictures/Screenshot "[i]; }
+    I64[4] v;
+    civil.from_days(t / 86400, v);
+    I64 at = two(two(20, v[0] / 100), v[0] % 100);
+    path[at] = '-';
+    at = two(at + 1, v[1]);
+    path[at] = '-';
+    at = two(at + 1, v[2]);
+    I64 s = t % 86400;
+    path[at] = ' ';
+    at = two(at + 1, s / 3600);
+    path[at] = '.';
+    at = two(at + 1, s % 3600 / 60);
+    path[at] = '.';
+    at = two(at + 1, s % 60);
+    if (k > 1) {
+        path[at] = ' ';
+        at = digits(at + 1, k);
+    }
+    for i in 0..4 { path[at + i] = b".png"[i]; }
+    path_n = at + 4;
+}
+
+// The picture encoded, then a new file in Pictures named for t; the status.
+I64 save(inout U8[_] px, inout U8[_] raw, inout U8[_] file, I64 t) {
+    if (!pixels(px)) {
+        msg.said(b"input", b"not the rows the header gives");
+        return 2;
+    }
+    I64 n = png.encode(px[0..3 * shot_w * shot_h], shot_w, shot_h, 3, raw, file);
+    if (n < 0) {
+        msg.said(b"png", b"cannot encode");
+        return 1;
+    }
+    I64 r = corectl.co_mkdir(b"Pictures", 0x1C0);
+    if (r < 0 && r != 0 - EEXIST) {
+        msg.file(b"Pictures", 0 - r);
+        return 1;
+    }
+    I64 lt = clocktext.local_s(zonefile.city(), t);   // the header's seconds on the bar's clock, the machine's zone
+    I64 fd = 0 - EEXIST;
+    I64 k = 0;
+    while (fd == 0 - EEXIST && k < TRIES) {
+        k = k + 1;
+        name(lt, k);
+        fd = shctl.sh_open(path[0..path_n], O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0x1A4);
+    }
+    if (fd < 0) {
+        msg.file(path[0..path_n], 0 - fd);
+        return 1;
+    }
+    I64 w = shctl.fd_write(fd, file[0..n]);
+    I64 c = shctl.fd_close(fd);
+    if (w != n || c < 0) {
+        I64 e = c;
+        if (w < 0) { e = w; }
+        if (e < 0) { msg.file(path[0..path_n], 0 - e); } else { msg.said(path[0..path_n], b"short write"); }
+        _ = corectl.co_unlink(path[0..path_n]);
+        return 1;
+    }
+    put.bytes(path[9..path_n]);
+    put.byte('\n');
+    return 0;
+}
+
+// The buffers are frame locals, zeroed whole when taken, in two sizes so a common screen costs the small ones only.
+// A shot of SMALL_PX pixels or fewer is at most 2160 rows, so its filtered rows are at most 2160 + 3 x SMALL_PX.
+I64 small(I64 t) {
+    U8[6912000] px;                     // 3 x SMALL_PX
+    U8[6914160] raw;                    // 2160 + 3 x SMALL_PX
+    U8[6917657] file;                   // png.bound of those rows
+    return save(px, raw, file, t);
+}
+
+I64 large(I64 t) {
+    U8[24883200] px;                    // 3840 x 2160 x 3
+    U8[24885360] raw;                   // png.rows(3840, 2160, 3)
+    U8[24897632] file;                  // png.bound(3840, 2160, 3)
+    return save(px, raw, file, t);
+}
+
+void main() {
+    msg.name(b"shot");
+    U8[20] head;
+    if (!take(head)) {
+        msg.said(b"input", b"no header");
+        msg.finish_with(2);
+    }
+    shot_w = u32_at(head, 0);
+    shot_h = u32_at(head, 4);
+    if (shot_w < 1 || shot_h < 1 || shot_w > MAX_W || shot_h > MAX_H || u32_at(head, 8) != 4 * shot_w) {
+        msg.said(b"input", b"not a size from 1 x 1 to 3840 x 2160 with 4 bytes a pixel");
+        msg.finish_with(2);
+    }
+    I64 hi = u32_at(head, 16);
+    I64 t = 0;
+    if (hi <= 1) { t = u32_at(head, 12) + hi * 4294967296; }
+    if (hi > 1 || t >= civil.SETTOD_MAX) {
+        msg.said(b"input", b"not a date the clock can hold");
+        msg.finish_with(2);
+    }
+    I64 st = 0;
+    if (shot_w * shot_h <= SMALL_PX) { st = small(t); } else { st = large(t); }
+    msg.finish_with(st);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,248 @@
+// user/ci/kit/unsaved.ci: AM section 7 (DN-47, provisional), the desk's ask before Restart or Shut Down while a window
+// reports unsaved work. gate() says whether to ask; the plate names the windows and offers Cancel and the action.
+//
+// The plate: W wide, the revert prompt's ground (the desk's PAPER window, radius 12). PAD in: the action's word in
+// TITLE; one row a window in BODY INK, ROW_H apart, at most ROWS, then `+N` in INK_DIM when more; two buttons BTN_H
+// high, radius 6, their words in NAME_BOLD (frame 23's, as kit/indextrash.ci draws them). No ask puts Enter on losing
+// work (design): the loss here is a side effect of Restart or Shut Down and the desk cannot save
+// a window yet, so the blue button is the one that keeps the work. At the left the action, plain: SURF1, its word in
+// INK centered, no key of its own (a click, or Tab to it and Space). At the right Cancel on FILL: its Esc on a KEY_H
+// keycap of radius 4 (SHORTCUT, KEY_SIDE in at each side) BTN_SIDE in, then KEY_GAP, then the word, keycap and word
+// ON_FILL. Enter and Esc both cancel, wherever the focus is. The focus starts on the blue button; Tab, Left or Right
+// move it and Space takes the focused button. DN-40's ring shows only once Tab, Left or Right is pressed in the ask,
+// never at its opening (note 68). No countdown, no sentence about what is lost (DN-46).
+//
+// Coordinates are logical pixels from the plate's top left; row_at draws device row y at zoom z (1 or 2) from the
+// plate's device top left. One ask at a time; the state is this module's.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;
+
+export const I64 W = 420;
+export const I64 PAD = 24;
+export const I64 ROW_Y = 60;          // the first window row's top
+export const I64 ROW_H = 24;
+export const I64 ROWS = 4;
+export const I64 BTN_H = 36;
+export const I64 BTN_GAP = 20;        // the last row to the buttons
+export const I64 BTN_MIN = 96;
+export const I64 BTN_SIDE = 12;       // a button's side to its keycap, its word to its other side
+export const I64 KEY_H = 20;          // a button's keycap
+const I64 KEY_R = 4;
+const I64 KEY_SIDE = 6;
+const I64 KEY_GAP = 10;               // the keycap to the word
+export const I64 RAD = 12;
+
+export const I64 ACT_RESTART = 2;     // the desk's power actions (kit/plane.ci's)
+export const I64 ACT_SHUTDOWN = 3;
+
+export const I64 STAY = 0;
+export const I64 CANCEL = -1;
+export const I64 GO = 1;
+
+const I64 K_ESC = 1;
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_SPACE = 57;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+
+Bool up = false;
+I64 act = 0;
+Bool on_go = false;                    // the focus: false Cancel, true the action
+Bool kbd = false;                      // Tab, Left or Right was pressed in the ask: the focus shows its ring
+I64 total = 0;                         // the windows that report unsaved work
+U8[96] nm;                             // ROWS names, 24 bytes each
+I64[4] nl;
+
+// Whether Restart or Shut Down must ask first: n windows report unsaved work.
+export Bool gate(I64 n) { return n > 0; }
+
+// The ask up for action a (ACT_RESTART or ACT_SHUTDOWN): n windows report unsaved work, the first ones named in
+// names (24 bytes each) with lengths lens. The focus is on Cancel, the blue button, its ring hidden (note 68).
+export void open(I64 a, in U8[_] names, in I64[_] lens, I64 n) {
+    act = a;
+    total = n;
+    for k in 0..ROWS {
+        nl[k] = 0;
+        if (k < n && k < len(lens)) { nl[k] = min(lens[k], 24); }
+        for q in 0..nl[k] { nm[24 * k + q] = names[24 * k + q]; }
+    }
+    on_go = false;
+    kbd = false;
+    up = true;
+}
+
+export void close() { up = false; }
+export Bool is_up() { return up; }
+export I64 action() { return act; }
+export Bool focus_go() { return on_go; }
+
+I64 shown() { return min(total, ROWS); }
+I64 rows_h() {
+    I64 r = shown();
+    if (total > ROWS) { r = r + 1; }
+    return ROW_H * r;
+}
+
+export I64 height() { return ROW_Y + rows_h() + BTN_GAP + BTN_H + PAD; }
+
+I64 word(inout U8[_] t) {
+    if (act == ACT_RESTART) {
+        U8[7] w = b"Restart";
+        for k in 0..7 { t[k] = w[k]; }
+        return 7;
+    }
+    U8[9] s = b"Shut Down";
+    for k in 0..9 { t[k] = s[k]; }
+    return 9;
+}
+
+// A keycap's width for key k.
+export I64 key_w(in U8[_] k) { return KEY_SIDE + ctext.width(k, len(k), faces.SHORTCUT, 1) + KEY_SIDE; }
+
+// A button's width: its keycap for key k (none when k is empty), then word s (n bytes); at least BTN_MIN.
+I64 bw(in U8[_] k, in U8[_] s, I64 n) {
+    I64 kw = 0;
+    if (len(k) > 0) { kw = key_w(k) + KEY_GAP; }
+    return max(BTN_MIN, BTN_SIDE + kw + ctext.width(s, n, faces.NAME_BOLD, 1) + BTN_SIDE);
+}
+I64 btn_y() { return height() - PAD - BTN_H; }
+
+I64 go_w() {
+    U8[9] t;
+    I64 n = word(t);
+    return bw(b"", t, n);
+}
+
+I64 cancel_w() { return bw(b"Esc", b"Cancel", 6); }
+
+// Cancel's left edge from the plate's left (logical).
+export I64 cancel_x0() { return W - PAD - cancel_w(); }
+
+// A key while the ask is up: GO, CANCEL (it closes either way) or STAY. Enter and Esc cancel (Cancel is the blue
+// button), Space takes the focused button.
+export I64 key(I64 c) {
+    if (c == K_ESC || c == K_ENTER) {
+        up = false;
+        return CANCEL;
+    }
+    if (c == K_SPACE) {
+        up = false;
+        if (on_go) { return GO; }
+        return CANCEL;
+    }
+    if (c == K_TAB || c == K_LEFT || c == K_RIGHT) {
+        if (kbd) {
+            if (c == K_LEFT) {
+                on_go = true;
+            } else if (c == K_RIGHT) {
+                on_go = false;
+            } else {
+                on_go = !on_go;
+            }
+        }
+        kbd = true;
+    }
+    return STAY;
+}
+
+// A press at (px, py) from the plate's top left (logical): GO on the action, CANCEL on Cancel, else STAY.
+export I64 click(I64 px, I64 py) {
+    I64 bt = btn_y();
+    if (py < bt || py >= bt + BTN_H) { return STAY; }
+    if (px >= PAD && px < PAD + go_w()) {
+        up = false;
+        return GO;
+    }
+    if (px >= cancel_x0() && px < W - PAD) {
+        up = false;
+        return CANCEL;
+    }
+    return STAY;
+}
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+I64 put_num(inout U8[_] t, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 q = v;
+    if (q == 0) {
+        d[0] = '0';
+        n = 1;
+    }
+    while (q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { t[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// A baseline (logical) for face f centered in [t, t + h).
+I64 base_in(I64 t, I64 h, I64 f) {
+    I64 a = ctext.ascent(f, 1);
+    I64 d = ctext.descent(f, 1);
+    return t + (h - a - d) / 2 + a;
+}
+
+// Button [x, x + w) (logical) from the plate's device top left (ox, oy) at zoom z: ground, its keycap for key k (edge
+// ke, key in ki), its word s in ink; with no key (k empty) the word centered; ring: DN-40's.
+void button(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 x, I64 w, in U8[_] k, I64 ke, I64 ki, in U8[_] s, I64 n,
+            I64 ground, I64 ink, Bool ring, I64 z) {
+    I64 bt = btn_y();
+    I64 x0 = ox + x * z;
+    I64 y0 = oy + bt * z;
+    I64 x1 = ox + (x + w) * z;
+    I64 y1 = oy + (bt + BTN_H) * z;
+    if (y >= y0 && y < y1) {
+        shape.rounded(row, y, x0, y0, x1, y1, 6 * z, tok(ground));
+        I64 wy = oy + base_in(bt, BTN_H, faces.NAME_BOLD) * z;
+        I64 e = 0;
+        if (len(k) == 0) {
+            I64 tw = ctext.width(s, n, faces.NAME_BOLD, z);
+            e = ctext.text(row, y, x0 + (x1 - x0 - tw) / 2, wy, x1, s, n, tok(ink), faces.NAME_BOLD, z);
+        } else {
+            I64 kx = x + BTN_SIDE;
+            I64 kw = key_w(k);
+            I64 ky = bt + (BTN_H - KEY_H) / 2;
+            shape.ring(row, y, ox + kx * z, oy + ky * z, ox + (kx + kw) * z, oy + (ky + KEY_H) * z, KEY_R * z, z,
+                       tok(ke));
+            if (y >= oy + ky * z && y < oy + (ky + KEY_H) * z) {
+                e = ctext.text(row, y, ox + (kx + KEY_SIDE) * z, oy + base_in(ky, KEY_H, faces.SHORTCUT) * z,
+                               ox + (kx + kw) * z, k, len(k), tok(ki), faces.SHORTCUT, z);
+            }
+            e = ctext.text(row, y, ox + (kx + kw + KEY_GAP) * z, wy, x1, s, n, tok(ink), faces.NAME_BOLD, z);
+        }
+    }
+    if (ring && y >= y0 - 4 * z && y < y1 + 4 * z) {   // DN-40: the keyboard's focus, outside the button
+        shape.focus_ring(row, y, x0, y0, x1, y1, 6 * z, z, tok(tokens.PAPER), tok(tokens.ULTRAMARINE));
+    }
+}
+
+// Row y (device) of the plate's content at zoom z, its top left at device (ox, oy); the ground is the caller's.
+export void row_at(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z) {
+    if (!up || y < oy || y >= oy + height() * z) { return; }
+    U8[9] t;
+    I64 tn = word(t);
+    I64 e = ctext.text(row, y, ox + PAD * z, oy + 39 * z, ox + (W - PAD) * z, t, tn, tok(tokens.INK), faces.TITLE, z);
+    for k in 0..shown() {
+        I64 ry = ROW_Y + ROW_H * k;
+        e = ctext.text(row, y, ox + PAD * z, oy + (ry + 17) * z, ox + (W - PAD) * z, nm[24 * k..24 * k + nl[k]], nl[k],
+                       tok(tokens.INK), faces.BODY, z);
+    }
+    if (total > ROWS) {
+        U8[24] m;
+        m[0] = '+';
+        I64 mn = put_num(m, 1, total - ROWS);
+        e = ctext.text(row, y, ox + PAD * z, oy + (ROW_Y + ROW_H * ROWS + 17) * z, ox + (W - PAD) * z, m[0..mn], mn,
+                       tok(tokens.INK_DIM), faces.BODY, z);
+    }
+    button(row, y, ox, oy, PAD, go_w(), b"", tokens.INK, tokens.INK, t, tn, tokens.SURF1, tokens.INK, kbd && on_go, z);
+    button(row, y, ox, oy, cancel_x0(), cancel_w(), b"Esc", tokens.ON_FILL, tokens.ON_FILL, b"Cancel", 6, tokens.FILL,
+           tokens.ON_FILL, kbd && !on_go, z);
+}
+// SPDX-License-Identifier: Apache-2.0

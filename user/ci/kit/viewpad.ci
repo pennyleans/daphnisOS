@@ -1,0 +1,305 @@
+// user/ci/kit/viewpad.ci: View's window (stage RS, RS-VIEW; frame 39 approved by DN-58, frame 25's empty state), on
+// draw.ci's row contract: where the picture sits on the surface and at what whole scale, the wedges at the left and
+// right edges, and the window with no picture shown (none asked, or one that does not open). The program
+// (user/ci/cview.ci) reads and decodes the file and feeds this module the picture's size, the surface's and the
+// pointer; the hosted tests drive it the same way.
+//
+// The picture is the window. It opens whole and never above actual size (frame 48): at 1, or at the largest 1 / d that
+// fits, centered on the MANTLE ground. Zoom In and Zoom Out step a ladder of whole scales (1/8 to 16) about the
+// surface's center; Actual Size is 1. A new box (resurface) fits the picture again, or keeps a hand's scale (design
+// note 65). A picture larger than the surface is panned, never past its edges. A wedge is a
+// plate 36 x 88 at the edge, its inner corners of radius 12, #141413 at 72 percent with a 14 px chevron in #f3efe6; the
+// wedge, like the picture, never swaps with the theme (design note 62). Geometry is in 1x pixels; the row functions
+// draw at zoom z.
+import user.ci.kit.tokens;
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.stroke;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+
+export const I64 PLATE_W = 36;
+export const I64 PLATE_H = 88;
+export const I64 EMPTY_W = 458;            // frame 25's window body: the surface with no picture shown
+export const I64 EMPTY_H = 267;
+export const I64 MIN_W = 320;              // the least box a told size lays out (DN-63); a smaller one clips right and
+export const I64 MIN_H = 240;              // bottom
+const I64 PLATE_R = 12;
+const I64 PLATE_A = 184;                   // 0.72 in 256ths
+const U32 PLATE_C = 0x141413;
+const U32 MARK_C = 0xf3efe6;
+
+// the zoom ladder: d below 0 is the scale 1 / -d
+I64[13] ladder = [-8, -6, -4, -3, -2, 1, 2, 3, 4, 6, 8, 12, 16];
+// the wedges' chevrons (frame 39: M3.5 1.5 L7 5 L3.5 8.5 in a 10 unit box, 1.5 wide), in sixteenths
+I64[8] chev_r = [56, 24, 112, 80, 112, 80, 56, 136];
+I64[8] chev_l = [104, 24, 48, 80, 48, 80, 104, 136];
+// the symbol bank's image, mono (tools/symbols-v1/ui_daphnis_sym_image_mono.svg: a frame 11 x 10 of
+// corner radius 1.5 from (2.5, 3), a sun of radius 1 at (5.75, 6.25), a hill M2.5 11 L6 8 L9 10.5 L11 9 L13.5 11),
+// in sixteenths of its 16 unit box, each corner and the sun in segments
+I64[96] image = [64, 48, 192, 48,  192, 48, 209, 55,  209, 55, 216, 72,  216, 72, 216, 184,
+                 216, 184, 209, 201,  209, 201, 192, 208,  192, 208, 64, 208,  64, 208, 47, 201,
+                 47, 201, 40, 184,  40, 184, 40, 72,  40, 72, 47, 55,  47, 55, 64, 48,
+                 40, 176, 96, 128,  96, 128, 144, 168,  144, 168, 176, 144,  176, 144, 216, 176,
+                 108, 100, 103, 111,  103, 111, 92, 116,  92, 116, 81, 111,  81, 111, 76, 100,
+                 76, 100, 81, 89,  81, 89, 92, 84,  92, 84, 103, 89,  103, 89, 108, 100];
+
+I64 iw = 1;           // the picture
+I64 ih = 1;
+I64 sw = 1;           // the surface
+I64 sh = 1;
+I64 up = 1;           // a picture pixel takes up x up surface pixels, or
+I64 down = 1;         // a surface pixel shows down x down picture pixels
+I64 ox = 0;           // the picture's corner on the surface
+I64 oy = 0;
+Bool hand = false;    // the scale was chosen by hand (Zoom In, Zoom Out, Actual Size): a new box keeps it
+U32[3840] scr;        // a row drawn before it is mixed in: 1920 surface pixels at 2x
+
+export I64 scale_up() { return up; }
+export I64 scale_down() { return down; }
+export I64 left() { return ox; }
+export I64 top() { return oy; }
+export I64 shown_w() { return iw * up / down; }
+export I64 shown_h() { return ih * up / down; }
+
+// The picture's place: centered on an axis it does not fill, kept inside the surface on one it does.
+void keep_in() {
+    I64 dw = shown_w();
+    I64 dh = shown_h();
+    if (dw <= sw) { ox = (sw - dw) / 2; }
+    else {
+        if (ox > 0) { ox = 0; }
+        if (ox < sw - dw) { ox = sw - dw; }
+    }
+    if (dh <= sh) { oy = (sh - dh) / 2; }
+    else {
+        if (oy > 0) { oy = 0; }
+        if (oy < sh - dh) { oy = sh - dh; }
+    }
+}
+
+// Actual size, or the largest 1 / d that shows the whole picture when it is larger than the surface; never above
+// actual size (frame 48, design note 67).
+export void fit() {
+    hand = false;
+    up = 1;
+    down = 1;
+    if (iw > sw || ih > sh) {
+        down = (iw + sw - 1) / sw;
+        if ((ih + sh - 1) / sh > down) { down = (ih + sh - 1) / sh; }
+    }
+    ox = 0;
+    oy = 0;
+    keep_in();
+}
+
+// The surface View asks for a picture w x h: the picture; at least 160 x 120 with the wedges, and at least the
+// picture menu as it opens (mw x mh), so the whole menu is in reach; at most 1920 x 1080. A smaller picture sits
+// centered on the ground (frame 48).
+export I64 want_w(I64 w, Bool wedges, I64 mw) {
+    I64 v = max(w, mw);
+    if (wedges) { v = max(v, 160); }
+    return min(v, 1920);
+}
+export I64 want_h(I64 h, Bool wedges, I64 mh) {
+    I64 v = max(h, mh);
+    if (wedges) { v = max(v, 120); }
+    return min(v, 1080);
+}
+
+export void surface(I64 w, I64 h) {
+    sw = w;
+    sh = h;
+    if (sw < 1) { sw = 1; }
+    if (sh < 1) { sh = 1; }
+}
+
+// RS-SURF: the box the desk told, w x h, at least MIN_W x MIN_H: the picture fitted whole again, or at a hand's
+// scale kept inside it (design note 65).
+export void resurface(I64 w, I64 h) {
+    surface(max(w, MIN_W), max(h, MIN_H));
+    if (hand) { keep_in(); } else { fit(); }
+}
+
+// A new picture w x h, fitted.
+export void picture(I64 w, I64 h) {
+    iw = w;
+    ih = h;
+    if (iw < 1) { iw = 1; }
+    if (ih < 1) { ih = 1; }
+    fit();
+}
+
+// The scale u / d, the picture's point at the surface's center kept there.
+void rescale(I64 u, I64 d) {
+    I64 cx = (sw / 2 - ox) * down / up;
+    I64 cy = (sh / 2 - oy) * down / up;
+    up = u;
+    down = d;
+    ox = sw / 2 - cx * up / down;
+    oy = sh / 2 - cy * up / down;
+    keep_in();
+}
+
+// Ladder step k's scale is above (dir 1) or below (dir -1) the scale now.
+Bool past(I64 k, I64 dir) {
+    I64 e = ladder[k];
+    I64 a = e * down;                  // e / 1 against up / down
+    I64 b = up;
+    if (e < 0) {
+        a = down;                      // 1 / -e against up / down
+        b = (0 - e) * up;
+    }
+    if (dir > 0) { return a > b; }
+    return a < b;
+}
+
+void step(I64 k) {
+    hand = true;
+    I64 e = ladder[k];
+    if (e < 0) { rescale(1, 0 - e); } else { rescale(e, 1); }
+}
+
+// Zoom In: the next whole scale up; false at 16.
+export Bool zoom_in() {
+    for k in 0..13 {
+        if (past(k, 1)) {
+            step(k);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Zoom Out: the next whole scale down; false at 1/8.
+export Bool zoom_out() {
+    I64 k = 12;
+    while (k >= 0) {
+        if (past(k, -1)) {
+            step(k);
+            return true;
+        }
+        k = k - 1;
+    }
+    return false;
+}
+
+// Actual Size: one picture pixel a surface pixel; false when it already is.
+export Bool actual() {
+    if (up == 1 && down == 1) { return false; }
+    hand = true;
+    rescale(1, 1);
+    return true;
+}
+
+// The picture is larger than the surface on an axis, so a drag pans it.
+export Bool larger() { return shown_w() > sw || shown_h() > sh; }
+
+// The picture moved by (dx, dy) surface pixels, kept inside; whether it moved.
+export Bool pan(I64 dx, I64 dy) {
+    I64 x = ox;
+    I64 y = oy;
+    ox = ox + dx;
+    oy = oy + dy;
+    keep_in();
+    return ox != x || oy != y;
+}
+
+// The picture's column under surface column x, or -1.
+export I64 src_x(I64 x) {
+    if (x < ox || x >= ox + shown_w()) { return -1; }
+    return (x - ox) * down / up;
+}
+
+export I64 src_y(I64 y) {
+    if (y < oy || y >= oy + shown_h()) { return -1; }
+    return (y - oy) * down / up;
+}
+
+// The band at each edge where the pointer shows that edge's wedge: a sixth of the width, 24 to 96.
+export I64 band() {
+    I64 b = sw / 6;
+    if (b < 24) { b = 24; }
+    if (b > 96) { b = 96; }
+    return b;
+}
+
+// The wedge the pointer at x shows: 1 left, 2 right, 0 none.
+export I64 side_at(I64 x) {
+    if (x < 0) { return 0; }
+    if (x < band()) { return 1; }
+    if (x >= sw - band() && x < sw) { return 2; }
+    return 0;
+}
+
+export I64 plate_top() { return sh / 2 - PLATE_H / 2; }
+
+// Channel c of RGBA pixel o of px laid on ground g (0 to 255).
+I64 comp(in U8[_] px, I64 o, I64 c, I64 g) {
+    I64 a = px[o + 3] as I64;
+    I64 v = px[o + c] as I64;
+    return (v * a + g * (255 - a) + 127) / 255;
+}
+
+// Row y (device) at zoom z: the ground, and the picture px (RGBA, iw a row) laid on it.
+export void picture_row(inout U32[_] row, I64 y, I64 z, in U8[_] px) {
+    U32 gc = tokens.word(tokens.MANTLE);
+    I64 gr = ((gc >> 16) & 255) as I64;
+    I64 gg = ((gc >> 8) & 255) as I64;
+    I64 gb = (gc & 255) as I64;
+    I64 n = sw * z;
+    if (n > len(row)) { n = len(row); }
+    for x in 0..n { row[x] = gc; }
+    I64 sy = src_y(y / z);
+    if (sy < 0) { return; }
+    I64 xa = ox * z;
+    I64 xb = (ox + shown_w()) * z;
+    if (xa < 0) { xa = 0; }
+    if (xb > n) { xb = n; }
+    for x in xa..xb {
+        I64 o = 4 * (sy * iw + src_x(x / z));
+        I64 r = comp(px, o, 0, gr);
+        I64 g = comp(px, o, 1, gg);
+        I64 b = comp(px, o, 2, gb);
+        row[x] = ((r << 16) | (g << 8) | b) as U32;
+    }
+}
+
+// Row y (device) at zoom z: the wedge of side s (1 left, 2 right) over what the row holds.
+export void wedge_row(inout U32[_] row, I64 y, I64 s, I64 z) {
+    I64 y0 = plate_top() * z;
+    I64 y1 = y0 + PLATE_H * z;
+    if (y < y0 || y >= y1 || s < 1 || s > 2) { return; }
+    I64 x0 = 0;
+    I64 xa = 0 - PLATE_R * z;          // the plate's rectangle reaches past the edge, so only its inner corners round
+    I64 xb = PLATE_W * z;
+    if (s == 2) {
+        x0 = (sw - PLATE_W) * z;
+        xa = x0;
+        xb = sw * z + PLATE_R * z;
+    }
+    I64 x1 = x0 + PLATE_W * z;
+    for x in x0..x1 { scr[x] = row[x]; }
+    shape.rounded(scr, y, xa, y0, xb, y1, PLATE_R * z, PLATE_C);
+    for x in x0..x1 { row[x] = blend.mix_px(row[x], scr[x], PLATE_A); }
+    I64 cx = x0 + 11 * z;              // the chevron's 14 px box, centered on the plate
+    I64 cy = y0 + 37 * z;
+    if (s == 2) { stroke.path_row(row, y, cx, cy, 7 * z, 5, chev_r, 2, 24, MARK_C); }
+    else { stroke.path_row(row, y, cx, cy, 7 * z, 5, chev_l, 2, 24, MARK_C); }
+}
+
+// Row y (device) at zoom z with no picture shown (frame 25's pattern, design note 64): the window body's PAPER, the
+// bank's image symbol at 32 px and one line 12 under it, both INK_DIM and centered.
+export void empty_row(inout U32[_] row, I64 y, I64 z, in U8[_] words) {
+    U32 gc = tokens.word(tokens.PAPER);
+    U32 dim = tokens.word(tokens.INK_DIM);
+    I64 n = sw * z;
+    if (n > len(row)) { n = len(row); }
+    for x in 0..n { row[x] = gc; }
+    I64 t = (sh - 57) / 2;             // 32 + 12 + the line's 13
+    I64 sx = (sw - 32) / 2 * z;
+    stroke.path_row(row, y, sx, t * z, 2 * z, 1, image, 24, 24, dim);
+    I64 w = ctext.width(words, len(words), faces.BODY, z);
+    _ = ctext.text(row, y, (n - w) / 2, (t + 44 + 11) * z, n, words, len(words), dim, faces.BODY, z);
+}
+// SPDX-License-Identifier: Apache-2.0

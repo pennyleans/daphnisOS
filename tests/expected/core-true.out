@@ -1,0 +1,6 @@
+$ 
+status 0
+$ x y
+status 0
+$ --help
+status 0

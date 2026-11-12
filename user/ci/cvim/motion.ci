@@ -1,0 +1,680 @@
+// user/ci/cvim/motion.ci: cvim's motions (docs/specs/2026-11-07-cv-cvim.md section 5, CV-2a): h j k l and the
+// arrows, w b e W B E ge gE, 0 ^ $, gg G {n}G, f F t T ; ,, % and { }. Each follows its Vim function (fwd_word,
+// end_word, bck_word, bckend_word, searchc, findpar, findmatchlimit) step for step over positions, since a line's
+// line feed is Vim's NUL: inc() steps onto it and past it, dec() back onto the previous line's.
+//
+// go() returns the target and sets R_MINCL (inclusive), R_MLINE (linewise), R_MFAIL (the command fails: an
+// operator is dropped) and R_MWANT (0: the screen column is the target's, 1: j and k keep it, 2: past the end).
+import user.ced.keys;
+import user.ci.cvim.buf;
+import user.ci.cvim.text;
+import user.ci.cvim.state;
+import user.ci.cvim.unicode;
+import user.ci.cvim.scroll;
+
+// inc and dec give a position times 4 plus how they moved (Vim's 0, 1 and 2), or -1 at the text's end or start.
+export I64 inc(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    if (text.ch(x, orig, add, p) != '\n') {
+        I64 q = text.nextc(x, orig, add, p);
+        if (text.ch(x, orig, add, q) == '\n') {
+            return q * 4 + 2;
+        }
+        return q * 4;
+    }
+    if (p + 1 < buf.total(x)) {
+        return (p + 1) * 4 + 1;
+    }
+    return -1;
+}
+
+export I64 dec(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    if (text.off_start(x, orig, add, p)) {
+        return text.prevc(x, orig, add, p) * 4;
+    }
+    if (p > 0) {
+        return (p - 1) * 4 + 1;
+    }
+    return -1;
+}
+
+// Vim's cls(): 0 blank (and the line end), 1 punctuation, 2 a word character; every non-blank is 1 for W B E.
+export I64 cls(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, Bool big) {
+    U8 c = text.ch(x, orig, add, p);
+    if (c == ' ' || c == '\t' || c == '\n') {
+        return 0;
+    }
+    if (c >= 128) {
+        I64 cl = unicode.class_of(text.code_at(x, orig, add, p));
+        if (big && cl != 0) { return 1; }
+        return cl;
+    }
+    if (big) { return 1; }
+    if (c >= 128 || c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+        return 2;
+    }
+    return 1;
+}
+
+Bool last_line(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 q = p;
+    I64 t = buf.total(x);
+    while (q < t && text.ch(x, orig, add, q) != '\n') {
+        q += 1;
+    }
+    return q >= t - 1;
+}
+
+void fail(inout I64[_] r) {
+    r[state.R_MFAIL] = 1;
+}
+
+// w and W (fwd_word); eol when an operator waits, so the last word stops at its line's end.
+export I64 fwd_word(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 rep, Bool big, Bool eol) {
+    I64 pos = p;
+    I64 left = rep;
+    while (left > 0) {
+        left -= 1;
+        I64 sclass = cls(x, orig, add, pos, big);
+        Bool last = last_line(x, orig, add, pos);
+        I64 v = inc(x, orig, add, pos);
+        if (v < 0) {
+            fail(r);
+            return pos;
+        }
+        pos = v / 4;
+        if (v % 4 >= 1 && last) {
+            fail(r);
+            return pos;
+        }
+        if (v % 4 >= 1 && eol && left == 0) {
+            return pos;
+        }
+        if (sclass != 0) {
+            while (cls(x, orig, add, pos, big) == sclass) {
+                v = inc(x, orig, add, pos);
+                if (v < 0) {
+                    return pos;
+                }
+                pos = v / 4;
+                if (v % 4 >= 1 && eol && left == 0) {
+                    return pos;
+                }
+            }
+        }
+        while (cls(x, orig, add, pos, big) == 0) {
+            if (text.empty_at(x, orig, add, pos)) {
+                break;
+            }
+            v = inc(x, orig, add, pos);
+            if (v < 0) {
+                return pos;
+            }
+            pos = v / 4;
+            if (v % 4 >= 1 && eol && left == 0) {
+                return pos;
+            }
+        }
+    }
+    return pos;
+}
+
+// Vim's skip_chars: past the characters of class c; -1 when the text ends first.
+I64 skip(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 c, Bool big, Bool fwd) {
+    I64 pos = p;
+    while (cls(x, orig, add, pos, big) == c) {
+        I64 v = dec(x, orig, add, pos);
+        if (fwd) {
+            v = inc(x, orig, add, pos);
+        }
+        if (v < 0) {
+            return -1 - pos;
+        }
+        pos = v / 4;
+    }
+    return pos;
+}
+
+// e and E (end_word); stop for cw on a word's last character; empty stops at an empty line.
+export I64 end_word(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 rep, Bool big, Bool stop0,
+             Bool empty) {
+    I64 pos = p;
+    Bool stop = stop0;
+    I64 left = rep;
+    while (left > 0) {
+        left -= 1;
+        I64 sclass = cls(x, orig, add, pos, big);
+        I64 v = inc(x, orig, add, pos);
+        if (v < 0) {
+            fail(r);
+            return pos;
+        }
+        pos = v / 4;
+        Bool finished = false;
+        if (cls(x, orig, add, pos, big) == sclass && sclass != 0) {
+            I64 q = skip(x, orig, add, pos, sclass, big, true);
+            if (q < 0) {
+                fail(r);
+                return -1 - q;
+            }
+            pos = q;
+        } else if (!stop || sclass == 0) {
+            while (cls(x, orig, add, pos, big) == 0) {
+                if (text.empty_at(x, orig, add, pos) && empty) {
+                    finished = true;
+                    break;
+                }
+                v = inc(x, orig, add, pos);
+                if (v < 0) {
+                    fail(r);
+                    return pos;
+                }
+                pos = v / 4;
+            }
+            if (!finished) {
+                I64 q = skip(x, orig, add, pos, cls(x, orig, add, pos, big), big, true);
+                if (q < 0) {
+                    fail(r);
+                    return -1 - q;
+                }
+                pos = q;
+            }
+        }
+        if (!finished) {
+            I64 d = dec(x, orig, add, pos);
+            if (d >= 0) {
+                pos = d / 4;
+            }
+        }
+        stop = false;
+    }
+    return pos;
+}
+
+// b and B (bck_word).
+export I64 bck_word(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 rep, Bool big) {
+    I64 pos = p;
+    I64 left = rep;
+    while (left > 0) {
+        left -= 1;
+        I64 sclass = cls(x, orig, add, pos, big);
+        I64 v = dec(x, orig, add, pos);
+        if (v < 0) {
+            fail(r);
+            return pos;
+        }
+        pos = v / 4;
+        Bool finished = false;
+        while (cls(x, orig, add, pos, big) == 0) {
+            if (text.empty_at(x, orig, add, pos)) {
+                finished = true;
+                break;
+            }
+            v = dec(x, orig, add, pos);
+            if (v < 0) {
+                return pos;
+            }
+            pos = v / 4;
+        }
+        if (!finished) {
+            I64 q = skip(x, orig, add, pos, cls(x, orig, add, pos, big), big, false);
+            if (q < 0) {
+                return -1 - q;
+            }
+            pos = inc(x, orig, add, q) / 4;
+        }
+    }
+    return pos;
+}
+
+// ge and gE (bckend_word, not stopping at a line's end).
+export I64 bckend_word(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 rep, Bool big) {
+    I64 pos = p;
+    I64 left = rep;
+    while (left > 0) {
+        left -= 1;
+        I64 sclass = cls(x, orig, add, pos, big);
+        I64 v = dec(x, orig, add, pos);
+        if (v < 0) {
+            fail(r);
+            return pos;
+        }
+        pos = v / 4;
+        if (sclass != 0) {
+            while (cls(x, orig, add, pos, big) == sclass) {
+                v = dec(x, orig, add, pos);
+                if (v < 0) {
+                    return pos;
+                }
+                pos = v / 4;
+            }
+        }
+        while (cls(x, orig, add, pos, big) == 0) {
+            if (text.empty_at(x, orig, add, pos)) {
+                break;
+            }
+            v = dec(x, orig, add, pos);
+            if (v < 0) {
+                return pos;
+            }
+            pos = v / 4;
+        }
+    }
+    return pos;
+}
+
+// Vim's adjust_cursor after w and e: not on a line end that has characters before it; the motion turns inclusive.
+I64 off_end(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 start, I64 p) {
+    if (p > start && text.ch(x, orig, add, p) == '\n' && text.off_start(x, orig, add, p)) {
+        r[state.R_MINCL] = 1;
+        return text.prevc(x, orig, add, p);
+    }
+    return p;
+}
+
+// f F t T ; , (searchc); find is the command, c its character, again for ; and ,.
+I64 search_char(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 find, I64 c0, I64 rep,
+                Bool again, Bool flip) {
+    I64 cmd = find;
+    I64 c = c0;
+    Bool stop = true;
+    if (again) {
+        cmd = r[state.R_FIND_CMD];
+        c = r[state.R_FIND_CH];
+        if (cmd == 0) {
+            fail(r);
+            return p;
+        }
+        if (flip) {
+            if (cmd == 'f') {
+                cmd = 'F';
+            } else if (cmd == 'F') {
+                cmd = 'f';
+            } else if (cmd == 't') {
+                cmd = 'T';
+            } else {
+                cmd = 't';
+            }
+        }
+        if (rep == 1 && (cmd == 't' || cmd == 'T')) {
+            stop = false;
+        }
+    } else {
+        r[state.R_FIND_CMD] = cmd;
+        r[state.R_FIND_CH] = c;
+    }
+    Bool fwd = cmd == 'f' || cmd == 't';
+    Bool until = cmd == 't' || cmd == 'T';
+    r[state.R_MINCL] = 0;
+    if (fwd) {
+        r[state.R_MINCL] = 1;
+    }
+    U8[4] cs;
+    I64 cn = text.encode_utf8(c, cs);
+    I64 ls = text.lstart(x, orig, add, text.lineof(x, orig, add, p));
+    I64 q = p;
+    I64 left = rep;
+    while (left > 0) {
+        left -= 1;
+        while (true) {
+            if (fwd) {
+                q = text.nextc(x, orig, add, q);
+                if (text.ch(x, orig, add, q) == '\n') {
+                    fail(r);
+                    return p;
+                }
+            } else {
+                if (q <= ls) {
+                    fail(r);
+                    return p;
+                }
+                q = text.prevc(x, orig, add, q);
+            }
+            Bool same = true;
+            for i in 0..cn {
+                if (text.ch(x, orig, add, q + i) != cs[i]) {
+                    same = false;
+                }
+            }
+            if (same && stop) {
+                break;
+            }
+            stop = true;
+        }
+    }
+    if (until) {
+        if (fwd) {
+            q = text.prevc(x, orig, add, q);
+        } else {
+            q = text.nextc(x, orig, add, q);
+        }
+    }
+    return q;
+}
+
+export I64 pair_of(U8 c) {
+    if (c == '(') {
+        return ')';
+    }
+    if (c == ')') {
+        return '(';
+    }
+    if (c == '[') {
+        return ']';
+    }
+    if (c == ']') {
+        return '[';
+    }
+    if (c == '{') {
+        return '}';
+    }
+    if (c == '}') {
+        return '{';
+    }
+    return 0;
+}
+
+export Bool escaped(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 n = 0;
+    I64 q = p;
+    while (q > 0 && text.ch(x, orig, add, q - 1) == '\\') { n += 1; q -= 1; }
+    return n % 2 != 0;
+}
+
+// Match pairs with the same backslash parity as the starting bracket.
+export I64 match_at(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    U8 c = text.ch(x, orig, add, p);
+    I64 m = pair_of(c);
+    Bool fwd = c == '(' || c == '[' || c == '{';
+    I64 depth = 0;
+    I64 q = p;
+    I64 t = buf.total(x);
+    Bool escape = escaped(x, orig, add, p);
+    while (true) {
+        if (fwd) {
+            q += 1;
+            if (q >= t) {
+                return -1;
+            }
+        } else {
+            q -= 1;
+            if (q < 0) {
+                return -1;
+            }
+        }
+        U8 d = text.ch(x, orig, add, q);
+        if ((d == c || d as I64 == m) && escaped(x, orig, add, q) != escape) { continue; }
+        if (d == c) {
+            depth += 1;
+        } else if (d as I64 == m) {
+            if (depth == 0) {
+                return q;
+            }
+            depth -= 1;
+        }
+    }
+    return -1;
+}
+
+// An unmatched open bracket before p (findmatch(NULL, open)); -1 when none.
+export I64 open_before(in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, U8 open) {
+    I64 close = pair_of(open);
+    I64 depth = 0;
+    I64 q = p;
+    while (q > 0) {
+        q -= 1;
+        U8 d = text.ch(x, orig, add, q);
+        if (d as I64 == close) {
+            depth += 1;
+        } else if (d == open) {
+            if (depth == 0) {
+                return q;
+            }
+            depth -= 1;
+        }
+    }
+    return -1;
+}
+
+// % with no rep: the bracket under the cursor or the first one after it on the line, to its match.
+I64 percent(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p) {
+    I64 q = p;
+    while (text.ch(x, orig, add, q) != '\n' && pair_of(text.ch(x, orig, add, q)) == 0) {
+        q += 1;
+    }
+    if (text.ch(x, orig, add, q) == '\n') {
+        fail(r);
+        return p;
+    }
+    I64 m = match_at(x, orig, add, q);
+    if (m < 0) {
+        fail(r);
+        return p;
+    }
+    return m;
+}
+
+// { and } (findpar): the next empty line after a non-empty one; at the text's end, the last character (inclusive).
+I64 paragraph(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 p, I64 rep, Bool fwd) {
+    I64 nl = text.nlines(x);
+    I64 curr = text.lineof(x, orig, add, p);
+    I64 left = rep;
+    while (left > 0) {
+        left -= 1;
+        Bool did_skip = false;
+        Bool first = true;
+        while (true) {
+            Bool blank = text.lstart(x, orig, add, curr) == text.lend(x, orig, add, curr);
+            if (!blank) {
+                did_skip = true;
+            }
+            if (!first && did_skip && blank) {
+                break;
+            }
+            I64 next = curr - 1;
+            if (fwd) {
+                next = curr + 1;
+            }
+            if (next < 0 || next >= nl) {
+                if (left > 0) {
+                    fail(r);
+                    return p;
+                }
+                break;
+            }
+            curr = next;
+            first = false;
+        }
+    }
+    r[state.R_MINCL] = 0;
+    if (curr == nl - 1 && fwd) {
+        I64 ls = text.lstart(x, orig, add, curr);
+        I64 e = text.lend(x, orig, add, curr);
+        if (e > ls) {
+            r[state.R_MINCL] = 1;
+            return text.prevc(x, orig, add, e);
+        }
+        return ls;
+    }
+    return text.lstart(x, orig, add, curr);
+}
+
+// The motion m from p (its character c for f F t T), count1 times (count0 as typed, 0 for none); op is the waiting
+// operator or 0.
+export I64 go(inout I64[_] r, in I64[_] x, in U8[_] orig, in U8[_] add, I64 m, I64 c, I64 count1, I64 count0,
+              I64 op) {
+    r[state.R_MINCL] = 0;
+    r[state.R_MLINE] = 0;
+    r[state.R_MFAIL] = 0;
+    r[state.R_MWANT] = 0;
+    I64 p = r[state.R_CUR];
+    I64 nl = text.nlines(x);
+    I64 l = text.lineof(x, orig, add, p);
+    if (m == 'h' || m == keys.K_LEFT) {
+        I64 q = p;
+        for i in 0..count1 {
+            if (!text.off_start(x, orig, add, q)) {
+                break;
+            }
+            q = text.prevc(x, orig, add, q);
+        }
+        if (q == p && op == 0) {
+            r[state.R_BELL] = 1;
+        }
+        return q;
+    }
+    if (m == 'l' || m == keys.K_RIGHT) {
+        I64 q = p;
+        for i in 0..count1 {
+            if (text.ch(x, orig, add, q) == '\n' || text.ch(x, orig, add, text.nextc(x, orig, add, q)) == '\n') {
+                if (op != 0 && text.ch(x, orig, add, q) != '\n') {
+                    r[state.R_MINCL] = 1;
+                }
+                break;
+            }
+            q = text.nextc(x, orig, add, q);
+        }
+        if (q == p && op == 0) {
+            r[state.R_BELL] = 1;
+        }
+        return q;
+    }
+    if (m == 'j' || m == keys.K_DOWN || m == 'k' || m == keys.K_UP) {
+        r[state.R_MLINE] = 1;
+        r[state.R_MWANT] = 1;
+        I64 to = 0;
+        if (m == 'j' || m == keys.K_DOWN) {
+            if (l >= nl - 1) {
+                fail(r);
+                return p;
+            }
+            to = min(l + count1, nl - 1);
+        } else {
+            if (l == 0) {
+                fail(r);
+                return p;
+            }
+            to = max(l - count1, 0);
+        }
+        if (r[state.R_WANT] < 0) {
+            r[state.R_WANT] = text.vcol(x, orig, add, p);
+        }
+        return text.at_vcol(x, orig, add, to, r[state.R_WANT], false);
+    }
+    if (m == '0' || m == keys.K_HOME) {
+        return text.lstart(x, orig, add, l);
+    }
+    if (m == '^') {
+        return text.first_nonblank(x, orig, add, l, true);
+    }
+    if (m == '$' || m == keys.K_END) {
+        r[state.R_MINCL] = 1;
+        r[state.R_MWANT] = 2;
+        if (count1 > 1 && l >= nl - 1) {
+            fail(r);
+            return p;
+        }
+        I64 to = min(l + count1 - 1, nl - 1);
+        I64 e = text.lend(x, orig, add, to);
+        if (e > text.lstart(x, orig, add, to)) {
+            return text.prevc(x, orig, add, e);
+        }
+        return e;
+    }
+    if (m == 'w' || m == 'W') {
+        Bool big = m == 'W';
+        U8 here = text.ch(x, orig, add, p);
+        if (op == 'c' && here != '\n' && !text.white(here)) {
+            r[state.R_MINCL] = 1;
+            I64 q = end_word(r, x, orig, add, p, count1, big, true, false);
+            r[state.R_MFAIL] = 0;
+            return off_end(r, x, orig, add, p, q);
+        }
+        I64 q = fwd_word(r, x, orig, add, p, count1, big, op != 0);
+        if (r[state.R_MFAIL] == 1 && op == 0) {
+            r[state.R_BELL] = 1;
+        }
+        r[state.R_MFAIL] = 0;
+        return off_end(r, x, orig, add, p, q);
+    }
+    if (m == 'e' || m == 'E') {
+        r[state.R_MINCL] = 1;
+        I64 q = end_word(r, x, orig, add, p, count1, m == 'E', false, false);
+        if (r[state.R_MFAIL] == 1 && op == 0) {
+            r[state.R_BELL] = 1;
+        }
+        r[state.R_MFAIL] = 0;
+        return off_end(r, x, orig, add, p, q);
+    }
+    if (m == 'b' || m == 'B') {
+        return bck_word(r, x, orig, add, p, count1, m == 'B');
+    }
+    if (m == state.M_GE || m == state.M_GEB) {
+        r[state.R_MINCL] = 1;
+        return bckend_word(r, x, orig, add, p, count1, m == state.M_GEB);
+    }
+    if (m == 'G' || m == state.M_GG) {
+        r[state.R_MLINE] = 1;
+        I64 to = nl - 1;
+        if (m == state.M_GG) {
+            to = 0;
+        }
+        if (count0 > 0) {
+            to = min(count0 - 1, nl - 1);
+        }
+        return text.first_nonblank(x, orig, add, to, true);
+    }
+    if (m == 'f' || m == 'F' || m == 't' || m == 'T') {
+        return search_char(r, x, orig, add, p, m, c, count1, false, false);
+    }
+    if (m == ';' || m == ',') {
+        return search_char(r, x, orig, add, p, 0, 0, count1, true, m == ',');
+    }
+    if (m == '%') {
+        if (count0 > 0) {
+            if (count0 > 100) { fail(r); return p; }
+            r[state.R_MLINE] = 1;
+            I64 to = (nl * count0 + 99) / 100 - 1;
+            return text.first_nonblank(x, orig, add, to, true);
+        }
+        r[state.R_MINCL] = 1;
+        return percent(r, x, orig, add, p);
+    }
+    if (m == '{' || m == '}') {
+        return paragraph(r, x, orig, add, p, count1, m == '}');
+    }
+    if (m == 'H' || m == 'M' || m == 'L') {
+        r[state.R_MLINE] = 1;
+        return text.first_nonblank(x, orig, add, scroll.hml(r, x, m, count1, op != 0), true);
+    }
+    if (m == '`' || m == '\'') {
+        // A mark (CV-2b): ` to its character, exclusive; ' to its line's first non-blank, linewise.
+        I64 ml = -1;
+        I64 mc = 0;
+        if (c >= 'a' && c <= 'z') {
+            ml = r[state.R_MARK0 + 2 * (c - 'a')];
+            mc = r[state.R_MARK0 + 2 * (c - 'a') + 1];
+        }
+        if (ml < 0 || ml >= nl) {
+            fail(r);
+            r[state.R_BELL] = 1;
+            return p;
+        }
+        if (m == '\'') {
+            r[state.R_MLINE] = 1;
+            return text.first_nonblank(x, orig, add, ml, true);
+        }
+        I64 ls = text.lstart(x, orig, add, ml);
+        return min(ls + mc, text.lend(x, orig, add, ml));
+    }
+    fail(r);
+    return p;
+}
+
+// Whether key k is a motion of go().
+export Bool is_motion(I64 k) {
+    return k == 'h' || k == 'j' || k == 'k' || k == 'l' || k == keys.K_LEFT || k == keys.K_RIGHT || k == keys.K_UP
+        || k == keys.K_DOWN || k == 'w' || k == 'W' || k == 'b' || k == 'B' || k == 'e' || k == 'E' || k == '0'
+        || k == '^' || k == '$' || k == keys.K_HOME || k == keys.K_END || k == 'G' || k == ';' || k == ','
+        || k == '%' || k == '{' || k == '}';
+}
+// SPDX-License-Identifier: Apache-2.0

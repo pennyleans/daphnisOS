@@ -1,0 +1,458 @@
+// user/ci/trash.ci: the Trash store (FF spec section 3h, design note 52's store rules). One trash for the one
+// writable volume, inside it: a person's at $HOME/.trash, `items/` the trashed entries and `records/` one plain-text
+// record each, under the same stored name. Moving to Trash and Restore are renames, never copies; Delete Forever and
+// Empty Trash are the only calls that free blocks. Every call answers 0 or a count, or -errno; nothing here asks.
+// The file calls are user/ci/trashfs.ci's, so tests/hosted/trash/ runs this module over a stand-in of them.
+import user.ci.trashfs;
+
+export const I64 EPERM = 1;
+export const I64 ENOENT = 2;
+export const I64 EACCES = 13;
+export const I64 EEXIST = 17;
+export const I64 EXDEV = 18;
+export const I64 ENOTDIR = 20;
+export const I64 EINVAL = 22;
+export const I64 EROFS = 30;
+export const I64 ENAMETOOLONG = 36;
+
+export const I64 PATH = 4096;
+const I64 TRIES = 1000;              // NAME, NAME 2 .. NAME 999 before a name is given up
+
+U8[4096] root;                       // $HOME/.trash
+I64 rootn = 0;
+U8[4096] last;                       // put: the stored name; restore: the path the item came back to
+I64 lastn = 0;
+I64 last_s = 0;                      // info: the deletion's seconds
+
+// --- bytes ---
+
+I64 cat(inout U8[_] t, I64 at, in U8[_] s, I64 n) {
+    if (at + n > len(t)) { return 0 - 1; }
+    for k in 0..n { t[at + k] = s[k]; }
+    return at + n;
+}
+
+// v's digits into t from at; the end, or -1 when they do not fit (never past t).
+I64 put_dec(inout U8[_] t, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 x = v;
+    if (x < 0) { x = 0; }
+    while (n == 0 || x > 0) {
+        d[n] = (48 + x % 10) as U8;
+        x = x / 10;
+        n = n + 1;
+    }
+    if (at < 0 || at + n > len(t)) { return 0 - 1; }
+    for k in 0..n { t[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+Bool starts(in U8[_] a, I64 an, in U8[_] p, I64 pn) {
+    if (an < pn) { return false; }
+    for k in 0..pn {
+        if (a[k] != p[k]) { return false; }
+    }
+    return true;
+}
+
+// Whether a[0..an] is p[0..pn] or under it (p then a '/').
+Bool at_or_under(in U8[_] a, I64 an, in U8[_] p, I64 pn) {
+    if (!starts(a, an, p, pn)) { return false; }
+    return an == pn || a[pn] == '/';
+}
+
+// An absolute path with no empty, `.` or `..` component and no trailing '/', at most PATH bytes.
+export Bool clean(in U8[_] p, I64 n) {
+    if (n < 2 || n > PATH || p[0] != '/' || p[n - 1] == '/') { return false; }
+    I64 s = 1;
+    while (s <= n) {
+        I64 e = s;
+        while (e < n && p[e] != '/') { e = e + 1; }
+        I64 l = e - s;
+        if (l == 0 || (l == 1 && p[s] == '.') || (l == 2 && p[s] == '.' && p[s + 1] == '.')) { return false; }
+        s = e + 1;
+    }
+    return true;
+}
+
+I64 base_start(in U8[_] p, I64 n) {
+    I64 k = n;
+    while (k > 0 && p[k - 1] != '/') { k = k - 1; }
+    return k;
+}
+
+// --- where ---
+
+// The trash's root, $HOME/.trash, into `root`; 0, or -EROFS where HOME is not on the volume (under /home).
+I64 find_root() {
+    U8[4096] h;
+    I64 hn = trashfs.home(h);
+    if (hn <= 0 || !clean(h, hn) || !at_or_under(h, hn, b"/home", 5)) { return 0 - EROFS; }
+    rootn = cat(root, 0, h, hn);
+    rootn = cat(root, rootn, b"/.trash", 7);
+    if (rootn < 0) { return 0 - ENAMETOOLONG; }
+    return 0;
+}
+
+// root + "/" + sub + ("/" + name) into t; its length, or -1.
+I64 path_in(inout U8[_] t, in U8[_] sub, I64 sn, in U8[_] name, I64 nn) {
+    I64 n = cat(t, 0, root, rootn);
+    if (n >= 0) { n = cat(t, n, b"/", 1); }
+    if (n >= 0) { n = cat(t, n, sub, sn); }
+    if (n >= 0 && nn > 0) {
+        n = cat(t, n, b"/", 1);
+        if (n >= 0) { n = cat(t, n, name, nn); }
+    }
+    return n;
+}
+
+// The trash's directories, made 0700 when missing; 0, or -errno.
+I64 make_dirs() {
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    U8[4096] t;
+    I64 k = trashfs.kind(root[0..rootn]);
+    if (k == 0) { k = trashfs.mkdir(root[0..rootn], 0x1C0); }
+    if (k < 0) { return k; }
+    I64 n = path_in(t, b"items", 5, b"", 0);
+    k = trashfs.kind(t[0..n]);
+    if (k == 0) { k = trashfs.mkdir(t[0..n], 0x1C0); }
+    if (k < 0) { return k; }
+    n = path_in(t, b"records", 7, b"", 0);
+    k = trashfs.kind(t[0..n]);
+    if (k == 0) { k = trashfs.mkdir(t[0..n], 0x1C0); }
+    if (k < 0) { return k; }
+    return 0;
+}
+
+// The trash made ready (its folders, 0700, as the person who calls: Index's Trash place before its first item); 0, or
+// -errno.
+export I64 ready() { return make_dirs(); }
+
+// The items directory's path into t (Index's Trash place); its length, or -errno.
+export I64 items_dir(inout U8[_] t) {
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    return path_in(t, b"items", 5, b"", 0);
+}
+
+// The trash's root into t; its length, or -errno (Index leaves it out of the home it is in).
+export I64 root_dir(inout U8[_] t) {
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    return cat(t, 0, root, rootn);
+}
+
+// --- names ---
+
+// The k-th candidate for name nm[0..nn] into t: the name itself, then "STEM k.EXT" (a leading dot is no extension).
+I64 candidate(in U8[_] nm, I64 nn, I64 k, inout U8[_] t) {
+    if (k == 1) { return cat(t, 0, nm, nn); }
+    I64 ext = nn;
+    for i in 1..nn {
+        if (nm[i] == '.') { ext = i; }
+    }
+    I64 n = cat(t, 0, nm, ext);
+    if (n < 0) { return n; }
+    n = cat(t, n, b" ", 1);
+    if (n < 0) { return n; }
+    n = put_dec(t, n, k);
+    if (n < 0) { return n; }
+    return cat(t, n, nm[ext..nn], nn - ext);
+}
+
+// A stored name free in both items/ and records/ into t; its length, or -errno.
+I64 free_name(in U8[_] nm, I64 nn, inout U8[_] t) {
+    U8[4096] a;
+    for k in 1..TRIES {
+        I64 n = candidate(nm, nn, k, t);
+        if (n <= 0 || n > 255) { return 0 - ENAMETOOLONG; }
+        I64 i = path_in(a, b"items", 5, t, n);
+        if (i < 0) { return 0 - ENAMETOOLONG; }
+        I64 ki = trashfs.kind(a[0..i]);
+        I64 r = path_in(a, b"records", 7, t, n);
+        I64 kr = trashfs.kind(a[0..r]);
+        if (ki == 0 && kr == 0) { return n; }
+    }
+    return 0 - EEXIST;
+}
+
+// A stored name: 1 to 255 bytes, no '/', not "." and not "..": what info, restore and delete_forever take.
+export Bool stored_ok(in U8[_] s, I64 n) {
+    if (n < 1 || n > 255 || n > len(s)) { return false; }
+    if ((n == 1 && s[0] == '.') || (n == 2 && s[0] == '.' && s[1] == '.')) { return false; }
+    for k in 0..n {
+        if (s[k] == '/') { return false; }
+    }
+    return true;
+}
+
+// --- records ---
+
+// The record's text for path p[0..pn] deleted at s into t; its length, or -1.
+I64 record_text(in U8[_] p, I64 pn, I64 s, inout U8[_] t) {
+    I64 n = cat(t, 0, b"daphnis-trash 1\npath ", 21);
+    if (n < 0) { return n; }
+    n = put_dec(t, n, pn);
+    n = cat(t, n, b"\n", 1);
+    if (n >= 0) { n = cat(t, n, p, pn); }
+    if (n >= 0) { n = cat(t, n, b"\ndeleted ", 9); }
+    if (n < 0 || n + 21 > len(t)) { return 0 - 1; }
+    n = put_dec(t, n, s);
+    return cat(t, n, b"\n", 1);
+}
+
+// Digits of t from at, a number ended by a line feed: the value and the end past the line feed in e[0], or -1.
+I64 number(in U8[_] t, I64 tn, I64 at, inout I64[_] e) {
+    I64 v = 0;
+    I64 k = at;
+    while (k < tn && t[k] >= '0' && t[k] <= '9' && k - at < 18) {
+        v = v * 10 + (t[k] as I64 - 48);
+        k = k + 1;
+    }
+    if (k == at || k >= tn || t[k] != '\n') { return 0 - 1; }
+    e[0] = k + 1;
+    return v;
+}
+
+// Item stored[0..sn]'s original path into p and its deletion time into last_s; the path's length, or -EINVAL when
+// the record is missing or damaged (the item is still listed and can be deleted; Restore is unavailable).
+export I64 info(in U8[_] stored, I64 sn, inout U8[_] p) {
+    if (!stored_ok(stored, sn)) { return 0 - EINVAL; }
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    U8[4096] a;
+    I64 an = path_in(a, b"records", 7, stored, sn);
+    if (an < 0) { return 0 - EINVAL; }
+    U8[4200] t;
+    I64 tn = trashfs.read_file(a[0..an], t);
+    if (tn < 21 || !starts(t, tn, b"daphnis-trash 1\npath ", 21)) { return 0 - EINVAL; }
+    I64[1] e;
+    I64 pn = number(t, tn, 21, e);
+    if (pn < 2 || pn > PATH || pn > len(p) || e[0] + pn + 9 > tn) { return 0 - EINVAL; }
+    for k in 0..pn { p[k] = t[e[0] + k]; }
+    if (!clean(p, pn) || !starts(t[e[0] + pn..tn], tn - e[0] - pn, b"\ndeleted ", 9)) { return 0 - EINVAL; }
+    I64 s = number(t, tn, e[0] + pn + 9, e);
+    if (s < 0 || e[0] != tn) { return 0 - EINVAL; }
+    last_s = s;
+    return pn;
+}
+
+export I64 deleted_s() { return last_s; }
+
+// What the last put stored the item as, or where the last restore put it back.
+export I64 last_name(inout U8[_] t) {
+    for k in 0..lastn { t[k] = last[k]; }
+    return lastn;
+}
+
+// --- the calls ---
+
+// Moves path p[0..pn] to the Trash: a record written, then a rename into items/. 0, or -errno: -EROFS without a
+// volume, -EXDEV off the volume, -EINVAL for the trash, an entry in it or a folder that holds it, -ENOENT for
+// nothing there; the kernel's answer otherwise (-EACCES: the same rights as any write).
+export I64 put(in U8[_] p, I64 pn) {
+    if (!clean(p, pn)) { return 0 - EINVAL; }
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    if (at_or_under(p, pn, root, rootn) || at_or_under(root, rootn, p, pn)) { return 0 - EINVAL; }
+    if (!at_or_under(p, pn, b"/home", 5)) { return 0 - EXDEV; }
+    I64 k = trashfs.kind(p[0..pn]);
+    if (k == 0) { return 0 - ENOENT; }
+    if (k < 0) { return k; }
+    r = make_dirs();
+    if (r < 0) { return r; }
+    U8[256] nm;
+    I64 b = base_start(p, pn);
+    I64 nn = free_name(p[b..pn], pn - b, nm);
+    if (nn < 0) { return nn; }
+    U8[4200] t;
+    I64 tn = record_text(p, pn, trashfs.now_s(), t);
+    if (tn < 0) { return 0 - ENAMETOOLONG; }
+    U8[4096] rp;
+    I64 rn = path_in(rp, b"records", 7, nm, nn);
+    U8[4096] ip;
+    I64 in_ = path_in(ip, b"items", 5, nm, nn);
+    if (rn < 0 || in_ < 0) { return 0 - ENAMETOOLONG; }
+    r = trashfs.write_file(rp[0..rn], t, tn);
+    if (r < 0) {
+        I64 u = trashfs.unlink(rp[0..rn]);
+        return r;
+    }
+    r = trashfs.rename(p[0..pn], ip[0..in_]);
+    if (r < 0) {
+        I64 u = trashfs.unlink(rp[0..rn]);
+        return r;
+    }
+    lastn = cat(last, 0, nm, nn);
+    return 0;
+}
+
+// The stored names in the trash, each ended by a 0 byte, into buf (from items/, never the records); the bytes, or
+// -errno; 0 with no trash yet.
+export I64 list(inout U8[_] buf) {
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    U8[4096] t;
+    I64 n = path_in(t, b"items", 5, b"", 0);
+    if (trashfs.kind(t[0..n]) != 1) { return 0; }
+    return trashfs.names(t[0..n], buf);
+}
+
+// How many items one listing of the trash holds (all of them up to 16 KB of names; a trash past that reads as at least
+// that many, so it is full, never empty): the rail's Trash or Trash Full. 0 with no trash or when it does not read.
+export I64 items() {
+    U8[16384] b;
+    I64 n = list(b);
+    I64 c = 0;
+    for k in 0..n {
+        if (b[k] == 0) { c = c + 1; }
+    }
+    return c;
+}
+
+// Each missing folder above path p[0..pn] made again, 0700; 0, or -errno (-ENOTDIR: a file stands in the way). A link
+// to a folder on the way is followed, as put's rename followed it (review on PR 287); deleting never follows one.
+I64 make_parents(in U8[_] p, I64 pn) {
+    I64 e = 1;
+    while (e < pn) {
+        while (e < pn && p[e] != '/') { e = e + 1; }
+        if (e >= pn) { return 0; }
+        I64 k = trashfs.kind_through(p[0..e]);
+        if (k == 0) { k = trashfs.mkdir(p[0..e], 0x1C0); }
+        if (k == 2) { return 0 - ENOTDIR; }
+        if (k < 0) { return k; }
+        e = e + 1;
+    }
+    return 0;
+}
+
+// Puts item stored[0..sn] back at its original path, by rename, never over what is there: a taken name brings it
+// back as "NAME 2", "NAME 3", ... (last_name says which), a missing folder is made again. 0, or -errno; -EINVAL for a
+// damaged or missing record (nothing moves).
+export I64 restore(in U8[_] stored, I64 sn) {
+    U8[4096] p;
+    I64 pn = info(stored, sn, p);
+    if (pn < 0) { return pn; }
+    if (!at_or_under(p, pn, b"/home", 5) || pn == 5) { return 0 - EINVAL; }   // on the volume, as put takes, first
+    U8[4096] ip;
+    I64 in_ = path_in(ip, b"items", 5, stored, sn);
+    if (in_ < 0 || trashfs.kind(ip[0..in_]) <= 0) { return 0 - ENOENT; }
+    I64 r = make_parents(p, pn);
+    if (r < 0) { return r; }
+    I64 b = base_start(p, pn);
+    U8[4096] dst;
+    U8[256] nm;
+    I64 dn = 0 - EEXIST;
+    I64 k = 1;
+    while (k < TRIES && dn == 0 - EEXIST) {
+        I64 nn = candidate(p[b..pn], pn - b, k, nm);
+        if (nn <= 0 || nn > 255) { return 0 - ENAMETOOLONG; }
+        I64 n = cat(dst, 0, p, b);
+        if (n >= 0) { n = cat(dst, n, nm, nn); }
+        if (n < 0) { return 0 - ENAMETOOLONG; }
+        if (trashfs.kind(dst[0..n]) == 0) { dn = n; }
+        k = k + 1;
+    }
+    if (dn < 0) { return dn; }
+    r = trashfs.rename(ip[0..in_], dst[0..dn]);
+    if (r < 0) { return r; }
+    U8[4096] rp;
+    I64 rn = path_in(rp, b"records", 7, stored, sn);
+    I64 u = trashfs.unlink(rp[0..rn]);
+    lastn = cat(last, 0, dst, dn);
+    return 0;
+}
+
+// Removes path t[0..tn] and everything under it, a symlink as a name (never followed): one path buffer, down into
+// the first folder still holding a name and back up as each empties. 0, or -errno.
+I64 remove_tree(inout U8[_] t, I64 tn) {
+    I64 k = trashfs.kind(t[0..tn]);
+    if (k == 0) { return 0; }
+    if (k == 2) { return trashfs.unlink(t[0..tn]); }
+    if (k < 0) { return k; }
+    I64 n = tn;
+    U8[512] nb;
+    for guard in 0..1000000 {
+        I64 got = trashfs.names(t[0..n], nb);
+        if (got < 0) { return got; }
+        if (got == 0) {
+            I64 r = trashfs.rmdir(t[0..n]);
+            if (r < 0) { return r; }
+            if (n == tn) { return 0; }
+            while (n > tn && t[n - 1] != '/') { n = n - 1; }
+            n = n - 1;                 // back to the parent, its name and slash cut
+        } else {
+            I64 l = 0;
+            while (l < got && nb[l] != 0) { l = l + 1; }
+            if (n + 1 + l > len(t)) { return 0 - ENAMETOOLONG; }
+            t[n] = '/';
+            for q in 0..l { t[n + 1 + q] = nb[q]; }
+            I64 c = trashfs.kind(t[0..n + 1 + l]);
+            if (c == 1) {
+                n = n + 1 + l;         // down into it
+            } else if (c == 2) {
+                I64 r = trashfs.unlink(t[0..n + 1 + l]);
+                if (r < 0) { return r; }
+            } else if (c < 0) {
+                return c;
+            }
+        }
+    }
+    return 0 - EINVAL;
+}
+
+// Frees item stored[0..sn] and its record for good. 0, or -errno.
+export I64 delete_forever(in U8[_] stored, I64 sn) {
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    if (!stored_ok(stored, sn)) { return 0 - EINVAL; }   // never "..": that would free the whole trash
+    U8[4096] t;
+    I64 tn = path_in(t, b"items", 5, stored, sn);
+    if (tn < 0) { return 0 - ENAMETOOLONG; }
+    r = remove_tree(t, tn);
+    if (r < 0) { return r; }
+    tn = path_in(t, b"records", 7, stored, sn);
+    I64 u = trashfs.unlink(t[0..tn]);
+    return 0;
+}
+
+// Frees every item and every record, over and over until items/ and records/ read empty. The items freed, or -errno.
+export I64 empty() {
+    I64 r = find_root();
+    if (r < 0) { return r; }
+    I64 freed = 0;
+    U8[4096] d;
+    for sub in 0..2 {
+        I64 dn = path_in(d, b"items", 5, b"", 0);
+        if (sub == 1) { dn = path_in(d, b"records", 7, b"", 0); }
+        if (trashfs.kind(d[0..dn]) == 1) {
+            U8[4096] nb;
+            Bool more = true;
+            while (more) {
+                I64 got = trashfs.names(d[0..dn], nb);
+                if (got < 0) { return got; }
+                more = got > 0;
+                I64 s = 0;
+                while (s < got) {
+                    I64 e = s;
+                    while (e < got && nb[e] != 0) { e = e + 1; }
+                    if (sub == 0) {
+                        r = delete_forever(nb[s..e], e - s);
+                        if (r < 0) { return r; }
+                        freed = freed + 1;
+                    } else {
+                        U8[4096] t;
+                        I64 tn = path_in(t, b"records", 7, nb[s..e], e - s);
+                        r = trashfs.unlink(t[0..tn]);
+                        if (r < 0) { return r; }
+                    }
+                    s = e + 1;
+                }
+            }
+        }
+    }
+    return freed;
+}
+// SPDX-License-Identifier: Apache-2.0

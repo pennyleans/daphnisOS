@@ -1,0 +1,61 @@
+// user/ci/kit/openas.ci: RG-1, an open the desk makes for Index or the plane (FF-3), as data: what a path's peek
+// answered, and the command line that opens a file in its program. The desk is uid 0 with no ring 0 and stats
+// nothing in a 0700 home, so a path it cannot stat is peeked as the session's account (user/ci/runas.h RUN_PEEK:
+// `finder --peek PATH` writes d for a folder, or f and the file's first 512 bytes); the command then runs in a
+// terminal of the session, as the account, so the program opens the file with the account's rights and the desk's
+// own rights stay as they are. Pure: hdesk.ci makes the calls; tests/rs/openas_test.ci runs this hosted.
+
+import user.ci.kit.opener;
+import user.ci.kit.shquote;
+
+export const I64 GONE = 0;             // the account cannot stat it either (or the peek failed)
+export const I64 DIR = 1;
+export const I64 FILE = 2;
+export const I64 OTHER = 3;            // neither a folder nor a regular file: a device, a pipe, a socket
+export const I64 HEAD = 512;           // a file's bytes the peek gives, at most
+export const I64 O_NONBLOCK = 0x800;   // the Linux number: an open of a regular file never waits on it
+
+// What a stat's mode m is (corectl.ST_MODE): DIR, FILE for a regular file only, else OTHER. The desk and the peek
+// open a FILE only, with O_NONBLOCK and a second stat of the descriptor, so a typed device or pipe path never holds
+// the desk or the run queue; OTHER opens nothing.
+export I64 of_mode(I64 m) {
+    I64 t = m & 0xF000;                  // S_IFMT
+    if (t == 0x4000) { return DIR; }     // S_IFDIR
+    if (t == 0x8000) { return FILE; }    // S_IFREG
+    return OTHER;
+}
+
+// What a peek's output o (n bytes) says: DIR (exactly `d`), FILE (`f` and up to HEAD bytes), else GONE.
+export I64 kind(in U8[_] o, I64 n) {
+    if (n == 1 && o[0] == 'd') { return DIR; }
+    if (n >= 1 && n <= 1 + HEAD && o[0] == 'f') { return FILE; }
+    return GONE;
+}
+
+// The command line that opens file p, whose first bytes are head, into cmd: its program (the opener's table; the
+// editor, ced, for text with no extension) and the path as one single-quoted shell word (kit/shquote.ci, AC-Q) of a
+// line at most most bytes. Its length; 0 when no program opens it; -1 when the line is refused (a control byte, or
+// past most).
+export I64 command(in U8[_] p, in U8[_] head, inout U8[_] cmd, I64 most) {
+    I64 kd = opener.kind_of(p, false, head);
+    U8[32] pr;
+    I64 pn = 0;
+    if (kd >= 0) { pn = opener.prog_of(kd, pr); }
+    U8[6] ed = b"editor";
+    Bool editor = pn == 6;
+    for k in 0..6 {
+        if (editor && pr[k] != ed[k]) { editor = false; }
+    }
+    if (kd == opener.TEXT || editor) {   // `editor` is $EDITOR: ced today
+        U8[3] c = b"ced";
+        for k in 0..3 { pr[k] = c[k]; }
+        pn = 3;
+    }
+    if (pn == 0) { return 0; }
+    for k in 0..pn { cmd[k] = pr[k]; }
+    cmd[pn] = ' ';
+    I64 cn = shquote.quote(p, cmd, pn + 1, most);
+    if (cn < 0) { return -1; }
+    return cn;
+}
+// SPDX-License-Identifier: Apache-2.0

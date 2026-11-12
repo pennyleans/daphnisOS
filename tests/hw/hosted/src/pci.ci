@@ -1,0 +1,39 @@
+// tests/hw/hosted/src/pci.ci: src/pci.ci's face for the hosted I219-V tests: one device on the bus, the MSI board's
+// I219-V (8086:15bc, class 0x020000), BAR 0 at mmio.ci's BAR. Configuration offset 0xe4 (the descriptor ring status,
+// e1000.h:79) is what a test sets.
+
+export const I64 NONE = -1;
+
+U32 desc_status = 0;
+
+export void set_desc_status(U32 v) {
+    desc_status = v;
+}
+
+export I64 list(inout I64[_] devs, inout U32[_] ids, inout U32[_] classes) {
+    devs[0] = 0;
+    ids[0] = 0x15BC8086;
+    classes[0] = 0x02000000;
+    return 1;
+}
+
+export U32 read32(I64 dev, I64 reg) {
+    if (reg == 0x04) {
+        return 0x00100006;                 // memory decoding and bus mastering on
+    }
+    if (reg == 0x10) {
+        return 0xF7100000;
+    }
+    if (reg == 0xE4) {
+        return desc_status;
+    }
+    return 0;
+}
+
+export U64 mem_bar(I64 dev) {
+    return 0xF7100000;
+}
+
+export void enable_mem_dma(I64 dev) {
+}
+// SPDX-License-Identifier: Apache-2.0

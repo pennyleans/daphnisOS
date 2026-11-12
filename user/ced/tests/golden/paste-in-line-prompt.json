@@ -1,0 +1,28 @@
+{
+  "id": "paste-in-line-prompt",
+  "rules": [
+    "KEY-4",
+    "KEY-8"
+  ],
+  "text": "ab\ncd\nef",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "07",
+    "1b5b3230307e321b5b3230317e",
+    "0d"
+  ],
+  "expect": {
+    "text": "ab\ncd\nef",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

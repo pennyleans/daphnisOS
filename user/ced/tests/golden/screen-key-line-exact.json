@@ -1,0 +1,25 @@
+{
+  "id": "screen-key-line-exact",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "",
+  "size": [
+    4,
+    25
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [],
+  "expect": {
+    "text": "",
+    "screen": [
+      "",
+      "",
+      " x                   1:1",
+      "^S save  ^Q quit  ^F find"
+    ]
+  }
+}

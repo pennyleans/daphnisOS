@@ -1,0 +1,154 @@
+// tests/rs/ststore_test.ci: hosted tests of RS-SET6, Settings' Storage page (user/ci/kit/ststore.ci, frame 38) and the
+// home's walk (user/ci/kit/homeuse.ci). Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+import user.ci.kit.homeuse;
+import user.ci.kit.ststore;
+
+U32[1600] row;
+
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+Bool same(in U8[_] a, I64 n, in U8[_] b) {
+    if (n != len(b)) { return false; }
+    for k in 0..n { if (a[k] != b[k]) { return false; } }
+    return true;
+}
+
+Bool fed(in U8[_] l) { return homeuse.line(l, len(l)); }
+
+test "frame 38: sizes in binary units, one decimal under 10, whole from 10" {
+    U8[24] t;
+    assert(same(t, ststore.size_text(t, 0, 421888), b"412 MiB"));
+    assert(same(t, ststore.size_text(t, 0, 2202010), b"2.1 GiB"));
+    assert(same(t, ststore.size_text(t, 0, 67108864), b"64 GiB"));
+    assert(same(t, ststore.size_text(t, 0, 98304), b"96 MiB"));
+    assert(same(t, ststore.size_text(t, 0, 1048576), b"1 GiB"));                          // ".0" dropped
+    assert(same(t, ststore.size_text(t, 0, 1048575), b"1 GiB"));                          // never "1024 MiB"
+    assert(same(t, ststore.size_text(t, 0, 0), b"0 KiB"));
+    assert(same(t, ststore.size_text(t, 0, 5), b"5 KiB"));
+    assert(same(t, ststore.size_text(t, 0, 1610612736), b"1.5 TiB"));
+    ststore.set_volume(b"Daphnis", 7, 67108864, 67108864 - 3355443);
+    assert(same(t, ststore.used_text(t), b"3.2 GiB used of 64 GiB"));
+    assert(ststore.used_w(454) == 22);
+    ststore.set_volume(b"Daphnis", 7, 67108864, 67108860);
+    assert(ststore.used_w(454) == ststore.BAR_H);                                         // a sliver still shows
+}
+
+test "homeuse: du -k -s names the parts, then the home, whose line is the rest: Other" {
+    homeuse.start(b"/home/sam", 9);
+    assert(fed(b"421888\t/home/sam/Documents"));
+    assert(!fed(b"12\t/home/sam/Documents/old"));
+    assert(!fed(b"77\t/home/samuel"));                                                     // another home
+    assert(!fed(b"77\t/home/samuel/Documents"));
+    assert(!fed(b"x\t/home/sam"));
+    assert(fed(b"98304\t/home/sam/.trash"));
+    assert(homeuse.other() == -1);
+    assert(fed(b"79808\t/home/sam"));
+    homeuse.done();
+    assert(homeuse.finished());
+    assert(homeuse.part_kib(homeuse.DOCUMENTS) == 421888 && homeuse.part_kib(homeuse.PICTURES) == -1);
+    assert(homeuse.other() == 79808);
+}
+
+// du's output on a home with all four, as user/bin/du prints it for RUN_DU's vector (a review's finding: with the home
+// named first, du counted each part inside it and printed the home alone, so Storage lost the three folders).
+test "board b159806: Documents, Downloads, Pictures and the Trash each get their row and size" {
+    homeuse.start(b"/home/sam", 9);
+    assert(fed(b"56\t/home/sam/Documents") && fed(b"4\t/home/sam/Downloads") && fed(b"16\t/home/sam/Pictures"));
+    assert(fed(b"8\t/home/sam/.trash") && fed(b"32\t/home/sam"));
+    homeuse.done();
+    assert(homeuse.part_kib(homeuse.DOCUMENTS) == 56 && homeuse.part_kib(homeuse.DOWNLOADS) == 4);
+    assert(homeuse.part_kib(homeuse.PICTURES) == 16 && homeuse.part_kib(homeuse.TRASH) == 8 && homeuse.other() == 32);
+    ststore.set_volume(b"Daphnis", 7, 67108864, 60000000);
+    ststore.walk_started();
+    ststore.walk_done();
+    for r in 0..ststore.ROWS { assert(ststore.shows(r)); }
+    U8[24] t;
+    assert(same(t, ststore.size_text(t, 0, homeuse.part_kib(homeuse.DOCUMENTS)), b"56 KiB"));
+    assert(same(t, ststore.size_text(t, 0, homeuse.other()), b"32 KiB"));
+    homeuse.start(b"/home/sam", 9);                                                         // the old order: the
+    assert(fed(b"116\t/home/sam"));                                                        // home alone
+    homeuse.done();
+    ststore.walk_started();
+    ststore.walk_done();
+    assert(!ststore.shows(ststore.R_DOCUMENTS) && !ststore.shows(ststore.R_PICTURES));
+}
+
+test "RS-HOME: while the walk runs every row shows; after it, a missing folder's row does not" {
+    ststore.set_volume(b"Daphnis", 7, 67108864, 60000000);
+    ststore.walk_started();
+    for r in 0..ststore.ROWS { assert(ststore.shows(r)); }
+    assert(!ststore.can_empty());
+    homeuse.start(b"/home/sam", 9);
+    assert(fed(b"100\t/home/sam/Documents"));
+    assert(fed(b"300\t/home/sam"));
+    homeuse.done();
+    ststore.walk_done();
+    assert(ststore.shows(ststore.R_DOCUMENTS) && !ststore.shows(ststore.R_PICTURES));
+    assert(ststore.shows(ststore.R_OTHER) && ststore.shows(ststore.R_TRASH));
+    assert(!ststore.can_empty());
+}
+
+test "a new home has no .trash yet: the Trash reads 0 KiB, not missing; before the home is listed it is not known" {
+    homeuse.start(b"/home/new", 9);
+    assert(fed(b"1\t/home/new/Documents") && fed(b"1\t/home/new/Downloads") && fed(b"1\t/home/new/Pictures"));
+    assert(homeuse.part_kib(homeuse.TRASH) == -1);                                          // the home not listed yet
+    assert(fed(b"12\t/home/new"));
+    homeuse.done();
+    assert(homeuse.part_kib(homeuse.TRASH) == 0 && homeuse.other() == 12);
+    ststore.set_volume(b"Daphnis", 7, 67108864, 60000000);
+    ststore.set_trash_entries(0);
+    ststore.walk_started();
+    ststore.walk_done();
+    assert(ststore.shows(ststore.R_TRASH) && !ststore.can_empty());
+    U8[24] t;
+    assert(same(t, ststore.size_text(t, 0, homeuse.part_kib(homeuse.TRASH)), b"0 KiB"));
+}
+
+test "DN-58 item 12: Empty Trash works when the Trash holds something, else 40 percent and inert" {
+    ststore.set_volume(b"Daphnis", 7, 67108864, 60000000);
+    ststore.set_trash_entries(0);
+    ststore.walk_started();
+    homeuse.start(b"/home/sam", 9);
+    assert(fed(b"1\t/home/sam/Documents") && fed(b"1\t/home/sam/Downloads") && fed(b"1\t/home/sam/Pictures"));
+    assert(fed(b"4\t/home/sam/.trash") && fed(b"10\t/home/sam"));        // Codex on PR 317: an empty Trash's own block
+    homeuse.done();
+    ststore.walk_done();
+    assert(!ststore.can_empty());
+    I64 ty = Y0 + stpage.BODY + 56 + stpage.GAP + stpage.LAB + 4 * ststore.R_PITCH;
+    assert(ty == Y0 + 297);                                                                // frame 38's Trash row
+    assert(ststore.click(CX, Y0, CR, YB, CR - 20, ty + 12) == stpage.NONE);
+    assert(!ststore.enter() && ststore.key(stpage.K_ENTER) == stpage.NONE);                // an empty Trash: no stop
+    ststore.walk_started();
+    homeuse.start(b"/home/sam", 9);
+    assert(fed(b"1\t/home/sam/Documents") && fed(b"1\t/home/sam/Downloads") && fed(b"1\t/home/sam/Pictures"));
+    assert(fed(b"64\t/home/sam/.trash") && fed(b"80\t/home/sam"));
+    homeuse.done();
+    ststore.walk_done();
+    assert(!ststore.can_empty());                                                          // KiB alone says nothing
+    ststore.set_trash_entries(3);
+    assert(ststore.click(CX, Y0, CR, YB, CR - 20, ty + 12) == ststore.EMPTY);
+    assert(ststore.click(CX, Y0, CR, YB, CR - 200, ty + 12) == stpage.NONE);
+    ststore.open();
+    assert(ststore.key(stpage.K_DOWN) == stpage.DRAW && ststore.focused() == 1);
+    assert(ststore.key(stpage.K_SPACE) == ststore.EMPTY);
+    assert(ststore.key(stpage.K_UP) == stpage.DRAW && ststore.focused() == 1);            // no arrow leaves it
+    assert(ststore.key(stpage.K_TAB) == stpage.BACK && ststore.focused() == 0);           // the desk's Tab order
+    assert(ststore.enter_last() && ststore.focused() == 1 && ststore.key(stpage.K_BACKTAB) == stpage.BACK);
+}
+
+test "frame 38: the bar's used share in ULTRAMARINE on a MANTLE track" {
+    tokens.set_theme(0);
+    ststore.set_volume(b"Daphnis", 7, 1000, 500);
+    I64 y = Y0 + stpage.BODY + 40;
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    ststore.row_at(row, CX, Y0, CR, YB, y);
+    assert(row[CX + 100] == tokens.word(tokens.ULTRAMARINE) && row[CR - 100] == tokens.word(tokens.MANTLE));
+}
+// SPDX-License-Identifier: Apache-2.0

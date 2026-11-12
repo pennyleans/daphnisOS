@@ -1,0 +1,268 @@
+// user/ci/keymap.ci: key codes to the bytes a terminal sends (W-4): the US layout of a PC keyboard, Shift, and
+// Ctrl with a letter or one of @ [ \ ] ^ _ for its control byte. Enter sends CR (the pty's ICRNL makes it NL),
+// Backspace DEL, Tab HT, Esc ESC. Keys with no byte (arrows, function keys, the modifiers) give -1. seq_of adds
+// the xterm sequences of the arrows, Home, End, PgUp, PgDn, Insert, Delete and F3 (E-3, docs/specs/2026-11-06-e-editor.md
+// section 6): ESC [ A for Up, ESC [ 1 ; m A with Shift (m 2), Ctrl (5) or both (6); ESC [ 5 ~ and ESC [ 5 ; m ~ for
+// PgUp; ESC O R and ESC [ 1 ; m R for F3.
+//
+// K-11b (docs/specs/2026-11-07-k-kit2.md section 3h): byte_of and seq_of stay the US layout whatever the layout is.
+// key_utf8 types in the chosen layout (US, GB, DE, FR, ES; pc105, the basic variants of xkeyboard-config 2.42) as
+// UTF-8, with AltGr (KEY_RIGHTALT) and the ISO key (KEY_102ND), and dead keys: a dead key gives nothing and waits;
+// then a letter it combines with gives the Latin-1 letter, space gives the accent, and any other key the accent and
+// then that key (a second dead key gives the first's accent and waits in its place). A key with no bytes (Shift,
+// Ctrl, AltGr, F1) leaves a dead key waiting. Ctrl gives seq_of's bytes, the US control byte by key position, with
+// AltGr ignored; Shift with AltGr (level 4) gives nothing but on Esc, Backspace, Tab, Enter and Space.
+
+export const I64 KEY_LEFTCTRL = 29;
+export const I64 KEY_LEFTSHIFT = 42;
+export const I64 KEY_RIGHTSHIFT = 54;
+export const I64 KEY_RIGHTCTRL = 97;
+export const I64 KEY_102ND = 86;       // the ISO key between left Shift and Z
+export const I64 KEY_RIGHTALT = 100;   // AltGr in every layout but US
+
+// the layouts, US first (the default)
+export const I64 US = 0;
+export const I64 GB = 1;
+export const I64 DE = 2;
+export const I64 FR = 3;
+export const I64 ES = 4;
+export const I64 LAYOUTS = 5;
+
+// codes 0 to 57, plain and with Shift; 0 for no byte
+U8[58] plain = [0, 27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 127, 9,
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', 13, 0, 'a', 's',
+    'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', 39, '`', 0, 92, 'z', 'x', 'c', 'v',
+    'b', 'n', 'm', ',', '.', '/', 0, 0, 0, ' '];
+U8[58] shifted = [0, 27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', 127, 9,
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', 13, 0, 'A', 'S',
+    'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', 34, '~', 0, '|', 'Z', 'X', 'C', 'V',
+    'B', 'N', 'M', '<', '>', '?', 0, 0, 0, ' '];
+
+// The byte of key code with the modifiers held, or -1.
+export I64 byte_of(I64 code, Bool shift, Bool ctrl) {
+    if (code < 0 || code >= 58) { return -1; }
+    I64 b = plain[code] as I64;
+    if (shift) { b = shifted[code] as I64; }
+    if (b == 0) { return -1; }
+    if (ctrl) {
+        I64 u = b;
+        if (u >= 'a' as I64 && u <= 'z' as I64) { u = u - 32; }
+        if (u >= 64 && u <= 95) { return u - 64; }
+        return -1;
+    }
+    return b;
+}
+
+// codes 102 to 111: Home, Up, PgUp, Left, Right, End, Down, PgDn, Insert, Delete; a final byte, or a digit before ~
+U8[10] csi_key = ['H', 'A', '5', 'D', 'C', 'F', 'B', '6', '2', '3'];
+const I64 KEY_F3 = 61;
+
+// The bytes of key code with the modifiers held into dst (at least 6 bytes); their count, 0 for none.
+export I64 seq_of(I64 code, Bool shift, Bool ctrl, inout U8[_] dst) {
+    I64 b = byte_of(code, shift, ctrl);
+    if (b >= 0) {
+        dst[0] = b as U8;
+        return 1;
+    }
+    U8 f = 'R';
+    if (code >= 102 && code <= 111) {
+        f = csi_key[code - 102];
+    } else if (code != KEY_F3) {
+        return 0;
+    }
+    I64 m = 1;
+    if (shift) { m = m + 1; }
+    if (ctrl) { m = m + 4; }
+    dst[0] = 27;
+    dst[1] = '[';
+    if (f >= '0' && f <= '9') {
+        dst[2] = f;
+        if (m == 1) {
+            dst[3] = '~';
+            return 4;
+        }
+        dst[3] = ';';
+        dst[4] = ('0' as I64 + m) as U8;
+        dst[5] = '~';
+        return 6;
+    }
+    if (m == 1) {
+        if (code == KEY_F3) { dst[1] = 'O'; }
+        dst[2] = f;
+        return 3;
+    }
+    dst[2] = '1';
+    dst[3] = ';';
+    dst[4] = ('0' as I64 + m) as U8;
+    dst[5] = f;
+    return 6;
+}
+
+// BEGIN generated (K-11b) from xkeyboard-config 2.42, pc105, the basic variants (section 3h); the same data are
+// tests/k/keymap_test.ci's expectations, so a change here needs the same change there
+const I64 ROWS = 59;     // codes 0 to 57, then KEY_102ND
+const I64 LEVELS = 4;   // plain, Shift, AltGr, Shift with AltGr
+const I64 DEAD = 0x110000;   // an entry above DEAD is dead key (entry - DEAD)
+// code points by layout - 1, row and level; 0 for no bytes
+U32[944] sym = [
+    0, 0, 0, 0, 27, 27, 27, 27, 49, 33, 185, 0, 50, 34, 178, 0, 51, 163, 179, 0, 52, 36, 8364, 0, 53, 37, 189, 0, 54,
+    94, 190, 0, 55, 38, 123, 0, 56, 42, 91, 0, 57, 40, 93, 0, 48, 41, 125, 0, 45, 95, 92, 0, 61, 43, 0x110006, 0,
+    127, 127, 127, 127, 9, 9, 9, 9, 113, 81, 64, 0, 119, 87, 383, 0, 101, 69, 101, 0, 114, 82, 182, 0, 116, 84, 359,
+    0, 121, 89, 8592, 0, 117, 85, 8595, 0, 105, 73, 8594, 0, 111, 79, 248, 0, 112, 80, 254, 0, 91, 123, 0x110005, 0,
+    93, 125, 0x110004, 0, 13, 13, 13, 13, 0, 0, 0, 0, 97, 65, 230, 0, 115, 83, 223, 0, 100, 68, 240, 0, 102, 70, 273,
+    0, 103, 71, 331, 0, 104, 72, 295, 0, 106, 74, 0x110009, 0, 107, 75, 312, 0, 108, 76, 322, 0, 59, 58, 0x110002, 0,
+    39, 64, 0x110003, 0, 96, 172, 124, 0, 0, 0, 0, 0, 35, 126, 0x110001, 0, 122, 90, 171, 0, 120, 88, 187, 0, 99, 67,
+    162, 0, 118, 86, 8222, 0, 98, 66, 8220, 0, 110, 78, 8221, 0, 109, 77, 181, 0, 44, 60, 8226, 0, 46, 62, 183, 0,
+    47, 63, 0x110008, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 32, 32, 32, 92, 124, 124, 0, 0, 0, 0, 0, 27, 27, 27,
+    27, 49, 33, 185, 0, 50, 34, 178, 0, 51, 167, 179, 0, 52, 36, 188, 0, 53, 37, 189, 0, 54, 38, 172, 0, 55, 47, 123,
+    0, 56, 40, 91, 0, 57, 41, 93, 0, 48, 61, 125, 0, 223, 63, 92, 0, 0x110002, 0x110001, 0x110006, 0, 127, 127, 127,
+    127, 9, 9, 9, 9, 113, 81, 64, 0, 119, 87, 383, 0, 101, 69, 8364, 0, 114, 82, 182, 0, 116, 84, 359, 0, 122, 90,
+    8592, 0, 117, 85, 8595, 0, 105, 73, 8594, 0, 111, 79, 248, 0, 112, 80, 254, 0, 252, 220, 0x110005, 0, 43, 42,
+    126, 0, 13, 13, 13, 13, 0, 0, 0, 0, 97, 65, 230, 0, 115, 83, 383, 0, 100, 68, 240, 0, 102, 70, 273, 0, 103, 71,
+    331, 0, 104, 72, 295, 0, 106, 74, 0x110008, 0, 107, 75, 312, 0, 108, 76, 322, 0, 246, 214, 0x110007, 0, 228, 196,
+    0x110003, 0, 0x110003, 176, 8242, 0, 0, 0, 0, 0, 35, 39, 8217, 0, 121, 89, 187, 0, 120, 88, 171, 0, 99, 67, 162,
+    0, 118, 86, 8222, 0, 98, 66, 8220, 0, 110, 78, 8221, 0, 109, 77, 181, 0, 44, 59, 183, 0, 46, 58, 8230, 0, 45, 95,
+    8211, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 32, 32, 32, 60, 62, 124, 0, 0, 0, 0, 0, 27, 27, 27, 27, 38, 49,
+    185, 0, 233, 50, 126, 0, 34, 51, 35, 0, 39, 52, 123, 0, 40, 53, 91, 0, 45, 54, 124, 0, 232, 55, 96, 0, 95, 56,
+    92, 0, 231, 57, 94, 0, 224, 48, 64, 0, 41, 176, 93, 0, 61, 43, 125, 0, 127, 127, 127, 127, 9, 9, 9, 9, 97, 65,
+    230, 0, 122, 90, 171, 0, 101, 69, 8364, 0, 114, 82, 182, 0, 116, 84, 359, 0, 121, 89, 8592, 0, 117, 85, 8595, 0,
+    105, 73, 8594, 0, 111, 79, 248, 0, 112, 80, 254, 0, 0x110003, 0x110005, 0x110005, 0, 36, 163, 164, 0, 13, 13, 13,
+    13, 0, 0, 0, 0, 113, 81, 64, 0, 115, 83, 223, 0, 100, 68, 240, 0, 102, 70, 273, 0, 103, 71, 331, 0, 104, 72, 295,
+    0, 106, 74, 0x110009, 0, 107, 75, 312, 0, 108, 76, 322, 0, 109, 77, 181, 0, 249, 37, 0x110003, 0, 178, 126, 172,
+    0, 0, 0, 0, 0, 42, 181, 0x110001, 0, 119, 87, 322, 0, 120, 88, 187, 0, 99, 67, 162, 0, 118, 86, 8222, 0, 98, 66,
+    8220, 0, 110, 78, 8221, 0, 44, 63, 0x110002, 0, 59, 46, 8226, 0, 58, 47, 183, 0, 33, 167, 0x110008, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 32, 32, 32, 60, 62, 124, 0, 0, 0, 0, 0, 27, 27, 27, 27, 49, 33, 124, 0, 50, 34,
+    64, 0, 51, 183, 35, 0, 52, 36, 126, 0, 53, 37, 189, 0, 54, 38, 172, 0, 55, 47, 123, 0, 56, 40, 91, 0, 57, 41, 93,
+    0, 48, 61, 125, 0, 39, 63, 92, 0, 161, 191, 0x110006, 0, 127, 127, 127, 127, 9, 9, 9, 9, 113, 81, 64, 0, 119, 87,
+    383, 0, 101, 69, 8364, 0, 114, 82, 182, 0, 116, 84, 359, 0, 121, 89, 8592, 0, 117, 85, 8595, 0, 105, 73, 8594, 0,
+    111, 79, 248, 0, 112, 80, 254, 0, 0x110001, 0x110003, 91, 0, 43, 42, 93, 0, 13, 13, 13, 13, 0, 0, 0, 0, 97, 65,
+    230, 0, 115, 83, 223, 0, 100, 68, 240, 0, 102, 70, 273, 0, 103, 71, 331, 0, 104, 72, 295, 0, 106, 74, 0x110009,
+    0, 107, 75, 312, 0, 108, 76, 322, 0, 241, 209, 0x110004, 0, 0x110002, 0x110005, 123, 0, 186, 170, 92, 0, 0, 0, 0,
+    0, 231, 199, 125, 0, 122, 90, 171, 0, 120, 88, 187, 0, 99, 67, 162, 0, 118, 86, 8222, 0, 98, 66, 8220, 0, 110,
+    78, 8221, 0, 109, 77, 181, 0, 44, 59, 8226, 0, 46, 58, 183, 0, 45, 95, 0x110008, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 32, 32, 32, 32, 60, 62, 124, 0
+];
+// dead keys 1 to 9: grave, acute, circumflex, tilde, diaeresis, cedilla, doubleacute, belowdot, hook; index 0 unused
+U32[10] accent = [0, 0x0060, 0x00B4, 0x005E, 0x007E, 0x00A8, 0x00B8, 0x02DD, 0x0323, 0x0309];
+// the Latin-1 letter of dead key d and letter A to Z, a to z, at (d - 1) * 52 + letter; 0 for none
+U32[468] composed = [
+    192, 0, 0, 0, 200, 0, 0, 0, 204, 0, 0, 0, 0, 0, 210, 0, 0, 0, 0, 0, 217, 0, 0, 0, 0, 0, 224, 0, 0, 0, 232, 0, 0,
+    0, 236, 0, 0, 0, 0, 0, 242, 0, 0, 0, 0, 0, 249, 0, 0, 0, 0, 0, 193, 0, 0, 0, 201, 0, 0, 0, 205, 0, 0, 0, 0, 0,
+    211, 0, 0, 0, 0, 0, 218, 0, 0, 0, 221, 0, 225, 0, 0, 0, 233, 0, 0, 0, 237, 0, 0, 0, 0, 0, 243, 0, 0, 0, 0, 0,
+    250, 0, 0, 0, 253, 0, 194, 0, 0, 0, 202, 0, 0, 0, 206, 0, 0, 0, 0, 0, 212, 0, 0, 0, 0, 0, 219, 0, 0, 0, 0, 0,
+    226, 0, 0, 0, 234, 0, 0, 0, 238, 0, 0, 0, 0, 0, 244, 0, 0, 0, 0, 0, 251, 0, 0, 0, 0, 0, 195, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 209, 213, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 227, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 241, 245, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 196, 0, 0, 0, 203, 0, 0, 0, 207, 0, 0, 0, 0, 0, 214, 0, 0, 0, 0, 0, 220, 0, 0, 0,
+    0, 0, 228, 0, 0, 0, 235, 0, 0, 0, 239, 0, 0, 0, 0, 0, 246, 0, 0, 0, 0, 0, 252, 0, 0, 0, 255, 0, 0, 0, 199, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 231, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+];
+U8[43] names = [69, 110, 103, 108, 105, 115, 104, 32, 40, 85, 83, 41, 69, 110, 103, 108, 105, 115, 104, 32, 40, 85, 75, 41, 71, 101, 114, 109, 97, 110, 70, 114, 101, 110, 99, 104, 83, 112, 97, 110, 105, 115, 104];
+I64[6] name_at = [0, 12, 24, 30, 36, 43];
+// END generated
+
+I64 lay = US;
+I64 dead = 0;   // the dead key waiting (1 to 9, as accent), 0 for none
+
+// Choose layout k (US to ES); out of range keeps the layout. Either way no dead key waits.
+export void set_layout(I64 k) {
+    if (k >= 0 && k < LAYOUTS) { lay = k; }
+    dead = 0;
+}
+
+export I64 layout() { return lay; }
+
+// Whether KEY_RIGHTALT is AltGr in the layout, rather than Alt.
+export Bool has_altgr() { return lay != US; }
+
+export Bool dead_pending() { return dead != 0; }
+
+// Drop a waiting dead key (a focus change, say).
+export void dead_clear() { dead = 0; }
+
+// The name of layout k for the Settings page into dst (at least 16 bytes); its length, 0 for no layout k.
+export I64 layout_name(I64 k, inout U8[_] dst) {
+    if (k < 0 || k >= LAYOUTS) { return 0; }
+    I64 a = name_at[k];
+    I64 n = name_at[k + 1] - a;
+    for i in 0..n { dst[i] = names[a + i]; }
+    return n;
+}
+
+// Code point cp as UTF-8 into dst at at; the index after it.
+I64 put(I64 cp, inout U8[_] dst, I64 at) {
+    if (cp < 0x80) {
+        dst[at] = cp as U8;
+        return at + 1;
+    }
+    if (cp < 0x800) {
+        dst[at] = (0xC0 | (cp >> 6)) as U8;
+        dst[at + 1] = (0x80 | (cp & 0x3F)) as U8;
+        return at + 2;
+    }
+    if (cp < 0x10000) {
+        dst[at] = (0xE0 | (cp >> 12)) as U8;
+        dst[at + 1] = (0x80 | ((cp >> 6) & 0x3F)) as U8;
+        dst[at + 2] = (0x80 | (cp & 0x3F)) as U8;
+        return at + 3;
+    }
+    dst[at] = (0xF0 | (cp >> 18)) as U8;
+    dst[at + 1] = (0x80 | ((cp >> 12) & 0x3F)) as U8;
+    dst[at + 2] = (0x80 | ((cp >> 6) & 0x3F)) as U8;
+    dst[at + 3] = (0x80 | (cp & 0x3F)) as U8;
+    return at + 4;
+}
+
+// The waiting dead key's accent into dst at 0, dropping it; the count, 0 for none.
+I64 flush(inout U8[_] dst) {
+    if (dead == 0) { return 0; }
+    I64 n = put(accent[dead] as I64, dst, 0);
+    dead = 0;
+    return n;
+}
+
+// The UTF-8 bytes of a press of key code in the layout, with the modifiers held, into dst (at least 8 bytes);
+// their count, 0 for none (a dead key, or a key with no bytes).
+export I64 key_utf8(I64 code, Bool shift, Bool ctrl, Bool altgr, inout U8[_] dst) {
+    if (lay == US) { return seq_of(code, shift, ctrl, dst); }
+    I64 row = -1;
+    if (code >= 0 && code < 58) { row = code; }
+    if (code == KEY_102ND) { row = 58; }
+    if (ctrl || row < 0) {
+        U8[6] seq;
+        I64 n = seq_of(code, shift, ctrl, seq);
+        if (n == 0) { return 0; }
+        I64 at = flush(dst);
+        for i in 0..n { dst[at + i] = seq[i]; }
+        return at + n;
+    }
+    I64 lv = 0;
+    if (shift) { lv = 1; }
+    if (altgr) { lv = lv + 2; }
+    I64 s = sym[((lay - 1) * ROWS + row) * LEVELS + lv] as I64;
+    if (s == 0) { return 0; }
+    if (s > DEAD) {
+        I64 at = flush(dst);
+        dead = s - DEAD;
+        return at;
+    }
+    if (dead == 0) { return put(s, dst, 0); }
+    I64 li = -1;
+    if (s >= 'A' as I64 && s <= 'Z' as I64) { li = s - 'A' as I64; }
+    if (s >= 'a' as I64 && s <= 'z' as I64) { li = s - 'a' as I64 + 26; }
+    if (li >= 0) {
+        I64 c = composed[(dead - 1) * 52 + li] as I64;
+        if (c != 0) {
+            dead = 0;
+            return put(c, dst, 0);
+        }
+    }
+    I64 at = flush(dst);
+    if (s == ' ' as I64) { return at; }
+    return put(s, dst, at);
+}
+// SPDX-License-Identifier: Apache-2.0

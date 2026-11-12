@@ -1,0 +1,19 @@
+# tests/core/stat.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). H: the stdout depends on the
+# host; the committed output holds its line count. The inode and change time differ in each copy of the tree, so
+# no case prints them (-t and the default form were checked by hand against the oracle in one tree).
+-c %n:%s:%a:%A:%F:%h:%B:%f:%t:%T text.txt | - | -
+-c %x:%X:%y:%Y text.txt look/a.txt | - | -
+-c %F:%a:%A look look/run.sh empty | - | -
+-c '%-6s:%06s:%6.2n:%.3F:%5a:%-5a:' text.txt | - | -
+-c '%% %q' text.txt | - | -
+-c '' text.txt | - | -
+-L -c %n:%s text.txt | - | -
+-c %n look/sp\ ace.txt | - | -
+-c %s missing text.txt | - | -
+-c %u:%g:%b:%d:%D:%o text.txt look | - | H
+-c %U:%G text.txt | - | D-15
+text.txt | - | D-15 H
+look | - | D-15 H
+ | - | D-3
+-c | - | D-3
+-f text.txt | - | D-1

@@ -1,0 +1,93 @@
+if then
+if else
+elif
+if none 0
+multi line if
+while 0
+n=x
+n=xx
+n=xxx
+until
+for one
+for two three
+for four
+empty for 0
+pos a
+pos b c
+pos d
+quoted a
+quoted b c
+quoted d
+count 3 first a
+after shift 2 b c
+after shift 2 0
+shift too far 1
+1a
+1c
+loops done
+apple starts with a
+banana matched b or c
+cherry matched b or c
+a star
+q one letter
+case none 0
+quoted subject
+paren pattern
+hello world with 2 args
+hello with 0 args
+greet status 0
+returned 2
+early 1
+early status 7
+in pp 2 1 2
+shifted 2
+outer 3 x
+v is inner
+v after outer
+3
+2
+1
+liftoff
+brace one
+brace two
+in subshell
+subshell 4
+/etc
+/
+PIPED 1
+PIPED 2
+text
+files ok
+n 0
+z 0
+eq 0
+ne 1
+lt 0
+le 1
+ge 0
+and 0
+or 0
+empty 1
+one 0
+bang 1
+size 0
+rw 0
+exec 0
+plain echo spaced   kept  
+-n not an option
+word|42|right|left|007|ff|FF|10|c
+one
+two
+three
+no args |
+   03|005|0xff|010|+4| 4|-9   |
+tab	here|
+octA|
+esc AB	|
+31 15 65 -12
+   9|ab |he|
+percent % done
+last
+stopafter stop
+end
+status 5

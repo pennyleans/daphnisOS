@@ -1,0 +1,24 @@
+// tests/rs/keysheet_proof.ci: the shortcut sheet's proof, frame 27, over a dimmed stand-in of the desk (MANTLE) on a
+// 1024 x 768 screen. Theme TH (0 dark, 1 light) at zoom Z (1 or 2).
+// Run: cint run --root . tests/rs/keysheet_proof.ci -- TH Z
+import user.ci.kit.tokens;
+import user.ci.kit.keysheet;
+import tests.rs.stwin;
+
+U32[2048] row;
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    I64 z = 1;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    if (len(a) > 2 && a[2] == '2') { z = 2; }
+    tokens.set_theme(th);
+    keysheet.open(1024, 768);
+    "frame {1024 * z} {768 * z}\n";
+    for y in 0..768 * z {
+        for x in 0..1024 * z { row[x] = tokens.word(tokens.MANTLE); }
+        keysheet.row_at(row, y, z, th);
+        stwin.emit(row, 1024 * z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

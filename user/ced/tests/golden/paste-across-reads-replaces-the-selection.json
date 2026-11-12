@@ -1,0 +1,26 @@
+{
+  "id": "paste-across-reads-replaces-the-selection",
+  "rules": [
+    "KEY-4"
+  ],
+  "text": "abcdef",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    3
+  ],
+  "chunks": [
+    "1b5b3230307e5859",
+    "5a1b5b3230317e"
+  ],
+  "expect": {
+    "text": "XYZdef",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

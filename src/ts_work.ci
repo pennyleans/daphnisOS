@@ -1,0 +1,212 @@
+// src/ts_work.ci: what the K5 tasks do. A task is a step function: main (src/main_k5.ci) calls the
+// step of its role once per step, the step ends with one request, and nothing lives on the stack
+// between steps. A task's whole state is therefore the module variables below (this module's path
+// begins "src/ts_", which is what rt/state.c encodes), plus its private pages and its fuel count.
+// Every task has its own copy of these variables, and uses the ones of its role.
+
+import src.sha256;
+import src.taskwork;
+import src.taskside;
+import src.trap;
+
+export const I64 ROUNDS = 24;
+// the request kinds the kernel serves (src/kern.ci)
+export const I64 R_DONE = 0;
+export const I64 R_YIELD = 1;
+export const I64 R_SEND = 2;
+export const I64 R_RECV = 3;
+export const I64 R_SELECT = 4;
+export const I64 R_INPUT = 5;
+export const I64 R_GIVE = 6;
+export const I64 R_TAKE = 7;
+export const I64 NLINES = 12;
+
+// the producer
+U8[64] pblock;
+I64 pround = 0;
+I64 pready = 0;
+// the editor
+I64 eline = 0;
+I64 ephase = 0;
+I64 ecks = 0;
+// the sink
+I64 sphase = 0;
+I64 sacc = 0;
+I64 srem0 = 24;
+I64 srem1 = 12;
+I64 swait = 0;
+
+// The folding of the sink: depends on the order in which values arrive.
+export I64 fold(I64 acc, I64 v, I64 ch) {
+    return (acc * 31 + v * 2 + ch) % 1000003;
+}
+
+// The value at args[2 .. 10), little endian: what the kernel delivered.
+I64 inbox(in U8[_] args) {
+    U64 x = 0;
+    I64 k = 8;
+    while (k > 0) {
+        k -= 1;
+        x = (x <<% 8) | (args[2 + k] as U64);
+    }
+    return x as% I64;
+}
+
+// One step of a producer: one SHA-256 round, sent on channel ch; then done.
+export void producer(I64 me, I64 ch) {
+    U8[32] d;
+    if (pready == 0) {
+        taskwork.init_block(me, pblock);
+        pready = 1;
+    }
+    if (pround == ROUNDS) {
+        taskside.request(R_DONE, 0, 0, 0);
+        return;
+    }
+    I64 v = taskwork.round(pblock, d);
+    pround += 1;
+    taskside.request(R_SEND, ch, 0, v);
+}
+
+// One step of the sink: folds what its last select delivered, then selects again; when all have
+// come it takes the editor's page (a grant: the page leaves the editor first) and folds its words.
+export void sink(in U8[_] args) {
+    if (swait != 0) {
+        I64 ch = args[10] as I64;
+        sacc = fold(sacc, inbox(args), ch);
+        if (ch == 0) {
+            srem0 -= 1;
+        } else {
+            srem1 -= 1;
+        }
+        swait = 0;
+    }
+    if (srem0 + srem1 == 0) {
+        if (sphase == 0) {
+            sphase = 1;
+            taskside.request(R_TAKE, 1, 0, 0);
+            return;
+        }
+        if (sphase == 1) {
+            for i in 0..NLINES {
+                sacc = (sacc * 31 + taskside.page_load(0, i)) % 1000003;
+            }
+            sphase = 2;
+        }
+        taskside.request(R_DONE, 0, 0, 0);
+        return;
+    }
+    I64 mask = 0;
+    if (srem0 > 0) {
+        mask += 1;
+    }
+    if (srem1 > 0) {
+        mask += 2;
+    }
+    swait = 1;
+    taskside.request(R_SELECT, mask, 0, 0);
+}
+
+// One step of the editor: asks for a line of input (up to 7 bytes), keeps it in its page (slot 0),
+// sends a checksum of the document so far on channel 1, and ends after NLINES lines.
+export void editor(in U8[_] args) {
+    if (ephase == 1) {
+        I64 v = inbox(args);
+        taskside.page_store(0, eline, v);
+        ecks = (ecks * 31 + v) % 1000003;
+        eline += 1;
+        ephase = 2;
+        taskside.request(R_SEND, 1, 0, ecks);
+        return;
+    }
+    if (ephase == 2 && eline == NLINES) {
+        ephase = 3;
+        taskside.request(R_GIVE, 2, 0, 0);
+        return;
+    }
+    if (ephase == 3) {
+        taskside.request(R_DONE, 0, 0, 0);
+        return;
+    }
+    ephase = 1;
+    taskside.request(R_INPUT, 0, 0, 0);
+}
+
+// Network 1, the test of the page tables: task 0 owns a page in slot 0, task 1 does not.
+I64 oval = 0;
+I64 ophase = 0;
+
+// Task 0: writes 77 into its own page, yields, reads it back, ends.
+export void owner() {
+    if (ophase == 0) {
+        taskside.page_store(0, 0, 77);
+        ophase = 1;
+        taskside.request(R_YIELD, 0, 0, 0);
+        return;
+    }
+    orec = trap.trap_record_len();    // task 1 has faulted by now: there is no record of its for task 0 to read
+    oval = taskside.page_load(0, 0);
+    taskside.request(R_DONE, 0, 0, 0);
+}
+
+// Task 1: writes into slot 0, which is a page of task 0's space and not in its own: the hardware refuses.
+export void intruder() {
+    taskside.page_store(0, 0, 5);
+    taskside.request(R_DONE, 0, 0, 0);
+}
+
+// Network 4, the grant: task 0 writes 77 into its page and gives it to task 1, which takes it into its slot
+// 3 and reads it; then task 0 writes into the slot again, which its tables no longer hold: the hardware refuses.
+I64 gphase = 0;
+I64 kphase = 0;
+
+export void giver() {
+    if (gphase == 0) {
+        taskside.page_store(0, 0, 77);
+        gphase = 1;
+        taskside.request(R_GIVE, 1, 0, 0);
+        return;
+    }
+    taskside.page_store(0, 0, 9);
+    taskside.request(R_DONE, 0, 0, 0);
+}
+
+export void taker() {
+    if (kphase == 0) {
+        kphase = 1;
+        taskside.request(R_TAKE, 0, 3, 0);
+        return;
+    }
+    oval = taskside.page_load(3, 0);
+    taskside.request(R_DONE, 0, 0, 0);
+}
+
+// Network 8, the extremes: task 0 sends the most negative value but one, task 2 receives it, and both go through
+// a snapshot and a restore.
+I64 xphase = 0;
+I64 xval = 0;
+I64 orec = -1;
+
+export void xsend() {
+    if (xphase == 0) {
+        xphase = 1;
+        taskside.request(R_SEND, 0, 0, 0 - 9223372036854775807);
+        return;
+    }
+    taskside.request(R_DONE, 0, 0, 0);
+}
+
+export void xrecv(in U8[_] args) {
+    if (xphase == 0) {
+        xphase = 1;
+        taskside.request(R_RECV, 0, 0, 0);
+        return;
+    }
+    xval = inbox(args);
+    taskside.request(R_DONE, 0, 0, 0);
+}
+
+export void idle() {
+    taskside.request(R_DONE, 0, 0, 0);
+}
+// SPDX-License-Identifier: Apache-2.0

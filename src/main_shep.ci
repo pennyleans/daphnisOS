@@ -1,0 +1,187 @@
+// src/main_shep.ci: K4.5, the shepherd. One program, roles by argument. Argument 0 is the
+// kernel's own entry: it runs the networks of src/shep.ci under several fuel quanta and
+// prints one line per run. Arguments 1 to 3 are the tasks (the same main, started by
+// rt/task.c), whose second argument digit is the network.
+//
+// The result of a network does not depend on the schedule: the tasks share no memory (each
+// context has its own module state, and cint has no pointers), a channel has one sender and one
+// receiver and a receive names its channel, and what a task does that the world can see goes
+// to its own log. The transcript prints the root of the logs next to a digest of the schedule:
+// the digests differ with the quantum, the roots do not (check.sh).
+
+import src.serial;
+import src.report;
+import src.taskapi;
+import src.shepwork;
+import src.taskwork;
+import src.text;
+import src.shep;
+import src.ownstate;
+import src.hog;
+import src.guards;
+import src.trap;
+import src.cpu;
+
+// The fuel quanta of the runs. 0 is no quantum: a turn lasts until the task blocks or ends. Each
+// of the seven gives a schedule of its own (check.sh requires seven different digests).
+I64 quantum_of(I64 i) {
+    if (i == 0) {
+        return 0;
+    } else if (i == 1) {
+        return 1;
+    } else if (i == 2) {
+        return 250;
+    } else if (i == 3) {
+        return 500;
+    } else if (i == 4) {
+        return 1000;
+    } else if (i == 5) {
+        return 2000;
+    }
+    return 8000;
+}
+
+void run_line(I64 net, I64 q, Bool trace) {
+    U8[64] res;
+    I64 turns = shep.run_net(net, q, trace, res);
+    serial.serial_write("net ");
+    report.print_dec(net);
+    serial.serial_write(" q ");
+    report.print_dec(q);
+    if (turns < 0) {
+        serial.serial_write(": deadlock\n");
+        return;
+    }
+    serial.serial_write(": turns ");
+    report.print_dec(turns);
+    serial.serial_write(" sched ");
+    report.print_hash(res, 0);
+    serial.serial_write(" root ");
+    report.print_hash(res, 1);
+    serial.serial_write("\n");
+    if (net == 6) {
+        // the record of the probe, from task 2's log (event 0 is its length, then its bytes)
+        serial.serial_write("probe record: ");
+        I64 n = taskapi.log_val(1, 0);
+        for i in 0..n {
+            U8 b = taskapi.log_val(1, i + 1) as U8;
+            serial.serial_putc(text.hex_digit(b >> 4));
+            serial.serial_putc(text.hex_digit(b));
+        }
+        serial.serial_write("\n");
+    }
+}
+
+// Task `me` (1 or 2): sends ROUNDS values on channel ch and logs each as sent.
+void producer(I64 me, I64 ch) {
+    U8[64] block;
+    U8[32] d;
+    taskwork.init_block(me, block);
+    for r in 0..shepwork.ROUNDS {
+        I64 v = taskwork.round(block, d);
+        taskapi.chan_send(ch, v);
+        taskapi.emit(shepwork.KIND_SENT, v);
+    }
+}
+
+// Task 3: receives 2 * ROUNDS values and folds them in the order it got them. In network 0
+// that order is fixed by the code (channel 0 then channel 1, each round); in network 1 it is
+// whatever chan_recv_any finds, which is the schedule's doing.
+void sink(I64 net) {
+    I64 acc = 0;
+    for r in 0..shepwork.ROUNDS {
+        for k in 0..2 {
+            I64 v = 0;
+            if (net == 1) {
+                v = taskapi.chan_recv_any(0, 1);
+            } else {
+                v = taskapi.chan_recv(k);
+            }
+            acc = shepwork.fold(acc, v);
+            taskapi.emit(shepwork.KIND_RECV, v);
+        }
+    }
+    taskapi.emit(shepwork.KIND_TOTAL, acc);
+}
+
+void main(in U8[_] args) {
+    I64 role = (args[0] as I64) - 48;
+    if (role == 0) {
+        serial.serial_init();
+        serial.serial_write("Daphnis K4.5: shepherd\n");
+        cpu.tss_install();
+        cpu.idt_install_ist();
+        report.line_dec("guard pages not present, of 12: ", guards.absent_guard_pages());
+        report.line_dec("stack pages present, of 6: ", guards.present_stack_pages());
+        // the turns of two runs of net 0 are printed, so the digest can be recomputed from them
+        for i in 0..7 {
+            run_line(0, quantum_of(i), quantum_of(i) == 500 || quantum_of(i) == 2000);
+        }
+        for i in 0..7 {
+            run_line(1, quantum_of(i), false);
+        }
+        for net in 2..9 {
+            run_line(net, 0, false);
+            run_line(net, net == 4 ? 20 : 1, false);
+        }
+        serial.serial_write("shep: done\n");
+        return;
+    }
+    I64 net = (args[1] as I64) - 48;
+    if (net <= 1) {
+        if (role == 1) {
+            producer(1, 0);
+        } else if (role == 2) {
+            producer(2, 1);
+        } else {
+            sink(net);
+        }
+    } else if (net == 2) {
+        // each of tasks 1 and 2 waits for a message the other never sends
+        if (role == 1) {
+            _ = taskapi.chan_recv(1);
+        } else if (role == 2) {
+            _ = taskapi.chan_recv(0);
+        }
+    } else if (net == 5) {
+        // 28,000 bytes of frames on a 16 KiB stack: task 1 faults, tasks 2 and 3 finish
+        if (role == 1) {
+            _ = hog.run();
+        }
+    } else if (net == 6) {
+        // a probe that runs the stack of task 2 into its guard pages: the probe returns, with
+        // the trap record, which the task logs byte by byte
+        if (role == 2) {
+            trap.trap_probe_stack();
+            I64 n = trap.trap_record_len();
+            taskapi.emit(6, n);
+            for i in 0..n {
+                taskapi.emit(7, trap.trap_record_byte(i) as I64);
+            }
+        }
+    } else if (net == 4) {
+        // a module variable of the task's own: every task counts from 1
+        if (role <= 2) {
+            for r in 0..shepwork.ROUNDS {
+                taskapi.emit(4, ownstate.bump());
+            }
+        }
+    } else if (net == 8) {
+        // task_quantum is the kernel's: a task that calls it is refused, on every schedule
+        if (role == 1) {
+            taskapi.task_quantum(0);
+        }
+    } else if (net == 7) {
+        // never runs: the task's first call falls in its guard pages
+        return;
+    } else if (net == 3) {
+        // channel 0 is sent on by task 1 and received by task 3: task 1 receiving and task 2
+        // sending are each a fault record, on every schedule
+        if (role == 1) {
+            _ = taskapi.chan_recv(0);
+        } else if (role == 2) {
+            taskapi.chan_send(0, 1);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

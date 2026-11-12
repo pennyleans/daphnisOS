@@ -1,0 +1,72 @@
+Daphnis W: the tiler
+daphnis: framebuffer 640x480 stride 2560
+daphnis: keyboard and mouse on
+daphnis: image 1598912 bytes from the loader module
+daphnis: run mcifb pid 1 (device)
+mcifb: surface 640x480 stride 2560
+mcifb: drawn
+daphnis: state 2ec09a148ab9581c37ec39d6999eb7b3274f5a17458262e4bb14ad22553f15d6
+daphnis: exit 0
+daphnis: surface 640x480 stride 2560 sha256 5ce934ae6461a82f2c9b7221efbbdfaa8c22789282dc596230037693c8fa3ef5
+daphnis: fs tables 12 frames held
+daphnis: pool frames free 16371 of 16383
+daphnis: run tiler --start mcifb pid 2 (device)
+tiler: tile 0,0 at 0,0 inside 319x239
+tiler: tile 1,0 at 320,0 inside 319x239
+tiler: tile 0,1 at 0,240 inside 319x239
+tiler: tile 1,1 at 320,240 inside 319x239
+tiler: surface 640x480 stride 2560 sha256 5192950d5ef9c5064589e93f0210c5328d13309791ca63268acbc13fb9ee5a5c
+tiler: start client 0 in tile 0,0 at 2,21 inside 315x216
+mcifb: surface 315x216 stride 1260
+mcifb: drawn
+daphnis: tile surface 315x216 at 2,21 sha256 c85841c67fd7633b76511b831227a94a677ce3083d110ae460fb8bde58c8b132
+tiler: client 0 in tile 0,0 ended, status 0
+daphnis: state 774ac4a936940538962998c0eef33fb898ac6eb2419107737c42fe51865282b3
+daphnis: exit 0
+daphnis: pid 2 forked 1
+daphnis: surface 640x480 stride 2560 sha256 14572b36f9adb266f1ccd1fc68a06640e7211a6c6da01d493443b171ccb1168b
+daphnis: fs tables 12 frames held
+daphnis: pool frames free 16371 of 16383
+daphnis: run tiler --start mkeys --start mkeys --start mkeys pid 3 (device)
+tiler: tile 0,0 at 0,0 inside 319x239
+tiler: tile 1,0 at 320,0 inside 319x239
+tiler: tile 0,1 at 0,240 inside 319x239
+tiler: tile 1,1 at 320,240 inside 319x239
+tiler: surface 640x480 stride 2560 sha256 5192950d5ef9c5064589e93f0210c5328d13309791ca63268acbc13fb9ee5a5c
+tiler: start client 0 in tile 0,0 at 2,21 inside 315x216
+tiler: start client 1 in tile 1,0 at 322,21 inside 315x216
+tiler: start client 2 in tile 0,1 at 2,261 inside 315x216
+key 30 1
+key 30 0
+key 48 1
+key 48 0
+key 46 1
+key 46 0
+syn 6
+keys: nothing more queued, EAGAIN
+daphnis: tile queue 12 events given, 0 unread
+tiler: client 0 in tile 0,0 ended, status 0
+tiler: focus 1,0
+key 30 1
+key 30 0
+key 48 1
+key 48 0
+key 46 1
+key 46 0
+syn 6
+keys: nothing more queued, EAGAIN
+daphnis: tile queue 12 events given, 0 unread
+tiler: client 1 in tile 1,0 ended, status 0
+tiler: focus 0,0
+tiler: focus 0,1
+key 30 1
+tiler: end client 2 in tile 0,1
+daphnis: tile queue 4 events given, 0 unread
+tiler: client 2 in tile 0,1 ended, status 15
+daphnis: state 97f53346d5effc525704e8e32db97e276c07995ecff299e478fa043a8c5f7ab1
+daphnis: exit 0
+daphnis: pid 3 forked 3
+daphnis: surface 640x480 stride 2560 sha256 010d6d762cd6d3aa0a97bd2965f6712f2a99970b72cae31da03030a2a45a4239
+daphnis: fs tables 12 frames held
+daphnis: pool frames free 16371 of 16383
+daphnis: done

@@ -1,0 +1,52 @@
+// tests/rs/store_proof.ci: RS-SET6's proof, frame 38: a 64 GiB volume with 3.2 GiB used and sam's home as the frame
+// sizes it, fed through kit/homeuse.ci as du's lines; with a third argument W, the walk still running. Theme TH
+// (0 dark, 1 light) at zoom Z (1 or 2).
+// Frame 48: a fourth argument sizes the window (tests/rs/stwin.ci size_of: N 480 x 400, W 976 x 400).
+// Run: cint run --root . tests/rs/store_proof.ci -- TH Z [W|-] [N|W]
+import user.ci.kit.tokens;
+import user.ci.kit.stside;
+import user.ci.kit.homeuse;
+import user.ci.kit.ststore;
+import user.ci.kit.stbox;
+import tests.rs.stwin;
+
+U32[2048] row;
+
+void feed(in U8[_] l) { Bool b = homeuse.line(l, len(l)); }
+
+export void main(in U8[_] a) {
+    I64 th = 0;
+    I64 z = 1;
+    if (len(a) > 0 && a[0] == '1') { th = 1; }
+    if (len(a) > 2 && a[2] == '2') { z = 2; }
+    tokens.set_theme(th);
+    U8 sz = '-';
+    if (len(a) > 6) { sz = a[6]; }
+    stwin.size_of(sz);
+    stbox.show(stside.STORAGE);
+    ststore.open();
+    ststore.set_volume(b"Daphnis", 7, 67108864, 67108864 - 3355443);
+    ststore.set_trash_entries(12);
+    ststore.walk_started();
+    if (!(len(a) > 4 && a[4] == 'W')) {
+        homeuse.start(b"/home/sam", 9);
+        feed(b"421888\t/home/sam/Documents");        // du -k -s: the parts, then the home's rest (RUN_DU)
+        feed(b"2202010\t/home/sam/Downloads");
+        feed(b"217088\t/home/sam/Pictures");
+        feed(b"98304\t/home/sam/.trash");
+        feed(b"389120\t/home/sam");
+        homeuse.done();
+        ststore.walk_done();
+    }
+    stbox.set_tall(ststore.tall());
+    "frame {stwin.fw() * z} {stwin.fh() * z}\n";
+    for dy in 0..stwin.fh() * z {
+        I64 y = dy / z;
+        stwin.frame_row(row, dy, z);
+        if (stwin.in_body(dy, z)) { ststore.row_at(row, stwin.cx(), stbox.y0_at(y), stwin.cr(), stbox.yb_at(y), y); }
+        stwin.over_row(row, dy, z);
+        stwin.corners_row(row, dy, z);
+        stwin.emit(row, stwin.fw() * z);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

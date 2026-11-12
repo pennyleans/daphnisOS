@@ -1,0 +1,78 @@
+// tests/font/glyphs_test.ci: hosted tests of the coverage glyphs (FONT-1, F3; tools/glyphs.py, docs/specs/
+// 2026-11-07-k-kit2.md section 3e). Run by check.sh: cint test --root . tests/font/glyphs_test.ci
+
+import user.ci.kit.jbm_r1;
+import user.ci.kit.jbm_b2;
+import user.ci.kit.jbm12_r1;
+import user.ci.kit.inter13_r1;
+import user.ci.kit.inter11_s1;
+import user.ci.kit.inter20_s2;
+
+test "the terminal cell: lookup, the stand-in, sizes" {
+    assert(jbm_r1.W == 8 && jbm_r1.H == 16);
+    assert(jbm_b2.W == 16 && jbm_b2.H == 32);
+    assert(jbm_r1.index(0x20) == 0);
+    assert(jbm_r1.index(0x41) == 0x41 - 32);
+    assert(jbm_r1.index(0xE9) != jbm_r1.MISSING);
+    assert(jbm_r1.index(0x10FFFF) == jbm_r1.MISSING);
+    assert(jbm_r1.index(0x7F) == jbm_r1.MISSING);
+    assert(jbm_r1.index(0xFFFD) == jbm_r1.MISSING);
+}
+
+test "the space is clear and the full block is full" {
+    I64 sp = jbm_r1.index(0x20);
+    I64 full = jbm_r1.index(0x2588);
+    for y in 0..16 {
+        for x in 0..8 {
+            assert(jbm_r1.at(sp, x, y) == 0);
+            assert(jbm_r1.at(full, x, y) == 15);
+        }
+    }
+}
+
+test "a light horizontal line is one whole row, edge to edge, and meets the vertical's column" {
+    I64 h = jbm_r1.index(0x2500);
+    I64 v = jbm_r1.index(0x2502);
+    I64 rows = 0;
+    I64 row = -1;
+    for y in 0..16 {
+        if (jbm_r1.at(h, 0, y) == 15) { rows = rows + 1; row = y; }
+        for x in 0..8 { assert(jbm_r1.at(h, x, y) == 0 || jbm_r1.at(h, x, y) == 15); }
+    }
+    assert(rows == 1);
+    for x in 0..8 { assert(jbm_r1.at(h, x, row) == 15); }
+    I64 cols = 0;
+    for x in 0..8 { if (jbm_r1.at(v, x, 0) == 15) { cols = cols + 1; } }
+    assert(cols == 1);
+    for y in 0..16 { assert(jbm_r1.at(v, 3, y) == 15); }
+    I64 cross = jbm_r1.index(0x253C);
+    assert(jbm_r1.at(cross, 0, row) == 15 && jbm_r1.at(cross, 7, row) == 15);
+    assert(jbm_r1.at(cross, 3, 0) == 15 && jbm_r1.at(cross, 3, 15) == 15);
+}
+
+test "proportional faces: whole-pixel advances, the stand-in, tracking" {
+    assert(jbm12_r1.advance(jbm12_r1.index(0x4D)) == 7);
+    assert(jbm12_r1.advance(jbm12_r1.index(0x69)) == 7);
+    assert(inter13_r1.advance(inter13_r1.index(0x4D)) > inter13_r1.advance(inter13_r1.index(0x69)));
+    assert(inter13_r1.index(0xFFFD) == inter13_r1.MISSING);
+    assert(inter13_r1.index(0xAD) == inter13_r1.MISSING);
+    assert(inter13_r1.width(inter13_r1.index(0x20)) == 0);
+    assert(inter11_s1.advance(inter11_s1.index(0x20)) > 0);
+    assert(inter20_s2.SIZE == 40);
+}
+
+test "an ink box holds ink on its edges" {
+    I64 g = inter13_r1.index(0x48);
+    I64 w = inter13_r1.width(g);
+    I64 h = inter13_r1.height(g);
+    assert(w > 0 && h > 0);
+    assert(inter13_r1.top(g) < 0);
+    I64 left = 0;
+    I64 right = 0;
+    for y in 0..h {
+        left = left + inter13_r1.at(g, 0, y);
+        right = right + inter13_r1.at(g, w - 1, y);
+    }
+    assert(left > 0 && right > 0);
+}
+// SPDX-License-Identifier: Apache-2.0

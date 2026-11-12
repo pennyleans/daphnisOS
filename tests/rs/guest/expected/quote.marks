@@ -1,0 +1,12 @@
+# AC-Q (PR 326), and Index's open (FF-6c): Index opens /rs/it's $(kern true) in ced; the desk types the path as one
+# single-quoted word, so the shell runs no command substitution and no prompt for ring 0 ever shows.
+hdesk: bar desktop 1 |Console| var |/|
+~hdesk: bar desktop 1 \|Index\| var \|/rs\|.*
+finder: filter |kern| items 1
+=hdesk: open |/rs/it's $(kern true)| window 1
+=hdesk: ff runs |ced '/rs/it'\''s $(kern true)'|
+daphnis: shut down
+!hdesk: kern ask
+!hdesk: approval ask
+!hdesk: launch refused
+!hdesk: ff path refused

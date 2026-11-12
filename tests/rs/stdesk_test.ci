@@ -1,0 +1,271 @@
+// tests/rs/stdesk_test.ci: hosted tests of RS-SET1, Settings' Desk page (user/ci/kit/stdesk.ci, frame 33).
+// Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.icons3;
+import user.ci.kit.stpage;
+import user.ci.kit.stdesk;
+
+U32[1600] row;
+U32[1600] ref;
+
+// The proof window's page box (tests/rs/stwin.ci): content from y0 56 to yb 503, the page from cx 257 to cr 711.
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+void six() {
+    stdesk.pins_clear();
+    Bool b = stdesk.pin(b"Index", 5, icons3.FINDER);
+    b = stdesk.pin(b"Console", 7, icons3.TERMINAL);
+    b = stdesk.pin(b"Edit", 4, icons3.EDITOR);
+    b = stdesk.pin(b"CVim", 4, icons3.CVIM);
+    b = stdesk.pin(b"Web Browser", 11, icons3.BROWSER);
+    b = stdesk.pin(b"View", 4, icons3.IMAGES);
+}
+
+I64 pin_mid(I64 k) { return Y0 + stdesk.LIST + stdesk.PIN_PITCH * k + 16; }
+
+test "frame 33: the six swatches are literal, the same word on both themes" {
+    assert(stdesk.swatch(0) == 0x00141414 as U32 && stdesk.swatch(2) == 0x001a4b8c as U32);
+    assert(stdesk.swatch(4) == 0x009e4724 as U32 && stdesk.swatch(5) == 0x00e8eaee as U32);
+    stdesk.open();
+    stdesk.set_background(4);
+    for th in 0..2 {
+        tokens.set_theme(th);
+        I64 y = Y0 + stpage.BODY + 20;                  // the swatches' middle row
+        pen.at(0, 0, 1, y);
+        for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+        stdesk.row_at(row, CX, Y0, CR, YB, y);
+        I64 sx = CR - stpage.bw(b"Choose Picture", 14, 0) - 16 - 24 - 36;   // swatch 4
+        assert(row[sx + 12] == 0x009e4724 as U32);
+    }
+    tokens.set_theme(0);
+}
+
+test "frame 33: a press on a swatch, Choose Picture or the switch is an action for the host" {
+    stdesk.open();
+    stdesk.set_background(0);
+    stdesk.set_recent(true);
+    six();
+    I64 ry = Y0 + stpage.BODY;
+    I64 pick = CR - stpage.bw(b"Choose Picture", 14, 0);
+    I64 s3 = pick - 16 - 24 - 36 * 2;
+    assert(stdesk.click(CX, Y0, CR, YB, s3 + 12, ry + 20) == stdesk.BG && stdesk.arg() == 3);
+    assert(stdesk.click(CX, Y0, CR, YB, pick + 10, ry + 20) == stdesk.PICK);
+    assert(stdesk.click(CX, Y0, CR, YB, s3 - 8, ry + 20) == stpage.NONE);                 // between swatches
+    I64 rr = ry + stpage.PITCH;
+    assert(stdesk.click(CX, Y0, CR, YB, CR - 10, rr + 20) == stdesk.RECENT && stdesk.arg() == 0);
+    stdesk.set_recent(false);
+    assert(stdesk.click(CX, Y0, CR, YB, CR - 10, rr + 20) == stdesk.RECENT && stdesk.arg() == 1);
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 10, rr + 20) == stpage.NONE);                // the label is not the switch
+}
+
+test "frame 33: a pin's remove mark unpins; its row drags to a new place" {
+    stdesk.open();
+    six();
+    assert(stdesk.pins() == 6);
+    assert(stdesk.pin_at(CX, Y0, CR, YB, CX + 40, pin_mid(2)) == 2);
+    assert(stdesk.pin_at(CX, Y0, CR, YB, CX + 40, pin_mid(2) + 17) == -1);                 // the 2 px between pins
+    assert(stdesk.click(CX, Y0, CR, YB, CR - 10, pin_mid(4)) == stdesk.UNPIN && stdesk.arg() == 4);
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 40, pin_mid(1)) == stpage.DRAW);              // press Console
+    assert(stdesk.release() == stpage.DRAW);                                               // not moved: nothing
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 40, pin_mid(1)) == stpage.DRAW);
+    assert(!stdesk.move(CX, Y0, CR, YB, CX + 40, pin_mid(1) + 8));                         // still its own place
+    assert(stdesk.move(CX, Y0, CR, YB, CX + 40, pin_mid(3) + 10));                         // between CVim and Web Browser
+    assert(stdesk.release() == stdesk.MOVE && stdesk.arg() == 1 && stdesk.arg2() == 3);
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 40, pin_mid(5)) == stpage.DRAW);              // View to the top
+    assert(stdesk.move(CX, Y0, CR, YB, CX + 40, Y0 + stdesk.LIST - 6));
+    assert(stdesk.release() == stdesk.MOVE && stdesk.arg() == 5 && stdesk.arg2() == 0);
+}
+
+test "frame 33: the pointer lights a pin with a SURF1 pill and its remove mark" {
+    tokens.set_theme(0);
+    stdesk.open();
+    six();
+    assert(stdesk.hover(CX, Y0, CR, YB, CX + 40, pin_mid(2)));
+    assert(!stdesk.hover(CX, Y0, CR, YB, CX + 60, pin_mid(2)));
+    I64 y = pin_mid(2) - 12;
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stdesk.row_at(row, CX, Y0, CR, YB, y);
+    assert(row[CX + 200] == tokens.word(tokens.SURF1));
+    y = pin_mid(1) - 12;
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stdesk.row_at(row, CX, Y0, CR, YB, y);
+    assert(row[CX + 200] == tokens.word(tokens.PAPER));
+}
+
+test "the desk's Tab order: the swatches, Choose Picture, Recent Files and the pins, each once, then the sidebar" {
+    stdesk.open();
+    stdesk.set_background(5);
+    six();
+    assert(stdesk.enter() && stdesk.focused() == stdesk.F_SWATCH);
+    assert(stdesk.key(stpage.K_RIGHT) == stpage.DRAW && stdesk.focused() == stdesk.F_SWATCH);   // the last: it stays
+    assert(stdesk.key(stpage.K_LEFT) == stdesk.BG && stdesk.arg() == 4);
+    stdesk.set_background(0);
+    assert(stdesk.key(stpage.K_LEFT) == stpage.DRAW && stdesk.focused() == stdesk.F_SWATCH);    // the first: it stays
+    stdesk.set_background(stdesk.PICTURE);
+    assert(stdesk.key(stpage.K_LEFT) == stdesk.BG && stdesk.arg() == 5);                    // a picture: the last swatch
+    assert(stdesk.key(stpage.K_TAB) == stpage.DRAW && stdesk.focused() == stdesk.F_PICK);
+    assert(stdesk.key(stpage.K_ENTER) == stdesk.PICK);
+    assert(stdesk.key(stpage.K_DOWN) == stpage.DRAW && stdesk.focused() == stdesk.F_PICK);  // no arrow leaves a stop
+    assert(stdesk.key(stpage.K_TAB) == stpage.DRAW && stdesk.focused() == stdesk.F_RECENT);
+    assert(stdesk.key(stpage.K_SPACE) == stdesk.RECENT);
+    assert(stdesk.key(stpage.K_TAB) == stpage.DRAW && stdesk.focused() == stdesk.F_PIN);    // the list, at its first
+    assert(stdesk.key(stpage.K_DOWN) == stpage.DRAW && stdesk.focused() == stdesk.F_PIN + 1);
+    assert(stdesk.key(stpage.K_DELETE) == stdesk.UNPIN && stdesk.arg() == 1);
+    assert(stdesk.key(stpage.K_UP) == stpage.DRAW && stdesk.key(stpage.K_UP) == stpage.DRAW);
+    assert(stdesk.focused() == stdesk.F_PIN);                                               // the list's top holds it
+    assert(stdesk.key(stpage.K_TAB) == stpage.BACK && stdesk.focused() == stdesk.F_NONE && stdesk.focus_top() == -1);
+    assert(stdesk.enter_last() && stdesk.focused() == stdesk.F_PIN);                         // Shift+Tab, back
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.DRAW && stdesk.focused() == stdesk.F_RECENT);
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.DRAW && stdesk.focused() == stdesk.F_PICK);
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.DRAW && stdesk.focused() == stdesk.F_SWATCH);
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.BACK && stdesk.focused() == stdesk.F_NONE);
+    stdesk.pins_clear();
+    assert(stdesk.enter_last() && stdesk.focused() == stdesk.F_RECENT);                      // no pins, no list stop
+    assert(stdesk.key(stpage.K_TAB) == stpage.BACK);
+}
+
+test "the desk's rule: the ring shows after the first Tab or arrow, not after a click or a press" {
+    stdesk.open();
+    six();
+    assert(stdesk.click(CX, Y0, CR, YB, CR - 10, Y0 + stpage.BODY + stpage.PITCH + 20) == stdesk.RECENT);
+    assert(stdesk.focused() == stdesk.F_RECENT && stdesk.focus_top() == -1);               // clicked: no ring
+    assert(stdesk.key(stpage.K_SPACE) == stdesk.RECENT && stdesk.focus_top() == -1);       // a press: still none
+    assert(stdesk.key(stpage.K_LEFT) == stpage.DRAW && stdesk.focus_top() == stpage.BODY + stpage.PITCH);
+    stdesk.open();
+    assert(stdesk.key(stpage.K_ENTER) == stpage.NONE && stdesk.focused() == stdesk.F_NONE); // no stop: nothing
+    assert(stdesk.key(stpage.K_DOWN) == stpage.DRAW && stdesk.focused() == stdesk.F_SWATCH); // an arrow: the first
+}
+
+test "frame 33: a long list scrolls; the keyboard keeps its pin in view" {
+    stdesk.open();
+    stdesk.pins_clear();
+    for k in 0..30 { Bool b = stdesk.pin(b"Program", 7, icons3.PROGRAM); }
+    assert(stdesk.pins() == stdesk.PINS);                                                  // DN-49: 28 at most
+    I64 vis = stdesk.shown(Y0, YB);
+    assert(vis == 6);
+    pen.at(0, 0, 1, Y0);
+    stdesk.row_at(row, CX, Y0, CR, YB, Y0);                                                 // the page learns vis
+    assert(stdesk.scroll(3) && stdesk.first() == 3);
+    assert(stdesk.scroll(100) && stdesk.first() == stdesk.PINS - vis);
+    assert(!stdesk.scroll(1));
+    assert(stdesk.scroll(-100) && stdesk.first() == 0);
+    assert(stdesk.enter());
+    I64 c = stdesk.key(stpage.K_TAB);
+    for k in 0..2 { c = stdesk.key(stpage.K_TAB); }                                        // the switch, the first pin
+    for k in 0..8 { c = stdesk.key(stpage.K_DOWN); }                                       // pin 8
+    assert(stdesk.focused() == stdesk.F_PIN + 8 && stdesk.first() == 8 - vis + 1);
+    stdesk.pins_clear();
+    for k in 0..8 { Bool b = stdesk.pin(b"Program", 7, icons3.PROGRAM); }                  // pins 8 and on taken out
+    stdesk.unpinned(8);
+    assert(stdesk.focused() == stdesk.F_PIN + 7 && stdesk.first() == 8 - vis);
+}
+
+test "Codex on PR 307: a drag at the list's foot drops where the pointer is; a refill keeps the scroll" {
+    stdesk.open();
+    stdesk.pins_clear();
+    for k in 0..10 { Bool b = stdesk.pin(b"Program", 7, icons3.PROGRAM); }
+    I64 vis = stdesk.shown(Y0, YB);
+    pen.at(0, 0, 1, Y0);
+    stdesk.row_at(row, CX, Y0, CR, YB, Y0);
+    assert(stdesk.scroll(2) && stdesk.first() == 2);
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 40, pin_mid(0)) == stpage.DRAW);             // pin 2, the first shown
+    I64 foot = Y0 + stdesk.LIST + stdesk.PIN_PITCH * vis + 5;                               // under the last row shown
+    assert(stdesk.move(CX, Y0, CR, YB, CX + 40, foot) && stdesk.first() == 3);              // the list follows
+    assert(stdesk.release() == stdesk.MOVE && stdesk.arg() == 2 && stdesk.arg2() == 3 + vis - 1);
+    assert(stdesk.focused() == stdesk.F_PIN + 3 + vis - 1);                                 // the moved pin keeps focus
+    stdesk.pins_clear();                                                                    // the host refills the list
+    for k in 0..10 { Bool b = stdesk.pin(b"Program", 7, icons3.PROGRAM); }
+    stdesk.row_at(row, CX, Y0, CR, YB, Y0);
+    assert(stdesk.first() == 3);                                                            // no jump to the top
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 40, pin_mid(0)) == stpage.DRAW);             // pin 3
+    assert(stdesk.move(CX, Y0, CR, YB, CX + 40, foot + 200) && stdesk.first() == 4);        // far below: still the foot
+    assert(stdesk.release() == stdesk.MOVE && stdesk.arg() == 3 && stdesk.arg2() == 4 + vis - 1);
+    stdesk.pins_clear();                                                                    // a shorter list
+    for k in 0..3 { Bool b = stdesk.pin(b"Program", 7, icons3.PROGRAM); }
+    stdesk.row_at(row, CX, Y0, CR, YB, Y0);
+    assert(stdesk.first() == 0);
+}
+
+test "DN-51 frame 26: a pin dragged off the list's side is refused (Not here) and moves nothing" {
+    stdesk.open();
+    stdesk.pins_clear();
+    for k in 0..4 { Bool b = stdesk.pin(b"Program", 7, icons3.PROGRAM); }
+    pen.at(0, 0, 1, Y0);
+    stdesk.row_at(row, CX, Y0, CR, YB, Y0);
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 40, pin_mid(0)) == stpage.DRAW);
+    assert(stdesk.dragging() && !stdesk.refused());
+    assert(stdesk.move(CX, Y0, CR, YB, CX + 40, pin_mid(2)) && !stdesk.refused());
+    assert(stdesk.move(CX, Y0, CR, YB, CX - 100, pin_mid(2)) && stdesk.refused());
+    assert(stdesk.release() == stpage.DRAW && !stdesk.dragging() && !stdesk.refused());
+    assert(stdesk.click(CX, Y0, CR, YB, CX + 40, pin_mid(0)) == stpage.DRAW);
+    assert(stdesk.move(CX, Y0, CR, YB, CR + 100, pin_mid(2)) && stdesk.refused());
+    assert(stdesk.move(CX, Y0, CR, YB, CX + 40, pin_mid(3)) && !stdesk.refused());   // back on the list
+    assert(stdesk.release() == stdesk.MOVE && stdesk.arg() == 0);
+}
+
+// Row y of the page on PAPER, at scale 1.
+void draw(inout U32[_] r, I64 y) {
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { r[x] = tokens.word(tokens.PAPER); }
+    stdesk.row_at(r, CX, Y0, CR, YB, y);
+}
+
+test "BG-1 A: set_pick_live(false) fades Choose Picture alone, at 40 percent; the swatches and the label stay" {
+    tokens.set_theme(0);
+    stdesk.open();
+    stdesk.set_background(2);
+    six();
+    I64 px = CR - stpage.bw(b"Choose Picture", 14, 0);
+    for k in 0..3 {
+        I64 y = Y0 + stpage.BODY + 8 + 12 * k;
+        draw(ref, y);
+        stdesk.set_pick_live(false);
+        draw(row, y);
+        stdesk.set_pick_live(true);
+        I64 n = 0;
+        for x in 0..800 {
+            if (row[x] != ref[x]) { n = n + 1; }
+        }
+        for x in 0..px { assert(row[x] == ref[x]); }
+        assert(n > 0);                                                                 // the button and its words
+        stpage.fade(ref, px, CR);
+        for x in 0..800 { assert(row[x] == ref[x]); }
+    }
+}
+
+test "BG-1 A: Tab goes from the swatches to Recent Files; a press on Choose Picture asks nothing; going dead drops it" {
+    stdesk.open();
+    six();
+    stdesk.set_pick_live(false);
+    assert(stdesk.enter() && stdesk.focused() == stdesk.F_SWATCH);
+    assert(stdesk.key(stpage.K_TAB) == stpage.DRAW && stdesk.focused() == stdesk.F_RECENT);
+    assert(stdesk.key(stpage.K_TAB) == stpage.DRAW && stdesk.focused() == stdesk.F_PIN);
+    assert(stdesk.key(stpage.K_TAB) == stpage.BACK);
+    assert(stdesk.enter_last() && stdesk.focused() == stdesk.F_PIN);
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.DRAW && stdesk.focused() == stdesk.F_RECENT);
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.DRAW && stdesk.focused() == stdesk.F_SWATCH);
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.BACK);
+    stdesk.pins_clear();
+    assert(stdesk.enter_last() && stdesk.focused() == stdesk.F_RECENT);                      // no pins, no list stop
+    assert(stdesk.key(stpage.K_BACKTAB) == stpage.DRAW && stdesk.focused() == stdesk.F_SWATCH);
+    stdesk.open();
+    I64 ry = Y0 + stpage.BODY;
+    I64 px = CR - stpage.bw(b"Choose Picture", 14, 0);
+    assert(stdesk.click(CX, Y0, CR, YB, px + 10, ry + 20) == stpage.NONE && stdesk.focused() == stdesk.F_NONE);
+    assert(stdesk.click(CX, Y0, CR, YB, CR - 2, ry + 20) == stpage.NONE);
+    stdesk.set_pick_live(true);
+    assert(stdesk.click(CX, Y0, CR, YB, px + 10, ry + 20) == stdesk.PICK && stdesk.focused() == stdesk.F_PICK);
+    stdesk.set_pick_live(false);
+    assert(stdesk.focused() == stdesk.F_NONE);
+    assert(stdesk.key(stpage.K_ENTER) == stpage.NONE);                                        // no stop: nothing
+    stdesk.set_pick_live(true);
+    assert(stdesk.enter() && stdesk.key(stpage.K_TAB) == stpage.DRAW && stdesk.focused() == stdesk.F_PICK);
+    assert(stdesk.key(stpage.K_SPACE) == stdesk.PICK);                                        // live: as before
+}
+// SPDX-License-Identifier: Apache-2.0

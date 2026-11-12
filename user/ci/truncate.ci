@@ -1,0 +1,75 @@
+// user/ci/truncate.ci: truncate [-c] -s SIZE FILE... (docs/specs/2026-11-06-c-core.md, CT-5, CORE-5 C; busybox and
+// GNU truncate, no POSIX page): sets each FILE to SIZE bytes, cut or extended with zeros, created (mode 0666 less the
+// umask) unless -c, when a missing FILE is passed over. SIZE is decimal with an optional suffix, as busybox: k or K
+// 1,024, M 1,048,576, G 1,073,741,824; kB or KB 1,000, MB, GB. A relative SIZE (+ - < > / %) is a bad size, past 2^62
+// the limit COUNT.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+
+const I64 O_WRONLY = 0x1;
+const I64 O_CREAT = 0x40;
+const I64 O_NONBLOCK = 0x800;
+const I64 ENOENT = 2;
+
+// The multiplier of the suffix a[s..e], 0 for none known.
+I64 unit(in U8[_] a, I64 s, I64 e) {
+    I64 k = e - s;
+    if (k == 0) { return 1; }
+    U8 c = a[s];
+    I64 m = 0;
+    if (c == 'k' || c == 'K') { m = 1; }
+    if (c == 'M') { m = 2; }
+    if (c == 'G') { m = 3; }
+    if (m == 0 || k > 2) { return 0; }
+    if (k == 2 && a[s + 1] != 'B') { return 0; }
+    I64 base = 1024;
+    if (k == 2) { base = 1000; }
+    I64 v = 1;
+    for i in 0..m { v = v * base; }
+    return v;
+}
+
+I64 size_of(in U8[_] a, I64 s, I64 e) {
+    I64 d = s;
+    while (d < e && a[d] >= '0' && a[d] <= '9') { d = d + 1; }
+    if (d == s) { msg.usage(b"bad size"); }
+    I64 m = unit(a, d, e);
+    if (m == 0) { msg.usage(b"bad size"); }
+    I64 v = args.count_of(a, s, d, b"bad size");
+    if (v > 4611686018427387904 / m) { msg.limit(b"COUNT"); }
+    return v * m;
+}
+
+I64 want = 0;
+I64 how = 0;
+
+void one(in U8[_] name) {
+    I64 fd = shctl.sh_open(name, how, 0x1B6);
+    if (fd < 0) {
+        if (!(args.has('c') && fd == 0 - ENOENT)) { msg.file(name, 0 - fd); }
+    } else {
+        I64 r = corectl.co_ftruncate(fd, want);
+        if (r < 0) { msg.file(name, 0 - r); }
+        _ = shctl.fd_close(fd);
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"truncate");
+    args.parse(a, b"c", b"s");
+    if (!args.has('s')) { msg.usage(b"missing -s"); }
+    want = size_of(a, args.val_start('s'), args.val_stop('s'));
+    how = O_WRONLY | O_NONBLOCK;
+    if (!args.has('c')) { how = how | O_CREAT; }
+    I64 n = args.operands();
+    if (n == 0) { msg.usage(b"missing operand"); }
+    for i in 0..n {
+        one(a[args.op_start(i)..args.op_stop(a, i)]);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

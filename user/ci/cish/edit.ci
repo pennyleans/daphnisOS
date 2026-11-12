@@ -1,0 +1,669 @@
+// user/ci/cish/edit.ci: the CSH-3 line editor (K-9, docs/specs/2026-11-07-k-kit2.md section 3; the sheet is
+// studio-assets reference/daphnis-desk/agy/ref_daphnis_desk_sheets.md section 3.2). An interactive cish reads each
+// line through read_line. For the line the terminal is raw (ICANON, ECHO, ISIG, IEXTEN and IXON off, VMIN 1, VTIME 0;
+// ICRNL and output processing kept); its settings are put back before read_line returns, so a command runs as
+// before. A byte is a cell (UTF-8 is K-2b's).
+//   printable      in at the cursor
+//   Left Right     Ctrl+B Ctrl+F; Ctrl+Left and Ctrl+Right a word (KB-1: GNOME and Windows motions)
+//   Home End       Ctrl+A Ctrl+E (ESC [ H, ESC [ F, ESC [ 1 ~, ESC [ 4 ~, ESC [ 7 ~, ESC [ 8 ~, and ESC O)
+//   Backspace      DEL or BS: the byte left of the cursor; Delete (ESC [ 3 ~) and Ctrl+D the byte under it
+//   Ctrl+U Ctrl+K  the line left of the cursor, right of it; Ctrl+W the word left of it (white space delimits)
+//   Up Down        the history: HIST_LINES lines in HIST_BYTES, oldest out first; Down past the newest gives back
+//                  the line being typed. A line equal to the newest is not kept again.
+//   Tab            completes the word at the cursor: a command (the first word of a command, no `/`) from the
+//                  builtins and PATH's directories, else a path from its directory (dot names only for a leading
+//                  dot), as far as every candidate agrees; one candidate gains `/` (a directory) or a space. A
+//                  second Tab in a row that adds nothing lists the candidates sorted, in 16-column cells, then the
+//                  prompt and the line again below.
+//   Ctrl+C         `^C`, a new line: INTR, the line dropped
+//   Ctrl+L         the screen cleared (ESC [ 2 J ESC [ H), the prompt and the line at its top
+//   Ctrl+D         on an empty line: EOF, cish ends with $? (POSIX XCU sh, end of file)
+//   Enter          CR or NL: the line, a newline appended
+// Drawing (to descriptor 2): the prompt is taken to start at column 0, and the line wraps at the window's columns
+// (view_winsize, asked once a line, else 80). A byte typed at the end is written alone; any other change redraws: up to
+// the prompt's row (ESC [ n A), CR, the prompt and the line, ESC [ J, and the cursor placed with ESC [ n A, CR and
+// ESC [ n C. A line that fills its last row exactly goes on with CR NL, so the cursor never waits on a pending wrap.
+import user.ci.shctl;
+import user.ci.kit.ondesk;
+import user.ci.viewctl;
+import user.ci.cish.limits;
+import user.ci.cish.vars;
+import user.ci.cish.msg;
+import user.ci.cish.builtin;
+
+export const I64 EOF = -1;
+export const I64 INTR = -2;
+const I64 HIST_LINES = 128;
+const I64 HIST_BYTES = 16384;
+const I64 MAX = 4095;      // limits.LINE less the newline
+const I64 CANDS = 512;
+const I64 CBYTES = 16384;
+
+U8[4096] buf;      // the line
+I64 blen = 0;
+I64 pos = 0;       // the cursor, 0 to blen
+U8[256] pr;        // the prompt
+I64 plen = 0;
+I64 cols = 80;
+I64 crow = 0;      // the cursor's row, counted from the prompt's
+U8[8192] ob;       // output not yet written
+I64 on = 0;
+Bool tabbed = false;   // the key before was a Tab
+
+U8[16384] hb;      // the history, oldest first
+I64[128] hoff;
+I64[128] hlen;
+I64 hn = 0;
+I64 hused = 0;
+I64 hat = 0;       // the entry shown, hn for the line being typed
+U8[4096] sb;       // the line being typed, while the history is shown
+I64 slen = 0;
+
+U8[16384] cb;      // the candidates
+I64[512] coff;
+I64[512] clen;
+Bool[512] cdir;
+I64[512] cord;
+I64 nc = 0;
+I64 cbn = 0;
+U8[16384] db;      // a directory's names
+U8[4096] pb;       // a path being built
+
+void flush() {
+    if (on > 0) {
+        _ = msg.write_all(2, ob[0..on]);
+        on = 0;
+    }
+}
+
+void put(I64 b) {
+    if (on == 8192) { flush(); }
+    ob[on] = b as U8;
+    on = on + 1;
+}
+
+void puts(in U8[_] s) {
+    for k in 0..len(s) { put(s[k] as I64); }
+}
+
+// ESC [ n f, n at least 1.
+void csi(I64 n, I64 f) {
+    put(27);
+    put('[' as I64);
+    U8[20] d;
+    I64 nd = 0;
+    I64 v = n;
+    while (v > 0 || nd == 0) {
+        d[nd] = (v % 10 + 48) as U8;
+        nd = nd + 1;
+        v = v / 10;
+    }
+    while (nd > 0) {
+        nd = nd - 1;
+        put(d[nd] as I64);
+    }
+    put(f);
+}
+
+// The cursor from row from (the row it is on) to pos.
+void go(I64 from) {
+    I64 at = plen + pos;
+    I64 r = at / cols;
+    I64 c = at % cols;
+    if (from > r) { csi(from - r, 'A' as I64); }
+    if (from < r) { csi(r - from, 'B' as I64); }
+    put(13);
+    if (c > 0) { csi(c, 'C' as I64); }
+    crow = r;
+}
+
+void place() {
+    I64 f = crow;
+    go(f);
+}
+
+// The prompt and the line drawn again from the prompt's row.
+void refresh() {
+    if (crow > 0) { csi(crow, 'A' as I64); }
+    put(13);
+    puts(pr[0..plen]);
+    puts(buf[0..blen]);
+    I64 total = plen + blen;
+    if (total > 0 && total % cols == 0) {
+        put(13);
+        put(10);
+    }
+    puts(b"\x1b[J");
+    go(total / cols);
+}
+
+// The cursor past the line's end, on a row of its own below it.
+void below() {
+    I64 total = plen + blen;
+    I64 er = total / cols;
+    if (er > crow) { csi(er - crow, 'B' as I64); }
+    put(13);
+    if (total == 0 || total % cols != 0) { put(10); }
+    pos = blen;
+    crow = 0;
+}
+
+Bool insert(in U8[_] s) {
+    if (blen + len(s) > MAX) { return false; }
+    I64 k = blen;
+    while (k > pos) {
+        k = k - 1;
+        buf[k + len(s)] = buf[k];
+    }
+    for i in 0..len(s) { buf[pos + i] = s[i]; }
+    blen = blen + len(s);
+    pos = pos + len(s);
+    return true;
+}
+
+// Bytes a..b of the line out.
+void cut_span(I64 a, I64 b) {
+    for k in b..blen { buf[a + k - b] = buf[k]; }
+    blen = blen - (b - a);
+    if (pos > b) {
+        pos = pos - (b - a);
+    } else if (pos > a) {
+        pos = a;
+    }
+}
+
+// Bytes a up to the cursor out.
+void cut(I64 a) {
+    I64 b = pos;
+    cut_span(a, b);
+}
+
+Bool blank(U8 c) { return c == ' ' || c == 9; }
+
+I64 word_left() {
+    I64 k = pos;
+    while (k > 0 && blank(buf[k - 1])) { k = k - 1; }
+    while (k > 0 && !blank(buf[k - 1])) { k = k - 1; }
+    return k;
+}
+
+I64 word_right() {
+    I64 k = pos;
+    while (k < blen && blank(buf[k])) { k = k + 1; }
+    while (k < blen && !blank(buf[k])) { k = k + 1; }
+    return k;
+}
+
+// History.
+
+void drop_oldest() {
+    I64 n0 = hlen[0];
+    for k in n0..hused { hb[k - n0] = hb[k]; }
+    hused = hused - n0;
+    for i in 1..hn {
+        hoff[i - 1] = hoff[i] - n0;
+        hlen[i - 1] = hlen[i];
+    }
+    hn = hn - 1;
+}
+
+void remember() {
+    if (blen == 0 || blen > HIST_BYTES) { return; }
+    if (hn > 0 && hlen[hn - 1] == blen) {
+        Bool same = true;
+        for k in 0..blen {
+            if (hb[hoff[hn - 1] + k] != buf[k]) { same = false; }
+        }
+        if (same) { return; }
+    }
+    while (hn > 0 && (hn == HIST_LINES || hused + blen > HIST_BYTES)) { drop_oldest(); }
+    hoff[hn] = hused;
+    hlen[hn] = blen;
+    for k in 0..blen { hb[hused + k] = buf[k]; }
+    hused = hused + blen;
+    hn = hn + 1;
+}
+
+void show(I64 i) {
+    if (hat == hn) {
+        for k in 0..blen { sb[k] = buf[k]; }
+        slen = blen;
+    }
+    hat = i;
+    if (i == hn) {
+        for k in 0..slen { buf[k] = sb[k]; }
+        blen = slen;
+    } else {
+        for k in 0..hlen[i] { buf[k] = hb[hoff[i] + k]; }
+        blen = hlen[i];
+    }
+    pos = blen;
+    refresh();
+}
+
+// Completion.
+
+Bool cand_is(I64 c, in U8[_] s) {
+    if (clen[c] != len(s)) { return false; }
+    for k in 0..len(s) {
+        if (cb[coff[c] + k] != s[k]) { return false; }
+    }
+    return true;
+}
+
+void add_cand(in U8[_] s, Bool dir) {
+    if (nc == CANDS || cbn + len(s) > CBYTES) { return; }
+    for c in 0..nc {
+        if (cand_is(c, s)) { return; }
+    }
+    coff[nc] = cbn;
+    clen[nc] = len(s);
+    cdir[nc] = dir;
+    for k in 0..len(s) { cb[cbn + k] = s[k]; }
+    cbn = cbn + len(s);
+    nc = nc + 1;
+}
+
+Bool starts(in U8[_] s, in U8[_] pre) {
+    if (len(s) < len(pre)) { return false; }
+    for k in 0..len(pre) {
+        if (s[k] != pre[k]) { return false; }
+    }
+    return true;
+}
+
+// The names in directory dir (as typed: empty is the working directory) that start with pre; with files_only,
+// no directory.
+void scan(in U8[_] dir, in U8[_] pre, Bool files_only) {
+    I64 nd = len(dir);
+    if (nd > 3000) { return; }
+    for k in 0..nd { pb[k] = dir[k]; }
+    if (nd == 0) {
+        pb[0] = '.';
+        nd = 1;
+    }
+    I64 n = shctl.sh_dirents(pb[0..nd], db);
+    if (n < 0) { return; }
+    if (pb[nd - 1] != '/') {
+        pb[nd] = '/';
+        nd = nd + 1;
+    }
+    I64 a = 0;
+    while (a < n) {
+        I64 e = a;
+        while (e < n && db[e] != 0) { e = e + 1; }
+        I64 m = e - a;
+        Bool hid = m > 0 && db[a] == '.';
+        Bool skip = m == 0 || (m == 1 && hid) || (m == 2 && hid && db[a + 1] == '.');
+        if (hid && (len(pre) == 0 || pre[0] != '.')) { skip = true; }
+        if (!skip && starts(db[a..e], pre) && nd + m < 4096) {
+            for k in 0..m { pb[nd + k] = db[a + k]; }
+            U8[16] st;
+            Bool d = false;
+            if (shctl.sh_stat(pb[0..nd + m], 1, st) == 0) {
+                I64 mode = st[0] as I64 + 256 * (st[1] as I64);
+                d = mode / 4096 == 4;
+            }
+            if (!(files_only && d)) { add_cand(db[a..e], d); }
+        }
+        a = e + 1;
+    }
+}
+
+void commands(in U8[_] pre) {
+    I64 n = builtin.names(db);
+    I64 a = 0;
+    U8[32] nm;
+    while (a < n) {
+        I64 e = a;
+        while (e < n && db[e] != 0) { e = e + 1; }
+        for k in a..e { nm[k - a] = db[k]; }
+        if (starts(nm[0..e - a], pre)) { add_cand(nm[0..e - a], false); }
+        a = e + 1;
+    }
+    I64 v = vars.lookup(b"PATH");
+    if (!vars.has_value(v)) { return; }
+    U8[1024] dir;
+    I64 nd = 0;
+    I64 vl = vars.value_len(v);
+    for k in 0..vl + 1 {
+        if (k == vl || vars.value_at(v, k) == ':') {
+            scan(dir[0..nd], pre, true);
+            nd = 0;
+        } else if (nd < 1024) {
+            dir[nd] = vars.value_at(v, k);
+            nd = nd + 1;
+        }
+    }
+}
+
+// Candidate a sorts before candidate b.
+Bool before(I64 a, I64 b) {
+    I64 n = clen[a];
+    if (clen[b] < n) { n = clen[b]; }
+    for k in 0..n {
+        U8 x = cb[coff[a] + k];
+        U8 y = cb[coff[b] + k];
+        if (x != y) { return x < y; }
+    }
+    return clen[a] < clen[b];
+}
+
+void list() {
+    for i in 0..nc { cord[i] = i; }
+    for i in 1..nc {
+        I64 j = i;
+        while (j > 0 && before(cord[j], cord[j - 1])) {
+            I64 t = cord[j];
+            cord[j] = cord[j - 1];
+            cord[j - 1] = t;
+            j = j - 1;
+        }
+    }
+    I64 keep = pos;
+    below();
+    I64 x = 0;      // the next cell's column
+    I64 w = 0;      // the column written to
+    for i in 0..nc {
+        I64 c = cord[i];
+        I64 m = clen[c];
+        if (cdir[c]) { m = m + 1; }
+        if (x > 0 && x + m > cols) {
+            put(13);
+            put(10);
+            x = 0;
+            w = 0;
+        }
+        while (w < x) {
+            put(' ' as I64);
+            w = w + 1;
+        }
+        puts(cb[coff[c]..coff[c] + clen[c]]);
+        if (cdir[c]) { put('/' as I64); }
+        w = w + m;
+        x = x + (m / 16 + 1) * 16;
+    }
+    put(13);
+    put(10);
+    crow = 0;
+    pos = keep;
+    refresh();
+}
+
+Bool delim(U8 c) {
+    return blank(c) || c == ';' || c == '|' || c == '&' || c == '<' || c == '>' || c == '(' || c == ')';
+}
+
+Bool complete() {
+    I64 ws = pos;
+    while (ws > 0 && !delim(buf[ws - 1])) { ws = ws - 1; }
+    I64 k = ws;
+    while (k > 0 && blank(buf[k - 1])) { k = k - 1; }
+    Bool cmd = k == 0 || buf[k - 1] == ';' || buf[k - 1] == '|' || buf[k - 1] == '&' || buf[k - 1] == '(';
+    I64 slash = -1;
+    for i in ws..pos {
+        if (buf[i] == '/') { slash = i; }
+    }
+    nc = 0;
+    cbn = 0;
+    I64 p0 = ws;
+    if (cmd && slash < 0) {
+        commands(buf[ws..pos]);
+    } else {
+        p0 = slash + 1;
+        if (slash < 0) { p0 = ws; }
+        scan(buf[ws..p0], buf[p0..pos], false);
+    }
+    if (nc == 0) { return false; }
+    I64 have = pos - p0;
+    I64 l = clen[0];
+    for c in 1..nc {
+        I64 j = 0;
+        while (j < l && j < clen[c] && cb[coff[c] + j] == cb[coff[0] + j]) { j = j + 1; }
+        l = j;
+    }
+    Bool grew = false;
+    if (l > have) {
+        U8[4096] t;
+        for j in have..l { t[j - have] = cb[coff[0] + j]; }
+        grew = insert(t[0..l - have]);
+    }
+    if (nc == 1) {
+        if (cdir[0]) {
+            grew = insert(b"/") || grew;
+        } else if (pos == blen || !blank(buf[pos])) {
+            grew = insert(b" ") || grew;
+        }
+    }
+    if (grew) {
+        refresh();
+    } else if (tabbed && nc > 1) {
+        list();
+    }
+    return grew;
+}
+
+// The terminal.
+
+U8[128] saved;
+I64 nsaved = 0;
+
+void raw() {
+    nsaved = shctl.sh_tcget(0, saved);
+    if (nsaved < 24) {
+        nsaved = 0;
+        return;
+    }
+    U8[128] r;
+    for k in 0..nsaved { r[k] = saved[k]; }
+    I64 i1 = r[1] as I64;
+    if (i1 / 4 % 2 == 1) { r[1] = (i1 - 4) as U8; }                 // IXON 0x400
+    I64 l0 = r[12] as I64;
+    l0 = l0 - l0 % 2;                                                   // ISIG 0x1
+    if (l0 / 2 % 2 == 1) { l0 = l0 - 2; }                               // ICANON 0x2
+    if (l0 / 8 % 2 == 1) { l0 = l0 - 8; }                               // ECHO 0x8
+    r[12] = l0 as U8;
+    I64 l1 = r[13] as I64;
+    if (l1 >= 128) { r[13] = (l1 - 128) as U8; }                      // IEXTEN 0x8000
+    r[17 + 5] = 0;                                                      // VTIME
+    r[17 + 6] = 1;                                                      // VMIN
+    _ = shctl.sh_tcset(0, r[0..nsaved]);
+}
+
+void cooked() {
+    if (nsaved > 0) { _ = shctl.sh_tcset(0, saved[0..nsaved]); }
+}
+
+I64 key() {
+    U8[1] b;
+    if (shctl.fd_read(0, b) != 1) { return -1; }
+    return b[0] as I64;
+}
+
+// After ESC: the rest of a sequence; the key it means as the control byte of the same action (1 Home, 5 End, 2 Left,
+// 6 Right, 16 Up, 14 Down) or 1000 more for one with none (1002 Ctrl+Left, 1005 Ctrl+Right, 1003 Delete); 0 for
+// none, -1 at the input's end.
+I64 escape() {
+    I64 b = key();
+    if (b < 0) { return -1; }
+    if (b != '[' as I64 && b != 'O' as I64) { return 0; }
+    I64[2] p;
+    p[0] = 0;
+    p[1] = 0;
+    I64 np = 0;
+    I64 f = key();
+    while (f >= 0 && (f < 64 || f > 126)) {
+        if (f >= 48 && f <= 57 && np < 2 && p[np] < 1000) {
+            p[np] = 10 * p[np] + f - 48;
+        } else if (f == ';' as I64) {
+            np = np + 1;
+        }
+        f = key();
+    }
+    if (f < 0) { return -1; }
+    Bool ctrl = np >= 1 && (p[1] == 5 || p[1] == 6);
+    if (f == 'A' as I64) { return 16; }
+    if (f == 'B' as I64) { return 14; }
+    if (f == 'C' as I64) {
+        if (ctrl) { return 5 + 1000; }
+        return 6;
+    }
+    if (f == 'D' as I64) {
+        if (ctrl) { return 2 + 1000; }
+        return 2;
+    }
+    if (f == 'H' as I64) { return 1; }
+    if (f == 'F' as I64) { return 5; }
+    if (f == '~' as I64) {
+        if (p[0] == 1 || p[0] == 7) { return 1; }
+        if (p[0] == 4 || p[0] == 8) { return 5; }
+        if (p[0] == 3) { return 3 + 1000; }
+    }
+    return 0;
+}
+
+// ESC ] 2 ; the working directory BEL: the window's variable (the sheet section 3: at most 32 bytes, a longer path
+// as `...` and its last 29). AM-3: then ESC ] 7770 with Console's About, again each prompt (the desk forgets a
+// terminal's declaration when another program comes to its foreground).
+export void title() {
+    U8[4096] w;
+    I64 n = shctl.sh_getcwd(w);
+    if (n <= 0) { return; }
+    puts(b"\x1b]2;");
+    I64 a = 0;
+    if (n > 32) {
+        puts(b"...");
+        a = n - 29;
+    }
+    for k in a..n {
+        U8 c = w[k];
+        if (c < 32 || c > 126) { c = '?'; }
+        put(c as I64);
+    }
+    put(7);
+    if (ondesk.on_desk()) {            // AM-3: only in a desk terminal
+        puts(b"\x1b]7770;about;Console;0.1.0;The desk's shell, cish: history and its own line editor.\x07");
+    }
+    flush();
+}
+
+// One line with prompt p into dst (at least limits.LINE bytes): its length with the newline, EOF, or INTR.
+export I64 read_line(in U8[_] p, inout U8[_] dst) {
+    plen = len(p);
+    if (plen > 256) { plen = 256; }
+    for k in 0..plen { pr[k] = p[k]; }
+    I64 ws = viewctl.view_winsize(0);
+    cols = 80;
+    if (ws > 0 && ws % 65536 >= 2 && ws % 65536 <= 4096) { cols = ws % 65536; }
+    blen = 0;
+    pos = 0;
+    crow = 0;
+    hat = hn;
+    tabbed = false;
+    raw();
+    puts(pr[0..plen]);
+    if (plen > 0 && plen % cols == 0) {
+        put(13);
+        put(10);
+    }
+    crow = plen / cols;
+    flush();
+    I64 res = 0;
+    Bool going = true;
+    while (going) {
+        I64 k = key();
+        Bool tab = false;
+        if (k == 27) { k = escape(); }
+        if (k < 0) {
+            res = EOF;
+            going = false;
+        } else if (k == 10 || k == 13) {
+            below();
+            remember();
+            for i in 0..blen { dst[i] = buf[i]; }
+            dst[blen] = 10;
+            res = blen + 1;
+            going = false;
+        } else if (k == 3) {
+            pos = blen;
+            place();
+            puts(b"^C\r\n");
+            res = INTR;
+            going = false;
+        } else if (k == 4 && blen == 0) {
+            res = EOF;
+            going = false;
+        } else if (k == 1) {
+            pos = 0;
+            place();
+        } else if (k == 5) {
+            pos = blen;
+            place();
+        } else if (k == 2) {
+            if (pos > 0) {
+                pos = pos - 1;
+                place();
+            }
+        } else if (k == 6) {
+            if (pos < blen) {
+                pos = pos + 1;
+                place();
+            }
+        } else if (k == 1002) {
+            pos = word_left();
+            place();
+        } else if (k == 1005) {
+            pos = word_right();
+            place();
+        } else if (k == 127 || k == 8) {
+            if (pos > 0) {
+                cut(pos - 1);
+                refresh();
+            }
+        } else if (k == 4 || k == 1003) {
+            if (pos < blen) {
+                I64 a = pos;
+                cut_span(a, a + 1);
+                refresh();
+            }
+        } else if (k == 21) {
+            cut(0);
+            refresh();
+        } else if (k == 11) {
+            blen = pos;
+            refresh();
+        } else if (k == 23) {
+            cut(word_left());
+            refresh();
+        } else if (k == 12) {
+            puts(b"\x1b[2J\x1b[H");
+            crow = 0;
+            refresh();
+        } else if (k == 16) {
+            if (hat > 0) { show(hat - 1); }
+        } else if (k == 14) {
+            if (hat < hn) { show(hat + 1); }
+        } else if (k == 9) {
+            tab = !complete();
+        } else if (k >= 32 && k != 127 && k < 256) {
+            if (pos == blen && blen < MAX) {
+                buf[blen] = k as U8;
+                blen = blen + 1;
+                pos = blen;
+                put(k);
+                I64 at = plen + pos;
+                if (at % cols == 0) { puts(b"\r\n\x1b[K"); }
+                crow = at / cols;
+            } else {
+                U8[1] one;
+                one[0] = k as U8;
+                if (insert(one[0..1])) { refresh(); }
+            }
+        }
+        tabbed = tab;
+        flush();
+    }
+    cooked();
+    return res;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,77 @@
+Every cint program here (built by user/ci/build.sh or tools/build-ced.sh) is emitted by the public cint v0.2.18
+(https://github.com/pennyleans/cint-public-build, tag v0.2.18, commit a14a03f3) and contains its runtime
+(rt/cint_rt.c), under the Apache License, Version 2.0; each was built with the musl-gcc of Ubuntu 24.04 (gcc 13.3.0,
+musl 1.2.4).
+
+user/bin/musltest is a static binary built from user/c/musltest.c with musl 1.2.4 (musl-gcc,
+Ubuntu 24.04), so it contains musl, which is licensed under the following MIT license. The
+binary is a test program of the Daphnis gate (ruling DU-2 A); user/c/build.sh rebuilds it.
+user/bin/mchurn (R-2d, the churn before the sealed run) is built the same way from user/c/mchurn.c
+and contains musl under the same license.
+user/bin/mperm (FS-1, the permission probe of check-tiler.sh) is built the same way from user/c/mperm.c
+and contains musl under the same license.
+user/bin/mstamp (FS-4, the stamp time probe of check-tiler.sh) is built the same way from user/c/mstamp.c
+and contains musl under the same license.
+user/bin/mfacts (KF-3b, the process record probe of check-tiler.sh) is built the same way from user/c/mfacts.c
+and contains musl under the same license.
+user/bin/mnofollow (FS-5, the O_NOFOLLOW probe) is built the same way from user/c/mnofollow.c
+and contains musl under the same license.
+user/bin/mrevoke (GV-1a, the revoke probe of check-tiler.sh) is built the same way from user/c/mrevoke.c
+and contains musl under the same license.
+user/bin/mcut (GV-1b, the probe of check-revoke.sh) is built the same way from user/c/mcut.c
+and contains musl under the same license.
+user/bin/mring (GV-1c, the ring 0 probe of check-revoke.sh) is built the same way from user/c/mring.c
+and contains musl under the same license.
+user/bin/mzkill (KILL-Z, the probe of check-tiler.sh) is built the same way from user/c/mzkill.c
+and contains musl under the same license.
+user/bin/mexepath (AC-T2, the image path probe of check-tiler.sh) is built the same way from user/c/mexepath.c
+and contains musl under the same license.
+user/bin/mudp (N-2, eight datagrams to an echo) is a cint program built by user/ci/build.sh with
+musl-gcc and contains musl under the same license.
+
+user/bin/opltest (AU-7, gate 7 of stage AU) is a cint program built by user/ci/build.sh with musl-gcc; it contains
+musl under the same license, and the OPL3 of user/ci/opl/opl3.ci, a port of ymfm under the BSD 3-Clause License
+in user/ci/opl/NOTICE.
+user/bin/atone (AU-3, the test signal of stage AU's gate) is a cint program built by user/ci/build.sh with
+musl-gcc and contains musl under the same license.
+
+user/bin/cat and user/bin/wc (CT-0), user/bin/ls, head, tail, stat and du (CT-1), user/bin/cp, mv, rm, mkdir,
+rmdir, mktemp and tee (CT-2), user/bin/grep, sort, uniq, cut, tr, cmp and sha256sum (CT-3), user/bin/find,
+xargs, env, echo, sleep and date (CT-4), and user/bin/true, false, test, bracket (/bin/[), printf, basename,
+dirname, sync, seq, rev, truncate, md5sum and wget (CT-5), the native core set (docs/specs/2026-11-06-c-core.md),
+are cint programs built by user/ci/build.sh with musl-gcc and contain musl under the same license.
+
+user/bin holds no busybox binary, and no image holds busybox; the shell of every image is
+cish. busybox 1.36.1 (https://busybox.net/) is licensed under the GNU General Public License
+version 2. The gates can run it on Linux as an oracle: user/busybox/build.sh builds it static with musl
+from the upstream tarball, https://busybox.net/downloads/busybox-1.36.1.tar.bz2 (SHA-256 pinned in that
+script), with the configuration in user/busybox/, and user/busybox/oracle.sh does so when CORE_ORACLE
+names that tarball. This repository ships no change to busybox.
+
+musl as a whole is licensed under the following standard MIT license:
+
+----------------------------------------------------------------------
+Copyright (c) 2005-2020 Rich Felker, et al.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+----------------------------------------------------------------------
+
+The full musl COPYRIGHT file, which names the other contributors and the files under other
+permissive licenses, ships with musl: https://musl.libc.org/

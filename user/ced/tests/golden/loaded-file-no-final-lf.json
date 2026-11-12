@@ -1,0 +1,25 @@
+{
+  "id": "loaded-file-no-final-lf",
+  "rules": [
+    "TEXT-1"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "6869"
+  ],
+  "expect": {
+    "text": "hi",
+    "sel": [
+      2,
+      2
+    ]
+  }
+}

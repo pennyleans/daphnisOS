@@ -1,0 +1,26 @@
+// tests/kfz/defects/d4_zombie.ci: KILL-Z (PR 355, a P1 found on Arch): kill (62) of a child that has ended and is not
+// yet waited for. At this base slot_of finds the zombie and finish() runs on it a second time: on a board it reads the
+// page tables its end freed and faults the kernel; hosted, where the pool keeps freed bytes, the second end shows as
+// the status wait4 reads. Fails here, passes with PR 355 merged; joins the suite once 355 is in the base. Uses
+// k7_pty.ci's kz_fork.
+
+test "KILL-Z: a signal to an ended child not yet waited for answers 0 and does nothing; wait4 still reads its exit" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 c = kz_fork(a);
+    I64 v = vpid[c];
+    _ = kz_call_raw(c, 60, 7, 0, 0, 0, 0, 0);            // exit(7): its frames go back, the pool's books with them
+    assert(state[c] == ZOMBIE);
+    I64 pool = kz_pool();
+    U64[3] sigs = [9, 15, 0];
+    for k in 0..3 {
+        assert(kz_call(a, 62, v as U64, sigs[k], 0, 0, 0, 0) == 0);
+        assert(state[c] == ZOMBIE && kz_pool() == pool);
+    }
+    kz_own(a, KZ_RW + 2048, 8);
+    assert(kz_call(a, 61, v as U64, KZ_RW + 2048, 0, 0, 0, 0) == v);
+    assert((kz_u64(a, KZ_RW + 2048) & 0xFFFFFFFF) == 0x700);
+    assert(kz_call(a, 62, v as U64, 9, 0, 0, 0, 0) == E_SRCH);
+    assert(kz_pool() == pool);
+    kz_end(a);
+}
+// SPDX-License-Identifier: Apache-2.0

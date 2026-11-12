@@ -1,0 +1,69 @@
+// user/ci/kit/winrule.ci: where and how big a new floating window opens, and the frames of a maximized float on its
+// way back (DN-20 and DN-21, DECISIONS 2026-11-10 05:27Z and 05:28Z, design note 21).
+//
+// Every value is in device pixels: the 1x values times z, the UI scale. The work area is the screen under the bar,
+// [ax, ax + aw) x [ay, ay + ah).
+//   Size: the app's ask, each side at most the work area less SIDE a side; with no ask, 5/8 of the work area's width
+//     by 11/16 of its height, each down to a multiple of 8, at least MIN_W x MIN_H (never past the work area).
+//   Place: the first float on a desktop centered across, its top a third of the free height under the bar; each later
+//     one CASCADE right and down from the last placed, back to the first place when its right or bottom edge would
+//     come within EDGE of the work area's.
+//   Restore: the frame moves from the maximized one to the one before maximizing over RESTORE_MS on the out curve.
+// Pure arithmetic: hdesk.ci keeps the state (the last place a desktop, the last frame an app).
+
+export const I64 SIDE = 32;
+export const I64 MIN_W = 480;
+export const I64 MIN_H = 320;
+export const I64 CASCADE = 32;
+export const I64 EDGE = 16;
+export const I64 RESTORE_MS = 200;
+
+// The size of a new float into o (width, height): the app's ask (askw x askh, 0 for none) or the default.
+export void float_size(I64 askw, I64 askh, I64 aw, I64 ah, I64 z, inout I64[2] o) {
+    if (askw > 0 && askh > 0) {
+        o[0] = min(askw, aw - 2 * SIDE * z);
+        o[1] = min(askh, ah - 2 * SIDE * z);
+        return;
+    }
+    I64 u = 8 * z;
+    o[0] = min(max((aw * 5 / 8) / u * u, MIN_W * z), aw);
+    o[1] = min(max((ah * 11 / 16) / u * u, MIN_H * z), ah);
+}
+
+// The first place of a fw x fh float into o (x, y): centered across, its top a third of the free height down.
+export void place_first(I64 fw, I64 fh, I64 ax, I64 ay, I64 aw, I64 ah, inout I64[2] o) {
+    o[0] = ax + max(aw - fw, 0) / 2;
+    o[1] = ay + max(ah - fh, 0) / 3;
+}
+
+// The place of a fw x fh float after the last one placed at (lx, ly) (placed false: none yet on this desktop).
+export void place_next(Bool placed, I64 lx, I64 ly, I64 fw, I64 fh, I64 ax, I64 ay, I64 aw, I64 ah, I64 z,
+                 inout I64[2] o) {
+    if (placed) {
+        I64 x = lx + CASCADE * z;
+        I64 y = ly + CASCADE * z;
+        if (x + fw <= ax + aw - EDGE * z && y + fh <= ay + ah - EDGE * z) {
+            o[0] = x;
+            o[1] = y;
+            return;
+        }
+    }
+    place_first(fw, fh, ax, ay, aw, ah, o);
+}
+
+// Whether the frame (x, y, fw, fh) lies wholly in the work area: a remembered frame is used only then.
+export Bool on_area(I64 x, I64 y, I64 fw, I64 fh, I64 ax, I64 ay, I64 aw, I64 ah) {
+    return fw > 0 && fh > 0 && x >= ax && y >= ay && x + fw <= ax + aw && y + fh <= ay + ah;
+}
+
+// The frame c thousandths of the way from f to t (each x, y, w, h) into o, each side rounded toward f.
+export void frame_at(I64 c, in I64[4] f, in I64[4] t, inout I64[4] o) {
+    for k in 0..4 {
+        if (t[k] >= f[k]) {
+            o[k] = f[k] + ((t[k] - f[k]) * c) / 1000;
+        } else {
+            o[k] = f[k] - ((f[k] - t[k]) * c) / 1000;
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

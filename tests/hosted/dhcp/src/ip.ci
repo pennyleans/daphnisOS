@@ -1,0 +1,43 @@
+// tests/hosted/dhcp/src/ip.ci: src/ip.ci for the hosted DHCP test. output_from counts what DHCP sends and keeps the
+// last frame's DHCP message type and destination.
+
+export const I64 DATA = 34;
+export const I64 PROTO_UDP = 17;
+
+I64 sent = 0;
+I64 last_type = 0;
+I64 last_dst = 0;
+
+export I64 csum(in U8[1514] f, I64 at, I64 n, I64 init) {
+    _ = f[at];
+    _ = n;
+    _ = init;
+    return 0;
+}
+
+export Bool output_from(I64 src_ip, I64 dst_ip, I64 proto, inout U8[1514] f, I64 n) {
+    _ = src_ip;
+    _ = proto;
+    _ = n;
+    sent += 1;
+    last_type = f[42 + 242] as I64;   // option 53's value, the first option after the cookie
+    last_dst = dst_ip;
+    return true;
+}
+
+export I64 src() {
+    return 0x0A000202;
+}
+
+export I64 sends() {
+    return sent;
+}
+
+export I64 last_message() {
+    return last_type;
+}
+
+export I64 last_destination() {
+    return last_dst;
+}
+// SPDX-License-Identifier: Apache-2.0

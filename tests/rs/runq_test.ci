@@ -1,0 +1,123 @@
+// tests/rs/runq_test.ci: the desk's queue of runs as the account (user/ci/kit/runq.ci), hosted: a choice made while
+// setkey runs is not lost; a choice of one key never replaces another's; closing Settings stops a read and keeps
+// every write; the session's end drops all; a peek (RG-1) goes first. Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.runq;
+
+U8[4200] a;
+
+// The argument SET would start with now, as text: "KEY=VALUE" into t; its length.
+I64 next_set(inout U8[_] t) {
+    I64 n = runq.arg(a);
+    if (n < 0) { return -1; }
+    for k in 0..n {
+        t[k] = a[k];
+        if (a[k] == 0) { t[k] = '='; }
+    }
+    return n;
+}
+
+Bool is(in U8[_] t, I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (t[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "a second choice made while setkey runs waits and goes after it, the newest value winning" {
+    runq.clear();
+    U8[64] t;
+    assert(runq.set(b"time.24-hour", b"1") && runq.next() == runq.SET);
+    assert(is(t, next_set(t), b"time.24-hour=1"));
+    runq.started(runq.SET);                          // setkey time.24-hour 1 runs
+    assert(runq.set(b"time.24-hour", b"0"));         // the person flips it back meanwhile
+    assert(runq.set(b"time.24-hour", b"1") && runq.pending() == 1);   // and again: the newest waits
+    assert(runq.next() == -1);                       // one run at a time
+    runq.ended();
+    assert(runq.next() == runq.SET && is(t, next_set(t), b"time.24-hour=1"));
+    runq.started(runq.SET);
+    runq.ended();
+    assert(runq.next() == -1 && runq.pending() == 0);
+}
+
+test "a waiting choice of one key is never replaced by another key's: each key keeps its own value, oldest first" {
+    runq.clear();
+    U8[64] t;
+    assert(runq.want(runq.DU) && runq.next() == runq.DU);
+    runq.started(runq.DU);                           // a read runs: the settings wait
+    assert(runq.set(b"time.24-hour", b"1") && runq.set(b"calendar.week-starts", b"1"));
+    assert(runq.pending() == 2);
+    runq.ended();
+    assert(runq.next() == runq.SET && is(t, next_set(t), b"time.24-hour=1"));
+    runq.started(runq.SET);
+    runq.ended();
+    assert(runq.next() == runq.SET && is(t, next_set(t), b"calendar.week-starts=1"));
+    runq.started(runq.SET);
+    runq.ended();
+    assert(runq.next() == -1);
+}
+
+test "closing Settings stops a running read and drops the queued ones; setkey, Empty Trash and waiting settings go" {
+    runq.clear();
+    U8[64] t;
+    assert(runq.want(runq.DU) && runq.want(runq.COUNT) && runq.want(runq.PICTURE));
+    runq.started(runq.DU);
+    assert(runq.set(b"time.24-hour", b"0"));
+    assert(runq.close());                            // du is a read: the desk stops it
+    runq.ended();
+    assert(runq.next() == runq.SET);                 // the setting still goes; the reads are gone
+    runq.started(runq.SET);
+    assert(runq.set(b"calendar.week-starts", b"0") && runq.want(runq.EMPTY));
+    assert(!runq.close());                           // setkey runs: not stopped
+    runq.ended();
+    assert(runq.next() == runq.SET && is(t, next_set(t), b"calendar.week-starts=0"));
+    runq.started(runq.SET);
+    runq.ended();
+    assert(runq.next() == runq.EMPTY);               // Empty Trash, asked for, still goes
+    runq.started(runq.EMPTY);
+    assert(!runq.close());
+    runq.ended();
+    assert(runq.next() == -1);
+}
+
+test "the session's end drops every job and every waiting setting; bad keys and values are refused" {
+    runq.clear();
+    assert(runq.set(b"time.24-hour", b"1") && runq.want(runq.DU));
+    runq.started(runq.SET);
+    runq.clear();
+    assert(runq.running() == -1 && runq.next() == -1 && runq.pending() == 0);
+    assert(!runq.want(runq.SET) && !runq.want(-1) && !runq.want(runq.JOBS));
+    assert(!runq.set(b"", b"1"));
+    U8[49] long_key;
+    for k in 0..49 { long_key[k] = 'a'; }
+    assert(!runq.set(long_key, b"1"));
+}
+
+test "RG-1: a peek someone waits on goes first, and closing Settings neither drops nor stops it" {
+    runq.clear();
+    assert(runq.set(b"time.24-hour", b"1") && runq.want(runq.DU) && runq.want(runq.PEEK));
+    assert(runq.next() == runq.PEEK);
+    runq.started(runq.PEEK);
+    assert(!runq.close() && runq.running() == runq.PEEK);   // a peek is not a read of Settings
+    runq.ended();
+    assert(runq.next() == runq.SET);
+    assert(runq.want(runq.PEEK) && !runq.close() && runq.next() == runq.PEEK);
+    runq.clear();
+    assert(runq.next() == -1);                       // the session's end drops a waiting peek too
+}
+test "RG-1: the settings read goes after the waiting settings, before the reads, and Settings' close keeps it" {
+    runq.clear();
+    assert(runq.want(runq.PICTURE) && runq.want(runq.DU) && runq.want(runq.PREFS));
+    assert(runq.set(b"time.24-hour", b"1"));
+    assert(runq.next() == runq.SET);                 // the write first, so the read holds it
+    runq.started(runq.SET);
+    runq.ended();
+    assert(runq.next() == runq.PREFS);
+    assert(!runq.close() && runq.next() == runq.PREFS);   // not a read of Settings: still queued
+    runq.started(runq.PREFS);
+    assert(!runq.close() && runq.running() == runq.PREFS);
+    runq.ended();
+    assert(runq.next() == -1);                       // the reads went with Settings' close
+    runq.clear();
+}
+// SPDX-License-Identifier: Apache-2.0

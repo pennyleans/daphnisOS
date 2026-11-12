@@ -1,0 +1,425 @@
+// user/ci/kit/shotsel.ci: RS-SHOT's area select and picture plate (stage RS, docs/specs/2026-11-11-rs-rel-s1-units.md
+// edition 10; frame 43, approved by DN-58), on draw.ci's row contract. Every coordinate is a device pixel of the
+// screen; the 1x values of the frame go times the UI scale sc. The overlay and the plate are the same in both themes.
+//
+// The area select is drawn over the held screen (hdeskctl.fb_hold): the desk reads each row with fb_peek, turns it
+// into pixels with unpack, and gives it to row_at, which lays on it the dim (#141413 at 50 percent) outside the area,
+// the area's 1 px inset edge in #f3efe6, the size label (84 x 24 or wider, radius 6, #282a2c, JetBrains Mono 12 in
+// #f3efe6, shadow Low) 8 below the area and flush with its right edge, and the 22 px crosshair at the pointer. Before
+// the press the whole screen is dimmed. The label goes above the area when it does not fit below, and inside its
+// lower edge when it fits neither. The area runs from the press to the pointer; a release over an area of no width
+// or no height drops it and the select waits for a new press; Esc ends the select.
+//
+// The plate (right 16, bottom 16, 200 wide, radius 12, #222426, padding 6, shadow Mid) shows the picture whole,
+// 188 wide at the shot's aspect and at most 188 high (a taller shot is narrower, centered), its corners radius 7.
+// Its picture is made while the screen is held: plate_next names the next row of the shot it needs and plate_feed
+// takes that row as fb_peek gives it, so at most four rows of the shot are read for each row of the picture, and at
+// most four pixels of each for each of its pixels; each pixel of the picture is the mean of its samples. The plate
+// stays HOLD_MS; the desk opens View on a click inside it (plate_hit). This module reads no clock and makes no call.
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.shade;
+import user.ci.kit.stroke;
+import user.ci.kit.ctext;
+import user.ci.kit.faces;
+
+export const I64 NONE = 0;
+export const I64 DRAW = 1;              // draw rows lo() to hi() again
+export const I64 TAKE = 2;              // the area is chosen: area_x, area_y, area_w, area_h
+export const I64 CANCEL = 3;            // the select is over and nothing is taken
+export const I64 HOLD_MS = 4000;        // the plate's stay
+
+export const U32 DIM = 0x141413;
+export const I64 DIM_A = 128;           // 50 percent, in 256ths
+export const U32 EDGE = 0xf3efe6;
+export const U32 LABEL = 0x282a2c;
+export const U32 PLATE = 0x222426;
+const U32 INK = 0xf3efe6;
+const U32 CORE = 0x141413;              // the crosshair's inner stroke
+const I64 LABEL_W = 84;
+const I64 LABEL_H = 24;
+const I64 LABEL_R = 6;
+const I64 LABEL_GAP = 8;
+const I64 LABEL_PAD = 10;               // each side of a size wider than 84 allows
+const I64 CROSS = 22;
+const I64 CROSS_OUT = 52;               // 3.25 px in sixteenths
+const I64 CROSS_IN = 28;                // 1.75 px
+export const I64 PLATE_W = 200;
+const I64 PLATE_R = 12;
+const I64 PLATE_PAD = 6;
+const I64 PLATE_IN = 16;                // from the screen's right and bottom edges
+const I64 PIC = 188;                    // the picture's widest and highest, PLATE_W less its padding
+const I64 PIC_R = 7;
+const I64 LOW = 1;
+const I64 MID = 2;
+const I64 KEY_ESC = 1;
+const I64 SAMPLES = 4;                  // the most samples a picture pixel takes each way
+const I64 TMAX = 376;                   // the picture's side as kept: PIC at scale 2
+
+I64 sw = 0;
+I64 sh = 0;
+I64 sc = 1;
+Bool ptr = false;                       // the pointer has been seen
+I64 qx = 0;                             // the pointer, kept to [0, sw] x [0, sh]
+I64 qy = 0;
+Bool pressed = false;
+I64 ax = 0;                             // the press
+I64 ay = 0;
+I64 dlo = 0;                            // rows to draw again
+I64 dhi = 0;
+I64[8] cross;                           // the crosshair's two segments in its 22 units, in sixteenths
+U8[24] said;                             // the label's words
+I64 said_n = 0;
+
+// ---- the area select ----
+
+export I64 area_x() { return min(ax, qx); }
+export I64 area_y() { return min(ay, qy); }
+export I64 area_w() { return max(ax, qx) - min(ax, qx); }
+export I64 area_h() { return max(ay, qy) - min(ay, qy); }
+export I64 lo() { return dlo; }
+export I64 hi() { return dhi; }
+
+// The label's words, the area's size in device pixels as the picture will have it: "W x H".
+I64 digits(I64 at, I64 v) {
+    I64 d = 1;
+    while (d * 10 <= v) { d = d * 10; }
+    I64 k = at;
+    while (d > 0) {
+        said[k] = ((v / d % 10) as U8) + 48;
+        k = k + 1;
+        d = d / 10;
+    }
+    return k;
+}
+
+void words() {
+    I64 k = digits(0, area_w());
+    said[k] = ' ';
+    said[k + 1] = 'x';
+    said[k + 2] = ' ';
+    said_n = digits(k + 3, area_h());
+}
+
+I64 zt() { return min(sc, 2); }
+
+export I64 label_w() {
+    words();
+    return max(LABEL_W * sc, ctext.width(said, said_n, faces.PATH, zt()) + 2 * LABEL_PAD * sc);
+}
+
+export I64 label_x() { return max(0, area_x() + area_w() - label_w()); }
+
+export I64 label_y() {
+    I64 h = LABEL_H * sc;
+    I64 g = LABEL_GAP * sc;
+    I64 y = area_y() + area_h() + g;
+    if (y + h <= sh) { return y; }
+    y = area_y() - g - h;
+    if (y >= 0) { return y; }
+    return max(0, area_y() + area_h() - g - h);
+}
+
+// The rows the drawing covers now: the crosshair, and once pressed the area and the label with its shadow.
+I64 span_lo() {
+    I64 v = qy - CROSS * sc;
+    if (pressed) { v = min(v, min(area_y(), label_y()) - shade.reach_up(LOW, 0, sc)); }
+    return max(0, v);
+}
+
+I64 span_hi() {
+    I64 v = qy + CROSS * sc;
+    if (pressed) {
+        v = max(v, max(area_y() + area_h(), label_y() + LABEL_H * sc + shade.reach_down(LOW, 0, sc)));
+    }
+    return min(sh, v);
+}
+
+// The select begun on a screen w x h at UI scale s; the whole screen to draw.
+export void begin(I64 w, I64 h, I64 s) {
+    sw = w;
+    sh = h;
+    sc = max(1, s);
+    ptr = false;
+    pressed = false;
+    dlo = 0;
+    dhi = sh;
+    cross[0] = 176;                         // M11 1V21
+    cross[1] = 16;
+    cross[2] = 176;
+    cross[3] = 336;
+    cross[4] = 16;                          // M1 11H21
+    cross[5] = 176;
+    cross[6] = 336;
+    cross[7] = 176;
+}
+
+// The state changed from the rows [a, b): the rows to draw again are those and the rows covered now.
+I64 changed(I64 a, I64 b) {
+    dlo = min(a, span_lo());
+    dhi = max(b, span_hi());
+    return DRAW;
+}
+
+// The pointer at (x, y).
+export I64 point(I64 x, I64 y) {
+    I64 a = span_lo();
+    I64 b = span_hi();
+    if (!ptr) {
+        a = sh;
+        b = 0;
+    }
+    ptr = true;
+    qx = clamp(x, 0, sw);
+    qy = clamp(y, 0, sh);
+    return changed(a, b);
+}
+
+export I64 press(I64 x, I64 y) {
+    I64 r = point(x, y);
+    if (pressed) { return r; }
+    pressed = true;
+    ax = qx;
+    ay = qy;
+    dlo = 0;                                // the dim leaves the area: every row once
+    dhi = sh;
+    return DRAW;
+}
+
+export I64 release(I64 x, I64 y) {
+    I64 r = point(x, y);
+    if (!pressed) { return r; }
+    if (area_w() > 0 && area_h() > 0) { return TAKE; }
+    pressed = false;
+    dlo = 0;
+    dhi = sh;
+    return DRAW;
+}
+
+export I64 key(I64 code) {
+    if (code == KEY_ESC) { return CANCEL; }
+    return NONE;
+}
+
+// A row as fb_peek gives it (blue, green, red, unused) as n pixels 0x00RRGGBB.
+export void unpack(in U8[_] line, inout U32[_] row, I64 n) {
+    for x in 0..n {
+        row[x] = ((line[4 * x + 2] as U32) << 16) | ((line[4 * x + 1] as U32) << 8) | (line[4 * x] as U32);
+    }
+}
+
+// Row y of the screen with the select laid over it; row holds the held screen's row y, sw pixels.
+export void row_at(inout U32[_] row, I64 y) {
+    I64 n = min(sw, len(row));
+    if (!pressed) {
+        blend.mix(row, 0, n, DIM, DIM_A);
+    } else {
+        I64 x0 = area_x();
+        I64 y0 = area_y();
+        I64 x1 = x0 + area_w();
+        I64 y1 = y0 + area_h();
+        if (y < y0 || y >= y1) {
+            blend.mix(row, 0, n, DIM, DIM_A);
+        } else {
+            blend.mix(row, 0, x0, DIM, DIM_A);
+            blend.mix(row, x1, n, DIM, DIM_A);
+            I64 e = sc;
+            if (y < y0 + e || y >= y1 - e) {
+                blend.mix(row, x0, x1, EDGE, 256);
+            } else {
+                blend.mix(row, x0, min(x0 + e, x1), EDGE, 256);
+                blend.mix(row, max(x1 - e, x0), x1, EDGE, 256);
+            }
+        }
+        I64 lw = label_w();
+        I64 lx = label_x();
+        I64 ly = label_y();
+        I64 lh = LABEL_H * sc;
+        shade.shade_row(row, 0, n, y, lx, ly, lx + lw, ly + lh, LABEL_R, LOW, 0, sc);
+        if (y >= ly && y < ly + lh) {
+            shape.rounded(row, y, lx, ly, lx + lw, ly + lh, LABEL_R * sc, LABEL);
+            I64 z = zt();
+            I64 wd = ctext.width(said, said_n, faces.PATH, z);
+            I64 asc = ctext.ascent(faces.PATH, z);
+            I64 base = ly + (lh - asc - ctext.descent(faces.PATH, z)) / 2 + asc;
+            _ = ctext.text(row, y, lx + (lw - wd) / 2, base, lx + lw, said, said_n, INK, faces.PATH, z);
+        }
+    }
+    if (ptr) {
+        I64 cx = qx - 11 * sc;
+        I64 cy = qy - 11 * sc;
+        stroke.path_row(row, y, cx, cy, sc, 1, cross, 2, CROSS_OUT * sc, EDGE);
+        stroke.path_row(row, y, cx, cy, sc, 1, cross, 2, CROSS_IN * sc, CORE);
+    }
+}
+
+// ---- the plate ----
+
+U32[47126] pic0;                        // the picture as kept, tw x th (TMAX x TMAX at most), in three parts:
+U32[47126] pic1;                        // a module's array holds at most 65536 elements
+U32[47126] pic2;
+I64[1128] acc;                          // a picture row's sums, blue, green and red for each of its pixels
+I64 shot_w = 0;                         // the shot, in device pixels
+I64 shot_h = 0;
+I64 pw1 = 0;                            // the picture at 1x
+I64 ph1 = 0;
+I64 tw = 0;                             // the picture as kept, at zt() pixels a 1x pixel
+I64 th = 0;
+I64 at_t = 0;                           // the picture row being made
+I64 at_j = 0;                           // its next sample row
+
+const I64 PART = 47126;
+
+U32 pic_at(I64 i) {
+    if (i < PART) { return pic0[i]; }
+    if (i < 2 * PART) { return pic1[i - PART]; }
+    return pic2[i - 2 * PART];
+}
+
+void pic_put(I64 i, U32 c) {
+    if (i < PART) {
+        pic0[i] = c;
+    } else if (i < 2 * PART) {
+        pic1[i - PART] = c;
+    } else {
+        pic2[i - 2 * PART] = c;
+    }
+}
+
+// The shot's span [lo, hi) under picture pixel t of n, of a side of m: never empty.
+I64 span_a(I64 t, I64 n, I64 m) { return t * m / n; }
+I64 span_b(I64 t, I64 n, I64 m) { return max(t * m / n + 1, (t + 1) * m / n); }
+I64 takes(I64 t, I64 n, I64 m) { return min(SAMPLES, span_b(t, n, m) - span_a(t, n, m)); }
+
+// Sample j of the k that picture pixel t of n takes along a side of m: centered in its part of the span.
+I64 sample(I64 t, I64 n, I64 m, I64 j, I64 k) {
+    I64 a = span_a(t, n, m);
+    return a + (2 * j + 1) * (span_b(t, n, m) - a) / (2 * k);
+}
+
+// A shot w x h at UI scale s on a screen of sw_ x sh_: the picture's size, and its making begun.
+export void plate_begin(I64 w, I64 h, I64 s, I64 sw_, I64 sh_) {
+    sw = sw_;
+    sh = sh_;
+    sc = max(1, s);
+    shot_w = max(1, w);
+    shot_h = max(1, h);
+    pw1 = PIC;
+    ph1 = (PIC * shot_h + shot_w / 2) / shot_w;
+    if (ph1 > PIC) {
+        ph1 = PIC;
+        pw1 = (PIC * shot_w + shot_h / 2) / shot_h;
+    }
+    pw1 = max(1, pw1);
+    ph1 = max(1, ph1);
+    tw = pw1 * zt();
+    th = ph1 * zt();
+    at_t = 0;
+    at_j = 0;
+    for i in 0..3 * tw { acc[i] = 0; }
+}
+
+// The next row of the shot the picture needs, from the shot's top; -1 when the picture is made.
+export I64 plate_next() {
+    if (at_t >= th) { return -1; }
+    return sample(at_t, th, shot_h, at_j, takes(at_t, th, shot_h));
+}
+
+// The picture row at_t made from its sums.
+void settle() {
+    I64 k = takes(at_t, th, shot_h);
+    for t in 0..tw {
+        I64 c = k * takes(t, tw, shot_w);
+        I64 b = (acc[3 * t] + c / 2) / c;
+        I64 g = (acc[3 * t + 1] + c / 2) / c;
+        I64 r = (acc[3 * t + 2] + c / 2) / c;
+        pic_put(at_t * tw + t, ((r << 16) | (g << 8) | b) as U32);
+        acc[3 * t] = 0;
+        acc[3 * t + 1] = 0;
+        acc[3 * t + 2] = 0;
+    }
+}
+
+// The row plate_next named, as fb_peek gives it (4 bytes a pixel, the shot's width); every picture row that samples
+// the same row of the shot takes it now.
+export void plate_feed(in U8[_] line) {
+    I64 sy = plate_next();
+    while (sy >= 0 && plate_next() == sy) {
+        for t in 0..tw {
+            I64 k = takes(t, tw, shot_w);
+            for i in 0..k {
+                I64 o = 4 * sample(t, tw, shot_w, i, k);
+                acc[3 * t] = acc[3 * t] + (line[o] as I64);
+                acc[3 * t + 1] = acc[3 * t + 1] + (line[o + 1] as I64);
+                acc[3 * t + 2] = acc[3 * t + 2] + (line[o + 2] as I64);
+            }
+        }
+        at_j = at_j + 1;
+        if (at_j == takes(at_t, th, shot_h)) {
+            settle();
+            at_t = at_t + 1;
+            at_j = 0;
+        }
+    }
+}
+
+export Bool plate_made() { return at_t >= th; }
+export I64 pic_w() { return pw1 * sc; }
+export I64 pic_h() { return ph1 * sc; }
+
+// The plate's frame on the screen.
+export I64 plate_x0() { return sw - (PLATE_IN + PLATE_W) * sc; }
+export I64 plate_x1() { return sw - PLATE_IN * sc; }
+export I64 plate_y0() { return plate_y1() - (ph1 + 2 * PLATE_PAD) * sc; }
+export I64 plate_y1() { return sh - PLATE_IN * sc; }
+
+// The rows the plate and its shadow cover, for the desk's damage.
+export I64 plate_lo() { return max(0, plate_y0() - shade.reach_up(MID, 0, sc)); }
+export I64 plate_hi() { return min(sh, plate_y1() + shade.reach_down(MID, 0, sc)); }
+
+export Bool plate_hit(I64 x, I64 y) {
+    return x >= plate_x0() && x < plate_x1() && y >= plate_y0() && y < plate_y1();
+}
+
+// The samples of 16 of pixel (x, y) inside [x0, x1) x [y0, y1) with corners of radius r, as kit/shape.ci counts.
+I64 inside16(I64 x, I64 y, I64 x0, I64 y0, I64 x1, I64 y1, I64 r) {
+    I64 n = 0;
+    for j in 0..4 {
+        for i in 0..4 {
+            I64 u = 8 * x + 2 * i + 1;
+            I64 v = 8 * y + 2 * j + 1;
+            I64 dx = max(0, max(8 * (x0 + r) - u, u - 8 * (x1 - r)));
+            I64 dy = max(0, max(8 * (y0 + r) - v, v - 8 * (y1 - r)));
+            if (dx * dx + dy * dy <= 64 * r * r) { n = n + 1; }
+        }
+    }
+    return n;
+}
+
+// Row y of the screen with the plate over it.
+export void plate_row_at(inout U32[_] row, I64 y) {
+    I64 x0 = plate_x0();
+    I64 y0 = plate_y0();
+    I64 x1 = plate_x1();
+    I64 y1 = plate_y1();
+    shade.shade_row(row, 0, len(row), y, x0, y0, x1, y1, PLATE_R, MID, 0, sc);
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, x0, y0, x1, y1, PLATE_R * sc, PLATE);
+    I64 qx0 = x0 + PLATE_PAD * sc + (PIC - pw1) * sc / 2;
+    I64 qy0 = y0 + PLATE_PAD * sc;
+    I64 qx1 = qx0 + pw1 * sc;
+    I64 qy1 = qy0 + ph1 * sc;
+    if (y < qy0 || y >= qy1) { return; }
+    I64 r = min(PIC_R * sc, min(qx1 - qx0, qy1 - qy0) / 2);
+    I64 ty = (y - qy0) * zt() / sc;
+    Bool rim = y < qy0 + r || y >= qy1 - r;
+    for x in max(0, qx0)..min(len(row), qx1) {
+        U32 c = pic_at(ty * tw + (x - qx0) * zt() / sc);
+        if (rim && (x < qx0 + r || x >= qx1 - r)) {
+            row[x] = blend.mix_px(row[x], c, 16 * inside16(x, y, qx0, qy0, qx1, qy1, r));
+        } else {
+            row[x] = c;
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

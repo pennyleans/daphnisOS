@@ -1,0 +1,29 @@
+// user/ci/kit/runrec.ci: which session's login record the desk has given to its runs as the account
+// (user/ci/runas.h's run_session). The record is keyed on the session's generation, never on the account's index in
+// the store: logout() reads the store again, so after a removal the next session at the same index can be another
+// account (a review of PR 412, P1). The desk asks need(gen) before a run, gives the session's own
+// record when it answers true and notes it with given(gen, uid), and calls cleared() at every session end, before
+// anything else there, so no run can start as the account that left. Pure: hdesk.ci makes the calls,
+// tests/rs/sthost_test.ci runs this hosted.
+
+I64 gen_given = -1;                     // the session generation whose record runas.h holds, or -1 for none
+I64 uid_given = -1;
+
+// Whether session gen's record must be given before a run: none is held, or another session's is.
+export Bool need(I64 gen) { return gen < 0 || gen != gen_given; }
+
+// Session gen's record, for uid, is held now.
+export void given(I64 gen, I64 uid) {
+    gen_given = gen;
+    uid_given = uid;
+}
+
+// No record is held (the session ended, or the record was refused).
+export void cleared() {
+    gen_given = -1;
+    uid_given = -1;
+}
+
+export I64 held_gen() { return gen_given; }
+export I64 held_uid() { return uid_given; }
+// SPDX-License-Identifier: Apache-2.0

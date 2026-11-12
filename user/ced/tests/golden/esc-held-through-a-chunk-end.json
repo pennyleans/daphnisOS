@@ -1,0 +1,27 @@
+{
+  "id": "esc-held-through-a-chunk-end",
+  "rules": [
+    "KEY-2"
+  ],
+  "text": "ab",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "581b",
+    "5b43",
+    "59"
+  ],
+  "expect": {
+    "text": "XaYb",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

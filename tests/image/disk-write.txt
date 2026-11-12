@@ -1,0 +1,51 @@
+echo x > home/new.txt
+mkdir home/d
+rm home/hello.txt
+mv home/a home/b
+truncate -s 1 home/hello.txt
+cp home/hello.txt home/c.txt
+echo -- grant
+./grant disk ./sh <<'EOF'
+echo one > home/new.txt
+echo two >> home/new.txt
+cat home/new.txt
+cp msha home/msha
+./home/msha
+./home/nope
+./mexe
+./bin/mexe
+cp mexe home/mexe
+./home/mexe
+./mvfork
+echo one two | xargs echo
+mkdir home/mk
+cd home/mk
+printf 'all: b\n\techo done\nb: a\n\tcat a > b\n' > Makefile
+echo x > a
+../../make
+cat b
+cd ../..
+head -c 102400 home/big > home/c100
+mkdir -p home/m/n/o
+cp home/c100 home/m/n/o/copy
+md5sum home/c100 home/m/n/o/copy
+mv home/m/n/o/copy home/m/moved
+mv home/m/n home/a/n
+mv home/new.txt home/a/b.txt
+rm home/link
+truncate -s 5000 home/hello.txt
+truncate -s 10 home/c100
+truncate -s 70000 home/sparse
+seq 1 2000 > home/m/seq
+rmdir home/a/n/o
+rmdir home/a
+ls -R home
+sync
+cat home/a/b.txt; md5sum home/c100
+./mmeta meta
+./mmeta home/meta
+sync
+EOF
+echo grant: $?
+exit 0
+

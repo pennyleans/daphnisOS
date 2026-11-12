@@ -1,0 +1,31 @@
+{
+  "id": "esc-tail-in-find-closes-prompt-first",
+  "rules": [
+    "KEY-2",
+    "FIND-2"
+  ],
+  "text": "abc abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "6263",
+    "1b",
+    "",
+    "5b43",
+    "58"
+  ],
+  "expect": {
+    "text": "abcX abc",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

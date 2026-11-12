@@ -1,0 +1,397 @@
+// tests/kfz/k6_clock.ci: RS-CLK (PR 357): clock_settime (227) of CLOCK_REALTIME, for uid 0 or a holder of ring 0.
+// RS-CLK2: every process's CLOCK_REALTIME on the stamp time's line (FS-R3 C), a program started later reading later.
+// The order Linux has: the clock id, the pointer, the value's bounds, then the right to set it; a refusal sets nothing.
+
+const U64 NR_CLOCK_SETTIME = 227;
+
+// p's timespec at KZ_RW + 256: seconds and nanoseconds.
+U64 kz_ts(I64 p, U64 s, U64 ns) {
+    kz_own(p, KZ_RW + 256, 16);
+    U8[16] b;
+    for k in 0..8 {
+        b[k] = ((s >> (8 * k) as U64) & 0xFF) as U8;
+        b[8 + k] = ((ns >> (8 * k) as U64) & 0xFF) as U8;
+    }
+    assert(uvm.poke(p, KZ_RW + 256, b, 16, false) == 16);
+    return KZ_RW + 256;
+}
+
+test "clock_settime: another clock -EINVAL, a bad pointer -EFAULT, a value past its bounds -EINVAL, before the right" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    U64 was = realtime_s;
+    U64[6] clocks = [1, 2, 4, 7, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF];
+    for c in 0..6 {
+        assert(kz_call(p, NR_CLOCK_SETTIME, clocks[c], kz_ts(p, 1800000000, 0), 0, 0, 0, 0) == E_INVAL);
+    }
+    kz_strings(p);
+    for b in 0..KZ_BAD_PTRS {
+        U64 ts = kz_bad_ptr(b, 16);
+        if (b != 2 && b != 3 && b != 5) {                 // the read-only page reads: its bytes are a value
+            assert(kz_call(p, NR_CLOCK_SETTIME, 0, ts, 0, 0, 0, 0) == E_FAULT);
+        }
+    }
+    assert(kz_call(p, NR_CLOCK_SETTIME, 0, KZ_GAP - 8, 0, 0, 0, 0) == E_FAULT);   // the seconds read, not the ns
+    U64[4] bad_ns = [1000000000, 1000000001, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF];
+    for n in 0..4 {
+        assert(kz_call(p, NR_CLOCK_SETTIME, 0, kz_ts(p, 1800000000, bad_ns[n]), 0, 0, 0, 0) == E_INVAL);
+    }
+    U64[3] bad_s = [8277292036, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF];   // Linux's TIME_SETTOD_SEC_MAX, past it
+    for n in 0..3 {
+        assert(kz_call(p, NR_CLOCK_SETTIME, 0, kz_ts(p, bad_s[n], 0), 0, 0, 0, 0) == E_INVAL);
+    }
+    assert(realtime_s == was && kz_kept_outside(p, KZ_RW + 256, KZ_RW + 272));
+    kz_end(p);
+}
+
+test "clock_settime: a uid not 0, without ring 0, is -EPERM and sets nothing; uid 0 and ring 0 set it, at its bounds" {
+    I64 u = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 g = kz_proc(1001, fs.GRANT_ALL, fs.GRANT_DISK | fs.GRANT_NET);
+    U64 was = realtime_s;
+    assert(kz_call(u, NR_CLOCK_SETTIME, 0, kz_ts(u, 1800000000, 0), 0, 0, 0, 0) == E_PERM);
+    assert(kz_call(g, NR_CLOCK_SETTIME, 0, kz_ts(g, 0, 0), 0, 0, 0, 0) == E_PERM);
+    assert(realtime_s == was);
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 k = kz_proc(1002, fs.GRANT_ALL, fs.GRANT_KERN);
+    assert(kz_call(r, NR_CLOCK_SETTIME, 0, kz_ts(r, 1800000000, 999999999), 0, 0, 0, 0) == 0);
+    assert(realtime_s == 1800000000);
+    assert(kz_call(k, NR_CLOCK_SETTIME, 0, kz_ts(k, 8277292035, 0), 0, 0, 0, 0) == 0);    // the last second taken
+    assert(realtime_s == 8277292035);
+    assert(kz_call(r, NR_CLOCK_SETTIME, 0, kz_ts(r, 0, 0), 0, 0, 0, 0) == 0);             // the epoch itself
+    assert(realtime_s == 0);
+    assert(kz_call(u, NR_CLOCK_SETTIME, 0, kz_ts(u, 1800000000, 0), 0, 0, 0, 0) == E_PERM && realtime_s == 0);
+    kz_end(k);
+    kz_end(r);
+    kz_end(g);
+    kz_end(u);
+}
+
+// RS-CLK2 (a review's P1 4): a program's CLOCK_REALTIME is on the stamp time's line, not the boot's second.
+const U64 NR_NANOSLEEP = 35;
+const U64 NR_CLOCK_GETTIME = 228;
+const U64 NR_CLOCK_NANOSLEEP = 230;
+
+// p's clock clk as clock_gettime gives it, in nanoseconds (CLOCK_REALTIME: since 1970).
+U64 kz_clock(I64 p, U64 clk) {
+    kz_own(p, KZ_RW + 512, 16);
+    assert(kz_call(p, NR_CLOCK_GETTIME, clk, KZ_RW + 512, 0, 0, 0, 0) == 0);
+    return kz_u64(p, KZ_RW + 512) * NS + kz_u64(p, KZ_RW + 520);
+}
+
+// p sleeps s seconds: nanosleep, or with at clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME) to second s.
+void kz_sleep(I64 p, U64 s, Bool at) {
+    U64 ts = kz_ts(p, s, 0);
+    if (at) {
+        assert(kz_call(p, NR_CLOCK_NANOSLEEP, 0, 1, ts, 0, 0, 0) == 0);
+    } else {
+        assert(kz_call(p, NR_NANOSLEEP, ts, 0, 0, 0, 0, 0) == 0);
+    }
+}
+
+// A program starts in p as a shell's child starts one: execve("/kzx"), through load; its clock is 0 again.
+void kz_exec(I64 p) {
+    I64 x = exec_at[p];
+    kz_put(p, KZ_RW, "/kzx");
+    _ = kz_call_raw(p, 59, KZ_RW, 0, 0, 0, 0, 0);
+    assert(state[p] == READY && exec_at[p] > x && clock[p] == 0);
+}
+
+// The boot's time state as at boot: no clock has run past it and no set made; the base 1800000000.
+void kz_time_fresh() {
+    far = 0;
+    far_set = 0;
+    stamped = 0;
+    realtime_s = 1800000000;
+}
+
+test "RS-CLK2: two programs started seconds apart: the later reads the later time, and neither the boot's second" {
+    I64 x = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 b = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_time_fresh();
+    kz_sleep(x, 5, false);                       // the system's time is 5 s on
+    kz_exec(a);
+    U64 ta = kz_clock(a, 0);
+    assert(ta / NS == 1800000005);               // a program starts at the system's time, not the boot's second
+    kz_sleep(a, 3, false);                       // and its sleep moves the system's time with it
+    kz_exec(b);
+    kz_sleep(b, 1800000007, true);                // before it reads the time: a second already past, no sleep
+    assert(clock[b] < NS);
+    U64 tb = kz_clock(b, 0);
+    assert(tb / NS == 1800000008 && tb >= ta + 3 * NS);   // started 3 s after a, b reads 3 s after a
+    assert(stamp_s() == 1800000008);             // a file written now is not in b's future
+    assert(kz_clock(a, 0) >= ta + 3 * NS);       // a, still running, reads on from its start
+    assert(kz_clock(b, 1) < NS);                 // b's own clock (CLOCK_MONOTONIC) still starts at 0
+    I64 c = kz_fork(b);
+    assert(zero_at[c] == zero_at[b] && kz_clock(c, 0) >= tb);   // a fork's child is on its parent's line
+    kz_exec(c);                                  // and a program it starts is on the system's
+    assert(kz_clock(c, 0) / NS == 1800000008);
+    kz_end(c);
+    kz_end(b);
+    kz_end(a);
+    kz_end(x);
+}
+
+test "RS-CLK2: after a set every process reads the set's seconds, running or started after, and sleeps to them" {
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 b = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_time_fresh();
+    kz_exec(a);
+    kz_sleep(a, 4, false);
+    assert(kz_call(r, NR_CLOCK_SETTIME, 0, kz_ts(r, 1900000000, 0), 0, 0, 0, 0) == 0);
+    assert(kz_clock(a, 0) / NS == 1900000000);   // not the set's seconds plus the 4 s a ran before it
+    assert(kz_clock(r, 0) / NS == 1900000000);
+    kz_exec(b);
+    assert(kz_clock(b, 0) / NS == 1900000000);
+    kz_sleep(a, 2, false);
+    assert(kz_clock(a, 0) / NS == 1900000002);
+    kz_sleep(a, 1900000010, true);              // an absolute sleep wakes at its CLOCK_REALTIME
+    assert(kz_clock(a, 0) / NS == 1900000010);
+    kz_sleep(b, 1900000020, true);
+    assert(kz_clock(b, 0) / NS == 1900000020);
+    kz_sleep(b, 1900000001, true);              // a time already past: no sleep
+    assert(kz_clock(b, 0) / NS == 1900000020);
+    kz_end(b);
+    kz_end(a);
+    kz_end(r);
+}
+
+test "RS-CLK2: a live boot that took a date: a program and a running process read the machine's clock, as stamps do" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 b = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    kz_time_fresh();
+    machine.kfz_tick(1000);
+    set_realtime(1800000000);                    // A-3: the boot's rtc, taken at tick 1000
+    machine.kfz_said_clear();
+    machine.kfz_tick(1500);                      // 500 ticks on: 5.0001 s of the machine's clock, no process slept
+    assert(stamp_s() == 1800000005);             // a file written now carries it
+    assert(machine.kfz_said("wal 5 1\n"));       // journaled at call 1, so a replay takes the same seconds there
+    kz_exec(a);
+    assert(kz_clock(a, 0) / NS == 1800000005);   // a program started now reads it
+    assert(kz_clock(b, 0) / NS == 1800000005);   // and a process that was running catches up to it
+    machine.kfz_tick(1800);
+    assert(kz_call(r, NR_CLOCK_SETTIME, 0, kz_ts(r, 1900000000, 0), 0, 0, 0, 0) == 0);
+    machine.kfz_tick(2100);                      // 3.00006 s after the set
+    assert(stamp_s() == 1900000003);
+    assert(kz_clock(a, 0) / NS == 1900000003 && kz_clock(b, 0) / NS == 1900000003);
+    dated = false;
+    machine.kfz_tick(-1);
+    kz_end(r);
+    kz_end(b);
+    kz_end(a);
+}
+
+test "RS-CLK2: a sleep's timespec as Linux takes it: seconds below 0 or ns of a second -EINVAL, any other a sleep" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    U64[3] neg = [0x8000000000000000, 0xFFFFFFFFFFFFFFFF, 0x8000000000000001];
+    for k in 0..3 {
+        assert(kz_call(p, NR_NANOSLEEP, kz_ts(p, neg[k], 0), 0, 0, 0, 0, 0) == E_INVAL);
+        assert(kz_call(p, NR_CLOCK_NANOSLEEP, 0, 1, kz_ts(p, neg[k], 0), 0, 0, 0) == E_INVAL);
+    }
+    assert(kz_call(p, NR_NANOSLEEP, kz_ts(p, 5, 1000000000), 0, 0, 0, 0, 0) == E_INVAL);
+    assert(clock[p] == 0);
+    kz_sleep(p, 1000000001, false);              // past 10^9 s: a sleep, not -EINVAL
+    assert(clock[p] == 1000000001 * NS);
+    kz_sleep(p, 9223372036, false);              // past what the clock holds: to its end
+    assert(clock[p] == CLOCK_MAX);
+    kz_end(p);
+}
+
+test "RS-CLK2: on a dated boot a uid 1000 sleep moves its own reads alone: no other process, program or stamp" {
+    I64 x = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 y = kz_proc(1001, fs.GRANT_ALL, 0);
+    I64 z = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_time_fresh();
+    machine.kfz_tick(1000);
+    set_realtime(1800000000);
+    machine.kfz_tick(1200);                      // 2.00004 s on
+    assert(kz_clock(y, 0) / NS == 1800000002);
+    kz_sleep(x, 1900000000, true);               // a review's probe: an absolute sleep three years on
+    kz_sleep(x, 3600, false);                    // and `sleep 3600`
+    assert(kz_clock(x, 0) / NS == 1900003600);   // x's own reads move
+    assert(kz_clock(y, 0) / NS == 1800000002);   // y's do not
+    kz_exec(z);
+    assert(kz_clock(z, 0) / NS == 1800000002);   // nor a program started after
+    assert(stamp_s() == 1800000002);             // nor a file's stamp
+    machine.kfz_tick(1500);                      // the machine's clock moves the others, and x reads on its own
+    assert(kz_clock(y, 0) / NS == 1800000005 && kz_clock(x, 0) / NS == 1900003600);
+    dated = false;
+    machine.kfz_tick(-1);
+    kz_end(z);
+    kz_end(y);
+    kz_end(x);
+}
+
+// An image holding one member, rng.journal, of the bytes j.
+void kz_journal_image[m](in U8[m] j) {
+    U8[512] b;
+    for k in 0..512 {
+        b[k] = 0;
+    }
+    I64 x = kz_cpio_head(b, 0, 1, 0x81A4, m, 12);
+    kz_bytes(b, 110, "rng.journal");
+    kz_bytes(b, x, j);
+    I64 t = cpio.next_at(0, 12, m);
+    _ = kz_cpio_head(b, t, 0, 0, 0, 11);
+    kz_bytes(b, t + 110, "TRAILER!!!");
+    machine.kfz_image(b[0..cpio.next_at(t, 11, 0)]);
+}
+
+test "RS-CLK2: a replay takes the machine's clock from the journal's wal lines, never the PIT, and prints them" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_journal_image("rtc 1800000000\nwal 4 1\nwal 12 2\n");
+    rng.init();
+    I64 s = rng.journal_rtc();
+    assert(s == 1800000000);
+    kz_time_fresh();
+    machine.kfz_tick(1000);
+    set_realtime(s as U64);
+    machine.kfz_said_clear();
+    machine.kfz_tick(1700);                      // 7 s of the PIT, which a replay never reads
+    assert(kz_clock(a, 0) / NS == 1800000004);   // the journal's next wal line
+    assert(kz_clock(a, 0) / NS == 1800000012);   // the one after, at the next call
+    assert(kz_clock(a, 0) / NS == 1800000012);   // then the last, kept
+    assert(machine.kfz_said("wal 4 1\n") && machine.kfz_said("wal 12 2\n"));   // printed as the live run did
+    dated = false;
+    machine.kfz_tick(-1);
+    kz_end(a);
+}
+
+test "RS-CLK2: two reads in one second read the same, live and in the replay of its journal, call by call" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_time_fresh();
+    machine.kfz_tick(1000);
+    set_realtime(1800000000);
+    machine.kfz_said_clear();
+    machine.kfz_tick(1100);                      // 1.0002 s
+    assert(kz_clock(a, 0) / NS == 1800000001);
+    machine.kfz_tick(1150);                      // 1.5003 s: the same second
+    assert(kz_clock(a, 0) / NS == 1800000001);
+    machine.kfz_tick(1300);                      // 3.0006 s
+    assert(kz_clock(a, 0) / NS == 1800000003);
+    assert(machine.kfz_said("wal 1 1\n") && machine.kfz_said("wal 3 3\n") && !machine.kfz_said("wal 3 2"));
+    dated = false;
+    machine.kfz_tick(-1);
+    kz_end(a);
+}
+
+test "RS-CLK2: the replay of that journal reads 1, 1, 3 at the same calls, not the next line at the next call" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_journal_image("rtc 1800000000\nwal 1 1\nwal 3 3\n");
+    rng.init();
+    kz_time_fresh();
+    set_realtime(rng.journal_rtc() as U64);
+    assert(kz_clock(a, 0) / NS == 1800000001);
+    assert(kz_clock(a, 0) / NS == 1800000001);   // call 2: the journal's next line is call 3's
+    assert(kz_clock(a, 0) / NS == 1800000003);
+    dated = false;
+    kz_end(a);
+}
+
+test "RS-CLK2: a record starts its own line: a program's open line is ended first, so its text is never one" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_time_fresh();
+    machine.kfz_tick(1000);
+    set_realtime(1800000000);
+    machine.kfz_said_clear();
+    emit(a, "x wal 9 9", 9);                     // a program prints the text of a record, its line still open
+    machine.kfz_tick(1200);
+    assert(kz_clock(a, 0) / NS == 1800000002);
+    assert(machine.kfz_said("x wal 9 9\nwal 2 1\n"));
+    dated = false;
+    machine.kfz_tick(-1);
+    kz_end(a);
+}
+
+// RS-SLEEP (U1-2 edition 2, the kernel read's sleep inventory): on a live boot that took the machine's date a sleep
+// moves the virtual clock as before and also waits that time on the PIT; sealed and in a replay it returns at once.
+// One tick of the hosted timer is 10.0002 ms, so a 3 s sleep from tick 1000 ends at tick 1300, not at tick 1299.
+test "RS-SLEEP: on a live boot a sleep parks until the PIT has run it; the clock moves once, by the time asked" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    machine.kfz_tick(1000);
+    sleep_wall = true;
+    U64 c = clock[p];
+    assert(kz_call(p, NR_NANOSLEEP, kz_ts(p, 3, 0), 0, 0, 0, 0, 0) == fs.WOULD_BLOCK);
+    assert(on_device[p] && sleep_until[p] != 0 && clock[p] == c + 3 * NS);   // a device wait, never a deadlock
+    machine.kfz_tick(1299);
+    assert(kz_call(p, NR_NANOSLEEP, kz_ts(p, 3, 0), 0, 0, 0, 0, 0) == fs.WOULD_BLOCK);
+    assert(clock[p] == c + 3 * NS);              // made again at each turn: the clock is not moved twice
+    machine.kfz_tick(1300);
+    assert(kz_call(p, NR_NANOSLEEP, kz_ts(p, 3, 0), 0, 0, 0, 0, 0) == 0 && sleep_until[p] == 0);
+    assert(clock[p] == c + 3 * NS);
+    // clock_nanosleep: relative waits the time asked; absolute waits what the clock moved, none for a time past
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 1, 0, kz_ts(p, 1, 0), 0, 0, 0) == fs.WOULD_BLOCK);
+    machine.kfz_tick(1400);
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 1, 0, kz_ts(p, 1, 0), 0, 0, 0) == 0 && clock[p] == c + 4 * NS);
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 1, 1, kz_ts(p, 0, 0), 0, 0, 0) == 0 && sleep_until[p] == 0);
+    U64 t = clock[p] + 2 * NS;
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 1, 1, kz_ts(p, t / NS, t % NS), 0, 0, 0) == fs.WOULD_BLOCK);
+    assert(clock[p] == t);
+    machine.kfz_tick(1599);
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 1, 1, kz_ts(p, t / NS, t % NS), 0, 0, 0) == fs.WOULD_BLOCK);
+    machine.kfz_tick(1600);
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 1, 1, kz_ts(p, t / NS, t % NS), 0, 0, 0) == 0 && clock[p] == t);
+    // a bad timespec is refused at once and parks nothing
+    assert(kz_call(p, NR_NANOSLEEP, kz_ts(p, 5, 1000000000), 0, 0, 0, 0, 0) == E_INVAL && sleep_until[p] == 0);
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 12, 0, kz_ts(p, 1, 0), 0, 0, 0) == E_INVAL && sleep_until[p] == 0);
+    // a sleeper ended by a signal leaves no parked sleep for the slot's next process
+    assert(kz_call(p, NR_NANOSLEEP, kz_ts(p, 60, 0), 0, 0, 0, 0, 0) == fs.WOULD_BLOCK && sleep_until[p] != 0);
+    on_device[p] = false;
+    sleep_wall = false;
+    machine.kfz_tick(-1);
+    kz_end(p);
+    assert(sleep_until[p] == 0);
+}
+
+test "RS-SLEEP: sealed, in a replay and on a date with no RDRAND, a sleep returns at once and parks nothing" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_time_fresh();
+    assert(!sleep_wall);
+    machine.kfz_tick(1000);
+    set_realtime(1800000000);                    // A-3's date on the hosted machine, which has no RDRAND: not live
+    assert(dated && !sleep_wall);
+    U64 c = clock[p];
+    kz_sleep(p, 3, false);
+    assert(sleep_until[p] == 0 && clock[p] == c + 3 * NS);
+    assert(kz_call(p, NR_CLOCK_NANOSLEEP, 1, 0, kz_ts(p, 60, 0), 0, 0, 0) == 0 && sleep_until[p] == 0);
+    dated = false;
+    machine.kfz_tick(-1);
+    kz_end(p);
+}
+
+test "RS-SLEEP: `sleep 60` is halted for past WAIT_MAX; a device wait is chosen first and held to WAIT_MAX" {
+    I64 s = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 d = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 w = kz_proc(1000, fs.GRANT_ALL, 0);
+    machine.kfz_tick(1000);
+    sleep_wall = true;
+    assert(kz_call(s, NR_NANOSLEEP, kz_ts(s, 60, 0), 0, 0, 0, 0, 0) == fs.WOULD_BLOCK);
+    state[s] = WAITING;                          // as the scheduler leaves it
+    I64[2] o;
+    halt_for(o);
+    assert(o[0] == s && o[1] == -1);             // only a sleeper waits: halted for, not a deadlock
+    assert(halt_ok(s, WAIT_MAX) && halt_ok(s, WAIT_MAX + 6000));   // 60 s of 10 ms halts, four times WAIT_MAX
+    state[d] = WAITING;                          // a read of the input device by a process that is not the desk
+    on_device[d] = true;
+    halt_for(o);
+    assert(o[0] == d);                           // the device wait is chosen first, so its limit still holds
+    assert(d != tile.tiler_pid() && halt_ok(d, WAIT_MAX - 1) && !halt_ok(d, WAIT_MAX));
+    state[w] = WAITING;                          // and one waiting on no device is still named
+    on_device[w] = false;
+    halt_for(o);
+    assert(o[0] == d && o[1] == w);
+    state[d] = READY;
+    on_device[d] = false;
+    state[w] = READY;
+    machine.kfz_tick(1000 + 6000);               // 60.0012 s on: the sleep ends
+    state[s] = READY;
+    assert(kz_call(s, NR_NANOSLEEP, kz_ts(s, 60, 0), 0, 0, 0, 0, 0) == 0 && sleep_until[s] == 0);
+    on_device[s] = false;
+    sleep_wall = false;
+    machine.kfz_tick(-1);
+    kz_end(w);
+    kz_end(d);
+    kz_end(s);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,118 @@
+// user/ci/kit/apps.ci: the desk's apps, one descriptor each (FF edition 14, section 3g): the friendly name, the
+// program, the words search finds it by, where it runs, what it is and what it opens. The Super plane's grid, its
+// search and Finder's open (FF-R8 A) read this table; nothing else names an app. DN-5 (l 2026-11-10 04:48Z): ccalc is
+// Calculator, cview Images and cless Reader, their old names kept as aliases. DN-22:
+// fetch's label is Fetch (the program stays fetch). DN-28 (superseding DN-5's names): Index (finder), Console (cish),
+// Edit (ced), View (cview), Read (cless), Calc (ccalc), in title case; every old name stays an alias, so `files`,
+// `terminal`, `calculator`, `finder` and the rest still find them. Commands keep their names. DN-30: cvim is CVim,
+// in a terminal, with its icon (icons3.CVIM); `vim` and `vi` find it, and `editor` still finds Edit first. DN-31:
+// Web Browser is listed with its compass (icons3.BROWSER) but not built (LABEL). Strings are ASCII. RS-TTL (frame
+// 40): Edit and Read show a document, so a terminal window of theirs draws its title in the name's place
+// (kit/bartitle.ci parts); so does View's own window, its picture's name (frames 39 and 43, RS-TTL section 6).
+// RS-MON (LAND-1): Monitor runs in its own window with DN-59's gauge (icons3.MONITOR). The order (l, the design's
+// 2026-11-12 01:23Z): Index, Console, Edit, CVim, Read, View, Calc, Monitor, Fetch, Settings, Web Browser. HW-17
+// (2026-11-12): Calc opens calc, the Calc window RS-CALC built and DN-64 approved, in its own window (ccalc stays a
+// command and keeps its aliases); Doom's row is gone, since no shipped image holds Doom (l, 07:59Z).
+// tools/check-image-apps.py holds every program here to the release image's /bin.
+import user.ci.kit.match;
+
+export const I64 N = 11;
+export const I64 NONE = -1;
+
+// Where an app runs.
+export const I64 TERM = 0;      // in a new terminal window
+export const I64 WINDOW = 1;    // in its own window
+export const I64 DESK = 2;      // drawn by the desk itself (Settings)
+export const I64 LABEL = 3;     // listed, not built yet (DN-28, DN-31: Web Browser): opening it does nothing
+
+const I64 FIELDS = 5;      // fields a record
+U8[1024] text;
+I64[55] at;          // N * FIELDS field starts
+I64[55] ln;          // and lengths
+I64[11] runs = [1, 0, 0, 0, 0, 1, 1, 1, 0, 2, 3];     // WINDOW, TERM, TERM, TERM, ... by app, as below
+I64[11] glyph = [0, 1, 2, 11, 6, 4, 5, 15, 7, 3, 12];    // icons3: FINDER, TERMINAL, EDITOR, CVIM (DN-30), READER, IMAGES, CALCULATOR, MONITOR (DN-59), FETCH, SETTINGS, BROWSER (DN-31)
+// DN-60 (B, 2026-11-11): a command keeps its Console. The desk types it as is and the shell stays,
+// so what it prints stays on screen: Fetch, and any /bin program that is no app. Every other app is typed as
+// `exec CMD`, and its window ends when the person quits it (kit/launch.ci).
+Bool[11] cmds = [false, false, false, false, false, false, false, false, true, false, false];
+Bool[11] doc = [false, false, true, false, true, true, false, false, false, false, false];   // Edit, Read, View
+Bool ready = false;
+
+// The records, one a line: name | program | aliases (space separated) | what it is | what Enter opens.
+void parse(in U8[_] src) {
+    for i in 0..len(src) { text[i] = src[i]; }
+    I64 k = 0;
+    I64 s = 0;
+    for i in 0..len(src) {
+        U8 b = src[i];
+        if (b == '|' || b == '\n') {
+            at[k] = s;
+            ln[k] = i - s;
+            k = k + 1;
+            s = i + 1;
+        }
+    }
+}
+
+void load() {
+    if (ready) { return; }
+    parse("Index|/bin/finder|index finder files explorer|File explorer|The home folder\nConsole|/bin/cish|console terminal shell cish|Shell|A new shell\nEdit|/bin/ced|edit editor text ced|Text editor|An untitled file\nCVim|/bin/cvim|cvim vim vi modal|Modal editor|An empty buffer\nRead|/bin/cless|read reader pager less cless|Pager|Nothing until a file is chosen\nView|/bin/cview|view images image viewer pictures cview|Image viewer|Nothing until a file is chosen\nCalc|/bin/calc|calc calculator ccalc|Calculator|A new calculation\nMonitor|/bin/monitor|monitor activity system processes task manager|System monitor|The machine's parts\nFetch|/bin/fetch|fetch download|Downloader|Its usage\nSettings||settings preferences|Desk settings|The Desk page\nWeb Browser||browser web internet www compass|Web browser|Not built yet\n");
+    ready = true;
+}
+
+// Field f (0 name, 1 program, 2 aliases, 3 what it is, 4 what Enter opens) of app i into buf: its length.
+export I64 field(I64 i, I64 f, inout U8[_] buf) {
+    load();
+    I64 k = i * FIELDS + f;
+    I64 n = ln[k];
+    if (n > len(buf)) { n = len(buf); }
+    for j in 0..n { buf[j] = text[at[k] + j]; }
+    return n;
+}
+
+export I64 runs_in(I64 i) { load(); return runs[i]; }
+export Bool is_command(I64 i) { load(); return cmds[i]; }   // DN-60: typed as is in a Console that stays
+export I64 icon(I64 i) { load(); return glyph[i]; }
+export Bool shows_doc(I64 i) { load(); return doc[i]; }     // RS-TTL: its title names a document
+
+U8[64] word;
+
+// The best match score of the current query (match.begin) over app i's name and aliases, or match.NONE.
+export I64 score(I64 i) {
+    load();
+    I64 best = match.NONE;
+    for f in 0..3 {
+        if (f == 1) { continue; }
+        I64 k = i * FIELDS + f;
+        I64 s = at[k];
+        I64 e = at[k] + ln[k];
+        I64 w = s;
+        while (w <= e) {
+            I64 v = w;
+            while (v < e && text[v] != ' ') { v = v + 1; }
+            if (v > w) {
+                I64 n = v - w;
+                for j in 0..n { word[j] = text[w + j]; }
+                I64 sc = match.score(word[0..n]);
+                if (sc != match.NONE && (best == match.NONE || sc > best)) { best = sc; }
+            }
+            w = v + 1;
+        }
+    }
+    return best;
+}
+
+// The app whose program is path, or NONE.
+export I64 by_program(in U8[_] path) {
+    load();
+    for i in 0..N {
+        I64 k = i * FIELDS + 1;
+        if (ln[k] == len(path) && ln[k] > 0) {
+            Bool same = true;
+            for j in 0..ln[k] { if (text[at[k] + j] != path[j]) { same = false; } }
+            if (same) { return i; }
+        }
+    }
+    return NONE;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,73 @@
+Daphnis CS: cish
+daphnis: image 2456812 bytes from the loader module
+daphnis: input 0 bytes
+daphnis: run keyed pid 1
+keyed: start: @> 
+keyed: Ctrl+L: .[2J.[H.@> echo c''lear.[J
+keyed: Enter: .clear..
+keyed: echo: .hist..
+keyed: Up: .@> echo h''ist.[J
+keyed: Up, then typing: .hist2..
+keyed: Up Up Down: .hist2..
+keyed: Ctrl+A: .edit..
+keyed: Ctrl+B Ctrl+F Ctrl+E: .f-b!..
+keyed: Left Right Backspace: .aXY..
+keyed: Delete: .zR..
+keyed: Ctrl+W: .kill..
+keyed: Ctrl+U: .uk..
+keyed: Ctrl+Left Ctrl+K: .kk..
+keyed: Tab, a directory: .@> cd kd/.[J
+keyed: OSC 2: kd.@> 
+keyed: Tab, a shared prefix: .@> echo alp.[J
+keyed: Tab Tab, the list: .alpha           alps.
+keyed: Tab, a file: .alpha..
+keyed: Tab, a command: .@> echo .[J
+keyed: the command: .cmd..
+keyed: Ctrl+C: ^C.
+keyed: status: .s=130..
+keyed: PS2: .> 
+keyed: Ctrl+C at PS2: ^C.
+keyed: status: .p=130..
+keyed: a long line: .v wwwwwwww
+keyed: prompt: @> 
+keyed: the shell ended
+daphnis: state 2ee0af2f5af8a8f2ee9258741a9ef30160e9e1fdadea5024818a590227f835f1
+daphnis: exit 0
+daphnis: pid 1 forked 1
+daphnis: run keyed pid 2
+keyed: start: @> 
+keyed: Ctrl+L: .[2J.[H.@> echo c''lear.[J
+keyed: Enter: .clear..
+keyed: echo: .hist..
+keyed: Up: .@> echo h''ist.[J
+keyed: Up, then typing: .hist2..
+keyed: Up Up Down: .hist2..
+keyed: Ctrl+A: .edit..
+keyed: Ctrl+B Ctrl+F Ctrl+E: .f-b!..
+keyed: Left Right Backspace: .aXY..
+keyed: Delete: .zR..
+keyed: Ctrl+W: .kill..
+keyed: Ctrl+U: .uk..
+keyed: Ctrl+Left Ctrl+K: .kk..
+keyed: Tab, a directory: .@> cd kd/.[J
+keyed: OSC 2: kd.@> 
+keyed: Tab, a shared prefix: .@> echo alp.[J
+keyed: Tab Tab, the list: .alpha           alps.
+keyed: Tab, a file: .alpha..
+keyed: Tab, a command: .@> echo .[J
+keyed: the command: .cmd..
+keyed: Ctrl+C: ^C.
+keyed: status: .s=130..
+keyed: PS2: .> 
+keyed: Ctrl+C at PS2: ^C.
+keyed: status: .p=130..
+keyed: a long line: .v wwwwwwww
+keyed: prompt: @> 
+keyed: the shell ended
+daphnis: state 2ee0af2f5af8a8f2ee9258741a9ef30160e9e1fdadea5024818a590227f835f1
+daphnis: exit 0
+daphnis: pid 2 forked 1
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 12 frames held
+daphnis: pool frames free 16371 of 16383
+cish: done

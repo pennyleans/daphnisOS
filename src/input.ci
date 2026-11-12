@@ -1,0 +1,149 @@
+// src/input.ci: the input stream (F-2, F-3; docs/specs/2026-11-05-f-surface.md section 4): /dev/input/event0.
+// The keyboard's set-1 scancodes and the mouse's packets arrive as bytes in the two rings of rt/ps2.c
+// (IRQ 1, IRQ 12); a read of the device drains them into the queue of src/inq.ci, which makes Linux input events
+// of them (EV_KEY with the key code and 1 or 0; EV_REL REL_X, REL_Y and EV_KEY BTN_LEFT, BTN_RIGHT, BTN_MIDDLE from a
+// packet; EV_SYN after each), then asks it for a key repeat due at the timer's tick (RS-KR, src/keyrep.ci), and copies
+// as many whole 24-byte events as fit, at least one and at most 64, stamped with the reader's clock. With none queued
+// and none to decode it waits for the hardware (WOULD_BLOCK_DEV: src/proc.ci halts until an interrupt, the timer's
+// included, and retries), or says -EAGAIN under O_NONBLOCK. The queue keeps room for every release (src/inq.ci); a
+// ring's bytes are taken only while their events fit, so a reader that falls behind leaves them waiting in the ring,
+// and a ring that fills drops and counts the bytes past it (rt/ps2.c).
+
+import src.user;
+import src.uvm;
+import src.portio;
+import src.trap;
+import src.k12;
+import src.inq;
+import src.serial;
+
+export const I64 WOULD_BLOCK_DEV = -1001;
+const I64 EAGAIN = 11;
+const I64 EFAULT = 14;
+const I64 EINVAL = 22;
+const U64 NS = 1000000000;
+const I64 READ_MAX = 64;      // events a read gives at most: the 1536 bytes of read_events' buffer
+
+// The controller and the mouse set, IRQ 1, the cascade and IRQ 12 unmasked at the PICs (after
+// pit.pic_remap). True when the mouse answered.
+export Bool devices_on() {
+    Bool mouse = user.ps2_init() == 1;
+    U8 mask = portio.port_in8(0x21 as U16);
+    portio.port_out8(0x21 as U16, (mask & 0xF9) as U8);
+    mask = portio.port_in8(0xA1 as U16);
+    portio.port_out8(0xA1 as U16, (mask & 0xEF) as U8);
+    return mouse;
+}
+
+// The PS/2 rings drained into the queue while a byte's events fit (inq.KEY_ROOM, inq.MOUSE_ROOM), then a key repeat
+// due at this tick (RS-KR), only once the keyboard's ring is empty: a byte that does not fit waits in its ring for the
+// next pull, and the held key's release may be among them, so a repeat made then would reach the reader ahead of it.
+// A press that reached the queue is stamped for K-12 at its interrupt's time.
+void pull() {
+    I64 now = trap.timer_ticks();
+    Bool more = true;
+    Bool drained = false;           // the keyboard's ring read to its end
+    while (more && inq.room() >= inq.KEY_ROOM) {
+        I64 b = user.ps2_get(0);
+        if (b < 0) {
+            more = false;
+            drained = true;
+        } else {
+            I64 pressed = inq.decode(b, now);
+            if (pressed != 0) {
+                k12.key(pressed, user.ps2_stamp());   // K-12: the press, at its interrupt's time
+            }
+        }
+    }
+    more = true;
+    while (more && inq.room() >= inq.MOUSE_ROOM) {
+        I64 m = user.ps2_get(1);
+        if (m < 0) {
+            more = false;
+        } else {
+            inq.decode_mouse(m);
+        }
+    }
+    if (drained) {
+        _ = inq.repeat(now);
+    }
+}
+
+// read on the device into pid's memory at buf, up to n bytes, the events stamped now (nanoseconds of
+// CLOCK_REALTIME): the bytes copied, WOULD_BLOCK_DEV, -EAGAIN, -EINVAL (n under one event) or -EFAULT.
+export I64 read_events(I64 pid, U64 buf, U64 n, U64 now, Bool nonblock) {
+    if (n < 24) {
+        return 0 - EINVAL;
+    }
+    if (buf >= uvm.USER_HI) {
+        return 0 - EFAULT;
+    }
+    pull();
+    if (inq.queued() == 0) {
+        if (nonblock) {
+            return 0 - EAGAIN;
+        }
+        return WOULD_BLOCK_DEV;
+    }
+    I64 k = inq.queued();
+    if (k > READ_MAX) {
+        k = READ_MAX;
+    }
+    if ((n / 24) < k as U64) {
+        k = (n / 24) as I64;
+    }
+    U64 sec = now / NS;
+    U64 usec = (now % NS) / 1000;
+    U8[1536] b;
+    for i in 0..k {
+        U64 e = inq.at(i);
+        I64 at = 24 * i;
+        for j in 0..8 {
+            b[at + j] = ((sec >> ((8 * j) as U64)) & 0xFF) as U8;
+            b[at + 8 + j] = ((usec >> ((8 * j) as U64)) & 0xFF) as U8;
+            b[at + 16 + j] = ((e >> ((8 * j) as U64)) & 0xFF) as U8;
+        }
+    }
+    I64 put = uvm.poke(pid, buf, b, 24 * k, true);
+    I64 done = put / 24;
+    if (done == 0) {
+        return 0 - EFAULT;
+    }
+    inq.take(done);
+    return 24 * done;
+}
+
+// HW-4 (src/xhci.ci, at the scheduler's tick): a key of the USB keyboard, its event and EV_SYN as a set-1 key gives,
+// through RS-KR's filter; us is the K-12 stamp of a press.
+export void usb_key(I64 code, I64 value, I64 us) {
+    if (inq.usb_key(code, value, trap.timer_ticks()) && value == 1) {
+        k12.key(code, us);
+    }
+}
+
+// HW-4: a USB boot mouse report: the buttons that changed, the motion, the wheel, then EV_SYN when any (F-3's events).
+export void usb_mouse(I64 b, I64 dx, I64 dy, I64 wheel) {
+    inq.usb_mouse(b, dx, dy, wheel);
+}
+
+// True when an event is queued for a reader of the device (W-3: the tiler's sync ends on it).
+export Bool pending() {
+    pull();
+    return inq.queued() > 0;
+}
+
+// Events and bytes lost since boot: the ring's and the queue's.
+export I64 dropped() {
+    return user.ps2_dropped() + inq.dropped();
+}
+
+// At the end of a run, after `daphnis: input dropped`: what was dropped, the queue's counts, the rings' bytes and
+// tile_events, the tiler's client queues' (src/tile.ci dropped).
+export void say_dropped(I64 tile_events) {
+    U8[200] line;
+    I64 n = inq.drop_line(user.ps2_dropped(), tile_events, line);
+    for i in 0..n {
+        serial.serial_putc(line[i]);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

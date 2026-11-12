@@ -1,0 +1,137 @@
+// user/ci/bgread.ci: bgread PATH W H (BG-1): the account's background picture, read and fitted by a
+// process of the account (the desk runs it as the account, user/ci/runas.h RUN_PICTURE; the desk never opens the
+// picture). PATH is opened read-only without following a link at its last name and without waiting on a pipe put in its
+// place (O_RDONLY | O_NONBLOCK | O_NOFOLLOW), and the descriptor must be a regular file. PNG only (U-PNG's reader,
+// user/ci/core/img.ci, up to img.PIXELS_MAX), at most FILE_MAX bytes. The picture is scaled to cover W x H (each side 1
+// to 3840, the area at most 3840 x 2160) and cropped to it at its center, nearest pixel, alpha dropped. Out: a header
+// of u32 W and u32 H, little-endian, then W x H pixels row by row, top first, each a little-endian u32 0x00RRGGBB, the
+// desk's own word. Status 0 only after the whole stream; 1 for a path, file or picture refused (nothing past what was
+// written); 2 for a usage. Nothing on its output but the stream.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.fdctl;
+import user.ci.core.inflate;
+import user.ci.core.img;
+
+const I64 FILE_MAX = 33554432;         // 32 MiB of PNG
+const I64 O_READ = 0x20800;            // O_RDONLY | O_NONBLOCK | O_NOFOLLOW (fdctl.O_NOFOLLOW)
+const I64 SIDE_MAX = 3840;              // a side of the screen, portrait too
+const I64 AREA_MAX = 8294400;          // and its area, 3840 x 2160
+
+U8[65536] chunk;                       // a read, staged
+U8[15360] line;                        // an output row, 3840 x 4 bytes
+
+// A decimal of 1 to 4 digits with no leading zero, from 1 to most; its value, or -1.
+I64 dim(in U8[_] s, I64 most) {
+    if (len(s) < 1 || len(s) > 4 || s[0] == '0') { return -1; }
+    I64 v = 0;
+    for k in 0..len(s) {
+        if (s[k] < '0' || s[k] > '9') { return -1; }
+        v = v * 10 + (s[k] as I64 - 48);
+    }
+    if (v > most) { return -1; }
+    return v;
+}
+
+// Every byte of b to the output, as many writes as it takes; false when one fails.
+Bool put_all(in U8[_] b) {
+    I64 at = 0;
+    while (at < len(b)) {
+        I64 w = shctl.fd_write(1, b[at..len(b)]);
+        if (w <= 0) { return false; }
+        at = at + w;
+    }
+    return true;
+}
+
+// The picture at p fitted to w x h, on the given buffers; the status.
+I64 run(in U8[_] p, I64 w, I64 h, inout U8[_] f, inout U8[_] raw, inout U8[_] px) {
+    I64 fd = shctl.sh_open(p, O_READ, 0);
+    if (fd < 0) { return 1; }                        // -ELOOP for a link
+    I64[16] st;
+    I64 s = fdctl.fd_stat(fd, st);
+    if (s < 0 || (st[corectl.ST_MODE] & corectl.S_IFMT) != corectl.S_IFREG) {
+        _ = shctl.fd_close(fd);
+        return 1;
+    }
+    I64 n = 0;
+    Bool more = true;
+    while (more) {
+        I64 r = shctl.fd_read(fd, chunk);
+        if (r < 0) {
+            _ = shctl.fd_close(fd);
+            return 1;
+        }
+        if (r == 0) { more = false; }
+        if (n + r > len(f)) {
+            _ = shctl.fd_close(fd);
+            return 1;
+        }
+        for k in 0..r { f[n + k] = chunk[k]; }
+        n = n + r;
+    }
+    _ = shctl.fd_close(fd);
+    if (n < 8 || f[0] != 0x89 || f[1] != 'P' || f[2] != 'N' || f[3] != 'G') { return 1; }   // PNG only
+    if (img.decode(f, n, raw, px) != 0) { return 1; }
+    I64 sw = img.width();
+    I64 sh = img.height();
+    if (sw < 1 || sh < 1) { return 1; }
+    I64 cw = sw;                                     // the crop that covers w x h at its center
+    I64 ch = sh;
+    if (sw * h > sh * w) {
+        cw = max(1, sh * w / h);
+    } else {
+        ch = max(1, sw * h / w);
+    }
+    I64 x0 = (sw - cw) / 2;
+    I64 y0 = (sh - ch) / 2;
+    U8[8] hd;
+    for k in 0..4 {
+        hd[k] = ((w >> (8 * k)) & 255) as U8;
+        hd[4 + k] = ((h >> (8 * k)) & 255) as U8;
+    }
+    if (!put_all(hd)) { return 1; }
+    for y in 0..h {
+        I64 sy = y0 + y * ch / h;
+        for x in 0..w {
+            I64 sx = x0 + x * cw / w;
+            I64 i = 4 * (sy * sw + sx);
+            line[4 * x] = px[i + 2];                 // 0x00RRGGBB, little-endian: B, G, R, 0
+            line[4 * x + 1] = px[i + 1];
+            line[4 * x + 2] = px[i];
+            line[4 * x + 3] = 0;
+        }
+        if (!put_all(line[0..4 * w])) { return 1; }
+    }
+    return 0;
+}
+
+// The large buffers, as cview's: given back when this returns.
+I64 fit(in U8[_] p, I64 w, I64 h) {
+    U8[33554432] f;
+    U8[67108864] raw;
+    U8[33177600] px;
+    return run(p, w, h, f, raw, px);
+}
+
+export void main(in U8[_] a) {
+    I64[4] at;                                       // the three words' starts, and the end
+    I64 nw = 0;
+    I64 s = 0;
+    for k in 0..len(a) {
+        if (a[k] == 0) {
+            if (nw < 3) { at[nw] = s; }
+            nw = nw + 1;
+            s = k + 1;
+        }
+    }
+    if (nw != 3) { dev.exit_now(2); }
+    at[3] = len(a);
+    I64 pe = at[1] - 1;
+    I64 w = dim(a[at[1]..at[2] - 1], SIDE_MAX);
+    I64 h = dim(a[at[2]..at[3] - 1], SIDE_MAX);
+    if (pe < 2 || a[0] != '/' || w < 1 || h < 1 || w * h > AREA_MAX) { dev.exit_now(2); }
+    dev.exit_now(fit(a[0..pe], w, h));
+}
+// SPDX-License-Identifier: Apache-2.0

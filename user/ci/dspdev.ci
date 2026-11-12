@@ -1,0 +1,7 @@
+// user/ci/dspdev.ci: /dev/dsp from a cint program in ring 3 (user/ci/host.c, AU-3; docs/specs/2026-11-06-au-audio.md
+// section 4). dsp_open opens it for S16LE stereo at 48,000 Hz; dsp_put writes bytes whole; dsp_sync waits until the
+// device has played them. Each returns 0 or the count, or -errno.
+export extern unrestricted I64 dsp_open();
+export extern unrestricted I64 dsp_put(in U8[_] bytes);
+export extern unrestricted I64 dsp_sync();
+// SPDX-License-Identifier: Apache-2.0

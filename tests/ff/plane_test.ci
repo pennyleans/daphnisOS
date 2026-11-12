@@ -1,0 +1,901 @@
+// tests/ff/plane_test.ci: hosted tests of the Super plane's kit (FF-5 and the 0.1.0 polish, user/ci/kit/plane.ci
+// and shape.ci; docs/specs/2026-11-07-ff-super-plane.md sections 3, 3d and 3g). Run by check.sh:
+// cint test --root . tests/ff/plane_test.ci
+
+import user.ci.kit.plane;
+import user.ci.kit.icons3;
+import user.ci.kit.shape;
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.apps;
+import user.ci.kit.blend;
+import user.ci.kit.anim;
+
+U32[1920] row;     // a word a pixel (D-ROW)
+
+U32 px(I64 x) {
+    return row[x] & 0xFFFFFF;
+}
+
+U32 tk(I64 t) { return tokens.word(t); }
+
+void setup() {
+    plane.clear();
+    plane.resize(1920, 1052);
+    plane.source(plane.WIN, 0, 0, b"sh - /home", 10, b"pid 9", 5, 2);
+    plane.source(plane.PROG, 1, 9, b"/bin/ccalc", 10, b"/bin", 4, 1);
+    plane.source(plane.PROG, 2, 9, b"/bin/cless", 10, b"/bin", 4, 1);
+}
+
+// The frame's desk: Index, Console and Edit pinned (Settings is the rail's home, never a pin, DN-49), one window, on
+// a w x h plane at scale z.
+void desk(I64 w, I64 h, I64 z) {
+    plane.clear();
+    plane.place(w, h, z);
+    for i in 0..apps.N { plane.app(i); }
+    for i in 0..3 { assert(plane.pin_app(i)); }      // DN-5: the first boot's pins, apps 0 to 2: Index, Console, Edit
+    plane.window(7, 0, b"sh", 2, b"/", 1, 1, false);
+}
+
+test "the first boot pins Index, Console and Edit, and nothing else (hdesk.ci's loop, APPS-1's first three)" {
+    desk(1920, 1052, 1);
+    assert(plane.pinned_count() == 3);
+    assert(plane.is_pinned(apps.by_program(b"/bin/finder")) && plane.is_pinned(apps.by_program(b"/bin/cish")));
+    assert(plane.is_pinned(apps.by_program(b"/bin/ced")) && !plane.is_pinned(apps.by_program(b"/bin/cvim")));
+}
+
+// Pins up to n: the apps the desk has in order (Settings never), then files /home/notes/pin-NN.txt.
+void pins(I64 n) {
+    for i in 0..apps.N {
+        if (plane.pinned_count() < n) { Bool p = plane.pin_app(i); }
+    }
+    U8[22] fp = b"/home/notes/pin-00.txt";
+    I64 k = 0;
+    while (plane.pinned_count() < n) {
+        fp[16] = ('0' as I64 + k / 10) as U8;
+        fp[17] = ('0' as I64 + k % 10) as U8;
+        assert(plane.taskbar_toggle(fp, false));
+        k = k + 1;
+    }
+}
+
+void type_in(in U8[_] s) {
+    for k in 0..len(s) { assert(plane.typed(s[k])); }
+    plane.filter_begin();
+    I64 n = plane.filter_end();
+}
+
+test "the empty field keeps no rows; typing filters the sources, best first" {
+    setup();
+    plane.filter_begin();
+    assert(plane.filter_end() == 0);
+    assert(plane.typed('c'));
+    assert(plane.typed('c'));
+    assert(plane.typed('a'));
+    plane.filter_begin();
+    assert(plane.filter_end() == 1);
+    assert(plane.row_kind(0) == plane.PROG);
+    assert(plane.row_ref(0) == 1);
+    assert(plane.erase());
+    assert(plane.erase());
+    plane.filter_begin();
+    assert(plane.filter_end() == 2);
+}
+
+test "a file kept waits for its path, then shows it and its size" {
+    setup();
+    assert(plane.typed('n'));
+    assert(plane.typed('o'));
+    plane.filter_begin();
+    plane.offer_file(5, b"/home/notes.txt", 7);
+    plane.offer_file(6, b"/home/a/b", 8);
+    assert(plane.filter_end() == 1);
+    assert(plane.row_kind(0) == plane.FILE);
+    assert(plane.row_ref(0) == 5);
+    plane.fill_file(0, b"/home/notes.txt", 15, 3072, false);
+    U8[96] t;
+    assert(plane.row_text(0, t) == 15);
+    assert(t[6] == 'n');
+    assert(plane.row_side(0, t) == 6);
+    assert(t[0] == '3' && t[1] == '0' && t[4] == ' ' && t[5] == 'B');
+}
+
+test "arrows move in the drawn order: the top hit, then FILES, WINDOWS, PROGRAMS; within the list" {
+    setup();
+    assert(plane.typed('/'));
+    plane.filter_begin();
+    plane.offer_file(4, b"/home/x", 1);
+    assert(plane.filter_end() == 4);
+    for k in 0..plane.rows() {
+        if (plane.row_kind(k) == plane.FILE) { plane.fill_file(k, b"/home/x", 7, 10, false); }
+    }
+    // every row drawn once, the top hit first, then each section's rows in the list's order
+    I64 last = 0;
+    for p in 0..4 {
+        I64 k = plane.drawn(p);
+        assert(k >= 0 && k < 4);
+        if (p == 0) { assert(k == 0); }
+    }
+    for p in 1..4 {
+        I64 k = plane.drawn(p);
+        I64 s = 3;
+        if (plane.row_kind(k) == plane.FILE) { s = 1; }
+        if (plane.row_kind(k) == plane.WIN) { s = 2; }
+        assert(s >= last);
+        last = s;
+    }
+    assert(plane.selected() == 0);
+    assert(plane.move(5) == 3);
+    assert(plane.selected() == plane.drawn(3));
+    assert(plane.move(-9) == -3);
+    assert(plane.selected() == 0);
+}
+
+test "FF-5's transcript keeps its rows: `sh`, Down, picks the second window (tests/expected/hdesk-ff.out)" {
+    plane.clear();
+    plane.resize(1024, 740);
+    plane.source(plane.WIN, 0, 0, b"sh - /", 6, b"pid 1", 5, 2);
+    plane.source(plane.WIN, 1, 0, b"sh - /", 6, b"pid 2", 5, 1);
+    plane.source(plane.PROG, 900, 3, b"settings", 8, b"Super+,", 7, 0);
+    plane.source(plane.PROG, 0, 9, b"/bin/sh", 7, b"/bin", 4, 0);
+    plane.source(plane.PROG, 1, 9, b"/bin/sha256sum", 14, b"/bin", 4, 0);
+    plane.source(plane.PROG, 2, 9, b"/bin/seq", 8, b"/bin", 4, 0);
+    type_in(b"sh");
+    assert(plane.rows() == 4);
+    assert(plane.row_kind(0) == plane.WIN && plane.row_ref(0) == 0);
+    assert(plane.row_kind(1) == plane.WIN && plane.row_ref(1) == 1);
+    assert(plane.row_kind(2) == plane.PROG && plane.row_kind(3) == plane.PROG);
+    assert(plane.selected() == 0);
+    assert(plane.move(1) == 1);
+    assert(plane.selected() == 1);
+    // with no app in the grid, the field's `sett` keeps the settings row alone
+    for k in 0..2 { assert(plane.erase()); }
+    type_in(b"sett");
+    assert(plane.rows() == 1);
+    assert(plane.row_kind(0) == plane.PROG && plane.row_ref(0) == 900);
+}
+
+test "with the grid's apps, the transcript's `sh`, Down still picks window 0, and `sett` Settings (hdesk-ff.out)" {
+    plane.clear();
+    plane.resize(1920, 1052);
+    for i in 0..apps.N { plane.app(i); }
+    plane.source(plane.WIN, 1, 0, b"sh - /", 6, b"pid 2", 5, 2);
+    plane.source(plane.WIN, 0, 0, b"sh - /", 6, b"pid 1", 5, 1);
+    plane.source(plane.PROG, 900, 3, b"settings", 8, b"Super+,", 7, 0);
+    plane.source(plane.PROG, 0, 9, b"/bin/sh", 7, b"/bin", 4, 0);
+    plane.source(plane.PROG, 1, 9, b"/bin/sha256sum", 14, b"/bin", 4, 0);
+    plane.source(plane.PROG, 3, 1, b"/bin/ced", 8, b"/bin", 4, 0);   // the image: cish is /bin/sh, no /bin/cish
+    type_in(b"sh");
+    assert(plane.row_kind(0) == plane.WIN && plane.row_ref(0) == 1);
+    assert(plane.row_kind(1) == plane.WIN && plane.row_ref(1) == 0);
+    assert(plane.row_kind(2) == plane.PROG && plane.row_ref(2) == 0);         // /bin/sh, 7 bytes
+    assert(plane.row_kind(3) == plane.APP && plane.row_app(3) == apps.by_program(b"/bin/cish"));   // Terminal, 8
+    assert(plane.move(1) == 1);
+    assert(plane.selected() == 1 && plane.row_ref(plane.selected()) == 0);
+    for k in 0..2 { assert(plane.erase()); }
+    type_in(b"sett");
+    assert(plane.rows() == 1);
+    assert(plane.row_kind(0) == plane.APP);
+    U8[96] t;
+    assert(plane.row_text(0, t) == 8 && t[0] == 's' && t[7] == 's');
+    assert(plane.row_side(0, t) == 7 && t[0] == 'S' && t[6] == ',');
+    I64 st = plane.row_app(0);
+    assert(apps.runs_in(st) == apps.DESK);
+}
+
+test "the grid's apps are found by friendly name and alias; a program that is one is offered as the app" {
+    desk(1024, 740, 1);
+    plane.source(plane.PROG, 0, 9, b"/bin/ced", 8, b"/bin", 4, 0);
+    I64 ed = apps.by_program(b"/bin/ced");
+    type_in(b"text");
+    assert(plane.rows() == 1);
+    assert(plane.row_kind(0) == plane.APP && plane.row_ref(0) == ed);
+    assert(plane.row_app(0) == ed);
+    for k in 0..4 { assert(plane.erase()); }
+    type_in(b"editor");
+    assert(plane.rows() == 1);
+    assert(plane.row_kind(0) == plane.APP);
+    U8[96] t;
+    assert(plane.row_text(0, t) == 8);
+    assert(t[5] == 'c' && t[6] == 'e' && t[7] == 'd');
+}
+
+test "DN-49 placement: the plate 720 x 424, centered, 40 under the bar; the field, pins, rule, rail, band and footer" {
+    desk(1024, 740, 1);
+    assert(plane.plate_w() == 720 && plane.plate_h() == 424 && plane.plate_x0() == 152 && plane.plate_y0() == 40);
+    assert(plane.col_x0() == 172 && plane.col_x1() == 852 && plane.field_y0() == 60 && plane.field_y1() == 104);
+    assert(plane.grid_y0() == 120 && plane.grid_y1() == 284 && plane.grid_rows() == 2);
+    assert(plane.pins_x1() == 687 && plane.rule_x() == 703 && plane.rail_x0() == 720);
+    I64[4] b;
+    plane.cell_box(0, b);
+    assert(b[0] == 172 && b[1] == 120 && b[2] == 242 && b[3] == 200);
+    plane.cell_box(3, b);                       // Settings, the rail's first home, a 52 px row
+    assert(b[0] == 720 && b[1] == 120 && b[2] == 852 && b[3] == 172);
+    plane.cell_box(5, b);                       // All Apps, the last
+    assert(b[1] == 232 && b[3] == 284);
+    assert(plane.band_y0() == 300 && plane.foot_y0() == 420 && plane.band_y1() == 420);
+    assert(plane.left_x1() == 502 && plane.right_x0() == 522 && plane.right_x1() == 852);
+    desk(1920, 1052, 1);
+    assert(plane.plate_x0() == 600 && plane.col_x0() == 620 && plane.foot_y0() == 420);
+    desk(1920, 1024, 2);
+    assert(plane.scale() == 2 && plane.plate_x0() == 120 && plane.foot_y0() == 420);
+    desk(680, 740, 1);                          // a screen narrower than the plate: the plate takes its width
+    assert(plane.plate_w() == 680 && plane.col_w() == 640);
+    desk(1024, 740, 1);                         // a query: the band 16 under the field, the list, the preview 280 wide
+    type_in(b"sh");
+    assert(plane.band_y0() == 120 && plane.left_x1() == 552 && plane.right_x0() == 572);
+}
+
+test "DN-49 density: 7 a row at 48 px to 14 pins, 9 at 40 to 18, 11 at 32 to 22, 14 at 28 to 28; Pin dims at 28" {
+    I64[7] n = [14, 15, 18, 19, 22, 23, 28];
+    I64[7] c = [7, 9, 9, 11, 11, 14, 14];
+    I64[7] sz = [48, 40, 40, 32, 32, 28, 28];
+    for i in 0..7 {
+        desk(1024, 740, 1);
+        pins(n[i]);
+        assert(plane.pinned_count() == n[i] && plane.cols() == c[i] && plane.icon_size(0) == sz[i]);
+        assert(plane.pin_names(n[i]) == (sz[i] > 28) && plane.pins_full() == (n[i] == 28));
+        assert(plane.cells() == n[i] + 3 && plane.icon_size(n[i]) == 32);     // the homes keep 32
+        I64[4] b;
+        plane.cell_box(c[i] - 1, b);            // a full first row ends at the pins' edge
+        assert(b[1] == 120 && b[2] == plane.pins_x1());
+        plane.cell_box(n[i] - 1, b);            // the last pin in the second row
+        assert(b[1] == 204 && b[3] == 284 && b[2] <= plane.pins_x1());
+        for k in 0..n[i] {                      // every label in its cell, 4 px in from each side
+            plane.cell_box(k, b);
+            assert(plane.pin_label_w(k) <= b[2] - b[0] - 2 * plane.LABEL_PAD);
+        }
+        for y in 0..740 { plane.paint(row, y); }
+    }
+    assert(!plane.taskbar_toggle(b"/home/notes/one-more.txt", false) && plane.pinned_count() == 28);
+    assert(!plane.pin_app(plane.settings_app()));
+    desk(1024, 740, 1);
+    pins(16);                                   // 40 px: Web Browser clipped, its last byte the ellipsis's
+    U8[72] lb;
+    I64 ln = plane.pin_label(9, lb);            // cell 9: Web Browser (Settings is no pin)
+    assert(ln > 3 && lb[ln - 3] == 226 && lb[ln - 2] == 128 && lb[ln - 1] == 166);
+    assert(plane.pin_clipped(9) && !plane.pin_clipped(0));
+    // DN-52 (e), measured: 12 px where the name fits its room, else 11, else 10, and the clip only past 10
+    I64 w12 = ctext.width(b"Console", 7, faces.SMALL, 1);
+    I64 w11 = ctext.width(b"Console", 7, faces.PIN11, 1);
+    I64 w10 = ctext.width(b"Console", 7, faces.PIN10, 1);
+    assert(w10 < w11 && w11 < w12);
+    assert(plane.pin_face(b"Console", 7, w12) == faces.SMALL && plane.pin_face(b"Console", 7, w12 - 1) == faces.PIN11);
+    assert(plane.pin_face(b"Console", 7, w11 - 1) == faces.PIN10 && plane.pin_face(b"Console", 7, w10 - 1) == faces.PIN10);
+    I64[5] dn = [9, 14, 16, 18, 22];             // Console (app 1) with its open dot, at five densities, 16 among them
+    for d in 0..5 {
+        desk(1024, 740, 1);
+        pins(dn[d]);
+        plane.window(20, 1, b"cish", 4, b"/", 1, 1, false);
+        plane.window_app(1);
+        I64[4] cb;
+        plane.cell_box(1, cb);
+        I64 room = cb[2] - cb[0] - 2 * plane.LABEL_PAD - (plane.DOT + 5);
+        U8[72] cl;
+        I64 cn = plane.pin_label(1, cl);
+        assert(plane.has_windows(1));
+        if (w10 <= room) {
+            assert(!plane.pin_clipped(1) && cn == 7);   // it fits at 10 px or more: never an ellipsis
+        } else {
+            assert(plane.pin_clipped(1) && plane.pin_label_w(1) <= cb[2] - cb[0] - 2 * plane.LABEL_PAD);
+            assert(cl[cn - 3] == 226 && cl[cn - 2] == 128 && cl[cn - 1] == 166);   // at 16 pins: "Cons" and U+2026
+        }
+    }
+}
+
+test "selection over the pins, the rail and the rows: Left and Right, Up and Down, into the windows and back" {
+    desk(1024, 740, 1);
+    pins(9);                                    // nine pins, seven a row; the homes at 9, 10 and 11
+    plane.window(8, 0, b"sh", 2, b"/home", 5, 2, true);
+    assert(plane.rest_item() == 0 && plane.sel_kind() == plane.ON_CELL && plane.sel_ref() == 0);
+    assert(plane.nav(1, 0) == 1 && plane.nav(0, 1) == 8);
+    assert(plane.nav(0, 1) == 12);              // past the pins: the first Minimized row (DN-41 (c): 7 is open)
+    assert(plane.sel_kind() == plane.ON_WINDOW && plane.sel_ref() == 8);
+    assert(plane.nav(0, 1) == 12);
+    assert(plane.nav(0, -1) == 11 && plane.sel_kind() == plane.ON_ALLAPPS && plane.sel_ref() == plane.ALL);
+    assert(plane.nav(0, -1) == 10);             // up the rail: Trash
+    assert(plane.nav(-1, 0) == 8);              // left off the rail: the end of the pins' row beside it
+    assert(plane.nav(0, -1) == 1 && plane.nav(-1, 0) == 0 && plane.nav(-1, 0) == 0);
+    assert(plane.nav(0, 1) == 7 && plane.nav(1, 0) == 8);
+    assert(plane.nav(1, 0) == 10);              // right off the last pin: the rail
+    assert(plane.nav(0, -1) == 9 && plane.sel_ref() == plane.settings_app());
+    assert(plane.nav(0, 1) == 10 && plane.nav(0, 1) == 11 && plane.nav(0, 1) == 12);
+    // recent rows come before the windows: Right goes to the first window row, Left back
+    plane.recent(b"/home/a.txt", 11, 3, false);
+    assert(plane.nav(0, 0) == 12 && plane.sel_kind() == plane.ON_RECENT && plane.sel_ref() == 0);
+    assert(plane.nav(1, 0) == 13 && plane.sel_kind() == plane.ON_WINDOW && plane.sel_ref() == 8);   // the minimized one
+    assert(plane.nav(-1, 0) == 12);
+}
+
+test "MS-6 motion (DN-49): a pin keeps its size, its ground marks hover; the pill slides in 120; off, at once" {
+    desk(1024, 740, 1);
+    plane.set_time(0);
+    assert(plane.size_now(0) == 48 && plane.size_now(2) == 48 && plane.size_now(3) == 32);
+    I64[4] b;
+    plane.cell_box(2, b);
+    I64 h = plane.hover(b[0] + 4, b[1] + 4);
+    assert(h == 2 && plane.size_now(2) == 48);
+    plane.press(true);
+    plane.set_time(anim.steps(20));
+    assert(plane.size_now(2) == 48);
+    plane.press(false);
+    // the pill: from cell 0 to cell 1, the cells' left edges at 172 then 246
+    plane.set_time(anim.steps(100));
+    I64 n = plane.nav(1, 0);
+    assert(plane.moving());
+    plane.set_time(anim.steps(106));
+    plane.paint(row, 150);
+    assert(px(174) == tk(tokens.MANTLE) && px(244) == tk(tokens.FILL));   // past cell 0, short of cell 1's edge
+    plane.set_time(anim.steps(112));
+    assert(!plane.moving());
+    desk(1920, 1024, 2);                        // at 2x the sizes are device pixels
+    assert(plane.size_now(0) == 96 && plane.size_now(3) == 64);
+    desk(1024, 740, 1);                         // off: every change at its end on the first frame
+    plane.motion(false);
+    plane.set_time(0);
+    n = plane.nav(1, 0);
+    assert(!plane.moving());
+    plane.paint(row, 150);
+    assert(px(174) == tk(tokens.MANTLE) && px(250) == tk(tokens.FILL));
+}
+
+test "DN-5 pins (DN-49): the pins, then Settings, Trash and All Apps on the rail; Super+P pins and unpins" {
+    desk(1024, 740, 1);
+    I64 st = plane.settings_app();
+    assert(plane.pinned_count() == 3 && plane.cells() == 6);
+    assert(plane.cell_app(0) == 0 && plane.cell_app(2) == 2 && plane.cell_app(3) == st);
+    assert(plane.cell_app(4) == plane.TRASH && plane.cell_app(5) == plane.ALL);
+    I64 calc = apps.by_program(b"/bin/calc");
+    assert(!plane.is_pinned(calc));
+    assert(plane.toggle_pin(calc));
+    assert(plane.is_pinned(calc) && plane.cell_app(3) == calc && plane.cell_app(4) == st);
+    assert(!plane.toggle_pin(calc));
+    assert(!plane.is_pinned(calc) && plane.cell_app(3) == st);
+    assert(!plane.toggle_pin(0));               // Index off: the others move up
+    assert(plane.cell_app(0) == 1 && plane.pinned_count() == 2);
+    for i in 0..apps.N { Bool p = plane.pin_app(i); }
+    assert(plane.pinned_count() == apps.N - 1 && plane.cell_app(apps.N + 1) == plane.ALL);
+    plane.clear();
+    plane.place(1024, 740, 1);
+    assert(!plane.pin_app(0));                  // an app the desk does not have is not pinned
+    assert(plane.cells() == 3 && plane.cell_app(2) == plane.ALL && plane.sel_ref() == st);
+}
+
+test "DN-5 picker: every app in alphabetical order, filtered by name and alias; Esc goes back" {
+    desk(1024, 740, 1);
+    assert(!plane.picker_on());
+    plane.open_picker();
+    assert(plane.picker_on() && plane.picker_count() == apps.N);
+    U8[64] a;
+    U8[64] b;
+    for k in 1..plane.picker_count() {
+        I64 an = apps.field(plane.picker_app(k - 1), 0, a);
+        I64 bn = apps.field(plane.picker_app(k), 0, b);
+        U8 x = a[0];
+        U8 y = b[0];
+        if (x >= 'A' && x <= 'Z') { x = x + 32; }
+        if (y >= 'A' && y <= 'Z') { y = y + 32; }
+        assert(x <= y);
+    }
+    assert(plane.picker_app(0) == apps.by_program(b"/bin/calc"));      // Calculator first
+    assert(plane.picker_selected() == plane.picker_app(0));
+    assert(plane.picker_nav(1, 0) == 1 && plane.picker_nav(0, 1) == 6 && plane.picker_nav(0, 1) == 6);    // 11 apps: 5, 5, 1
+    assert(plane.picker_nav(-1, 0) == 5 && plane.picker_nav(0, 1) == 10 && plane.picker_nav(0, 1) == 10);  // none below the last
+    assert(plane.picker_nav(9, 0) == plane.picker_count() - 1 && plane.picker_nav(-99, 0) == 0);
+    assert(plane.picker_typed('c') && plane.picker_typed('c') && plane.picker_typed('a'));
+    assert(plane.picker_count() == 1 && plane.picker_selected() == apps.by_program(b"/bin/calc"));
+    assert(plane.picker_erase() && plane.picker_erase() && plane.picker_erase());
+    assert(plane.picker_count() == apps.N);
+    plane.close_picker();
+    assert(!plane.picker_on());
+    plane.paint(row, 82);
+    assert(px(500) == tk(tokens.SURF2));     // the plane's field again
+}
+
+// The OCHRE pixels on row r in picker cell k: how many, and their x sum.
+I64 ochre_in(I64 k, I64 r, inout I64[2] got) {
+    plane.paint(row, r);
+    I64[4] b;
+    plane.pk_box(k, b);
+    got[0] = 0;
+    got[1] = 0;
+    for x in b[0]..b[2] {
+        if (px(x) == tk(tokens.OCHRE)) {
+            got[0] = got[0] + 1;
+            got[1] = got[1] + x;
+        }
+    }
+    return got[0];
+}
+
+I64 pick_of(in U8[_] prog) {
+    for k in 0..plane.picker_count() {
+        if (plane.picker_app(k) == apps.by_program(prog)) { return k; }
+    }
+    return -1;
+}
+
+test "DN-39 (e): the dot under an app's name means it has an open window, not that it is pinned (DN-22's place)" {
+    desk(1024, 740, 1);                      // Index, Console, Edit and Settings pinned; an sh window of no app
+    I64 cv = apps.by_program(b"/bin/cvim");
+    plane.window(9, 0, b"cvim", 4, b"/home", 5, 1, false);
+    plane.window_app(cv);                    // CVim: not pinned, one window
+    assert(plane.has_windows(cv) && !plane.has_windows(apps.by_program(b"/bin/ced")));
+    plane.open_picker();
+    // the name's box is 124 + 115, 13 high: its baseline 11 down, the dot from 6 under it, 6 rows
+    I64 dr = 124 + 115 + 11 + 6 + 3;
+    I64[2] o;
+    assert(ochre_in(pick_of(b"/bin/ced"), dr, o) == 0);     // Edit: pinned, no window: no dot
+    assert(ochre_in(pick_of(b"/bin/calc"), dr, o) == 0);   // Calc: neither: no dot
+    I64 dots = ochre_in(pick_of(b"/bin/cvim"), dr, o);       // CVim: not pinned, a window: the dot
+    assert(dots >= 4 && dots <= 6);
+    I64[4] b;
+    plane.pk_box(pick_of(b"/bin/cvim"), b);
+    I64 c = (b[0] + b[2]) / 2;
+    assert(o[1] / dots >= c - 2 && o[1] / dots <= c + 1);
+    assert(ochre_in(pick_of(b"/bin/cvim"), dr - 6, o) == 0);   // above the dot, under the name: no OCHRE
+}
+
+test "DN-39 (d): an app's windows with their desktops and minimized state; go to one on its desktop, restore one here" {
+    desk(1024, 740, 1);
+    I64 con = apps.by_program(b"/bin/cish");
+    I64 cv = apps.by_program(b"/bin/cvim");
+    plane.window(11, 0, b"sh", 2, b"/etc", 4, 2, false);
+    plane.window_app(con);
+    plane.window(12, 0, b"cvim", 4, b"/home", 5, 3, true);
+    plane.window_app(cv);
+    plane.window(13, 0, b"sh", 2, b"/tmp", 4, 4, true);
+    plane.window_app(con);
+    I64[8] js;
+    assert(plane.app_windows(con, js) == 2);
+    assert(plane.window_ref(js[0]) == 11 && plane.window_desk(js[0]) == 2 && !plane.window_minimized(js[0]));
+    assert(plane.window_ref(js[1]) == 13 && plane.window_desk(js[1]) == 4 && plane.window_minimized(js[1]));
+    assert(plane.app_windows(cv, js) == 1 && plane.window_ref(js[0]) == 12 && plane.window_minimized(js[0]));
+    assert(plane.app_windows(apps.by_program(b"/bin/calc"), js) == 0);
+    I64 n = plane.app_windows(con, js);
+    plane.go_window(js[0]);                  // to sh on desktop 2
+    assert(plane.act_kind() == plane.GO_WINDOW && plane.act_ref() == 11 && plane.act_desk() == 2);
+    plane.go_window(js[1]);                  // a minimized one: to its own desktop, 4
+    assert(plane.act_kind() == plane.GO_WINDOW && plane.act_ref() == 13 && plane.act_desk() == 4);
+    assert(plane.restore_here(js[1], 1));    // restored onto the current desktop, 1
+    assert(plane.act_kind() == plane.RESTORE_HERE && plane.act_ref() == 13 && plane.act_desk() == 1);
+    assert(!plane.restore_here(js[0], 1));   // not minimized: nothing to restore, no action
+    assert(plane.act_kind() == plane.NO_ACT);
+    plane.go_window(99);
+    assert(plane.act_kind() == plane.NO_ACT);
+}
+
+test "DN-41 (c): the lower-right list is Minimized: of open and minimized windows it holds the minimized ones" {
+    desk(1024, 740, 1);                       // sh (7) open on desktop 1
+    plane.window(20, 0, b"cvim", 4, b"/home", 5, 2, true);
+    plane.window(21, 0, b"sh", 2, b"/etc", 4, 2, false);
+    plane.window(22, 0, b"cat", 3, b"/tmp", 4, 3, true);
+    assert(plane.windows() == 4 && plane.mn_count() == 2);
+    assert(plane.mn_at(0) == 1 && plane.mn_at(1) == 3 && plane.mn_at(2) == -1);
+    assert(plane.window_at(700, 300 + 19 + 10) == 20);
+    assert(plane.window_at(700, 300 + 19 + 10 + 28) == 22);
+    assert(plane.window_at(700, 300 + 19 + 10 + 56) == -1);   // two rows only: the open ones are not listed
+    plane.clear();
+    plane.place(1024, 740, 1);
+    plane.window(30, 0, b"sh", 2, b"/", 1, 1, false);
+    assert(plane.mn_count() == 0 && plane.window_at(700, 300 + 19 + 10) == -1);
+}
+
+test "DN-41 (e), DN-49: Settings, Trash and All Apps are homes on the rail: never pins, never moved" {
+    desk(1024, 740, 1);                       // Index, Console, Edit pinned
+    I64 st = plane.settings_app();
+    assert(apps.runs_in(st) == apps.DESK && plane.is_home(st));
+    assert(plane.is_home(plane.ALL) && plane.is_home(plane.TRASH) && !plane.is_home(0));
+    assert(!plane.pin_app(st) && !plane.is_pinned(st) && !plane.unpin_app(st) && plane.pinned_count() == 3);
+    assert(!plane.move_app(st, 0) && plane.cell_app(3) == st);
+    assert(!plane.move_app(plane.ALL, 0));
+    assert(plane.move_app(2, 0));             // Edit to the front: Index and Console move right
+    assert(plane.cell_app(0) == 2 && plane.cell_app(1) == 0 && plane.cell_app(2) == 1 && plane.cell_app(3) == st);
+    assert(plane.unpin_app(1) && !plane.is_pinned(1));   // an ordinary pin still comes off
+}
+
+test "DN-41 (d): All Apps' footer explains no dot: no OCHRE in it" {
+    desk(1920, 1052, 1);
+    plane.open_picker();
+    for y in 1000..1052 {
+        plane.paint(row, y);
+        for x in 0..1920 { assert(px(x) != tk(tokens.OCHRE)); }
+    }
+}
+
+test "DN-22 icons: 80 at rest, 88 on hover, 72 pressed; between them the larger drawing scaled down" {
+    desk(1024, 740, 1);
+    plane.open_picker();
+    plane.set_time(0);
+    assert(plane.pk_size(0) == 88 && plane.pk_size(1) == 80);
+    I64[4] b;
+    plane.pk_box(1, b);
+    I64 h = plane.hover(b[0] + 4, b[1] + 4);
+    assert(h == 1 && plane.pk_size(1) == 88);
+    plane.set_time(anim.steps(6));
+    I64 mid = plane.pk_size_now(1);
+    assert(mid > 80 && mid < 88);
+    // a mid size paints (the 88 drawing scaled down), and its middle row differs from the rest size's
+    for y in 0..740 { plane.paint(row, y); }
+    plane.set_time(anim.steps(12));
+    assert(plane.pk_size_now(1) == 88 && !plane.moving());
+    plane.press(true);
+    plane.set_time(anim.steps(20));
+    assert(plane.pk_size_now(1) == 72);
+}
+
+test "the drawing (DN-49): the scrim, the MANTLE plate, the field a SURF2 pill in its ring, the selected pin FILL" {
+    desk(1024, 740, 1);
+    for x in 0..1024 { row[x] = tk(tokens.PAPER); }
+    plane.paint(row, 10);
+    assert(px(500) == blend.mix_px(tk(tokens.PAPER), 0 as U32, plane.SCRIM) & 0xFFFFFF);   // the scrim alone
+    plane.paint(row, 200);
+    assert(px(156) == tk(tokens.MANTLE));     // the plate
+    plane.paint(row, 61);
+    assert(px(500) == tk(tokens.ULTRAMARINE));
+    assert(px(172) == tk(tokens.MANTLE));     // the pill's corner is round
+    plane.paint(row, 82);
+    assert(px(172) == tk(tokens.ULTRAMARINE) && px(173) == tk(tokens.ULTRAMARINE));
+    assert(px(500) == tk(tokens.SURF2));
+    plane.paint(row, 125);
+    assert(px(176) == tk(tokens.FILL));       // pin 0, selected: the FILL tile, no ring (DN-42)
+    assert(px(250) == tk(tokens.MANTLE));     // pin 1 at rest has no ground
+    assert(px(703) == tk(tokens.BAR_RULE) && px(704) == tk(tokens.MANTLE));   // the rule
+    I64 h = plane.hover(250, 125);
+    assert(h == 1);
+    plane.paint(row, 125);
+    assert(px(250) == tk(tokens.SURF2));
+    plane.paint(row, 420);
+    assert(px(500) == tk(tokens.BAR_RULE));   // the footer's line
+    desk(1920, 1024, 2);                      // at 2x every size doubles: the field's ring 4 px, its top at 120
+    plane.paint(row, 119);
+    assert(px(960) == tk(tokens.MANTLE));
+    plane.paint(row, 120);
+    assert(px(960) == tk(tokens.ULTRAMARINE));
+    plane.paint(row, 123);
+    assert(px(960) == tk(tokens.ULTRAMARINE));
+    plane.paint(row, 124);
+    assert(px(960) == tk(tokens.SURF2));
+}
+
+test "shape: a rounded rectangle is its color inside, blends at its corner, leaves what is outside" {
+    for x in 0..64 { row[x] = 0; }
+    shape.rounded(row, 0, 0, 0, 32, 32, 8, 0x00FFFFFF);
+    assert(px(0) == 0 && px(8) == 0x00FFFFFF && px(31) == 0);
+    I64 a = 0;
+    for x in 1..8 {
+        if (px(x) != 0 && px(x) != 0x00FFFFFF) { a = a + 1; }
+    }
+    assert(a > 0);
+    shape.rounded(row, 16, 0, 0, 32, 32, 8, 0x00FFFFFF);
+    assert(px(0) == 0x00FFFFFF && px(31) == 0x00FFFFFF);
+    for x in 0..64 { row[x] = 0; }
+    shape.ring(row, 16, 0, 0, 32, 32, 8, 2, 0x00FFFFFF);
+    assert(px(0) == 0x00FFFFFF && px(1) == 0x00FFFFFF && px(2) == 0 && px(30) == 0x00FFFFFF);
+    // a square corner (radius 0) is the color at every pixel; a corner pixel is the one blend of its samples
+    for x in 0..64 { row[x] = 0; }
+    shape.rounded(row, 0, 0, 0, 64, 64, 0, 0x00FFFFFF);
+    assert(px(0) == 0x00FFFFFF && px(63) == 0x00FFFFFF);
+    for x in 0..64 { row[x] = 0; }
+    shape.rounded(row, 0, 0, 0, 32, 32, 8, 0x00FFFFFF);
+    for x in 0..8 {
+        Bool one = false;
+        for n in 0..17 {
+            if (px(x) == blend.mix_px(0, 0x00FFFFFF, 16 * n)) { one = true; }
+        }
+        assert(one);
+    }
+}
+
+test "the restart leg's clicks (check-hybrid.sh, DN-47, DN-49): the power button, then Restart in its menu, at 1920 x 1080" {
+    plane.clear();
+    plane.place(1920, 1052, 1);
+    I64[4] b;
+    plane.power_span(1, b);
+    assert(b[0] == 1272 && b[2] == 1300 && b[1] == 428 && b[3] == 456);
+    assert(plane.power_at(1286, 442) == 1);
+    assert(plane.power_at(1100, 442) == 0);
+    plane.power_toggle(false);
+    plane.power_span(plane.ACT_RESTART, b);
+    assert(b[0] == 1138 && b[2] == 1294 && b[1] == 388 && b[3] == 416);
+    assert(plane.power_at(1216, 402) == plane.ACT_RESTART);
+    assert(plane.power_at(1216, 374) == plane.ACT_SHUTDOWN);
+    assert(plane.power_at(1216, 346) == 0);                            // DN-52 (d): Sleep, dimmed, takes nothing
+    plane.power_close();
+}
+
+test "DN-47: the menu's keys: Down from none takes the first row, Up wraps, Enter acts, Esc gives the button focus" {
+    plane.clear();
+    plane.place(1920, 1052, 1);
+    plane.power_toggle(true);                                          // by the keyboard: the first row chosen
+    assert(plane.power_open() && plane.power_key(plane.PK_ENTER) == plane.ACT_SHUTDOWN && !plane.power_open());
+    plane.power_toggle(true);
+    assert(plane.power_key(plane.PK_DOWN) == 0 && plane.power_key(plane.PK_ENTER) == plane.ACT_RESTART);
+    plane.power_toggle(true);
+    assert(plane.power_key(plane.PK_UP) == 0 && plane.power_key(plane.PK_ENTER) == plane.ACT_RESTART);
+    plane.set_lock(true);                                              // a session up: Lock first
+    plane.power_toggle(true);
+    assert(plane.power_key(plane.PK_ENTER) == plane.ACT_LOCK);
+    plane.power_toggle(true);                                          // DN-52 (d): Down skips Switch User and Sleep
+    assert(plane.power_key(plane.PK_DOWN) == 0 && plane.power_key(plane.PK_ENTER) == plane.ACT_SHUTDOWN);
+    plane.power_toggle(false);                                         // AC-D5's guest leg: 70 left, 152 up of the button
+    assert(plane.power_at(1286 - 70, 442 - 152) == plane.ACT_LOCK);
+    assert(plane.power_at(1286 - 70, 442 - 124) == 0 && plane.power_at(1286 - 70, 442 - 96) == 0);   // Switch User, Sleep
+    plane.power_close();
+    plane.power_toggle(true);
+    assert(plane.power_key(plane.PK_ESC) == -1 && !plane.power_open() && plane.power_focused());
+    plane.set_lock(false);
+    plane.power_unfocus();
+}
+
+test "pointer hits: pins, the rail, window rows, list rows, the footer's power button" {
+    desk(1024, 740, 1);
+    plane.window(9, 0, b"sh", 2, b"/tmp", 4, 3, true);   // DN-41 (c): the list holds this minimized one, not 7
+    assert(plane.cell_at(180, 130) == 0);
+    assert(plane.cell_at(180 + 74, 130) == 1);
+    assert(plane.cell_at(180 + 74 * 3, 130) == -1);   // a fourth pin is not there
+    assert(plane.cell_at(800, 130) == 3 && plane.cell_at(800, 250) == 5);   // Settings, All Apps
+    assert(plane.cell_at(800, 174) == -1);            // between two rail rows
+    assert(plane.window_at(700, 300 + 19 + 10) == 9);
+    assert(plane.window_at(700, 300 + 10) == -1);
+    assert(plane.pin_at(60, 140) == -1);
+    I64[4] pb;
+    plane.power_span(1, pb);                          // DN-47: the footer holds the power button alone
+    assert(plane.power_at(pb[0] + 4, pb[1] + 4) == 1);
+    assert(plane.power_at(200, 440) == 0 && plane.power_at(700, 455) == 0);
+    plane.source(plane.PROG, 0, 9, b"/bin/ced", 8, b"/bin", 4, 0);
+    type_in(b"editor");
+    assert(plane.cell_at(180, 130) == -1);
+    assert(plane.row_at(200, 120 + 19 + 10) == 0);
+    assert(plane.row_at(200, 120 + 10) == -1);
+    I64[4] m;
+    plane.machine_box(m);
+    assert(m[3] <= m[1]);
+}
+
+test "every row paints, empty and with a query, landscape and portrait, 1x and 2x" {
+    setup();
+    for i in 0..9 {
+        plane.app(i);
+        Bool p = plane.pin_app(i);
+    }
+    plane.recent(b"/home/ci/hdesk.ci", 17, 49152, false);
+    plane.recent(b"/home/ci/kit", 12, 0, true);
+    plane.window(0, 0, b"sh", 2, b"/home", 5, 1, false);
+    plane.grant(0, 1, b"sh - /home", 10);
+    for y in 0..1052 { plane.paint(row, y); }
+    assert(plane.typed('h'));
+    plane.filter_begin();
+    plane.offer_file(3, b"/home/notes.txt", 1);
+    I64 n = plane.filter_end();
+    for k in 0..n {
+        if (plane.row_kind(k) == plane.FILE) { plane.fill_file(k, b"/home/notes.txt", 15, 10, false); }
+    }
+    plane.preview_begin(b"/home/notes.txt", 15);
+    plane.preview_line(b"hello", 5);
+    assert(plane.toggle_preview());
+    for y in 0..1052 { plane.paint(row, y); }
+    plane.place(1080, 1864, 2);
+    for y in 0..1864 { plane.paint(row, y); }
+    assert(plane.erase());
+    for y in 0..1864 { plane.paint(row, y); }
+}
+
+test "a power chord arms its action until the plane opens again (FF-R6 B)" {
+    setup();
+    assert(plane.armed_action() == -1);
+    plane.arm(3);
+    assert(plane.armed_action() == 3);
+    for y in 0..1052 { plane.paint(row, y); }
+    plane.arm(2);
+    assert(plane.armed_action() == 2);
+    for y in 0..1052 { plane.paint(row, y); }
+    plane.reset();
+    assert(plane.armed_action() == -1);
+}
+
+// FONT-1 (docs/specs/2026-11-07-k-kit2.md section 3e): the plane's labels are ctext's, by role, at 1x.
+void clear_row() {
+    for x in 0..1920 { row[x] = 0; }
+}
+
+Bool row_clear() {
+    for x in 0..1920 {
+        if (row[x] != 0) { return false; }
+    }
+    return true;
+}
+
+test "FONT-1: a label's width is ctext.width of its bytes and role, and the pen stops there" {
+    I64[6] roles = [faces.PATH, faces.BODY, faces.NAME, faces.LABEL, faces.SEARCH, faces.TITLE];
+    U8[16] latin = [0x43, 0x61, 0x66, 0xC3, 0xA9, 0x20, 0xC3, 0x87, 0x61, 0x20, 0xE2, 0x80, 0x94, 0x20, 0x41, 0x67];
+    for k in 0..6 {
+        I64 f = roles[k];
+        assert(plane.txt_w(b"Settings", 8, f) == ctext.width(b"Settings", 8, f, 1));
+        assert(plane.txt_w(b"/home/ci/hdesk.ci", 17, f) == ctext.width(b"/home/ci/hdesk.ci", 17, f, 1));
+        assert(plane.txt_w(latin, 16, f) == ctext.width(latin, 16, f, 1));
+        I64 w = plane.txt_w(b"New Terminal", 12, f);
+        for y in 0..16 {
+            clear_row();
+            assert(plane.txt(row, y, 100, 0, 1900, b"New Terminal", 12, 0x00FFFFFF, f) == 100 + w);
+        }
+        // a label cut at x1 stops before it, whole glyphs only
+        clear_row();
+        I64 e = plane.txt(row, 8, 100, 0, 100 + w - 1, b"New Terminal", 12, 0x00FFFFFF, f);
+        assert(e <= 100 + w - 1 && e < 100 + w);
+    }
+    // the 13 px, 12 px and 11 px roles proportional, not 8 px a byte: Inter's i is narrower than its m
+    assert(plane.txt_w(b"i", 1, faces.BODY) < plane.txt_w(b"m", 1, faces.BODY));
+    assert(plane.txt_w(b"Settings", 8, faces.BODY) != 64);
+}
+
+test "FONT-1: the 16 px slot holds every glyph of the slot roles, its baseline 13 px down" {
+    I64[4] roles = [faces.PATH, faces.BODY, faces.NAME, faces.LABEL];
+    U8[20] tall = [0x41, 0x67, 0x7C, 0x28, 0x29, 0x5B, 0x5D, 0x5F, 0x6A, 0x51, 0xC3, 0x89, 0xC3, 0x87, 0xC3, 0x85, 0x40,
+                   0x24, 0x7B, 0x7D];
+    for k in 0..4 {
+        I64 f = roles[k];
+        Bool inked = false;
+        for y in 0..40 {
+            clear_row();
+            I64 e = plane.txt(row, y, 100, 10, 1900, tall, 20, 0x00FFFFFF, f);
+            if (y < 10 || y >= 26) { assert(row_clear()); }
+            if (!row_clear()) { inked = true; }
+        }
+        assert(inked);
+    }
+}
+
+test "DN-46 (c): a file or folder pinned to the Taskbar takes a cell after the apps; unpinned, the later ones move up" {
+    desk(1024, 740, 1);
+    I64 apps0 = plane.pinned_count();
+    assert(plane.taskbar_toggle(b"/home/a.txt", false) && plane.taskbar_toggle(b"/home/pics", true));
+    assert(plane.pinned_count() == apps0 + 2 && plane.on_taskbar(b"/home/pics"));
+    I64 c = plane.cell_app(apps0);
+    assert(c == plane.PIN_FILE + 0 && plane.cell_app(apps0 + 1) == plane.PIN_FILE + 1);
+    U8[32] t;
+    I64 n = plane.pin_name(1, t);
+    assert(n == 4 && t[0] == 'p' && t[3] == 's');           // the last part of the path
+    assert(!plane.taskbar_toggle(b"/home/a.txt", false));     // pinned: the toggle unpins it
+    assert(plane.pinned_count() == apps0 + 1 && plane.cell_app(apps0) == plane.PIN_FILE + 0);
+    assert(!plane.on_taskbar(b"/home/a.txt") && plane.on_taskbar(b"/home/pics"));
+}
+
+// A path of n bytes: /home/ then 'x', its last byte c.
+U8[300] lp;
+void long_path(I64 n, U8 c) {
+    U8[6] h = b"/home/";
+    for k in 0..6 { lp[k] = h[k]; }
+    for k in 6..n { lp[k] = 'x'; }
+    lp[n - 1] = c;
+}
+
+test "P1: a pin ask of 97 or 255 bytes stores nothing, no neighbor moves; 96 bytes pins, read back within the reader" {
+    desk(1024, 740, 1);
+    assert(plane.taskbar_toggle(b"/home/a.txt", false));
+    I64 c0 = plane.pinned_count();
+    long_path(97, 'b');
+    assert(!plane.taskbar_toggle(lp[0..97], false) && plane.pinned_count() == c0 && !plane.on_taskbar(lp[0..97]));
+    long_path(255, 'c');
+    assert(!plane.taskbar_toggle(lp[0..255], false) && plane.pinned_count() == c0);
+    long_path(96, 'd');
+    assert(plane.taskbar_toggle(lp[0..96], false) && plane.pinned_count() == c0 + 1 && plane.on_taskbar(lp[0..96]));
+    U8[96] t;
+    I64 n = plane.pin_sub(0, t);
+    assert(n == 11 && t[6] == 'a' && t[10] == 't');             // the neighbor's path, unchanged
+    n = plane.pin_sub(1, t);
+    assert(n == 96 && t[95] == 'd');
+    U8[32] s;
+    assert(plane.pin_sub(1, s) == 32 && plane.pin_name(1, s) == 32);   // never past a shorter reader
+    assert(plane.pin_sub(5, t) == 0 && plane.pin_sub(-1, t) == 0);    // no such pin
+    assert(!plane.taskbar_toggle(b"", false));
+}
+
+test "P1: with the pins full, or one slot free, a long ask changes nothing and a 96-byte one takes the last slot" {
+    desk(1024, 740, 1);
+    pins(27);
+    U8[96] t;
+    I64 before = plane.pin_sub(plane.pins() - 1, t);
+    U8 last = t[before - 1];
+    long_path(97, 'e');
+    assert(!plane.taskbar_toggle(lp[0..97], false) && plane.pinned_count() == 27);
+    long_path(96, 'f');
+    assert(plane.taskbar_toggle(lp[0..96], false) && plane.pinned_count() == 28);
+    I64 again = plane.pin_sub(plane.pins() - 2, t);
+    assert(again == before && t[again - 1] == last);            // the slot before it, unchanged
+    long_path(255, 'g');
+    assert(!plane.taskbar_toggle(lp[0..255], false) && plane.pinned_count() == 28);
+    long_path(90, 'h');
+    assert(!plane.taskbar_toggle(lp[0..90], false) && plane.pinned_count() == 28);   // full: nothing
+}
+
+test "P3: pin() says whether it stored the pin; refused, nothing moves and no Taskbar cell is added" {
+    desk(1024, 740, 1);
+    I64 c0 = plane.pinned_count();
+    I64 p0 = plane.pins();
+    long_path(97, 'i');
+    assert(!plane.pin(0, b"a.txt", 5, lp[0..97], 97) && plane.pins() == p0);     // past TEXT
+    assert(!plane.pin(0, b"a.txt", 6, b"/home/a.txt", 11) && plane.pins() == p0);  // a length past its bytes
+    assert(!plane.pin(0, b"a.txt", 5, b"", 0) && plane.pins() == p0);              // no path
+    assert(plane.pin(0, b"a.txt", 5, b"/home/a.txt", 11) && plane.pins() == p0 + 1);
+    assert(plane.pinned_count() == c0);                     // pin() adds no cell; the toggle adds one once stored
+    assert(plane.taskbar_toggle(b"/home/b.txt", false) && plane.pinned_count() == c0 + 1 && plane.pins() == p0 + 2);
+}
+
+test "AC-R1: a path a program asks for is used and logged only when printable: no control byte, no DEL, not empty" {
+    assert(plane.asked_path_ok(b"/home/a.txt") && plane.asked_path_ok(b"/home/my notes ~'q'.txt"));
+    U8[12] u = [47, 104, 111, 109, 101, 47, 67, 97, 102, 0xc3, 0xa9, 47];   // /home/Café/: UTF-8 passes
+    assert(plane.asked_path_ok(u[0..12]));
+    U8[8] c = b"/home/ax";
+    c[7] = 10;                                                  // a newline would forge a gate's line
+    assert(!plane.asked_path_ok(c[0..8]));
+    c[7] = 127;
+    assert(!plane.asked_path_ok(c[0..8]));
+    c[7] = 0;
+    assert(!plane.asked_path_ok(c[0..8]));
+    c[0] = 1;                                                   // a lone pin byte, read as an open ask
+    assert(!plane.asked_path_ok(c[0..1]) && !plane.asked_path_ok(c[0..0]));
+}
+
+test "DN-39 (d), DN-49: a pin's right-click menu: its windows, New Window, Unpin from Taskbar, Close All Windows" {
+    desk(1024, 740, 1);
+    I64 con = apps.by_program(b"/bin/cish");
+    plane.window(11, 0, b"sh", 2, b"/etc", 4, 2, false);
+    plane.window_app(con);
+    plane.window(13, 0, b"hello.ci", 8, b"/tmp", 4, 4, true);
+    plane.window_app(con);
+    assert(!plane.pin_menu_open(3, 100, 100) && !plane.pin_menu_on());   // Settings is no pin
+    assert(plane.pin_menu_open(1, 250, 150) && plane.pin_menu_on());
+    assert(plane.pin_menu_x() == 262 && plane.pin_menu_y() == 164);
+    assert(plane.pin_menu_rows() == 8 && plane.pin_menu_kind(0) == plane.AM_HEADING);
+    assert(plane.pin_menu_kind(3) == plane.AM_RULE && plane.pin_menu_kind(5) == plane.AM_UNPIN);
+    assert(plane.pin_menu_h() == 12 + 24 + 28 * 2 + 11 + 28 * 2 + 11 + 28);
+    assert(plane.pin_menu_at(270, 164 + 6 + 24 + 4) == 1 && plane.pin_menu_at(270, 164 + 6 + 4) == -1);
+    assert(plane.pin_menu_key(plane.PK_DOWN) == -1 && plane.pin_menu_sel() == 1);
+    assert(plane.pin_menu_key(plane.PK_UP) == -1 && plane.pin_menu_sel() == 7);    // Up wraps past the heading
+    assert(plane.pin_menu_key(plane.PK_DOWN) == -1 && plane.pin_menu_sel() == 1);
+    assert(plane.pin_menu_key(plane.PK_DOWN) == -1 && plane.pin_menu_key(plane.PK_ENTER) == 2);
+    assert(plane.pin_menu_choose(2, 1) == plane.AM_WINDOW && !plane.pin_menu_on());   // minimized: restored here
+    assert(plane.act_kind() == plane.RESTORE_HERE && plane.act_ref() == 13 && plane.act_desk() == 1);
+    assert(plane.pin_menu_open(1, 250, 150) && plane.pin_menu_choose(1, 1) == plane.AM_WINDOW);
+    assert(plane.act_kind() == plane.GO_WINDOW && plane.act_ref() == 11 && plane.act_desk() == 2);
+    assert(plane.pin_menu_open(1, 250, 150) && plane.pin_menu_choose(4, 1) == plane.AM_NEW);
+    assert(plane.pin_menu_app() == con && plane.is_pinned(con));
+    assert(plane.pin_menu_open(1, 250, 150) && plane.pin_menu_choose(5, 1) == plane.AM_UNPIN);
+    assert(!plane.is_pinned(con) && plane.pinned_count() == 2);
+    assert(plane.pin_menu_open(0, 1000, 700) && plane.pin_menu_rows() == 2);       // Index: no windows
+    assert(plane.pin_menu_x() == 1024 - 248 && plane.pin_menu_y() == 740 - (12 + 56));   // kept on the screen
+    plane.pin_menu_close();
+    assert(plane.taskbar_toggle(b"/home/a.txt", false));
+    I64 f = plane.pinned_count() - 1;
+    assert(plane.pin_menu_open(f, 200, 200) && plane.pin_menu_rows() == 1 && plane.pin_menu_kind(0) == plane.AM_UNPIN);
+    for y in 0..740 { plane.paint(row, y); }
+    assert(plane.pin_menu_choose(0, 1) == plane.AM_UNPIN && !plane.on_taskbar(b"/home/a.txt"));
+}
+
+test "DN-46 (d): the Trash home's icon is the trash drawing, the full one when the Trash holds something" {
+    plane.set_trash_full(false);
+    assert(plane.trash_icon() == icons3.TRASH);
+    plane.set_trash_full(true);
+    assert(plane.trash_icon() == icons3.TRASH_FULL);
+    plane.set_trash_full(false);
+}
+
+test "frame 33: the Taskbar's slots in order, a slot's name and icon, and a pin moved to a new place" {
+    desk(1024, 740, 1);
+    assert(plane.taskbar_toggle(b"/home/a.txt", false));
+    I64 n = plane.pinned_count();
+    assert(n == 4 && plane.pinned_at(n) == -1 && plane.pinned_at(-1) == -1);
+    I64 f = plane.pinned_at(n - 1);
+    assert(f == plane.PIN_FILE + 0);                   // the file pin, last
+    U8[96] t;
+    I64 tn = plane.slot_name(f, t);
+    assert(tn == 5 && t[0] == 'a' && t[4] == 't');     // its last part
+    assert(plane.slot_icon(f) >= 100);                 // a file icon: FILE_ICON and up
+    I64 a0 = plane.pinned_at(0);
+    assert(plane.pin_move(n - 1, 0) && plane.pinned_at(0) == f && plane.pinned_at(1) == a0);
+    assert(plane.pin_move(0, n - 1) && plane.pinned_at(n - 1) == f && plane.pinned_at(0) == a0);
+    assert(!plane.pin_move(0, n) && !plane.pin_move(-1, 0));   // past the pinned: nothing
+}
+// SPDX-License-Identifier: Apache-2.0

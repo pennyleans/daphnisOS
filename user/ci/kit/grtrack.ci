@@ -1,0 +1,51 @@
+// user/ci/kit/grtrack.ci: the desk's record of each window's grants for Settings' Grants page (frame 21, GV-2):
+// the word it saw last on each window and when it first saw each bit (disk, network, ring 0). The host calls
+// track() with each window's word (0 for a slot with no window) and forget() when a window ends; both say whether
+// the record changed, so the page is told again while it is open (a review's finding: a row stayed
+// after its app ended, since forget left nothing for track to see).
+export const I64 SLOTS = 16;
+export const I64 DISK = 1;             // the grant word's bits
+export const I64 NET = 2;
+export const I64 KERN = 8;
+
+I64[48] at_s;                          // 3 i + b: the time window i's bit b was first seen
+I64[16] seen_w;
+
+export I64 bit(I64 b) {
+    if (b == 0) { return DISK; }
+    if (b == 1) { return NET; }
+    return KERN;
+}
+
+// Window i's word g at time now: a new bit takes now; true when the word differs from the one seen last.
+export Bool track(I64 i, I64 g, I64 now) {
+    if (i < 0 || i >= SLOTS) { return false; }
+    for b in 0..3 {
+        if ((g & bit(b)) != 0 && (seen_w[i] & bit(b)) == 0) { at_s[3 * i + b] = now; }
+    }
+    Bool ch = g != seen_w[i];
+    seen_w[i] = g;
+    return ch;
+}
+
+// Window i ended: its record goes; true when it held a grant (the page loses its rows).
+export Bool forget(I64 i) {
+    if (i < 0 || i >= SLOTS) { return false; }
+    Bool had = seen_w[i] != 0;
+    seen_w[i] = 0;
+    for b in 0..3 { at_s[3 * i + b] = 0; }
+    return had;
+}
+
+export I64 seen(I64 i) { return seen_w[i]; }
+export I64 at(I64 i, I64 b) { return at_s[3 * i + b]; }
+
+// The time of window i's oldest grant, -1 for none.
+export I64 oldest(I64 i) {
+    I64 t = -1;
+    for b in 0..3 {
+        if ((seen_w[i] & bit(b)) != 0 && (t < 0 || at_s[3 * i + b] < t)) { t = at_s[3 * i + b]; }
+    }
+    return t;
+}
+// SPDX-License-Identifier: Apache-2.0

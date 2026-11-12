@@ -1,0 +1,115 @@
+// tests/set/indexpick_test.ci: Choose Picture (user/ci/kit/indexpick.ci, `finder --pick png`) over the volume in
+// memory of tests/set/fs_shctl.ci: what the picker lists and what Choose takes (folders and PNG names; a link by what
+// it leads to, or as itself), and the write: a pick sets desk.background alone and keeps every other line, a later
+// pick replaces it, a cancel or a refused path writes nothing (the bar's keys and presses: tests/ix/pickbar_test.ci).
+// Run by tools/check-settings.py (check.sh) in an isolated root with tests/set's stand-ins over shctl.ci, corectl.ci
+// and fdctl.ci.
+import user.ci.kit.settings;
+import user.ci.kit.setfile;
+import user.ci.kit.indexpick;
+import user.ci.shctl;
+
+const I64 DIR = 0x41ED;              // a folder, 0755
+const I64 REG = 0x81A4;              // a file, 0644
+const I64 LNK = 0xA1FF;              // a link, as lstat gives it
+const I64 FIFO = 0x11A4;
+
+U8[9000] got;
+
+// A volume with sam's home and a settings file holding two other lines, sam calling.
+void volume() {
+    shctl.reset();
+    settings.clear();
+    _ = shctl.node(b"/home", shctl.DIR, 0, 493, b"", 0);
+    _ = shctl.node(b"/home/sam", shctl.DIR, 1000, 448, b"", 0);
+    _ = shctl.node(b"/home/sam/.config", shctl.DIR, 1000, 448, b"", 0);
+    _ = shctl.node(b"/home/sam/.config/daphnis", shctl.DIR, 1000, 448, b"", 0);
+    _ = shctl.node(b"/home/sam/.config/daphnis/settings", shctl.FILE, 1000, 384,
+                   b"time.24-hour=1\ndesk.background=#141414\n", 39);
+    shctl.caller(1000);
+}
+
+// The file holds want, nothing is left open and no settings.new.7 is left.
+Bool file_is(in U8[_] want) {
+    I64 n = shctl.contents(b"/home/sam/.config/daphnis/settings", got);
+    if (n != len(want) || shctl.opened() != shctl.closed()) { return false; }
+    if (shctl.kind_of(b"/home/sam/.config/daphnis/settings.new.7") != shctl.NONE) { return false; }
+    for i in 0..n {
+        if (got[i] != want[i]) { return false; }
+    }
+    return true;
+}
+
+test "the picker lists folders and PNG names; Choose takes a regular file with a PNG's name, in any case" {
+    assert(indexpick.shows(b"Pictures", DIR) && indexpick.shows(b"a.png", REG) && indexpick.shows(b"B.PNG", REG));
+    assert(!indexpick.shows(b"a.jpg", REG) && !indexpick.shows(b"png", REG) && !indexpick.shows(b".png", REG));
+    assert(!indexpick.shows(b"a.png.txt", REG) && !indexpick.shows(b"apng", REG));
+    assert(indexpick.chooses(b"a.png", REG) && indexpick.chooses(b"Shot.Png", REG));
+    assert(!indexpick.chooses(b"d.png", DIR) && !indexpick.chooses(b"a.qoi", REG) && !indexpick.chooses(b"p.png", FIFO));
+    assert(!indexpick.chooses(b"two\nlines.png", REG));   // a setting's value holds no LF
+}
+
+test "a link is listed as Index lists it: by what it leads to, as itself when the account may not follow it" {
+    // Index stats each name following links as the account; a link it may follow lists with its target's mode.
+    assert(indexpick.shows(b"wall.png", REG) && indexpick.chooses(b"wall.png", REG));
+    assert(indexpick.shows(b"shots", DIR) && !indexpick.chooses(b"shots", DIR));
+    // A link to nothing, or to what the account may not reach, lists as itself (lstat): shown by its name, never taken.
+    assert(indexpick.shows(b"gone.png", LNK) && !indexpick.chooses(b"gone.png", LNK));
+    assert(!indexpick.shows(b"gone", LNK));
+    // A link the account follows to a PNG writes the link's own path, which the desk reads as the account again.
+    volume();
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/Pictures/wall.png") == 0);
+    assert(file_is(b"time.24-hour=1\ndesk.background=/home/sam/Pictures/wall.png\n"));
+}
+
+test "a pick writes desk.background alone: the other lines kept, the file the account's, 0600" {
+    volume();
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/Pictures/Sea Shore.PNG") == 0);
+    assert(file_is(b"time.24-hour=1\ndesk.background=/home/sam/Pictures/Sea Shore.PNG\n"));
+    assert(shctl.uid_of(b"/home/sam/.config/daphnis/settings") == 1000);
+    assert(shctl.mode_of(b"/home/sam/.config/daphnis/settings") == 384);
+    settings.clear();
+    assert(setfile.load(b"/home/sam", 1000) == 2 && settings.entries() == 2);
+}
+
+test "a cancel writes nothing; a later pick replaces the line, never adds one" {
+    volume();
+    assert(shctl.opened() == 0 && file_is(b"time.24-hour=1\ndesk.background=#141414\n"));   // Cancel: no choose
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/a.png") == 0);
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/Pictures/b.png") == 0);
+    assert(file_is(b"time.24-hour=1\ndesk.background=/home/sam/Pictures/b.png\n"));
+}
+
+test "a path Choose cannot take writes nothing: not absolute, no PNG name, too long, or a byte a value cannot hold" {
+    volume();
+    assert(indexpick.choose(b"/home/sam", b"Pictures/a.png") == -22);
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/notes.txt") == -22);
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/a.png/") == -22);
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/.png") == -22);
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/a\rb.png") == -22);
+    U8[4096] p;
+    p[0] = '/';
+    for q in 1..4092 { p[q] = 'a'; }
+    p[4092] = '.';
+    p[4093] = 'p';
+    p[4094] = 'n';
+    p[4095] = 'g';
+    assert(indexpick.choose(b"/home/sam", p[0..4096]) == -22);  // PATH bytes: no room for the ending 0
+    assert(shctl.opened() == 0);
+    assert(file_is(b"time.24-hour=1\ndesk.background=#141414\n"));
+    p[4091] = '.';                                                  // 4095 bytes are taken
+    p[4092] = 'p';
+    p[4093] = 'n';
+    p[4094] = 'g';
+    assert(indexpick.choose(b"/home/sam", p[0..4095]) == 0);
+    I64 n = shctl.contents(b"/home/sam/.config/daphnis/settings", got);
+    assert(n == 15 + 16 + 4095 + 1 && got[15 + 16] == '/' && got[n - 2] == 'g');
+}
+
+test "a write that fails leaves the file as it was" {
+    volume();
+    shctl.fail_rename(0 - 5);
+    assert(indexpick.choose(b"/home/sam", b"/home/sam/a.png") == -5);
+    assert(file_is(b"time.24-hour=1\ndesk.background=#141414\n"));
+}
+// SPDX-License-Identifier: Apache-2.0

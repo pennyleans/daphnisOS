@@ -1,0 +1,88 @@
+// Native long-running reclamation regressions use an explicit external frame arena.
+import console;
+import user.ci.cvim.key;
+import user.ci.cvim.state;
+import user.ci.cvim.buf;
+import user.ci.cvim.undo;
+import user.ced.keys;
+
+void production() {
+    I64[16384] r; I64[1069072] x; U8[2] orig; U8[33554432] add; I64[786432] sp; I64[278528] u;
+    orig[0]='a'; orig[1]='\n';
+    key.init(r,x,4096,65536); assert(key.load(r,x,orig,add));
+    for cycle in 0..100000 {
+        key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'Z'); assert(r[state.R_FULL] == 0);
+        key.step(r,x,orig,add,sp,u,keys.K_ESC); key.step(r,x,orig,add,sp,u,'u');
+        assert(buf.total(x) == 2 && r[state.R_U_AT] == 0 && r[state.R_U_OPS] == 1);
+        assert(r[state.R_SPTOP] == 0);
+    }
+    assert(r[state.R_PBOUND] <= 4);
+    "production redo_cycles=100000 total={buf.total(x)} pieces={buf.pieces(x)} bound={r[state.R_PBOUND]} append={r[state.R_ST_ADD]} spans={r[state.R_SPTOP]} undo_n={r[state.R_U_N]} undo_at={r[state.R_U_AT]} undo_ops={r[state.R_U_OPS]} full={r[state.R_FULL]}\n";
+    key.step(r,x,orig,add,sp,u,'x'); assert(r[state.R_FULL] == 0 && buf.total(x) == 1);
+    key.step(r,x,orig,add,sp,u,'u'); assert(buf.total(x) == 2);
+    "production cycles=100000 total={buf.total(x)} pieces={buf.pieces(x)} bound={r[state.R_PBOUND]} append={r[state.R_ST_ADD]} spans={r[state.R_SPTOP]} undo_n={r[state.R_U_N]} undo_at={r[state.R_U_AT]} undo_ops={r[state.R_U_OPS]} full={r[state.R_FULL]}\n";
+}
+
+void oldest() {
+    I64[16384] r; I64[133648] x; U8[2] orig; U8[40000] add; I64[96] sp; I64[278528] u;
+    orig[0]='a'; orig[1]='\n';
+    key.init(r,x,512,256); assert(key.load(r,x,orig,add));
+    for cycle in 0..17000 {
+        key.step(r,x,orig,add,sp,u,'o'); assert(r[state.R_FULL] == 0);
+        key.step(r,x,orig,add,sp,u,'Z'); assert(r[state.R_FULL] == 0);
+        key.step(r,x,orig,add,sp,u,keys.K_ESC); assert(r[state.R_FULL] == 0);
+        assert(r[state.R_U_N] == min(cycle+1,undo.STEPS));
+        assert(r[state.R_U_POT] == 3*min(cycle+1,undo.STEPS) && r[state.R_U_APOT] == r[state.R_U_POT]);
+        assert(r[state.R_PBOUND] >= buf.pieces(x) && r[state.R_PBOUND] <= buf.piece_limit(x));
+    }
+    assert(r[state.R_U_OPS] == undo.STEPS && r[state.R_SPTOP] == 0);
+    I64 final_size=buf.total(x);
+    for cycle in 0..2 {
+        for j in 0..undo.STEPS { key.step(r,x,orig,add,sp,u,'u'); assert(r[state.R_FULL] == 0); }
+        assert(buf.total(x) == final_size-2*undo.STEPS && r[state.R_U_AT] == 0 && r[state.R_U_APOT] == 0);
+        for j in 0..undo.STEPS { key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r'); assert(r[state.R_FULL] == 0); }
+        assert(buf.total(x) == final_size && r[state.R_U_AT] == undo.STEPS);
+        assert(r[state.R_U_POT] == 3*undo.STEPS && r[state.R_U_APOT] == r[state.R_U_POT]);
+    }
+    "oldest cycles=17000 total={buf.total(x)} pieces={buf.pieces(x)} bound={r[state.R_PBOUND]} append={r[state.R_ST_ADD]} spans={r[state.R_SPTOP]} undo_n={r[state.R_U_N]} undo_at={r[state.R_U_AT]} undo_ops={r[state.R_U_OPS]} full={r[state.R_FULL]} potential={r[state.R_U_POT]} applied_potential={r[state.R_U_APOT]}\n";
+    key.step(r,x,orig,add,sp,u,'r'); key.step(r,x,orig,add,sp,u,'Q'); assert(r[state.R_FULL] == 0);
+    for cycle in 0..20 {
+        key.step(r,x,orig,add,sp,u,'u'); assert(r[state.R_FULL] == 0 && buf.byte_at(x,orig,add,r[state.R_CUR]) == 'Z');
+        key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r'); assert(r[state.R_FULL] == 0 && buf.byte_at(x,orig,add,r[state.R_CUR]) == 'Q');
+    }
+    "oldest compound_undo_redo=20 total={buf.total(x)} pieces={buf.pieces(x)} bound={r[state.R_PBOUND]} undo_n={r[state.R_U_N]} undo_ops={r[state.R_U_OPS]} potential={r[state.R_U_POT]} applied_potential={r[state.R_U_APOT]}\n";
+}
+
+void operations() {
+    I64[16384] r; I64[16384] before; I64[1069072] x; U8[2] orig; U8[131072] add;
+    I64[786432] sp; I64[786432] old_sp; I64[278528] u; I64[278528] old_u;
+    orig[0]='a'; orig[1]='\n';
+    key.init(r,x,4096,65536); assert(key.load(r,x,orig,add));
+    key.step(r,x,orig,add,sp,u,'i'); key.step(r,x,orig,add,sp,u,'Z'); key.step(r,x,orig,add,sp,u,keys.K_ESC);
+    key.step(r,x,orig,add,sp,u,'R');
+    for cycle in 0..16384 {
+        key.step(r,x,orig,add,sp,u,'Q'); assert(r[state.R_FULL] == 0);
+        key.step(r,x,orig,add,sp,u,keys.K_BACKSPACE); assert(r[state.R_FULL] == 0);
+    }
+    assert(r[state.R_U_N] == 1 && r[state.R_U_AT] == 1 && r[state.R_U_OPS] == undo.OPS);
+    assert(buf.total(x) == 3 && buf.byte_at(x,orig,add,0) == 'Z');
+    before[0..16384]=r[0..16384]; old_u[0..278528]=u[0..278528]; old_sp[0..786432]=sp[0..786432];
+    key.step(r,x,orig,add,sp,u,'X'); assert(r[state.R_FULL] == 1);
+    for i in 0..16384 {
+        if (i != state.R_FULL && i != state.R_BELL && i != state.R_MSG) { assert(r[i] == before[i]); }
+    }
+    for i in 0..278528 { assert(u[i] == old_u[i]); }
+    for i in 0..786432 { assert(sp[i] == old_sp[i]); }
+    assert(buf.total(x) == 3 && buf.byte_at(x,orig,add,0) == 'Z');
+    key.step(r,x,orig,add,sp,u,keys.K_ESC);
+    for cycle in 0..2 {
+        key.step(r,x,orig,add,sp,u,'u'); assert(r[state.R_FULL] == 0 && r[state.R_U_APOT] == 0);
+        assert(buf.total(x) == 3 && buf.byte_at(x,orig,add,0) == 'Z');
+        key.step(r,x,orig,add,sp,u,keys.M_CTRL+'r'); assert(r[state.R_FULL] == 0 && r[state.R_U_APOT] == r[state.R_U_POT]);
+        assert(buf.total(x) == 3 && buf.byte_at(x,orig,add,0) == 'Z');
+    }
+    "operations cycles=16384 refused_key_preserved=1 inverse_cycles=2 total={buf.total(x)} pieces={buf.pieces(x)} bound={r[state.R_PBOUND]} append={r[state.R_ST_ADD]} spans={r[state.R_SPTOP]} undo_n={r[state.R_U_N]} undo_at={r[state.R_U_AT]} undo_ops={r[state.R_U_OPS]} potential={r[state.R_U_POT]} applied_potential={r[state.R_U_APOT]} full={r[state.R_FULL]}\n";
+}
+
+export void main(Grants g) { production(); oldest(); operations(); }
+// SPDX-License-Identifier: Apache-2.0

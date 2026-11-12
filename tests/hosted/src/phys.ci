@@ -1,0 +1,39 @@
+// tests/hosted/src/phys.ci: src/phys.ci for the hosted ext2 tests (FS-4, tests/fs/times_test.ci). The kernel's rows
+// reach physical memory through rt/phys.c; here the pool's first 128 frames are words in module state, so
+// src/ext2.ci runs as it is under `cint test`, which starts no program that imports an extern. check.sh builds the
+// test from a copy of the tree with this file at src/phys.ci and tests/hosted/src/blk.ci at src/blk.ci.
+
+const U64 BASE = 33554432;             // src/frames.ci POOL_BASE
+U64[65536] mem;                        // 128 frames of 4 KiB
+
+export void phys_read8(U64 base, inout U8[_] dst) {
+    for k in 0..len(dst) {
+        U64 a = base - BASE + k as U64;
+        dst[k] = ((mem[(a / 8) as I64] >> (8 * (a % 8))) & 0xFF) as U8;
+    }
+}
+
+export void phys_write8(U64 base, in U8[_] src) {
+    for k in 0..len(src) {
+        U64 a = base - BASE + k as U64;
+        I64 w = (a / 8) as I64;
+        U64 sh = 8 * (a % 8);
+        U64 byte = 0xFF;
+        mem[w] = (mem[w] & ~(byte << sh)) | ((src[k] as U64) << sh);
+    }
+}
+
+export void phys_read64(U64 base, inout U64[_] dst) {
+    I64 w = ((base - BASE) / 8) as I64;
+    for k in 0..len(dst) {
+        dst[k] = mem[w + k];
+    }
+}
+
+export void phys_write64(U64 base, in U64[_] src) {
+    I64 w = ((base - BASE) / 8) as I64;
+    for k in 0..len(src) {
+        mem[w + k] = src[k];
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

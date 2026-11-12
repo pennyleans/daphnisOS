@@ -1,0 +1,6 @@
+ls -R home
+md5sum home/big home/sparse home/hello.txt home/c100 home/m/moved home/m/seq home/a/b.txt
+wc -c home/sparse home/hello.txt home/c100 home/m/seq
+find home | sort | xargs stat -c 'stat %n %i %f %h %u %g %s %b %X %Y %Z'
+exit 0
+

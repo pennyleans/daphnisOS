@@ -1,0 +1,231 @@
+// user/ci/kit/noanswer.ci: "NAME is not answering." (frame 25, DN-51, approved 2026-11-11; design answers 2026-11-12
+// 08:23Z), the sheet the desk puts over a window it opened for an app when its program leaves input unread: input
+// waiting 5 s with none taken (FBIO_TILE_INFO kinds 17 and 18). It blocks that window alone, as the About sheet does
+// (kit/about.ci): the window's terminal content under it at 40 percent.
+//
+// The sheet: W wide, radius RAD, SURF1, shadow High (MS-3 level 3), centered over the window's content box. PAD in:
+// `NAME is not answering.` in NAME_BOLD INK; 12 below, two buttons BTN_H high, radius 6, their words in NAME_BOLD: at
+// the left Wait on FILL, its Enter on a KEY_H keycap of radius 4 (SHORTCUT, KEY_SIDE in at each side) BTN_SIDE in,
+// then KEY_GAP and the word, keycap and word ON_FILL; at the right `Close NAME` on SURF2 in INK, no key of its own.
+// Enter and Esc wait, wherever the focus is; Tab, Left or Right move the focus, which starts on Wait, and show
+// DN-40's ring; Space takes the focused button. No caption, no countdown (DN-46).
+//
+// Coordinates are logical pixels (device / z); row_at draws device row y at zoom z (1 or 2). One sheet at a time;
+// the state is this module's.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;
+import user.ci.kit.shade;
+
+export const I64 W = 280;
+export const I64 RAD = 12;
+export const I64 SHADOW = 3;           // High
+const I64 PAD = 14;
+const I64 HEAD = 20;                   // the sentence's line
+const I64 GAP = 8;
+const I64 BTN_H = 36;
+const I64 BTN_SIDE = 12;
+const I64 KEY_H = 20;
+const I64 KEY_SIDE = 6;
+const I64 KEY_GAP = 10;
+export const I64 H = PAD + HEAD + GAP + BTN_H + PAD;
+
+export const I64 STAY = 0;
+export const I64 WAIT = 1;
+export const I64 END = 2;              // Close NAME: the program ends at once
+
+const I64 K_ESC = 1;
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_SPACE = 57;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+
+Bool up = false;
+I64 owner = -1;
+I64 ax = 0;
+I64 ay = 0;
+U8[24] nm;
+I64 nn = 0;
+Bool on_end = false;                   // the focus: false Wait, true Close NAME
+Bool kbd = false;
+
+// The sheet up for window w, centered over its content box [cx, cx + cw) x [cy, cy + ch) (logical); the app's name.
+export void open(I64 w, I64 cx, I64 cy, I64 cw, I64 ch, in U8[_] name) {
+    nn = min(len(name), 24);
+    for k in 0..nn { nm[k] = name[k]; }
+    owner = w;
+    ax = cx + (cw - W) / 2;
+    ay = cy + (ch - H) / 2;
+    on_end = false;
+    kbd = false;
+    up = true;
+}
+
+export void close() {
+    up = false;
+    owner = -1;
+}
+
+// Window i went (hdesk close_window): a sheet it owned goes with it.
+export void forget(I64 i) {
+    if (up && i == owner) { close(); }
+}
+
+export Bool is_up() { return up; }
+export I64 window() { return owner; }
+export Bool blocks(I64 i) { return up && i == owner; }
+
+// A key for the blocked window: WAIT, END (the sheet closes either way) or STAY.
+export I64 key(I64 c) {
+    if (c == K_ENTER || c == K_ESC) {
+        close();
+        return WAIT;
+    }
+    if (c == K_SPACE) {
+        Bool e = on_end;
+        close();
+        if (e) { return END; }
+        return WAIT;
+    }
+    if (c == K_TAB || c == K_LEFT || c == K_RIGHT) {
+        if (kbd) {
+            if (c == K_LEFT) {
+                on_end = false;
+            } else if (c == K_RIGHT) {
+                on_end = true;
+            } else {
+                on_end = !on_end;
+            }
+        }
+        kbd = true;
+    }
+    return STAY;
+}
+
+I64 key_w() { return KEY_SIDE + ctext.width(b"Enter", 5, faces.SHORTCUT, 1) + KEY_SIDE; }
+I64 wait_w() { return BTN_SIDE + key_w() + KEY_GAP + ctext.width(b"Wait", 4, faces.NAME_BOLD, 1) + BTN_SIDE; }
+I64 end_w() {
+    U8[30] t;
+    I64 n = end_word(t);
+    return BTN_SIDE + ctext.width(t[0..n], n, faces.NAME_BOLD, 1) + BTN_SIDE;
+}
+I64 end_word(inout U8[30] t) {
+    U8[6] c = b"Close ";
+    for k in 0..6 { t[k] = c[k]; }
+    for k in 0..nn { t[6 + k] = nm[k]; }
+    return 6 + nn;
+}
+I64 btn_y() { return ay + PAD + HEAD + GAP; }
+
+// A press at (px, py) (logical) over the blocked window: WAIT on Wait, END on Close NAME, else STAY.
+export I64 click(I64 px, I64 py) {
+    I64 bt = btn_y();
+    if (py < bt || py >= bt + BTN_H) { return STAY; }
+    if (px >= ax + PAD && px < ax + PAD + wait_w()) {
+        close();
+        return WAIT;
+    }
+    if (px >= ax + W - PAD - end_w() && px < ax + W - PAD) {
+        close();
+        return END;
+    }
+    return STAY;
+}
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+I64 base_in(I64 t, I64 h, I64 f) {
+    I64 a = ctext.ascent(f, 1);
+    I64 d = ctext.descent(f, 1);
+    return t + (h - a - d) / 2 + a;
+}
+
+// Row y (device) of the sheet at zoom z on theme th: its shadow, its ground and its body, over row.
+export void row_at(inout U32[_] row, I64 y, I64 z, I64 th) {
+    if (!up) { return; }
+    I64 x0 = ax * z;
+    I64 y0 = ay * z;
+    I64 x1 = (ax + W) * z;
+    I64 y1 = (ay + H) * z;
+    if (y < y0 - shade.reach_up(SHADOW, th, z) || y >= y1 + shade.reach_down(SHADOW, th, z)) { return; }
+    I64 sd = shade.reach_side(SHADOW, th, z);
+    shade.shade_row(row, max(x0 - sd, 0), min(x1 + sd, len(row)), y, x0, y0, x1, y1, RAD, SHADOW, th, z);
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, x0, y0, x1, y1, RAD * z, tok(tokens.SURF1));
+    U8[48] t;
+    for k in 0..nn { t[k] = nm[k]; }
+    U8[18] s = b" is not answering.";
+    for k in 0..18 { t[nn + k] = s[k]; }
+    I64 e = ctext.text(row, y, (ax + PAD) * z, base_in(ay + PAD, HEAD, faces.NAME_BOLD) * z, (ax + W - PAD) * z,
+                       t[0..nn + 18], nn + 18, tok(tokens.INK), faces.NAME_BOLD, z);
+    I64 bt = btn_y();
+    I64 wx = ax + PAD;
+    I64 ww = wait_w();
+    I64 ex = ax + W - PAD - end_w();
+    if (y >= bt * z && y < (bt + BTN_H) * z) {
+        U32 on = tok(tokens.ON_FILL);
+        shape.rounded(row, y, wx * z, bt * z, (wx + ww) * z, (bt + BTN_H) * z, 6 * z, tok(tokens.FILL));
+        I64 kx = wx + BTN_SIDE;
+        I64 ky = bt + (BTN_H - KEY_H) / 2;
+        shape.ring(row, y, kx * z, ky * z, (kx + key_w()) * z, (ky + KEY_H) * z, 4 * z, z, on);
+        if (y >= ky * z && y < (ky + KEY_H) * z) {
+            e = ctext.text(row, y, (kx + KEY_SIDE) * z, base_in(ky, KEY_H, faces.SHORTCUT) * z, (kx + key_w()) * z,
+                           b"Enter", 5, on, faces.SHORTCUT, z);
+        }
+        I64 wb = base_in(bt, BTN_H, faces.NAME_BOLD) * z;
+        e = ctext.text(row, y, (kx + key_w() + KEY_GAP) * z, wb, (wx + ww) * z, b"Wait", 4, on, faces.NAME_BOLD, z);
+        shape.rounded(row, y, ex * z, bt * z, (ax + W - PAD) * z, (bt + BTN_H) * z, 6 * z, tok(tokens.SURF2));
+        U8[30] c;
+        I64 cn = end_word(c);
+        e = ctext.text(row, y, (ex + BTN_SIDE) * z, wb, (ax + W - PAD) * z, c[0..cn], cn, tok(tokens.INK),
+                       faces.NAME_BOLD, z);
+    }
+    if (kbd && y >= (bt - 4) * z && y < (bt + BTN_H + 4) * z) {   // DN-40: the keyboard's focus, outside the button
+        I64 fx = wx;
+        I64 fw = ww;
+        if (on_end) {
+            fx = ex;
+            fw = end_w();
+        }
+        shape.focus_ring(row, y, fx * z, bt * z, (fx + fw) * z, (bt + BTN_H) * z, 6 * z, z, tok(tokens.SURF1),
+                         tok(tokens.ULTRAMARINE));
+    }
+}
+
+// The device box the sheet draws in at zoom z, its shadow included, into b (x0, y0, x1, y1); empty when it is down.
+export void box(I64 z, I64 th, inout I64[4] b) {
+    for k in 0..4 { b[k] = 0; }
+    if (!up) { return; }
+    I64 sd = shade.reach_side(SHADOW, th, z);
+    b[0] = ax * z - sd;
+    b[1] = ay * z - shade.reach_up(SHADOW, th, z);
+    b[2] = (ax + W) * z + sd;
+    b[3] = (ay + H) * z + shade.reach_down(SHADOW, th, z);
+}
+
+// The parts of [x0, x1) x [y0, y1) outside the sheet's box at z, at most four, into pcs (x0, y0, x1, y1 each); how
+// many. A blocked window's client and terminal rows go only there (as kit/about.ci's around).
+export I64 around(I64 x0, I64 y0, I64 x1, I64 y1, I64 z, I64 th, inout I64[16] pcs) {
+    I64[4] b;
+    box(z, th, b);
+    if (b[2] <= x0 || b[0] >= x1 || b[3] <= y0 || b[1] >= y1 || b[0] >= b[2]) {
+        return piece(pcs, 0, x0, y0, x1, y1);
+    }
+    I64 n = piece(pcs, 0, x0, y0, x1, max(y0, b[1]));
+    n = piece(pcs, n, x0, min(y1, b[3]), x1, y1);
+    n = piece(pcs, n, x0, max(y0, b[1]), max(x0, b[0]), min(y1, b[3]));
+    n = piece(pcs, n, min(x1, b[2]), max(y0, b[1]), x1, min(y1, b[3]));
+    return n;
+}
+
+I64 piece(inout I64[16] pcs, I64 n, I64 x0, I64 y0, I64 x1, I64 y1) {
+    if (x0 >= x1 || y0 >= y1) { return n; }
+    pcs[4 * n] = x0;
+    pcs[4 * n + 1] = y0;
+    pcs[4 * n + 2] = x1;
+    pcs[4 * n + 3] = y1;
+    return n + 1;
+}
+// SPDX-License-Identifier: Apache-2.0

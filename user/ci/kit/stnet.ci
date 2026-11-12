@@ -1,0 +1,257 @@
+// user/ci/kit/stnet.ci: Settings' Network page (RS-SET3 of stage RS; frame 35, approved by DN-58, l 2026-11-11
+// 17:15Z), a page module on kit/stpage.ci. Read only (DN-58 item 8): the title with Copy Details at its right, then
+// WIRED, 32 px rows 41 apart: Status (a dot and Connected), Configured, Address, Subnet Mask, Gateway, DNS and Hardware
+// Address, the numbers in mono 12.
+//
+// The host reads the network record (`facts` kind 3, KF-3c; any process may) and hands its fields over by set_record;
+// the page formats them. Until the host has a record it calls no_record, and the page shows its title alone with
+// Copy Details at 40 percent: it never shows numbers it was not given. A field the record holds as zero (no address
+// yet, no gateway) is a row the page leaves out. Copy Details returns COPY; details() writes the rows as "Label: value"
+// lines for the host to put on the clipboard (as the About page's Copy Details, frame 31).
+//
+// The dot is the network's green (stpage.green, note 62) when the link is up, INK_DIM when it is down.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+
+export const I64 COPY = 16;            // stpage.ACT + 0
+
+export const I64 FIXED = 0;            // the record's source: the kernel's own address, DHCP, the boot argument
+export const I64 DHCP = 1;
+export const I64 BOOT = 2;
+
+export const I64 S_PITCH = 41;         // a 32 px row to the next: 32, 4, the rule, 4 (frame 35)
+export const I64 ROWS = 7;
+
+export const I64 R_STATUS = 0;
+export const I64 R_CONFIGURED = 1;
+export const I64 R_ADDRESS = 2;
+export const I64 R_MASK = 3;
+export const I64 R_GATEWAY = 4;
+export const I64 R_DNS = 5;
+export const I64 R_MAC = 6;
+
+Bool has = false;
+Bool up = false;
+U8[6] mac;
+U8[16] quad;                           // address, mask, gateway, DNS, four bytes each in network order
+I64 source = DHCP;
+
+I64 fs = 0;                            // 1: Copy Details under the keyboard
+Bool kbd = false;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- what the host tells ---
+
+// The network record's fields: link up, the MAC (6 bytes), and address, mask, gateway and DNS (4 bytes each, network
+// order), and where they came from (FIXED, DHCP, BOOT).
+export void set_record(Bool link, in U8[_] m, in U8[_] addr, in U8[_] mask, in U8[_] gw, in U8[_] dns, I64 src) {
+    has = true;
+    up = link;
+    for k in 0..6 { mac[k] = m[k]; }
+    for k in 0..4 {
+        quad[k] = addr[k];
+        quad[4 + k] = mask[k];
+        quad[8 + k] = gw[k];
+        quad[12 + k] = dns[k];
+    }
+    source = src;
+}
+
+export void no_record() { has = false; }
+export Bool record() { return has; }
+
+export void open() {
+    fs = 0;
+    kbd = false;
+}
+
+// The keyboard moves in from the sidebar: Copy Details, the page's one stop, when there is a record to copy; whether it
+// took the keyboard. Shift+Tab finds the same stop.
+export Bool enter() {
+    kbd = true;
+    fs = 0;
+    return tab(1);
+}
+
+export Bool enter_last() {
+    kbd = true;
+    fs = 0;
+    return tab(-1);
+}
+
+Bool tab(I64 d) {
+    I64 can = 0;
+    if (has) { can = 1; }
+    fs = stpage.tab_to(fs - 1, d, 1, can) + 1;
+    return fs > 0;
+}
+
+export I64 focused() { return fs; }
+
+// --- the rows ---
+
+// Whether row r shows: the record holds it.
+export Bool shows(I64 r) {
+    if (!has) { return false; }
+    if (r >= R_ADDRESS && r <= R_DNS) {
+        I64 q = 4 * (r - R_ADDRESS);
+        return quad[q] != 0 || quad[q + 1] != 0 || quad[q + 2] != 0 || quad[q + 3] != 0;
+    }
+    return true;
+}
+
+// Row r's label into t; its length.
+export I64 label_of(I64 r, inout U8[_] t) {
+    if (r == R_STATUS) { return stpage.put(t, 0, b"Status"); }
+    if (r == R_CONFIGURED) { return stpage.put(t, 0, b"Configured"); }
+    if (r == R_ADDRESS) { return stpage.put(t, 0, b"Address"); }
+    if (r == R_MASK) { return stpage.put(t, 0, b"Subnet Mask"); }
+    if (r == R_GATEWAY) { return stpage.put(t, 0, b"Gateway"); }
+    if (r == R_DNS) { return stpage.put(t, 0, b"DNS"); }
+    return stpage.put(t, 0, b"Hardware Address");
+}
+
+// Row r's value into t; its length.
+export I64 value_of(I64 r, inout U8[_] t) {
+    if (r == R_STATUS) {
+        if (up) { return stpage.put(t, 0, b"Connected"); }
+        return stpage.put(t, 0, b"Disconnected");
+    }
+    if (r == R_CONFIGURED) {
+        if (source == DHCP) { return stpage.put(t, 0, b"Automatic"); }
+        if (source == BOOT) { return stpage.put(t, 0, b"Manual"); }
+        return stpage.put(t, 0, b"Fixed");
+    }
+    if (r == R_MAC) {
+        I64 at = 0;
+        for k in 0..6 {
+            if (k > 0) { at = stpage.put(t, at, b":"); }
+            at = hex2(t, at, mac[k] as I64);
+        }
+        return at;
+    }
+    I64 q = 4 * (r - R_ADDRESS);
+    I64 at = 0;
+    for k in 0..4 {
+        if (k > 0) { at = stpage.put(t, at, b"."); }
+        at = stpage.digits(t, at, quad[q + k] as I64);
+    }
+    return at;
+}
+
+I64 hex2(inout U8[_] t, I64 at, I64 v) {
+    U8[16] h = b"0123456789abcdef";
+    if (at + 2 > len(t)) { return at; }
+    t[at] = h[v / 16];
+    t[at + 1] = h[v % 16];
+    return at + 2;
+}
+
+// The page's rows as "Label: value" lines into t, for the clipboard; the length.
+export I64 details(inout U8[_] t) {
+    I64 at = 0;
+    U8[24] w;
+    for r in 0..ROWS {
+        if (!shows(r)) { continue; }
+        I64 n = label_of(r, w);
+        at = stpage.put(t, at, w[0..n]);
+        at = stpage.put(t, at, b": ");
+        n = value_of(r, w);
+        at = stpage.put(t, at, w[0..n]);
+        at = stpage.put(t, at, b"\n");
+    }
+    return at;
+}
+
+// --- drawing ---
+
+I64 copy_w() { return stpage.bw(b"Copy Details", 12, faces.NAME); }
+I64 rows_y(I64 y0) { return y0 + stpage.BODY + stpage.LAB; }
+
+// Frame 48: the page's height from y0 with every row; a box less tall scrolls it (kit/stbox.ci).
+export I64 tall() { return rows_y(0) + (ROWS - 1) * S_PITCH + stpage.ROW_S + stpage.FOOT; }
+
+// Frame 48: the keyboard's row, from the page's top (y0 = 0): its top and bottom, -1 while the keyboard is not in the
+// page. The host gives them to kit/stbox.ci reveal after each key, so the row stays whole under the head.
+// The page's one stop, Copy Details, sits in the head.
+export I64 focus_top() {
+    if (!kbd || fs != 1) { return -1; }
+    return 18;
+}
+
+export I64 focus_bottom() {
+    if (!kbd || fs != 1) { return -1; }
+    return 18 + stpage.BTN;
+}
+
+// The 1x row y of the page from (cx, y0) to (cr, yb), through the pen.
+export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
+    stpage.title(row, cx, y0, cr, b"Network", 7, y);
+    I64 bx = cr - copy_w();
+    if (stpage.on(y, y0 + 14, stpage.BTN + 8)) {
+        if (stpage.on(y, y0 + 18, stpage.BTN)) {
+            stpage.button(row, bx, y0 + 18, copy_w(), stpage.BTN, b"Copy Details", 12, tok(tokens.INK), faces.NAME);
+            if (!has) { stpage.fade(row, bx, cr); }
+        }
+        if (kbd && fs == 1 && has) { stpage.focus(row, bx, y0 + 18, cr, y0 + 18 + stpage.BTN, stpage.R_CTRL); }
+    }
+    if (!has) { return; }
+    stpage.section(row, cx, y0 + stpage.BODY, cr, b"WIRED", 5, y);
+    I64 ry = rows_y(y0);
+    Bool first = true;
+    U8[24] t;
+    for r in 0..ROWS {
+        if (!shows(r)) { continue; }
+        if (!first && stpage.on(y, ry - 5, 1)) { stpage.rule(row, cx, ry - 5, cr); }
+        first = false;
+        if (stpage.on(y, ry, stpage.ROW_S)) {
+            I64 n = label_of(r, t);
+            stpage.label(row, cx, ry, stpage.ROW_S, cr - 200, t, n);
+            n = value_of(r, t);
+            if (r == R_STATUS) {
+                I64 vx = cr - stpage.tw(t, n, faces.BODY);
+                U32 lamp = tok(tokens.INK_DIM);
+                if (up) { lamp = stpage.green(); }
+                stpage.disc(row, vx - 16, ry + 12, 8, lamp);
+                stpage.value(row, cr, ry, stpage.ROW_S, t, n, tok(tokens.INK), faces.BODY);
+            } else if (r == R_CONFIGURED) {
+                stpage.value(row, cr, ry, stpage.ROW_S, t, n, tok(tokens.INK), faces.BODY);
+            } else {
+                stpage.value(row, cr, ry, stpage.ROW_S, t, n, tok(tokens.INK), faces.PATH);
+            }
+        }
+        ry = ry + S_PITCH;
+    }
+}
+
+// --- the pointer and the keyboard ---
+
+export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    kbd = false;
+    if (has && py >= y0 + 18 && py < y0 + 18 + stpage.BTN && px >= cr - copy_w() && px < cr) {
+        fs = 1;
+        return COPY;
+    }
+    return stpage.NONE;
+}
+
+// A key: Tab and Shift+Tab go to Copy Details and on to the sidebar (BACK); Enter or Space copies. An arrow with no
+// stop shows the ring on it.
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
+    if (stpage.is_tab(code)) {
+        if (tab(stpage.tab_d(code))) { return stpage.DRAW; }
+        return stpage.BACK;
+    }
+    if (fs == 0) {
+        if (stpage.is_arrow(code) && tab(1)) { return stpage.DRAW; }
+        return stpage.NONE;
+    }
+    if (stpage.is_arrow(code)) { return stpage.DRAW; }
+    if (has && stpage.is_press(code)) { return COPY; }
+    return stpage.NONE;
+}
+// SPDX-License-Identifier: Apache-2.0

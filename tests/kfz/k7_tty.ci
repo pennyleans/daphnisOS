@@ -1,0 +1,73 @@
+// tests/kfz/k7_tty.ci: the two names of /dev that the release image's programs open and src/fs.ci did not have
+// (HW-17's P1): /dev/null, which user/ci/runas.h's child takes as stdin and
+// stderr, so every run as the account ended 127; and /dev/tty, which xargs -p opens: the caller's controlling
+// terminal, or -ENXIO without one.
+
+const U64 KZ_O_WRONLY = 1;
+const I64 E_NXIO = -6;
+
+// p opens name (at KZ_RW + 512) with flags: the descriptor or the error.
+I64 kz_open_dev[m](I64 p, in U8[m] name, U64 flags) {
+    kz_put(p, KZ_RW + 512, name);
+    return kz_call(p, NR_OPEN, KZ_RW + 512, flags, 0, 0, 0, 0);
+}
+
+// fstat of fd in p: its mode and its device number, in r.
+void kz_devstat(I64 p, I64 fd, inout U64[2] r) {
+    kz_own(p, KZ_RW + 1536, 144);
+    assert(kz_call(p, 5, fd as U64, KZ_RW + 1536, 0, 0, 0, 0) == 0);
+    r[0] = kz_u64(p, KZ_RW + 1536 + 24) & 0xFFFFFFFF;
+    r[1] = kz_u64(p, KZ_RW + 1536 + 40);
+}
+
+test "dev null: any program opens it; reads end at once and leave the buffer, writes are taken whole, its own device" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);            // an account's process, no grant
+    I64 fd = kz_open_dev(p, "/dev/null", KZ_O_RDWR);
+    assert(fd >= 3);
+    kz_put(p, KZ_RW + 1024, "abc");
+    assert(kz_call(p, 1, fd as U64, KZ_RW + 1024, 3, 0, 0, 0) == 3);
+    assert(kz_call(p, 1, fd as U64, 16, 4096, 0, 0, 0) == 4096);         // no byte read: a bad pointer is no fault
+    assert(kz_call(p, 0, fd as U64, KZ_RW + 1024, 3, 0, 0, 0) == 0);
+    assert((kz_u64(p, KZ_RW + 1024) & 0xFFFFFF) == 0x636261);              // the buffer as it was
+    assert(kz_call(p, 8, fd as U64, 100, 0, 0, 0, 0) == 0);              // lseek: at 0
+    U64[2] st;
+    kz_devstat(p, fd, st);
+    assert(st[0] == 0x21B6 && st[1] == 0x103);                         // 020666, 1:3
+    // the access mode holds; a shell's `> /dev/null` opens it; O_EXCL finds it there
+    I64 w = kz_open_dev(p, "/dev/null", KZ_O_WRONLY);
+    assert(w >= 3 && kz_call(p, 0, w as U64, KZ_RW + 1024, 3, 0, 0, 0) == E_BADF);
+    I64 r = kz_open_dev(p, "/dev/null", 0);
+    assert(r >= 3 && kz_call(p, 1, r as U64, KZ_RW + 1024, 3, 0, 0, 0) == E_BADF);
+    assert(kz_open_dev(p, "/dev/null", KZ_O_WRONLY | KZ_O_CREAT | KZ_O_TRUNC) >= 3);
+    assert(kz_open_dev(p, "/dev/null", KZ_O_WRONLY | KZ_O_CREAT | KZ_O_EXCL) == E_EXIST);
+    assert(kz_open_dev(p, "dev/null", KZ_O_RDWR) >= 3);                // from / as the working directory
+    assert(kz_open_dev(p, "/dev/nul", KZ_O_RDWR) == E_NOENT && kz_open_dev(p, "/dev/nulls", KZ_O_RDWR) == E_NOENT);
+    kz_end(p);
+}
+
+test "dev tty: the caller's controlling terminal, its job's too; -ENXIO with none, in another session, or once the leader ended" {
+    I64 a = kz_proc(1000, fs.GRANT_ALL, 0);
+    assert(kz_open_dev(a, "/dev/tty", KZ_O_RDWR) == E_NXIO);          // no terminal yet
+    I64 m = kz_ptm(a);
+    I64 n = kz_ptn(a, m);
+    assert(kz_open_dev(a, "/dev/tty", KZ_O_RDWR) == E_NXIO);          // a master is no terminal
+    assert(kz_pts(a, n, KZ_O_RDWR) >= 3 && job.terminal(a) == n);    // the session leader takes it
+    I64 t = kz_open_dev(a, "/dev/tty", KZ_O_RDWR);
+    assert(t >= 3);
+    U64[2] st;
+    kz_devstat(a, t, st);
+    assert(st[1] == 0x8800 + (n as U64));                                // the slave of the pair: 136:n
+    I64 j = kz_fork(a);                                                // a job of the session: the same terminal
+    assert(kz_open_dev(j, "/dev/tty", KZ_O_RDWR) >= 3);
+    I64 o = kz_fork(a);                                                // a new session: none
+    assert(kz_call(o, NR_SETSID, 0, 0, 0, 0, 0, 0) > 0);
+    assert(kz_open_dev(o, "/dev/tty", KZ_O_RDWR) == E_NXIO);
+    I64 b = kz_proc(1000, fs.GRANT_ALL, 0);                            // another family: none
+    assert(kz_open_dev(b, "/dev/tty", KZ_O_RDWR) == E_NXIO);
+    kz_end(a);                                                         // the leader ends: the pair has no session
+    assert(job.terminal(j) == n && kz_open_dev(j, "/dev/tty", KZ_O_RDWR) == E_NXIO);
+    kz_end(b);
+    kz_end(o);
+    kz_end(j);
+}
+// SPDX-License-Identifier: Apache-2.0

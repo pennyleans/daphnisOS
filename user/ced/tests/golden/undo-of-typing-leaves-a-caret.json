@@ -1,0 +1,26 @@
+{
+  "id": "undo-of-typing-leaves-a-caret",
+  "rules": [
+    "UNDO-3"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "6869",
+    "1a"
+  ],
+  "expect": {
+    "text": "",
+    "sel": [
+      0,
+      0
+    ]
+  }
+}

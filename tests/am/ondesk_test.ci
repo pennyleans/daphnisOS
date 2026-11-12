@@ -1,0 +1,16 @@
+// tests/am/ondesk_test.ci: AM-3's guard: only TERM_PROGRAM=daphnis, exactly, is a desk terminal.
+import user.ci.kit.deskenv;
+
+test "only TERM_PROGRAM=daphnis, exactly, marks a desk terminal" {
+    U8[20] yes = b"TERM_PROGRAM=daphnis";
+    assert(deskenv.is_desk_entry(yes, 20));
+    U8[22] app = b"TERM_PROGRAM=Apple_Ter";
+    assert(!deskenv.is_desk_entry(app, 22));
+    U8[21] longer = b"TERM_PROGRAM=daphnisx";
+    assert(!deskenv.is_desk_entry(longer, 21));
+    U8[20] other = b"TERM_PROGRAM=daphnix";
+    assert(!deskenv.is_desk_entry(other, 20));
+    U8[10] term = b"TERM=xterm";
+    assert(!deskenv.is_desk_entry(term, 10));
+}
+// SPDX-License-Identifier: Apache-2.0

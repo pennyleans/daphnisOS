@@ -1,0 +1,14 @@
+# DN-43, review on PR 272: the About sheet over Index (finder /). F5 while it is up is the sheet's, so Index reads
+# no directory then; F5 after Enter closes it reads / again. guest.py sheet reads the screendumps on either side of
+# the first F5.
+hdesk: screen 1920x1080 plane 1920x
+~hdesk: bar desktop 1 \|Index\| var \|/\|.*
+finder: dir |/| items
+hdesk: app menu open
+~hdesk: app menu chose [0-9]+ \|About .+\|
+=hdesk: about 1
+-finder: dir |
+=hdesk: about closed
+finder: dir |/| items
+=hdesk: pixel 1 ended
+=hdesk: shell ended, status 0

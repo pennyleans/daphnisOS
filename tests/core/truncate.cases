@@ -1,0 +1,23 @@
+# tests/core/truncate.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6, CT-5). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree. The tree is compared after each case.
+-s 0 text.txt | - | -
+-s 10 text.txt | - | -
+-s 5000 nonl.txt | - | -
+-s 1k new | - | -
+-s 1K new | - | -
+-s 1M new | - | -
+-s 1kB new | - | -
+-s 1MB new | - | -
+-s 01k new | - | -
+-c -s 5 new | - | -
+-c -s 5 text.txt | - | -
+-s 3 text.txt nonl.txt new | - | -
+-s 3 missing/x text.txt | - | -
+-s 5 look | - | -
+-s +5 text.txt | - | D-3
+-s -5 text.txt | - | D-3
+-s 1m new | - | D-3
+-s 1T new | - | D-3
+-s x new | - | D-3
+text.txt | - | D-3
+-s 5 | - | D-3

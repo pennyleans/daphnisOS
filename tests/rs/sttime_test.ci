@@ -1,0 +1,288 @@
+// tests/rs/sttime_test.ci: hosted tests of RS-SET4, Settings' Date and Time page (user/ci/kit/sttime.ci, frame 36)
+// and its Time Zone control (frame 47, design note 63, DN-61): the clock's and date's text, the offset text across a
+// daylight change, the narrowing, the mark, the scroll position at open, and the page's actions. Run by check.sh with
+// every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.stpage;
+import user.ci.kit.sttime;
+import user.ci.core.tz;
+import user.ci.core.cal;
+
+U32[1600] row;
+U32[1600] ref;
+U8[64] got;
+
+const I64 CX = 257;
+const I64 Y0 = 56;
+const I64 CR = 711;
+const I64 YB = 503;
+
+Bool is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+I64 utc(I64 yy, I64 mm, I64 dd, I64 h, I64 m, I64 s) { return cal.days(yy, mm, dd) * 86400 + h * 3600 + m * 60 + s; }
+
+I64 ny() { return tz.find(b"America/New_York"); }
+
+// Whether city c's shown name begins with p, any case.
+Bool begins(I64 c, in U8[_] p) {
+    I64 n = tz.city(c, got);
+    if (n < len(p)) { return false; }
+    for k in 0..len(p) {
+        U8 a = got[k];
+        U8 b = p[k];
+        if (a >= 'A' && a <= 'Z') { a = a + 32; }
+        if (b >= 'A' && b <= 'Z') { b = b + 32; }
+        if (a != b) { return false; }
+    }
+    return true;
+}
+
+void page(I64 zone) {
+    sttime.open();
+    sttime.set_now(utc(2026, 11, 9, 6, 59, 0));
+    sttime.set_zone(zone);
+    sttime.set_24(true);
+    sttime.set_week(0);
+}
+
+test "frame 36: the clock and the date in the machine's zone, 24 and 12 hours" {
+    page(ny());
+    assert(is(sttime.clock_text(got), b"01:59"));
+    assert(is(sttime.date_text(got), b"Monday, November 9, 2026"));
+    sttime.set_24(false);
+    assert(is(sttime.clock_text(got), b"1:59 AM"));
+    sttime.set_now(utc(2026, 11, 9, 18, 5, 0));                                     // 13:05 in New York
+    assert(is(sttime.clock_text(got), b"1:05 PM"));
+    sttime.set_now(utc(2026, 11, 9, 5, 30, 0));                                     // 00:30
+    assert(is(sttime.clock_text(got), b"12:30 AM"));
+    sttime.set_now(utc(2026, 11, 9, 17, 0, 0));                                     // noon
+    assert(is(sttime.clock_text(got), b"12:00 PM"));
+    sttime.set_zone(-1);                                                             // no zone file: UTC
+    sttime.set_24(true);
+    sttime.set_now(utc(2026, 11, 9, 6, 59, 0));
+    assert(is(sttime.clock_text(got), b"06:59"));
+    sttime.set_now(utc(2026, 11, 8, 23, 59, 0));
+    assert(is(sttime.date_text(got), b"Sunday, November 8, 2026"));
+}
+
+test "note 63: the offset text, across New York's daylight change and on half hours" {
+    I64 c = ny();
+    assert(is(sttime.offset_text(c, utc(2026, 3, 8, 6, 59, 59), got), b"UTC-05:00"));
+    assert(is(sttime.offset_text(c, utc(2026, 3, 8, 7, 0, 0), got), b"UTC-04:00"));
+    assert(is(sttime.offset_text(c, utc(2026, 11, 1, 5, 59, 59), got), b"UTC-04:00"));
+    assert(is(sttime.offset_text(c, utc(2026, 11, 1, 6, 0, 0), got), b"UTC-05:00"));
+    assert(is(sttime.offset_text(tz.find(b"Asia/Kolkata"), utc(2026, 11, 9, 0, 0, 0), got), b"UTC+05:30"));
+    assert(is(sttime.offset_text(tz.find(b"America/St_Johns"), utc(2026, 1, 9, 0, 0, 0), got), b"UTC-03:30"));
+    assert(is(sttime.offset_text(tz.find(b"Africa/Abidjan"), utc(2026, 1, 9, 0, 0, 0), got), b"UTC+00:00"));
+    assert(is(sttime.offset_text(-1, utc(2026, 1, 9, 0, 0, 0), got), b"UTC+00:00"));
+}
+
+test "note 63: the plate opens with the chosen city marked fourth from the top" {
+    page(ny());
+    sttime.pick();
+    assert(sttime.picking() && sttime.rows() == tz.cities() && sttime.plate_h() == sttime.PLATE_H);
+    assert(sttime.marked() == ny() && sttime.first() == ny() - 3);
+    page(0);                                                                         // Abidjan, the first city
+    sttime.pick();
+    assert(sttime.marked() == 0 && sttime.first() == 0);
+    page(-1);                                                                        // UTC: the top of the list
+    sttime.pick();
+    assert(sttime.marked() == 0 && sttime.first() == 0);
+    page(tz.cities() - 1);                                                           // Zurich, the last
+    sttime.pick();
+    assert(sttime.marked() == tz.cities() - 1 && sttime.first() == tz.cities() - sttime.SHOWN);
+}
+
+test "note 63: typing narrows by the name's first letters, any case, and marks the top row" {
+    page(ny());
+    sttime.pick();
+    assert(sttime.typed('n') == stpage.DRAW && sttime.typed('E') == stpage.DRAW && sttime.typed('w') == stpage.DRAW);
+    I64 n = sttime.rows();
+    assert(n >= 1 && n < 10 && sttime.marked() == 0 && sttime.first() == 0);
+    Bool has = false;
+    for k in 0..n {
+        I64 c = sttime.city_of(k);
+        assert(begins(c, b"new"));
+        if (c == ny()) { has = true; }
+        if (k > 0) { assert(c > sttime.city_of(k - 1)); }                         // name order kept
+    }
+    assert(has);
+    I64 all = 0;                                                    // every city that begins so is listed
+    for c in 0..tz.cities() {
+        if (begins(c, b"NEW")) { all = all + 1; }
+    }
+    assert(all == n);
+    assert(sttime.plate_h() == sttime.PLATE_H - sttime.TZ_PITCH * (sttime.SHOWN - n));  // a shorter plate
+    assert(sttime.typed('q') == stpage.DRAW && sttime.rows() == 0);    // no match: an empty list, nothing more
+    assert(sttime.plate_h() == 6 + sttime.FIELD_H + 6);                             // the field alone
+    assert(sttime.key(stpage.K_DOWN) == stpage.NONE && sttime.key(stpage.K_ENTER) == stpage.DRAW);
+    assert(!sttime.picking());
+}
+
+test "note 63: Up and Down move the mark and the list follows; Backspace to empty restores the chosen city" {
+    page(ny());
+    sttime.pick();
+    I64 f = sttime.first();
+    for i in 0..4 { assert(sttime.key(stpage.K_DOWN) == stpage.DRAW); }
+    assert(sttime.marked() == ny() + 4 && sttime.first() == f);                     // row 8 of 8: still shown
+    assert(sttime.key(stpage.K_DOWN) == stpage.DRAW);
+    assert(sttime.marked() == ny() + 5 && sttime.first() == f + 1);
+    for i in 0..9 { I64 r = sttime.key(stpage.K_UP); }
+    assert(sttime.marked() == ny() - 4 && sttime.first() == ny() - 4);
+    I64 r = sttime.typed('l');
+    r = sttime.typed('o');
+    assert(sttime.rows() >= 2 && begins(sttime.city_of(0), b"lo"));
+    assert(sttime.key(stpage.K_BACKSPACE) == stpage.DRAW && begins(sttime.city_of(0), b"l"));
+    assert(sttime.key(stpage.K_BACKSPACE) == stpage.DRAW);
+    assert(sttime.rows() == tz.cities() && sttime.marked() == ny() && sttime.first() == ny() - 3);
+    assert(sttime.key(stpage.K_BACKSPACE) == stpage.NONE);
+    assert(sttime.scroll(400) && sttime.first() == tz.cities() - sttime.SHOWN && !sttime.scroll(1));
+    assert(sttime.scroll(-1000) && sttime.first() == 0);
+}
+
+test "note 63: Enter takes the mark; the chosen city or Esc closes with nothing asked" {
+    page(ny());
+    sttime.pick();
+    assert(sttime.key(stpage.K_ENTER) == stpage.DRAW && !sttime.picking());          // the chosen city again
+    sttime.pick();
+    I64 r = sttime.key(stpage.K_DOWN);
+    assert(sttime.key(stpage.K_ENTER) == sttime.ZONE && sttime.arg() == ny() + 1 && !sttime.picking());
+    sttime.pick();
+    r = sttime.key(stpage.K_DOWN);
+    assert(sttime.key(stpage.K_ESC) == stpage.DRAW && !sttime.picking());
+    page(-1);
+    sttime.pick();
+    r = sttime.typed('t');
+    r = sttime.typed('o');
+    r = sttime.typed('k');
+    assert(sttime.key(stpage.K_ENTER) == sttime.ZONE && begins(sttime.arg(), b"tok"));
+}
+
+test "frames 36 and 47: presses on Set, the menu button, a list row, outside the plate, the switch, the week" {
+    page(ny());
+    I64 cy = Y0 + stpage.BODY;
+    assert(sttime.click(CX, Y0, CR, YB, CR - 10, cy + 20) == sttime.SET);
+    I64 ry = Y0 + stpage.BODY + stpage.ROW + stpage.GAP;
+    assert(sttime.click(CX, Y0, CR, YB, CR - 20, ry + 20) == stpage.DRAW && sttime.picking());
+    I64 ly = ry + 40 + 6 + sttime.FIELD_H + 6;                                     // the list's top
+    assert(sttime.hover(CX, Y0, CR, YB, CR - 100, ly + sttime.TZ_PITCH + 10));
+    assert(!sttime.hover(CX, Y0, CR, YB, CR - 90, ly + sttime.TZ_PITCH + 12));
+    assert(sttime.click(CX, Y0, CR, YB, CR - 100, ly + 10) == sttime.ZONE && sttime.arg() == ny() - 3);
+    assert(!sttime.picking());
+    assert(sttime.click(CX, Y0, CR, YB, CR - 20, ry + 20) == stpage.DRAW);
+    assert(sttime.click(CX, Y0, CR, YB, CR - 100, ly - 20) == stpage.NONE && sttime.picking());   // the find field
+    assert(sttime.click(CX, Y0, CR, YB, CX + 10, ly + 10) == stpage.DRAW && !sttime.picking());   // outside: closed
+    I64 sy = stpage.row_y(ry, 1);
+    assert(sttime.click(CX, Y0, CR, YB, CR - 10, sy + 20) == sttime.HOUR24 && sttime.arg() == 0);
+    I64 wy = stpage.row_y(ry, 2);
+    assert(sttime.click(CX, Y0, CR, YB, CR - 20, wy + 20) == sttime.WEEK && sttime.arg() == 1);
+    assert(sttime.click(CX, Y0, CR, YB, CR - stpage.SEG_W + 20, wy + 20) == stpage.DRAW);         // Sunday already
+    assert(sttime.click(CX, Y0, CR, YB, CX + 10, wy + 20) == stpage.NONE);
+}
+
+test "the desk's Tab order: Set, Time Zone, 24-Hour Time and Week Starts On, each once, then the sidebar" {
+    page(ny());
+    assert(sttime.enter() && sttime.focused() == sttime.F_SET);
+    assert(sttime.key(stpage.K_UP) == stpage.DRAW && sttime.focused() == sttime.F_SET);  // no arrow leaves a stop
+    assert(sttime.key(stpage.K_ENTER) == sttime.SET);
+    assert(sttime.key(stpage.K_TAB) == stpage.DRAW && sttime.focused() == sttime.F_ZONE);
+    assert(sttime.key(stpage.K_SPACE) == stpage.DRAW && sttime.picking());
+    assert(sttime.key(stpage.K_ESC) == stpage.DRAW && sttime.focused() == sttime.F_ZONE);
+    assert(sttime.key(stpage.K_ENTER) == stpage.DRAW && sttime.picking());
+    assert(sttime.key(stpage.K_TAB) == stpage.DRAW && !sttime.picking());               // Tab closes it unchanged
+    assert(sttime.focused() == sttime.F_H24 && sttime.key(stpage.K_SPACE) == sttime.HOUR24 && sttime.arg() == 0);
+    assert(sttime.key(stpage.K_TAB) == stpage.DRAW && sttime.focused() == sttime.F_WEEK);
+    assert(sttime.key(stpage.K_RIGHT) == sttime.WEEK && sttime.arg() == 1);
+    assert(sttime.key(stpage.K_LEFT) == stpage.DRAW);                                    // Sunday already
+    sttime.set_week(1);
+    assert(sttime.key(stpage.K_LEFT) == sttime.WEEK && sttime.arg() == 0);
+    assert(sttime.key(stpage.K_RIGHT) == stpage.DRAW);                                   // Monday already
+    assert(sttime.key(stpage.K_TAB) == stpage.BACK && sttime.focused() == sttime.F_NONE);
+    assert(sttime.enter_last() && sttime.focused() == sttime.F_WEEK);
+    for k in 0..3 { assert(sttime.key(stpage.K_BACKTAB) == stpage.DRAW && sttime.focused() == sttime.F_WEEK - 1 - k); }
+    assert(sttime.key(stpage.K_BACKTAB) == stpage.BACK);
+}
+
+test "frame 47: the mark is the FILL pill; the plate runs to plate_bottom(), past the window's foot" {
+    tokens.set_theme(0);
+    page(ny());
+    sttime.pick();
+    I64 ry = Y0 + stpage.BODY + stpage.ROW + stpage.GAP;
+    I64 py = ry + 40;
+    assert(sttime.plate_bottom(Y0) == py + sttime.PLATE_H && sttime.plate_bottom(Y0) > YB);
+    I64 my = py + 6 + sttime.FIELD_H + 6 + 3 * sttime.TZ_PITCH + 14;               // the fourth row, the mark
+    pen.at(0, 0, 1, my);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    sttime.row_at(row, CX, Y0, CR, YB, my);
+    assert(row[CR - sttime.PLATE_W + 8] == tokens.word(tokens.FILL));
+    assert(row[CR - sttime.PLATE_W + 2] == tokens.word(tokens.SURF1));
+    I64 oy = my - sttime.TZ_PITCH;                                                  // the row above: no pill
+    pen.at(0, 0, 1, oy);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    sttime.row_at(row, CX, Y0, CR, YB, oy);
+    assert(row[CR - sttime.PLATE_W + 8] == tokens.word(tokens.SURF1));
+    for y in Y0..sttime.plate_bottom(Y0) + 8 {                                    // every row draws, both themes
+        for th in 0..2 {
+            tokens.set_theme(th);
+            pen.at(0, 0, 1, y);
+            for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+            sttime.row_at(row, CX, Y0, CR, YB, y);
+        }
+    }
+    tokens.set_theme(0);
+}
+
+// Row y of the page on PAPER, at scale 1.
+void draw(inout U32[_] r, I64 y) {
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { r[x] = tokens.word(tokens.PAPER); }
+    sttime.row_at(r, CX, Y0, CR, YB, y);
+}
+
+test "PR 357 not yet: set_can_set(false) fades the Set button alone, at 40 percent; the clock and the date stay" {
+    tokens.set_theme(0);
+    page(ny());
+    I64 bx = CR - stpage.bw(b"Set", 3, faces.NAME);
+    for k in 0..3 {
+        I64 y = Y0 + stpage.BODY + 8 + k * 12;
+        draw(ref, y);
+        sttime.set_can_set(false);
+        draw(row, y);
+        sttime.set_can_set(true);
+        I64 n = 0;
+        for x in 0..800 {
+            if (row[x] != ref[x]) { n = n + 1; }
+        }
+        for x in 0..bx { assert(row[x] == ref[x]); }
+        assert(n > 0);                                                                 // the button and its word
+        stpage.fade(ref, bx, CR);
+        for x in 0..800 { assert(row[x] == ref[x]); }
+    }
+}
+
+test "PR 357 not yet: Tab passes Set, a press on it does nothing, and going dead drops its focus" {
+    page(ny());
+    sttime.set_can_set(false);
+    assert(sttime.enter() && sttime.focused() == sttime.F_ZONE);
+    assert(sttime.key(stpage.K_BACKTAB) == stpage.BACK && sttime.focused() == sttime.F_NONE);
+    assert(sttime.enter_last() && sttime.focused() == sttime.F_WEEK);
+    for k in 0..2 { assert(sttime.key(stpage.K_BACKTAB) == stpage.DRAW); }
+    assert(sttime.focused() == sttime.F_ZONE && sttime.key(stpage.K_BACKTAB) == stpage.BACK);
+    page(ny());
+    I64 cy = Y0 + stpage.BODY;
+    assert(sttime.click(CX, Y0, CR, YB, CR - 10, cy + 20) == stpage.NONE && sttime.focused() == sttime.F_NONE);
+    sttime.set_can_set(true);
+    assert(sttime.enter() && sttime.focused() == sttime.F_SET);
+    sttime.set_can_set(false);
+    assert(sttime.focused() == sttime.F_NONE);
+    sttime.set_can_set(true);
+}
+// SPDX-License-Identifier: Apache-2.0

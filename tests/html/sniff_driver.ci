@@ -1,0 +1,22 @@
+import user.ci.web.sniff;
+extern unrestricted I64 fixture_next(out U8[_] input, out U8[_] name);
+extern observe I64 fixture_parameter(I64 which);
+extern unrestricted void fixture_report(I64 selected, I64 source, I64 faults, I64 status);
+void main() {
+    U8[131080] input; U8[256] name;
+    U8[2054] strided;
+    while (true) {
+        I64 n = fixture_next(input, name); if (n < 0) { return; }
+        I64 name_n = fixture_parameter(0);
+        I64 fallback = fixture_parameter(1);
+        if (fallback >= 2147483648) { fallback = fallback - 4294967296; }
+        I64 selected = sniff.choose(input[3..3+n], name[0..name_n], fallback);
+        I64 selected_source = sniff.source();
+        I64 bound = n; if (bound > 1024) { bound = 1024; }
+        for i in 0..bound { strided[3 + i * 2] = input[3+i]; }
+        assert(sniff.choose(strided[3..3+bound*2 by 2], name[0..name_n], fallback) == selected);
+        assert(sniff.source() == selected_source);
+        fixture_report(selected, selected_source, 0, 0);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,57 @@
+// user/ci/setkey.ci: setkey KEY VALUE (U-SET, docs/specs/2026-11-11-u-set.md): one setting of the account that runs
+// it, written to that account's own file, HOME/.config/daphnis/settings, by kit/setfile.ci's put (load, set, save:
+// a file that cannot be read is never written over). The desk runs it as the account (user/ci/runas.h, RUN_SET),
+// with HOME fixed by that run. Exactly two words: the first is the key, the second the value, as they are; no
+// option is parsed, so a value may begin with '-'. kit/settings.ci checks both (the key's form, the value's bytes).
+// Writes nothing on its output. Status 0; 1 for a key, a value or a write refused; 2 for any other number of words
+// or no HOME. RG-1: `setkey --print`, one word, writes the account's settings as kit/settings.ci text (the file's
+// kept lines, KEY=VALUE, at most settings.SIZE bytes) on its output: the desk's read of a 0700 home (user/ci/runas.h
+// RUN_PREFS); status 1 when the file cannot be read (a missing file is no settings, status 0).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.fdctl;
+import user.ci.kit.setfile;
+import user.ci.kit.settings;
+
+U8[8192] text;                         // settings.SIZE
+
+// HOME from the environment into buf; its length, 0 with none.
+I64 home_of(inout U8[_] buf) {
+    U8[600] e;
+    for i in 0..256 {
+        I64 n = shctl.sh_environ(i, e);
+        if (n <= 0) { return 0; }
+        if (n > 5 && n - 5 <= len(buf) && e[0] == 'H' && e[1] == 'O' && e[2] == 'M' && e[3] == 'E' && e[4] == '=') {
+            for k in 0..n - 5 { buf[k] = e[5 + k]; }
+            return n - 5;
+        }
+    }
+    return 0;
+}
+
+export void main(in U8[_] a) {
+    I64 e = 0;
+    while (e < len(a) && a[e] != 0) { e = e + 1; }
+    U8[512] home;
+    I64 hn = home_of(home);
+    if (e + 1 == len(a) && e == 7 && a[0] == '-' && a[1] == '-' && a[2] == 'p' && a[3] == 'r' && a[4] == 'i'
+            && a[5] == 'n' && a[6] == 't') {
+        if (hn < 1 || hn >= 512) { dev.exit_now(2); }
+        if (setfile.load(home[0..hn], -1) < 0) { dev.exit_now(1); }
+        I64 tn = settings.text(text);
+        if (tn < 0) { dev.exit_now(1); }
+        I64 w = shctl.fd_write(1, text[0..tn]);
+        if (w != tn) { dev.exit_now(1); }
+        dev.exit_now(0);
+    }
+    I64 v = e + 1;
+    I64 f = v;
+    while (f < len(a) && a[f] != 0) { f = f + 1; }
+    if (e >= len(a) || f >= len(a) || f + 1 != len(a)) { dev.exit_now(2); }   // KEY, VALUE and nothing more
+    if (hn < 1 || hn >= 512) { dev.exit_now(2); }
+    I64 r = setfile.put(home[0..hn], a[0..e], a[v..f]);
+    if (r < 0) { dev.exit_now(1); }
+    dev.exit_now(0);
+}
+// SPDX-License-Identifier: Apache-2.0

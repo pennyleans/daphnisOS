@@ -1,0 +1,35 @@
+// tests/cvim/terms_color_test.ci: DN-45 B in the terminal (user/ci/terms.ci): bright black is its own word
+// (tokens.term_bright_black, #a8a295) for SGR 90, 100, 38 ; 5 ; 8 and 48 ; 5 ; 8, under reverse too; 91 to 97 stay
+// the seven ANSI colors after black.
+import user.ci.terms;
+import user.ci.kit.tokens;
+
+void feed(I64 s, in U8[_] b) {
+    for i in 0..len(b) { terms.feed(s, b[i]); }
+}
+
+test "90 and 38;5;8 color the text bright black, 100 and 48;5;8 the ground" {
+    terms.init(0, 20, 4);
+    feed(0, b"\x1b[90ma\x1b[0m\x1b[100mb\x1b[0m\x1b[38;5;8mc\x1b[0m\x1b[48;5;8md\x1b[0m\r\n");
+    U32 bb = tokens.term_bright_black();
+    assert(bb == 0x00a8a295 as U32);
+    assert(terms.ink_at(0, 0, 0) == bb && terms.paper_at(0, 0, 0) == tokens.term_paper());
+    assert(terms.paper_at(0, 0, 1) == bb && terms.ink_at(0, 0, 1) == tokens.term_ink());
+    assert(terms.ink_at(0, 0, 2) == bb);
+    assert(terms.paper_at(0, 0, 3) == bb);
+}
+
+test "91 is still red, the eight stay; 30 and 38;5;0 black, not bright black" {
+    terms.init(0, 20, 4);
+    feed(0, b"\x1b[91ma\x1b[31mb\x1b[30mc\x1b[38;5;9md\x1b[0m\r\n");
+    assert(terms.ink_at(0, 0, 0) == tokens.term_ansi(1) && terms.ink_at(0, 0, 1) == tokens.term_ansi(1));
+    assert(terms.ink_at(0, 0, 2) == tokens.term_ansi(0) && terms.ink_at(0, 0, 2) != tokens.term_bright_black());
+    assert(terms.ink_at(0, 0, 3) == tokens.term_ansi(1));
+}
+
+test "90 with reverse swaps bright black onto the ground" {
+    terms.init(0, 20, 4);
+    feed(0, b"\x1b[90;7ma\x1b[0m\r\n");
+    assert(terms.paper_at(0, 0, 0) == tokens.term_bright_black() && terms.ink_at(0, 0, 0) == tokens.term_paper());
+}
+// SPDX-License-Identifier: Apache-2.0

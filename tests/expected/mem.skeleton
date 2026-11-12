@@ -1,0 +1,82 @@
+run 0
+fault: cint-core-1/fault/v2 159 bytes
+HEX
+run 1
+fault: cint-core-1/fault/v2 161 bytes
+HEX
+run 2
+fault: cint-core-1/fault/v2 161 bytes
+HEX
+run 3
+fault: cint-core-1/fault/v2 160 bytes
+HEX
+run 4
+fault: cint-core-1/fault/v2 160 bytes
+HEX
+run 5
+fault: cint-core-1/fault/v2 159 bytes
+HEX
+run 6
+Daphnis K3: memory
+mmap: valid
+ram: MiB 128
+pool 32 MiB to 96 MiB usable: yes
+frames: a 1
+frames: b 9
+frames: c 13
+frames: d 14
+frames: e 9
+refused: too many -1
+refused: zero -2
+refused: not owned -3
+refused: off the pool -2
+refused: free count plus one -1
+free after refusals: 16365
+arena: slot 0
+arena: object 1 at 33632256
+arena: object 2 at 33632384
+refused: object too big -14
+arena: bytes in use 228
+free at the end: 16383
+hash empty:          7fec4bf50f0ca06d3b170e0edac91746103bd63638d8089e64f2757fdad452e4
+hash before refusals: 018953414ccf21369e9a1bb061b0a1edca7670c29a5f19ba35b0ffe5eb4dd3b2
+hash after refusals:  018953414ccf21369e9a1bb061b0a1edca7670c29a5f19ba35b0ffe5eb4dd3b2
+frame refusals changed nothing: yes
+hash before big object: 07d6e886d28759ddf868122194f53c35b4c45e5c7df35f11951dd4707786cdd7
+hash after big object:  07d6e886d28759ddf868122194f53c35b4c45e5c7df35f11951dd4707786cdd7
+heap refusal changed nothing: yes
+hash final:           a9c61edff0cff5f1259906bc4248ddacf6c1379b92f7a452456112dc7ec72c02
+paging: page directory frame 1
+map va 0x40000000 status 0
+pattern written through the mapping, read through the physical window: yes
+pattern read through the mapping: yes
+translate va 0x40000000 is frame 2
+protect read-only status 0
+write to a read-only page
+fault: cint-core-1/fault/v2 210 bytes
+HEX
+the refused store left the word unchanged: yes
+protect writable status 0
+map va 0x40001000 executable status 0
+a fetch from the executable page returned: yes
+protect no-execute status 0
+fetch from a no-execute page
+fault: cint-core-1/fault/v2 210 bytes
+HEX
+a load through the mapping before the unmap works: yes
+unmap status is the frame 2
+load from an unmapped page
+fault: cint-core-1/fault/v2 210 bytes
+HEX
+remap va 0x40000000 status 0
+pattern after the remap: yes
+map over a mapped page is refused: -24
+map outside the region is refused: -22
+unmap of an unmapped page is refused: -25
+arena object written and read back: yes
+arena: a request of 4,097 bytes is refused: -14
+the refused request changed nothing: yes
+frames in use at the end (the bitmap, page directory and table): 3
+final state hash: e4c9995fd330921ab912b6fae4bde291aa2b374f126e36fa06d3f6b57b2b9879
+mem: done
+runs: 6 faulted, then one entry returned

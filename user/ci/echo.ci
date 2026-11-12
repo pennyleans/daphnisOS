@@ -1,0 +1,23 @@
+// user/ci/echo.ci: echo [STRING...] (docs/specs/2026-11-06-c-core.md, CT-4): the STRINGs with one blank between
+// each, then a newline, on descriptor 1. No options and no backslash escapes, as cish's builtin and the busybox the
+// oracle runs (POSIX leaves both to the implementation); `printf` is the portable form. This is /bin/echo, the one
+// xargs and find -exec run.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.core.put;
+import user.ci.core.msg;
+
+void main(in U8[_] a) {
+    msg.name(b"echo");
+    I64 s = 0;
+    for i in 0..len(a) {
+        if (a[i] == 0) {
+            if (s > 0) { put.byte(' '); }
+            put.bytes(a[s..i]);
+            s = i + 1;
+        }
+    }
+    put.byte('\n');
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,4023 @@
+// compiler/fold.ci: constant evaluation for cintc, the checked integer machine of SPEC-01
+// on the eight scalar widths, with exact values and literal conversions (slice 2 task 2.10b).
+//
+// cintc is written in cint-boot-1, which has no wide integers and no built-ins, and whose
+// checked operators would fault the compiler itself. So this module computes every
+// operation by hand from U64 pieces: the exact result (SPEC-01 4.1) as a sign and a
+// 128-bit magnitude, then the form (checked, wrapping, saturating). A checked operation
+// whose exact result leaves its type gives the fault of SPEC-01 9.2 with the fields
+// cint_ref records: code, operation (SPEC-01 9.8), operands, exact, and limit.
+//
+// Values. A typed value is a type tag (the IM-146 tags: I8 0x11 to I64 0x14, U8 0x21 to
+// U64 0x24, Bool 0x01) and its bits: two's complement, sign-extended to 64 bits for a
+// signed type, zero-extended for an unsigned type, 0 or 1 for Bool. Every operand passed
+// in must be such a value of its type (the checker guarantees it).
+//
+// Results. Every fold_* call fills a one-element view of Folded: `fault` 0 with `ty` and
+// `bits`, or a fault code (F_*) with the operation, the operands, `exact` (when the code
+// has one), and `limit`. A checked conversion whose source is a literal (SPEC-01 IM-26,
+// decision 23, D-17) has the operation `unassigned`, and its operand and exact are
+// the literal's Z, held in the literal-value table at lit_at, lit_len. `fault` -1 marks a
+// request this module does not decide (an unknown operator, or the Proposed `as|`).
+//
+// Literals (SPEC-09 CINTC-02, D-17). A literal's value is a Z of at most 4,096 magnitude
+// bits. lit_start, lit_digits, and lit_put build it in the work buffer and store its
+// minimal bytes (SPEC-01 IM-145: little-endian two's complement, zero is empty) in the
+// literal-value table, at most LIT_BYTES_MAX (513) per literal. A magnitude of 2^4096 or
+// more is LIT_TOO_WIDE: the scanner reports C1023 at the literal's first character.
+//
+// The work buffer (CINTC-02). One Work of 66 U64 limbs (4,224 bits) holds a Z of up to
+// 4,223 magnitude bits and its sign, the largest being the exact (2^4096 - 1) * 2^127 of a
+// literal converted to Q1.127 (SPEC-09I.31; OQ-147 bounded it at 2^63 for 64-bit storage).
+// It serves decimal-to-binary conversion of literals and decimal rendering of a Z (at most
+// 1,272 digits and a sign). z_render consumes the buffer; every caller loads it first.
+//
+// Rendering. render_fault writes the fault lines of SPEC-09 CONF-11 (`code`, `operation`,
+// one `operand` per operand, `exact`, `limit`) after a caller's prefix, for example
+// `diagnostic.fault.`, byte for byte as cint_ref writes them. fault_record writes the
+// canonical record of SPEC-01 IM-149 (`cint-core-1/fault/v2`, the compile-time kind of
+// IM-148) for the CINTC-14 `faults` view. Both go through an emit.Writer, so a measure
+// pass counts exactly the bytes the emit pass writes.
+//
+// Constant expressions (D-9, as amended by D-17). This module decides one operation at a
+// time; check.ci (task 2.10c) walks the maximal constant expression in evaluation order and
+// calls it, so the order rules stay there: `&&`, `||`, and `?:` evaluate only the operands
+// the result needs; a literal is range-checked (lit_fits, C2003) when it is evaluated, so
+// `const I8 X = 100 + 100 - 150;` stops at the first `+` (E_OVERFLOW, C6001); after a
+// fault-free evaluation every other literal is range-checked in source order, and every
+// checked conversion of a literal is decided (fold_lit_convert, C6001 E_NARROW at the
+// `as`), those inside skipped operands included. A literal shift count is typed I64.
+//
+// Bound (SPEC-09 CINTC-13): a fold_* call is O(1). lit_digits is O(d * L) for d digits and
+// L <= 66 used limbs; z_render is O(L^2); lit_put and lit_get are O(bytes).
+
+import limits;
+import emit;
+
+// ---------------------------------------------------------------- tags and codes
+
+export const I64 TY_BOOL = 0x01;
+export const I64 TY_Z = 0x0F;
+export const I64 TY_I8 = 0x11;
+export const I64 TY_I16 = 0x12;
+export const I64 TY_I32 = 0x13;
+export const I64 TY_I64 = 0x14;
+export const I64 TY_U8 = 0x21;
+export const I64 TY_U16 = 0x22;
+export const I64 TY_U32 = 0x23;
+export const I64 TY_U64 = 0x24;
+// The wide integers I128 to I1024 and U128 to U512 (SPEC-01 IM-11 to IM-17; box 15 unit 4,
+// the unsigned ones from unit 4d). A narrow fold_* call with a wide type gives fault -1; the
+// wide ones are fold_wide_* below.
+export const I64 TY_I128 = 0x15;
+export const I64 TY_I256 = 0x16;
+export const I64 TY_I512 = 0x17;
+export const I64 TY_I1024 = 0x18;
+export const I64 TY_U128 = 0x25;
+export const I64 TY_U256 = 0x26;
+export const I64 TY_U512 = 0x27;
+
+// Fault codes (SPEC-01 9.1) that constant evaluation of the scalar surface can meet.
+export const I64 F_NONE = 0;
+export const I64 F_OVERFLOW = 1;
+export const I64 F_DIV_ZERO = 2;
+export const I64 F_SHIFT = 5;
+export const I64 F_NARROW = 6;
+export const I64 F_DOMAIN = 11;
+
+// Operation names (SPEC-01 9.8) and forms.
+export const I64 OP_UNASSIGNED = 0;
+export const I64 OP_ADD = 1;
+export const I64 OP_SUB = 2;
+export const I64 OP_MUL = 3;
+export const I64 OP_DIV = 4;
+export const I64 OP_REM = 5;
+export const I64 OP_SHL = 6;
+export const I64 OP_SHR = 7;
+export const I64 OP_AND = 8;
+export const I64 OP_OR = 9;
+export const I64 OP_XOR = 10;
+export const I64 OP_NEG = 11;
+export const I64 OP_NOT = 12;
+export const I64 OP_AS = 13;
+// A built-in's operation is OP_BUILTIN + its id.
+export const I64 OP_BUILTIN = 32;
+export const I64 FORM_CHECKED = 0;
+export const I64 FORM_WRAP = 1;
+export const I64 FORM_SAT = 2;
+
+// Comparisons.
+export const I64 CMP_EQ = 1;
+export const I64 CMP_NE = 2;
+export const I64 CMP_LT = 3;
+export const I64 CMP_LE = 4;
+export const I64 CMP_GT = 5;
+export const I64 CMP_GE = 6;
+
+// lit_digits status.
+export const I64 LIT_OK = 0;
+export const I64 LIT_TOO_WIDE = 1;
+export const I64 LIT_BAD_DIGIT = 2;
+
+// The work buffer and the literal table (CINTC-02; limits.FOLD_LIMBS, LITERAL_BYTES_MAX).
+export const I64 WORK_LIMBS = 66;
+export const I64 LIT_BYTES_MAX = 513;
+export const I64 LIT_BITS_MAX = 4096;
+
+const U64 M32 = 0xFFFFFFFF;
+const U64 ALL = 0xFFFFFFFFFFFFFFFF;
+const U64 CHUNK = 1000000000;
+
+// The integer built-ins (SPEC-01 2.4, 4.3 to 4.10; `cint_ref` BUILTIN_SIGS). The rounding
+// modes of SPEC-01 4.5 are numbered from 1 in its order: floor, ceil, trunc, away,
+// half_even, half_away, half_trunc, half_up, half_down.
+export const I64 BI_ABS = 1;
+export const I64 BI_UABS = 2;
+export const I64 BI_MIN = 3;
+export const I64 BI_MAX = 4;
+export const I64 BI_CLAMP = 5;
+export const I64 BI_DIV_TRUNC = 6;
+export const I64 BI_REM_TRUNC = 7;
+export const I64 BI_DIV_EUCLID = 8;
+export const I64 BI_REM_EUCLID = 9;
+export const I64 BI_DIV_ROUND = 10;
+export const I64 BI_MULDIV = 11;
+export const I64 BI_MUL_FULL = 12;
+export const I64 BI_ISQRT = 13;
+export const I64 BI_ISQRT_ROUND = 14;
+export const I64 BI_ROTL = 15;
+export const I64 BI_ROTR = 16;
+// The result-returning forms (SPEC-01 IM-30, IM-188; box 12): `ArithError!T`, lowered as an
+// SO_BIN of form 3 and its tag, never folded.
+export const I64 BI_ADD_RESULT = 17;
+export const I64 BI_SUB_RESULT = 18;
+export const I64 BI_MUL_RESULT = 19;
+export const I64 BI_DIV_RESULT = 20;
+export const I64 BI_REM_RESULT = 21;
+export const I64 BI_SHL_RESULT = 22;
+// Box 15 unit 4e: the built-ins of fixed point (SPEC-01 IM-61 to IM-67, SPEC-04 LS-145):
+// `sqrt` (a mode, half_even when none is written), `qmul(R, a, b[, mode])` (operand types of
+// its own, the result R) and `mul_int(a, n)` (n an integer); `mul`, `div`, `mul_wrap` and
+// `mul_sat` with their mode are the operators `*`, `/`, `*%` and `*|` (OP_MUL, OP_DIV).
+export const I64 BI_SQRT = 23;
+export const I64 BI_QMUL = 24;
+export const I64 BI_MUL_INT = 25;
+export const I64 BI_QMUL_OP = 26;
+export const I64 BI_QDIV = 27;
+export const I64 BI_QMUL_WRAP = 28;
+export const I64 BI_QMUL_SAT = 29;
+// S-1 U-1, the lane Q built-ins (SPEC-01 IM-190 to IM-192; OQ-338, CINTC-OQ-82): `hadd` and
+// `rhadd` on integers and fixed point of 8 to 64 bits, `rmulh` of a fixed-point value by its
+// Q1.(w-1) coefficient, saturated, and `rshr`, the rounding right shift, with its count.
+export const I64 BI_HADD = 30;
+export const I64 BI_RHADD = 31;
+export const I64 BI_RMULH = 32;
+export const I64 BI_RSHR = 33;
+
+// ---------------------------------------------------------------- structs
+
+export struct Folded {
+    I64 fault;
+    I64 ty;
+    U64 bits;
+    I64 name;
+    I64 form;
+    I64 ty1;
+    I64 ty2;
+    I64 nops;
+    I64[3] op_ty;
+    U64[3] op_bits;
+    I64 mode;
+    Bool has_exact;
+    Bool exact_neg;
+    Bool exact_wide;
+    U64 exact_hi;
+    U64 exact_lo;
+    Bool has_limit;
+    I64 limit_ty;
+    U64 limit_bits;
+    I64 lit_at;
+    I64 lit_len;
+}
+
+export struct Work {
+    U64[66] limb;
+    I64 used;
+    Bool neg;
+    I64 status;
+}
+
+// ---------------------------------------------------------------- types
+
+export I64 ty_width(I64 ty) {
+    if (ty_q(ty)) {
+        I64 c = ty - TY_Q;
+        if (c < 8) {
+            return 8;
+        }
+        if (c < 24) {
+            return 16;
+        }
+        if (c < 56) {
+            return 32;
+        }
+        if (c < 120) {
+            return 64;
+        }
+        return 128;
+    }
+    switch (ty) {
+        case TY_I8, TY_U8: return 8;
+        case TY_I16, TY_U16: return 16;
+        case TY_I32, TY_U32: return 32;
+        case TY_I64, TY_U64: return 64;
+        case TY_I128, TY_U128: return 128;
+        case TY_I256, TY_U256: return 256;
+        case TY_I512, TY_U512: return 512;
+        case TY_I1024: return 1024;
+        case TY_BOOL: return 1;
+        default: return 0;
+    }
+}
+
+export Bool ty_signed(I64 ty) {
+    return (ty >= TY_I8 && ty <= TY_I1024) || ty_q(ty);
+}
+
+// Whether ty is one of the wide integer types, I128 to I1024 and U128 to U512.
+export Bool ty_wide(I64 ty) {
+    return (ty >= TY_I128 && ty <= TY_I1024) || (ty >= TY_U128 && ty <= TY_U512);
+}
+
+U64 ty_mask(I64 ty) {
+    switch (ty_width(ty)) {
+        case 8: return 0xFF;
+        case 16: return 0xFFFF;
+        case 32: return 0xFFFFFFFF;
+        default: return ALL;
+    }
+}
+
+// Box 15 unit 4e: the fixed-point type Q<i>.<f> (SPEC-01 IM-54, SPEC-04 LS-36) of storage
+// width w = i + f in {8, 16, 32, 64, 128}, i >= 1, is TY_Q + w - 8 + f, 0x80 to 0x177, in the
+// order of interp/sir.h's SC_Q. Its value is its raw storage integer, the signed integer of
+// width w, which ty_width, ty_signed and the bounds give. The 128 types of 128 bits (games wave
+// G2b, OQ-292) are 0xF8 to 0x177, past 255: a value of one is two limbs, as an I128's, on the
+// wide stack (ty_limbs).
+export const I64 TY_Q = 0x80;
+
+export Bool ty_q(I64 ty) {
+    return ty >= TY_Q && ty < TY_Q + 248;
+}
+
+// Whether ty is a fixed-point type of 128-bit storage.
+export Bool q_wide(I64 ty) {
+    return ty >= TY_Q + 120 && ty < TY_Q + 248;
+}
+
+// Whether a value of type ty is held in limbs: a wide integer, or fixed point of 128 bits.
+export Bool ty_limbs(I64 ty) {
+    return ty_wide(ty) || q_wide(ty);
+}
+
+// The fixed-point type of storage width w and f fraction bits, or 0 when there is none.
+export I64 q_type(I64 w, I64 f) {
+    if ((w != 8 && w != 16 && w != 32 && w != 64 && w != 128) || f < 0 || f >= w) {
+        return 0;
+    }
+    return TY_Q + w - 8 + f;
+}
+
+// The fraction bits f of fixed-point type ty.
+export I64 q_frac(I64 ty) {
+    return ty - TY_Q - (ty_width(ty) - 8);
+}
+
+// The storage integer type of fixed-point type ty, the signed integer of its width (IM-57).
+export I64 q_storage(I64 ty) {
+    switch (ty_width(ty)) {
+        case 8: return TY_I8;
+        case 16: return TY_I16;
+        case 32: return TY_I32;
+        case 64: return TY_I64;
+        default: return TY_I128;
+    }
+}
+
+// The value of type `ty` whose low bits are those of v: v modulo 2^w (SPEC-01 4.1, wrapping).
+export U64 ty_wrap(I64 ty, U64 v) {
+    U64 mask = ty_mask(ty);
+    U64 t = v & mask;
+    if (ty_signed(ty) && (t & ~(mask >> 1)) != 0) {
+        t = t | ~mask;
+    }
+    return t;
+}
+
+// The magnitudes of the type's maximum and minimum, and their bits.
+U64 max_mag(I64 ty) {
+    if (ty_signed(ty)) {
+        return ty_mask(ty) >> 1;
+    }
+    return ty_mask(ty);
+}
+
+U64 min_mag(I64 ty) {
+    if (ty_signed(ty)) {
+        return (ty_mask(ty) >> 1) + 1;
+    }
+    return 0;
+}
+
+export U64 ty_max(I64 ty) {
+    return max_mag(ty);
+}
+
+export U64 ty_min(I64 ty) {
+    if (ty_signed(ty)) {
+        return ~(ty_mask(ty) >> 1);
+    }
+    return 0;
+}
+
+Bool is_neg(I64 ty, U64 bits) {
+    return ty_signed(ty) && (bits >> 63) == 1;
+}
+
+U64 magnitude(I64 ty, U64 bits) {
+    if (is_neg(ty, bits)) {
+        return 0 -% bits;
+    }
+    return bits;
+}
+
+// ---------------------------------------------------------------- results
+
+void clear[r](inout Folded[r] f) {
+    f[0].fault = F_NONE;
+    f[0].ty = 0;
+    f[0].bits = 0;
+    f[0].name = OP_UNASSIGNED;
+    f[0].form = FORM_CHECKED;
+    f[0].ty1 = 0;
+    f[0].ty2 = 0;
+    f[0].nops = 0;
+    for i in 0..3 {
+        f[0].op_ty[i] = 0;
+        f[0].op_bits[i] = 0;
+    }
+    f[0].mode = 0;
+    f[0].has_exact = false;
+    f[0].exact_neg = false;
+    f[0].exact_wide = false;
+    f[0].exact_hi = 0;
+    f[0].exact_lo = 0;
+    f[0].has_limit = false;
+    f[0].limit_ty = 0;
+    f[0].limit_bits = 0;
+    f[0].lit_at = -1;
+    f[0].lit_len = 0;
+}
+
+void begin[r](inout Folded[r] f, I64 name, I64 form, I64 ty1, I64 ty2) {
+    clear(f);
+    f[0].name = name;
+    f[0].form = form;
+    f[0].ty1 = ty1;
+    f[0].ty2 = ty2;
+}
+
+void operand[r](inout Folded[r] f, I64 ty, U64 bits) {
+    f[0].op_ty[f[0].nops] = ty;
+    f[0].op_bits[f[0].nops] = bits;
+    f[0].nops += 1;
+}
+
+void value[r](inout Folded[r] f, I64 ty, U64 bits) {
+    f[0].fault = F_NONE;
+    f[0].ty = ty;
+    f[0].bits = bits;
+}
+
+void set_exact[r](inout Folded[r] f, Bool neg, U64 hi, U64 lo) {
+    f[0].has_exact = true;
+    f[0].exact_neg = neg && (hi != 0 || lo != 0);
+    f[0].exact_hi = hi;
+    f[0].exact_lo = lo;
+}
+
+void set_limit[r](inout Folded[r] f, I64 ty, U64 bits) {
+    f[0].has_limit = true;
+    f[0].limit_ty = ty;
+    f[0].limit_bits = bits;
+}
+
+// Applies the form to the exact result held in f (SPEC-01 4.1 to 4.3): a value of `ty`,
+// or for the checked form outside the type, E_OVERFLOW with limit the violated bound.
+void settle[r](inout Folded[r] f, I64 ty) {
+    Bool neg = f[0].exact_neg;
+    U64 hi = f[0].exact_hi;
+    U64 lo = f[0].exact_lo;
+    Bool fits = hi == 0 && ((!neg && lo <= max_mag(ty)) || (neg && lo <= min_mag(ty)));
+    if (fits) {
+        U64 bits = lo;
+        if (neg) {
+            bits = 0 -% lo;
+        }
+        value(f, ty, bits);
+        f[0].has_exact = false;
+        return;
+    }
+    if (f[0].form == FORM_WRAP) {
+        U64 bits = lo;
+        if (neg) {
+            bits = 0 -% lo;
+        }
+        value(f, ty, ty_wrap(ty, bits));
+        f[0].has_exact = false;
+        return;
+    }
+    if (f[0].form == FORM_SAT) {
+        if (neg) {
+            value(f, ty, ty_min(ty));
+        } else {
+            value(f, ty, ty_max(ty));
+        }
+        f[0].has_exact = false;
+        return;
+    }
+    f[0].fault = F_OVERFLOW;
+    if (neg) {
+        set_limit(f, ty, ty_min(ty));
+    } else {
+        set_limit(f, ty, ty_max(ty));
+    }
+}
+
+// ---------------------------------------------------------------- 128-bit pieces
+
+// The exact sum of two signed magnitudes below 2^64, into f's exact.
+void exact_add[r](inout Folded[r] f, Bool na, U64 ma, Bool nb, U64 mb) {
+    if (na == nb) {
+        U64 lo = ma +% mb;
+        U64 hi = 0;
+        if (lo < ma) {
+            hi = 1;
+        }
+        set_exact(f, na, hi, lo);
+    } else if (ma >= mb) {
+        set_exact(f, na, 0, ma - mb);
+    } else {
+        set_exact(f, nb, 0, mb - ma);
+    }
+}
+
+// The exact product of two magnitudes below 2^64 (four 32-bit partial products).
+void exact_mul[r](inout Folded[r] f, Bool neg, U64 a, U64 b) {
+    U64 a0 = a & M32;
+    U64 a1 = a >> 32;
+    U64 b0 = b & M32;
+    U64 b1 = b >> 32;
+    U64 p00 = a0 * b0;
+    U64 p01 = a0 * b1;
+    U64 p10 = a1 * b0;
+    U64 p11 = a1 * b1;
+    U64 mid = (p00 >> 32) + (p01 & M32) + (p10 & M32);
+    U64 lo = (p00 & M32) | ((mid & M32) << 32);
+    U64 hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+    set_exact(f, neg, hi, lo);
+}
+
+// The exact m * 2^k for a magnitude m below 2^64 and 0 <= k <= 63.
+void exact_shl[r](inout Folded[r] f, Bool neg, U64 m, I64 k) {
+    if (k == 0) {
+        set_exact(f, neg, 0, m);
+    } else {
+        set_exact(f, neg, m >> (64 - k), m <<% k);
+    }
+}
+
+// ---------------------------------------------------------------- operations
+
+// The shift count check of SPEC-01 4.6: 0 <= k <= w - 1, else E_SHIFT with limit I64(w - 1)
+// and no exact (decision 23 on OQ-125). Returns the count, or -1 after recording the fault.
+I64 shift_count[r](inout Folded[r] f, I64 ty, I64 tb, U64 b) {
+    I64 w = ty_width(ty);
+    if (is_neg(tb, b) || b > ((w - 1) as U64)) {
+        f[0].fault = F_SHIFT;
+        set_limit(f, TY_I64, (w - 1) as U64);
+        return -1;
+    }
+    return b as I64;
+}
+
+// a << k (checked or wrapping, by f's form) or a >> k on type ty, for a count k that
+// shift_count admitted.
+void narrow_shift[r](inout Folded[r] f, I64 name, I64 ty, U64 a, I64 k) {
+    if (name == OP_SHL) {
+        exact_shl(f, is_neg(ty, a), magnitude(ty, a), k);
+        settle(f, ty);
+    } else if (is_neg(ty, a)) {
+        value(f, ty, ~((~a) >> k));
+    } else {
+        value(f, ty, a >> k);
+    }
+}
+
+// Floor division (SPEC-01 4.4): q = floor(a / b) and r = a - b * q, from the magnitudes.
+void fold_divide[r](inout Folded[r] f, I64 name, I64 ty, Bool na, U64 ma, Bool nb, U64 mb) {
+    if (mb == 0) {
+        f[0].fault = F_DIV_ZERO;
+        return;
+    }
+    U64 qm = ma / mb;
+    U64 rm = ma % mb;
+    Bool rneg = na;
+    if (na != nb && rm != 0) {
+        qm += 1;
+        rm = mb - rm;
+        rneg = nb;
+    }
+    if (name == OP_DIV) {
+        set_exact(f, na != nb, 0, qm);
+    } else {
+        set_exact(f, rneg, 0, rm);
+    }
+    settle(f, ty);
+}
+
+// a op b for the binary operators of SPEC-01 4 on type `ty`: OP_ADD, OP_SUB, OP_MUL with
+// any form; OP_DIV and OP_REM (floor division, SPEC-01 4.4), OP_SHR, OP_AND, OP_OR, and
+// OP_XOR checked; OP_SHL checked or wrapping. The count of a shift has its own type tb;
+// every other operator takes tb == ty.
+export void fold_binary[r](inout Folded[r] f, I64 name, I64 form, I64 ty, U64 a, I64 tb, U64 b) {
+    begin(f, name, form, ty, 0);
+    if (ty_wide(ty) || ty_wide(tb)) {
+        f[0].fault = -1;
+        return;
+    }
+    operand(f, ty, a);
+    operand(f, tb, b);
+    Bool na = is_neg(ty, a);
+    U64 ma = magnitude(ty, a);
+    Bool nb = is_neg(tb, b);
+    U64 mb = magnitude(tb, b);
+    if (name == OP_ADD) {
+        exact_add(f, na, ma, nb, mb);
+        settle(f, ty);
+    } else if (name == OP_SUB) {
+        exact_add(f, na, ma, !nb && mb != 0, mb);
+        settle(f, ty);
+    } else if (name == OP_MUL) {
+        exact_mul(f, na != nb, ma, mb);
+        settle(f, ty);
+    } else if (name == OP_DIV || name == OP_REM) {
+        fold_divide(f, name, ty, na, ma, nb, mb);
+    } else if (name == OP_SHL || name == OP_SHR) {
+        I64 k = shift_count(f, ty, tb, b);
+        if (k < 0) {
+            return;
+        }
+        narrow_shift(f, name, ty, a, k);
+    } else if (name == OP_AND) {
+        value(f, ty, a & b);
+    } else if (name == OP_OR) {
+        value(f, ty, a | b);
+    } else if (name == OP_XOR) {
+        value(f, ty, a ^ b);
+    } else {
+        f[0].fault = -1;
+    }
+}
+
+// OP_NEG (checked, SPEC-01 4.3: -a, which faults for the minimum and for unsigned a > 0)
+// and OP_NOT (bitwise complement within the type).
+export void fold_unary[r](inout Folded[r] f, I64 name, I64 ty, U64 a) {
+    begin(f, name, FORM_CHECKED, ty, 0);
+    if (ty_wide(ty)) {
+        f[0].fault = -1;
+        return;
+    }
+    operand(f, ty, a);
+    if (name == OP_NEG) {
+        set_exact(f, !is_neg(ty, a), 0, magnitude(ty, a));
+        settle(f, ty);
+    } else if (name == OP_NOT) {
+        value(f, ty, ty_wrap(ty, ~a));
+    } else {
+        f[0].fault = -1;
+    }
+}
+
+// a as T (FORM_CHECKED: E_NARROW outside T), a as% T (FORM_WRAP) and a as| T (FORM_SAT: the
+// bound of T on the value's side, SPEC-01 IM-50; OQ-272), SPEC-01 4.7. A Bool source gives 0
+// or 1.
+export void fold_convert[r](inout Folded[r] f, I64 form, I64 from, U64 a, I64 to) {
+    begin(f, OP_AS, form, from, to);
+    if (ty_wide(from) || ty_wide(to)) {
+        f[0].fault = -1;
+        return;
+    }
+    operand(f, from, a);
+    if (from == TY_BOOL) {
+        value(f, to, a);
+        return;
+    }
+    Bool neg = is_neg(from, a);
+    U64 m = magnitude(from, a);
+    Bool fits = (!neg && m <= max_mag(to)) || (neg && m <= min_mag(to));
+    if (fits || form == FORM_WRAP) {
+        value(f, to, ty_wrap(to, a));
+        return;
+    }
+    if (form == FORM_SAT) {
+        if (neg) {
+            value(f, to, ty_min(to));
+        } else {
+            value(f, to, ty_max(to));
+        }
+        return;
+    }
+    if (form != FORM_CHECKED) {
+        f[0].fault = -1;
+        return;
+    }
+    f[0].fault = F_NARROW;
+    set_exact(f, neg, 0, m);
+    if (neg) {
+        set_limit(f, to, ty_min(to));
+    } else {
+        set_limit(f, to, ty_max(to));
+    }
+}
+
+// a cmp b on type ty (SPEC-01 4.9).
+export Bool fold_compare(I64 cmp, I64 ty, U64 a, U64 b) {
+    Bool lt = a < b;
+    if (ty_signed(ty)) {
+        lt = (a as% I64) < (b as% I64);
+    }
+    switch (cmp) {
+        case CMP_EQ: return a == b;
+        case CMP_NE: return a != b;
+        case CMP_LT: return lt;
+        case CMP_LE: return lt || a == b;
+        case CMP_GT: return !lt && a != b;
+        case CMP_GE: return !lt;
+        default: return false;
+    }
+}
+
+// ---------------------------------------------------------------- built-ins
+
+// The number of value arguments of built-in id, a rotation's count included.
+export I64 builtin_values(I64 id) {
+    if (id == BI_ABS || id == BI_UABS || id == BI_ISQRT || id == BI_ISQRT_ROUND || id == BI_SQRT) {
+        return 1;
+    }
+    if (id == BI_CLAMP || id == BI_MULDIV) {
+        return 3;
+    }
+    return 2;
+}
+
+// Whether built-in id takes a trailing rounding mode; `sqrt` and `qmul` take one or not
+// (check.ci, given_mode).
+export Bool builtin_mode(I64 id) {
+    return id == BI_DIV_ROUND || id == BI_ISQRT_ROUND || id == BI_MULDIV || (id >= BI_QMUL_OP && id <= BI_QMUL_SAT);
+}
+
+// Whether built-in id has a result of the operand type (`cint_ref` kind T): an untyped
+// call of it takes its type from its context (SPEC-04 4.2 rule 4.7).
+export Bool builtin_same(I64 id) {
+    return id != BI_UABS && id != BI_MULDIV && id != BI_MUL_FULL && !builtin_result(id) && id != BI_QMUL &&
+        id != BI_MUL_INT && id != BI_RMULH;
+}
+
+// Whether built-in id is a result-returning form (box 12).
+export Bool builtin_result(I64 id) {
+    return id >= BI_ADD_RESULT && id <= BI_SHL_RESULT;
+}
+
+// Whether built-in id can fault (SPEC-01 9.2): uabs, min, max, mul_full, mul_wrap, mul_sat,
+// hadd, rhadd and rmulh cannot; rshr faults on its count only.
+export Bool builtin_faults(I64 id) {
+    return id != BI_UABS && id != BI_MIN && id != BI_MAX && id != BI_MUL_FULL && id != BI_QMUL_WRAP &&
+        id != BI_QMUL_SAT && !(id >= BI_HADD && id <= BI_RMULH);
+}
+
+// Whether built-in id is a lane Q operation (SPEC-01 IM-190 to IM-192).
+export Bool builtin_lane(I64 id) {
+    return id >= BI_HADD && id <= BI_RSHR;
+}
+
+// Whether built-in id is defined on fixed point (SPEC-01 IM-60 to IM-67): abs, min, max, mul,
+// div, mul_wrap, mul_sat and sqrt take operands of one fixed-point type; qmul and mul_int
+// (check.ci h_mixed) operands of their own.
+export Bool builtin_q(I64 id) {
+    return id == BI_ABS || id == BI_MIN || id == BI_MAX || (id >= BI_SQRT && id <= BI_QMUL_SAT) || builtin_lane(id);
+}
+
+// Whether built-in id is defined on fixed point only.
+export Bool builtin_q_only(I64 id) {
+    return (id >= BI_SQRT && id <= BI_QMUL_SAT) || id == BI_RMULH;
+}
+
+// The 128-bit magnitude hi:lo divided by d != 0, bit by bit: the quotient goes to f's
+// exact magnitude, and the remainder is returned.
+U64 div128[r](inout Folded[r] f, U64 hi, U64 lo, U64 d) {
+    U64 qh = 0;
+    U64 ql = 0;
+    U64 rem = 0;
+    for i in 0..128 {
+        U64 bit = 0;
+        if (i < 64) {
+            bit = (hi >> (63 - i)) & 1;
+        } else {
+            bit = (lo >> (127 - i)) & 1;
+        }
+        Bool carry = (rem >> 63) != 0;
+        rem = (rem <<% 1) | bit;
+        qh = (qh <<% 1) | (ql >> 63);
+        ql = ql <<% 1;
+        if (carry || rem >= d) {
+            rem = rem -% d;
+            ql = ql | 1;
+        }
+    }
+    f[0].exact_hi = qh;
+    f[0].exact_lo = ql;
+    return rem;
+}
+
+// The exact n / d of a rational of sign neg rounded by `mode` (SPEC-01 4.5, `cint_ref`
+// round_div), from the truncated quotient magnitude div128 left in f and its remainder
+// rem: 1 more when the mode rounds away from zero; then the sign.
+void round_quotient[r](inout Folded[r] f, U64 rem, Bool neg, U64 d, I64 mode) {
+    Bool up = false;
+    switch (mode) {
+        case 1: up = neg;
+        case 2: up = !neg;
+        case 3: up = false;
+        case 4: up = true;
+        default:
+            U64 other = d - rem;
+            if (rem > other) {
+                up = true;
+            } else if (rem == other) {
+                switch (mode) {
+                    case 5: up = (f[0].exact_lo & 1) != 0;
+                    case 6: up = true;
+                    case 7: up = false;
+                    case 8: up = !neg;
+                    default: up = neg;
+                }
+            }
+    }
+    U64 hi = f[0].exact_hi;
+    U64 lo = f[0].exact_lo;
+    if (rem != 0 && up) {
+        lo = lo +% 1;
+        if (lo == 0) {
+            hi = hi +% 1;
+        }
+    }
+    set_exact(f, neg, hi, lo);
+}
+
+// The integer square root of n (the largest r with r * r <= n).
+U64 isqrt64(U64 n) {
+    U64 x = n;
+    U64 r = 0;
+    U64 bit = 0x4000000000000000;
+    while (bit > x) {
+        bit = bit >> 2;
+    }
+    while (bit != 0) {
+        if (x >= r + bit) {
+            x -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r = r >> 1;
+        }
+        bit = bit >> 2;
+    }
+    return r;
+}
+
+// Built-in id on operands v[0..] of type ty (SPEC-01 2.4, 4.3 to 4.10; `cint_ref` arith.op),
+// checked: mode the rounding mode (0 for none), rty the result type of uabs, mul_full and
+// muldiv, kty the type of a rotation's count. Faults: E_OVERFLOW (abs, the divisions,
+// muldiv), E_DIV_ZERO, E_SHIFT for a rotation count outside 0 ..= w - 1 (limit I64 w - 1),
+// E_DOMAIN for isqrt of a negative and for clamp with lo > hi (no exact, no limit; the
+// run-time clamp case is decided as E_DOMAIN, OQ-06).
+export void fold_builtin[r](inout Folded[r] f, I64 id, I64 mode, I64 ty, I64 rty, U64 a, U64 b, U64 c, I64 kty) {
+    I64 ty2 = 0;
+    if (id == BI_UABS || id == BI_MUL_FULL || id == BI_MULDIV) {
+        ty2 = rty;
+    }
+    begin(f, OP_BUILTIN + id, FORM_CHECKED, ty, ty2);
+    if (ty_wide(ty) || ty_wide(rty) || ty_wide(kty)) {
+        f[0].fault = -1;
+        return;
+    }
+    f[0].mode = mode;
+    Bool rot = id == BI_ROTL || id == BI_ROTR || id == BI_RSHR;
+    operand(f, ty, a);
+    if (rot) {
+        operand(f, kty, b);
+    } else if (builtin_values(id) > 1) {
+        operand(f, ty, b);
+    }
+    if (builtin_values(id) > 2) {
+        operand(f, ty, c);
+    }
+    Bool na = is_neg(ty, a);
+    U64 ma = magnitude(ty, a);
+    Bool nb = false;
+    U64 mb = 0;
+    if (builtin_values(id) > 1 && !rot) {
+        nb = is_neg(ty, b);
+        mb = magnitude(ty, b);
+    }
+    switch (id) {
+        case BI_ABS:
+            set_exact(f, false, 0, ma);
+            settle(f, ty);
+        case BI_UABS:
+            value(f, rty, ma);
+        case BI_MIN, BI_MAX:
+            Bool lt = fold_compare(CMP_LT, ty, a, b);
+            if (lt == (id == BI_MIN)) {
+                value(f, ty, a);
+            } else {
+                value(f, ty, b);
+            }
+        case BI_CLAMP:
+            if (fold_compare(CMP_GT, ty, b, c)) {
+                f[0].fault = F_DOMAIN;
+                return;
+            }
+            U64 x = a;
+            if (fold_compare(CMP_LT, ty, x, b)) {
+                x = b;
+            }
+            if (fold_compare(CMP_GT, ty, x, c)) {
+                x = c;
+            }
+            value(f, ty, x);
+        case BI_DIV_TRUNC, BI_REM_TRUNC, BI_DIV_EUCLID, BI_REM_EUCLID:
+            if (mb == 0) {
+                f[0].fault = F_DIV_ZERO;
+                return;
+            }
+            U64 qm = ma / mb;
+            U64 rm = ma % mb;
+            Bool rneg = na;
+            if ((id == BI_DIV_EUCLID || id == BI_REM_EUCLID) && na && rm != 0) {
+                qm += 1;
+                rm = mb - rm;
+                rneg = false;
+            }
+            if (id == BI_DIV_TRUNC || id == BI_DIV_EUCLID) {
+                set_exact(f, na != nb, 0, qm);
+            } else {
+                set_exact(f, rneg, 0, rm);
+            }
+            settle(f, ty);
+        case BI_DIV_ROUND:
+            if (mb == 0) {
+                f[0].fault = F_DIV_ZERO;
+                return;
+            }
+            U64 rd = div128(f, 0, ma, mb);
+            round_quotient(f, rd, na != nb, mb, mode);
+            settle(f, ty);
+        case BI_MULDIV:
+            Bool nc = is_neg(ty, c);
+            U64 mc = magnitude(ty, c);
+            if (mc == 0) {
+                f[0].fault = F_DIV_ZERO;
+                return;
+            }
+            exact_mul(f, na != nb, ma, mb);
+            Bool neg = f[0].exact_neg != nc;
+            U64 rq = div128(f, f[0].exact_hi, f[0].exact_lo, mc);
+            round_quotient(f, rq, neg, mc, mode);
+            settle(f, rty);
+        case BI_MUL_FULL:
+            exact_mul(f, na != nb, ma, mb);
+            settle(f, rty);
+        case BI_HADD, BI_RHADD:
+            // IM-190: (a & b) + S(a ^ b, 1) and (a | b) - S(a ^ b, 1), S the type's own right
+            // shift of the 64-bit pattern; neither sum leaves the type.
+            U64 half = shift_right(ty, a ^ b, 1);
+            if (id == BI_HADD) {
+                value(f, ty, ty_wrap(ty, (a & b) +% half));
+            } else {
+                value(f, ty, ty_wrap(ty, (a | b) -% half));
+            }
+        case BI_RSHR:
+            // IM-192: a for a count of 0, else S(a, k) + (S(a, k - 1) & 1); E_SHIFT outside
+            // 0 ..= w - 1 as for `>>`.
+            I64 rk = shift_count(f, ty, kty, b);
+            if (rk < 0) {
+                return;
+            }
+            if (rk == 0) {
+                value(f, ty, a);
+            } else {
+                value(f, ty, ty_wrap(ty, shift_right(ty, a, rk) +% (shift_right(ty, a, rk - 1) & 1)));
+            }
+        case BI_ISQRT, BI_ISQRT_ROUND:
+            if (na) {
+                f[0].fault = F_DOMAIN;
+                return;
+            }
+            U64 root = isqrt64(ma);
+            if (id == BI_ISQRT_ROUND && root * root != ma) {
+                if (mode == 2 || mode == 4 || (mode > 4 && ma > root * root + root)) {
+                    root += 1;
+                }
+            }
+            set_exact(f, false, 0, root);
+            settle(f, ty);
+        default:
+            I64 kk = shift_count(f, ty, kty, b);
+            if (kk < 0) {
+                return;
+            }
+            I64 w = ty_width(ty);
+            I64 sh = kk;
+            if (id == BI_ROTR && kk != 0) {
+                sh = w - kk;
+            }
+            if (sh == 0) {
+                value(f, ty, a);
+            } else {
+                value(f, ty, ty_wrap(ty, (a <<% sh) | (a >> (w - sh))));
+            }
+    }
+}
+
+// The 64-bit pattern v of type ty shifted right by k, 0 <= k <= 63: arithmetic for a signed
+// type, whose patterns are sign-extended, logical for an unsigned one.
+U64 shift_right(I64 ty, U64 v, I64 k) {
+    if (ty_signed(ty) && (v >> 63) == 1) {
+        return ~((~v) >> k);
+    }
+    return v >> k;
+}
+
+// ---------------------------------------------------------------- fixed point (box 15 unit 4e)
+//
+// SPEC-01 5 on the raw storage integers: add, sub, neg, abs, min, max and the comparisons are
+// the storage integer's (IM-60), with the fixed-point type in the operation and the limit
+// (fold_binary, fold_unary, fold_builtin and fold_compare take a Q type as they take its
+// storage integer). Multiplication, division, square root, qmul, mul_int and the conversions
+// form the exact result in 128 bits (2w, IM-56), round it once by the mode (4.5), then apply
+// the form; the exact of a fault is the rounded raw value.
+
+// The magnitude hi:lo of sign neg divided by 2^k, 0 <= k <= 63, rounded by mode into f's
+// exact.
+void exact_shr_round[r](inout Folded[r] f, Bool neg, U64 hi, U64 lo, I64 k, I64 mode) {
+    if (k == 0) {
+        set_exact(f, neg, hi, lo);
+        return;
+    }
+    U64 d = (1 as U64) << k;
+    U64 rem = div128(f, hi, lo, d);
+    round_quotient(f, rem, neg, d, mode);
+}
+
+// The largest root < 2^64 with root * root <= hi:lo, by bits from the top.
+U64 isqrt128[r](inout Folded[r] f, U64 hi, U64 lo) {
+    U64 root = 0;
+    U64 bit = 0x8000000000000000;
+    while (bit != 0) {
+        U64 t = root | bit;
+        exact_mul(f, false, t, t);
+        if (f[0].exact_hi < hi || (f[0].exact_hi == hi && f[0].exact_lo <= lo)) {
+            root = t;
+        }
+        bit = bit >> 1;
+    }
+    return root;
+}
+
+// a * b (form FORM_CHECKED, FORM_WRAP or FORM_SAT) and a / b (checked) on fixed-point type ty,
+// rounded by mode (SPEC-01 IM-61, IM-62): round(A * B / 2^f) and round(A * 2^f / B), E_DIV_ZERO
+// first for a zero divisor.
+export void fold_q_binary[r](inout Folded[r] f, I64 name, I64 form, I64 mode, I64 ty, U64 a, U64 b) {
+    begin(f, name, form, ty, 0);
+    f[0].mode = mode;
+    operand(f, ty, a);
+    operand(f, ty, b);
+    Bool neg = is_neg(ty, a) != is_neg(ty, b);
+    U64 ma = magnitude(ty, a);
+    U64 mb = magnitude(ty, b);
+    if (name == OP_MUL) {
+        exact_mul(f, neg, ma, mb);
+        exact_shr_round(f, neg, f[0].exact_hi, f[0].exact_lo, q_frac(ty), mode);
+    } else {
+        if (mb == 0) {
+            f[0].fault = F_DIV_ZERO;
+            return;
+        }
+        exact_shl(f, false, ma, q_frac(ty));
+        U64 rem = div128(f, f[0].exact_hi, f[0].exact_lo, mb);
+        round_quotient(f, rem, neg, mb, mode);
+    }
+    settle(f, ty);
+}
+
+// The fixed-point built-ins: sqrt(a) (round(sqrt(A * 2^f)), E_DOMAIN for A < 0, IM-67) on ty;
+// qmul into rty of a of type ty and b of type tb (round(A * B / 2^(fa + fb - fr)) when that
+// shift is positive, else exact, IM-63); mul_int(a, n) of a of type ty and n of integer type
+// tb, exact (IM-64). Checked.
+export void fold_q_builtin[r](inout Folded[r] f, I64 id, I64 mode, I64 ty, I64 tb, I64 rty, U64 a, U64 b) {
+    I64 ty2 = 0;
+    if (id == BI_QMUL) {
+        ty2 = rty;
+    }
+    begin(f, OP_BUILTIN + id, FORM_CHECKED, ty, ty2);
+    if (id == BI_RMULH) {
+        // IM-191: qmul(Q, a, k, half_up) into the type of a, saturated.
+        f[0].form = FORM_SAT;
+    }
+    f[0].mode = mode;
+    operand(f, ty, a);
+    if (id != BI_SQRT) {
+        operand(f, tb, b);
+    }
+    Bool na = is_neg(ty, a);
+    U64 ma = magnitude(ty, a);
+    if (id == BI_SQRT) {
+        if (na) {
+            f[0].fault = F_DOMAIN;
+            return;
+        }
+        exact_shl(f, false, ma, q_frac(ty));
+        U64 nh = f[0].exact_hi;
+        U64 nl = f[0].exact_lo;
+        U64 root = isqrt128(f, nh, nl);
+        exact_mul(f, false, root, root);
+        Bool exact = f[0].exact_hi == nh && f[0].exact_lo == nl;
+        // Above root * root + root, n is past (root + 1/2)^2, which no integer n equals.
+        U64 sl = f[0].exact_lo +% root;
+        U64 sh = f[0].exact_hi;
+        if (sl < root) {
+            sh += 1;
+        }
+        Bool above = nh > sh || (nh == sh && nl > sl);
+        if (!exact && (mode == 2 || mode == 4 || (mode > 4 && above))) {
+            root += 1;
+        }
+        set_exact(f, false, 0, root);
+        settle(f, ty);
+        return;
+    }
+    Bool nb = is_neg(tb, b);
+    U64 mb = magnitude(tb, b);
+    exact_mul(f, na != nb, ma, mb);
+    if (id == BI_MUL_INT) {
+        settle(f, ty);
+        return;
+    }
+    I64 shift = q_frac(ty) + q_frac(tb) - q_frac(rty);
+    if (shift > 0) {
+        exact_shr_round(f, f[0].exact_neg, f[0].exact_hi, f[0].exact_lo, shift, mode);
+    } else if (shift < 0) {
+        // Exact A * B * 2^-shift: past 128 bits it overflows any R, whose exact this record
+        // does not hold (fault -1, outside the folds of cintc).
+        I64 k = -shift;
+        if ((f[0].exact_hi >> (64 - k)) != 0) {
+            f[0].fault = -1;
+            return;
+        }
+        U64 hi = (f[0].exact_hi << k) | (f[0].exact_lo >> (64 - k));
+        set_exact(f, f[0].exact_neg, hi, f[0].exact_lo <<% k);
+    }
+    settle(f, rty);
+}
+
+// a as T, a as% T and a as| T (form FORM_CHECKED, FORM_WRAP or FORM_SAT) where `from` or `to`
+// is fixed point (SPEC-01 IM-68, IM-69): A * 2^(g - f) exactly when the fraction bits do not
+// decrease, else rounded by mode; an integer has f 0. Checked, outside T is E_NARROW with the
+// exact raw (or integer) result and T's violated bound; saturating, that bound (OQ-272).
+export void fold_q_convert[r](inout Folded[r] f, I64 form, I64 mode, I64 from, U64 a, I64 to) {
+    begin(f, OP_AS, form, from, to);
+    f[0].mode = mode;
+    operand(f, from, a);
+    I64 sf = 0;
+    I64 tf = 0;
+    if (ty_q(from)) {
+        sf = q_frac(from);
+    }
+    if (ty_q(to)) {
+        tf = q_frac(to);
+    }
+    if (tf >= sf) {
+        exact_shl(f, is_neg(from, a), magnitude(from, a), tf - sf);
+    } else {
+        exact_shr_round(f, is_neg(from, a), 0, magnitude(from, a), sf - tf, mode);
+    }
+    settle(f, to);
+    if (f[0].fault == F_OVERFLOW) {
+        f[0].fault = F_NARROW;
+    }
+}
+
+// A literal L converted by `as`, `as%` or `as|` (form) to fixed-point type `to` (SPEC-01
+// IM-26, IM-69): its raw L * 2^f, from the literal stored at lits[at..at + nbytes) times 2^f,
+// held as the wide exact in ws (z is scratch). Checked, out of range is E_NARROW with
+// operation `unassigned`, operand the literal's Z, exact L * 2^f and the bound of `to`.
+// Saturating, out of range is that bound (OQ-272). For `to` of 128 bits the exact then holds
+// the value, modulo 2^128 for `as%` (wide_push_ex and ex_load read it).
+export void fold_lit_q[r, b](inout Folded[r] f, I64 form, in U8[b] lits, I64 at, I64 nbytes, I64 to,
+        inout Work[_] z, inout Wide[_] ws, inout WideVal[_] wv) {
+    begin(f, OP_UNASSIGNED, form, TY_Z, to);
+    lit_get(lits, at, nbytes, z);
+    Bool neg = z[0].neg;
+    lit_scale(z, q_frac(to));
+    ex_from_work(ws, wv, z);
+    U64 low = z[0].limb[0];
+    if (z[0].neg) {
+        low = 0 -% low;
+    }
+    Bool fits = ex_fits(ws, wv, to);
+    if (fits || form == FORM_WRAP) {
+        value(f, to, ty_wrap(to, low));
+        return;
+    }
+    if (form == FORM_SAT) {
+        if (q_wide(to)) {
+            bound_load(to, !neg, z);
+            ex_from_work(ws, wv, z);
+        }
+        if (neg) {
+            value(f, to, ty_min(to));
+        } else {
+            value(f, to, ty_max(to));
+        }
+        return;
+    }
+    f[0].fault = F_NARROW;
+    f[0].nops = 1;
+    f[0].op_ty[0] = TY_Z;
+    f[0].lit_at = at;
+    f[0].lit_len = nbytes;
+    f[0].has_exact = true;
+    f[0].exact_wide = true;
+    f[0].exact_neg = neg;
+    if (q_wide(to)) {
+        // A limit held in limbs is named by limit_bits 0 (the minimum) or 1 (the maximum).
+        set_limit(f, to, 1);
+        if (neg) {
+            set_limit(f, to, 0);
+        }
+    } else if (neg) {
+        set_limit(f, to, ty_min(to));
+    } else {
+        set_limit(f, to, ty_max(to));
+    }
+}
+
+// ---------------------------------------------------------------- the work buffer
+
+export void z_clear(inout Work[_] z) {
+    for i in 0..WORK_LIMBS {
+        z[0].limb[i] = 0;
+    }
+    z[0].used = 0;
+    z[0].neg = false;
+    z[0].status = LIT_OK;
+}
+
+void z_trim(inout Work[_] z) {
+    while (z[0].used > 0 && z[0].limb[z[0].used - 1] == 0) {
+        z[0].used -= 1;
+    }
+    if (z[0].used == 0) {
+        z[0].neg = false;
+    }
+}
+
+// Loads a Z of magnitude hi:lo.
+export void z_load128(inout Work[_] z, Bool neg, U64 hi, U64 lo) {
+    z_clear(z);
+    z[0].limb[0] = lo;
+    z[0].limb[1] = hi;
+    z[0].used = 2;
+    z[0].neg = neg;
+    z_trim(z);
+}
+
+// z = z * m + d for m <= 16 and d < m, in 32-bit halves. Returns false, leaving z
+// unchanged in its low 66 limbs only, when the result needs a limb past WORK_LIMBS.
+Bool z_mul_add(inout Work[_] z, U64 m, U64 d) {
+    U64 carry = d;
+    for i in 0..z[0].used {
+        U64 x = z[0].limb[i];
+        U64 p0 = (x & M32) * m + carry;
+        U64 p1 = (x >> 32) * m + (p0 >> 32);
+        z[0].limb[i] = ((p1 & M32) << 32) | (p0 & M32);
+        carry = p1 >> 32;
+    }
+    if (carry != 0) {
+        if (z[0].used == WORK_LIMBS) {
+            return false;
+        }
+        z[0].limb[z[0].used] = carry;
+        z[0].used += 1;
+    }
+    return true;
+}
+
+// z = z - 1 in magnitude, for a magnitude of at least 2.
+void z_dec(inout Work[_] z) {
+    I64 i = 0;
+    while (z[0].limb[i] == 0) {
+        z[0].limb[i] = ALL;
+        i += 1;
+    }
+    z[0].limb[i] = z[0].limb[i] - 1;
+    z_trim(z);
+}
+
+// z = z / CHUNK, returning the remainder (0 <= rem < 10^9), in 32-bit halves.
+U64 z_div_chunk(inout Work[_] z) {
+    U64 rem = 0;
+    I64 i = z[0].used;
+    while (i > 0) {
+        i -= 1;
+        U64 x = z[0].limb[i];
+        U64 t = rem * 4294967296 + (x >> 32);
+        U64 qh = t / CHUNK;
+        rem = t % CHUNK;
+        t = rem * 4294967296 + (x & M32);
+        U64 ql = t / CHUNK;
+        rem = t % CHUNK;
+        z[0].limb[i] = (qh << 32) | ql;
+    }
+    z_trim(z);
+    return rem;
+}
+
+// z = z / d for 2 <= d <= 16, returning the remainder, in 32-bit halves.
+U64 z_div_small(inout Work[_] z, U64 d) {
+    U64 rem = 0;
+    I64 i = z[0].used;
+    while (i > 0) {
+        i -= 1;
+        U64 x = z[0].limb[i];
+        U64 t = rem * 4294967296 + (x >> 32);
+        U64 qh = t / d;
+        rem = t % d;
+        t = rem * 4294967296 + (x & M32);
+        U64 ql = t / d;
+        rem = t % d;
+        z[0].limb[i] = (qh << 32) | ql;
+    }
+    z_trim(z);
+    return rem;
+}
+
+// z = z + 1 in magnitude.
+void z_inc(inout Work[_] z) {
+    I64 i = 0;
+    while (i < z[0].used && z[0].limb[i] == ALL) {
+        z[0].limb[i] = 0;
+        i += 1;
+    }
+    if (i < z[0].used) {
+        z[0].limb[i] += 1;
+    } else if (i < WORK_LIMBS) {
+        z[0].limb[i] = 1;
+        z[0].used += 1;
+    }
+}
+
+// The bit length of the magnitude.
+I64 z_bits(inout Work[_] z) {
+    if (z[0].used == 0) {
+        return 0;
+    }
+    U64 top = z[0].limb[z[0].used - 1];
+    I64 n = 0;
+    while (top != 0) {
+        top = top >> 1;
+        n += 1;
+    }
+    return 64 * (z[0].used - 1) + n;
+}
+
+// Whether the magnitude is a power of two.
+Bool z_pow2(inout Work[_] z) {
+    if (z[0].used == 0) {
+        return false;
+    }
+    U64 top = z[0].limb[z[0].used - 1];
+    if ((top & (top - 1)) != 0) {
+        return false;
+    }
+    for i in 0..z[0].used - 1 {
+        if (z[0].limb[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The byte count of the minimal two's complement of the Z (SPEC-01 IM-145; zero is 0).
+export I64 z_len(inout Work[_] z) {
+    if (z[0].used == 0) {
+        return 0;
+    }
+    I64 bits = z_bits(z);
+    if (z[0].neg && z_pow2(z)) {
+        bits -= 1;
+    }
+    return (bits + 8) / 8;
+}
+
+U64 mag_byte(inout Work[_] z, I64 k) {
+    if (k / 8 >= z[0].used) {
+        return 0;
+    }
+    return (z[0].limb[k / 8] >> (8 * (k % 8))) & 0xFF;
+}
+
+// The index of the lowest nonzero byte of the magnitude (the magnitude is not zero).
+I64 low_byte(inout Work[_] z) {
+    I64 k = 0;
+    while (mag_byte(z, k) == 0) {
+        k += 1;
+    }
+    return k;
+}
+
+// Byte k of the two's complement of the Z, given the index of its lowest nonzero byte.
+U8 z_byte(inout Work[_] z, I64 k, I64 low) {
+    U64 m = mag_byte(z, k);
+    if (!z[0].neg || k < low) {
+        return m as U8;
+    }
+    if (k == low) {
+        return (256 - m) as U8;
+    }
+    return (255 - m) as U8;
+}
+
+// ---------------------------------------------------------------- literals
+
+// Starts a literal; `neg` for a negative literal (SPEC-04 LS-28, decision 23 on D-21).
+export void lit_start(inout Work[_] z, Bool neg) {
+    z_clear(z);
+    z[0].neg = neg;
+}
+
+// Appends the digits text[start..start + ndigits) in base 2, 8, 10, or 16, skipping the
+// separator `_` (SPEC-04 LS-26). Once the magnitude reaches 2^4096 the status is
+// LIT_TOO_WIDE (C1023) and later digits are ignored. Returns the status. The sign of
+// lit_start holds across every chunk, so the value does not depend on where the digits are
+// split (LS-27, D-17); a zero magnitude keeps it here and is zero again when stored (no
+// bytes) or rendered (`0`).
+export I64 lit_digits[n](inout Work[_] z, in U8[n] text, I64 start, I64 ndigits, I64 base) {
+    I64 i = start;
+    while (i < start + ndigits && z[0].status == LIT_OK) {
+        U8 c = text[i];
+        i += 1;
+        if (c == '_') {
+            continue;
+        }
+        I64 d = 99;
+        if (c >= '0' && c <= '9') {
+            d = (c - '0') as I64;
+        } else if (c >= 'a' && c <= 'f') {
+            d = (c - 'a') as I64 + 10;
+        } else if (c >= 'A' && c <= 'F') {
+            d = (c - 'A') as I64 + 10;
+        }
+        if (d >= base) {
+            z[0].status = LIT_BAD_DIGIT;
+        } else if (!z_mul_add(z, base as U64, d as U64) || z_bits(z) > LIT_BITS_MAX) {
+            z[0].status = LIT_TOO_WIDE;
+        }
+    }
+    return z[0].status;
+}
+
+// Appends the balanced-ternary digits text[start..start + ndigits), most significant first,
+// skipping `_` (SPEC-04 LS-30: `N` is -1, `0` is 0, `P` is +1): z = 3 z + d, or 3 z - d for a
+// negative literal, whose `neg` (lit_start's) every chunk passes again. Unlike lit_digits, z
+// carries the sign of the value read so far, which its leading nonzero digit sets; once z is
+// not zero, |3 z| >= 3 and adding d keeps that sign. The magnitude of a prefix never exceeds
+// the whole numeral's, so LIT_TOO_WIDE (C1023) agrees with the scanner's test of the whole.
+// Returns the status.
+export I64 lit_trits[n](inout Work[_] z, in U8[n] text, I64 start, I64 ndigits, Bool neg) {
+    I64 i = start;
+    while (i < start + ndigits && z[0].status == LIT_OK) {
+        U8 c = text[i];
+        i += 1;
+        if (c == '_') {
+            continue;
+        }
+        I64 d = 0;
+        if (c == 'P') {
+            d = 1;
+        } else if (c == 'N') {
+            d = -1;
+        } else if (c != '0') {
+            z[0].status = LIT_BAD_DIGIT;
+            continue;
+        }
+        if (neg) {
+            d = -d;
+        }
+        Bool down = d != 0 && z[0].used > 0 && (d < 0) != z[0].neg;
+        U64 up = 0;
+        if (d != 0 && !down) {
+            up = 1;
+            if (z[0].used == 0) {
+                z[0].neg = d < 0;
+            }
+        }
+        if (!z_mul_add(z, 3, up)) {
+            z[0].status = LIT_TOO_WIDE;
+        } else {
+            if (down) {
+                z_dec(z);
+            }
+            if (z_bits(z) > LIT_BITS_MAX) {
+                z[0].status = LIT_TOO_WIDE;
+            }
+        }
+    }
+    return z[0].status;
+}
+
+// Box 15 unit 4e: the raw value of a literal of fixed-point type with fbits fraction bits
+// (SPEC-04 LS-37, SPEC-01 IM-27) into z. A fraction literal's digits text[start..start +
+// ndigits) in base 10 or 16 (without its `0x`), negative when neg, are its exact value
+// N / base^k; the raw value is N * 2^fbits / base^k, rounded by `mode` (1 to 9, SPEC-01 4.5)
+// when not an integer; false when it is not and mode is 0 (C2006). The rounding reads the
+// last remainder digit against base / 2, and whether any earlier one was not 0.
+export Bool lit_fraction[n](inout Work[_] z, in U8[n] text, I64 start, I64 ndigits, I64 base, Bool neg, I64 fbits,
+        I64 mode) {
+    lit_start(z, false);
+    I64 point = start;
+    while (text[point] != '.') {
+        point += 1;
+    }
+    _ = lit_digits(z, text, start, point - start, base);
+    _ = lit_digits(z, text, point + 1, start + ndigits - point - 1, base);
+    I64 k = 0;
+    for i in point + 1..start + ndigits {
+        if (text[i] != '_') {
+            k += 1;
+        }
+    }
+    lit_scale(z, fbits);
+    U64 last = 0;
+    Bool sticky = false;
+    for j in 0..k {
+        if (last != 0) {
+            sticky = true;
+        }
+        last = z_div_small(z, base as U64);
+    }
+    if (last != 0 || sticky) {
+        if (mode == 0) {
+            return false;
+        }
+        U64 half = (base / 2) as U64;
+        Bool up = false;
+        switch (mode) {
+            case 1: up = neg;
+            case 2: up = !neg;
+            case 3: up = false;
+            case 4: up = true;
+            default:
+                if (last > half || (last == half && sticky)) {
+                    up = true;
+                } else if (last == half) {
+                    switch (mode) {
+                        case 5: up = z[0].used > 0 && (z[0].limb[0] & 1) != 0;
+                        case 6: up = true;
+                        case 7: up = false;
+                        case 8: up = !neg;
+                        default: up = neg;
+                    }
+                }
+        }
+        if (up) {
+            z_inc(z);
+        }
+    }
+    z[0].neg = neg && z[0].used > 0;
+    return true;
+}
+
+// z = z * 2^fbits: an integer literal's raw value in a fixed-point type (SPEC-01 IM-27).
+export void lit_scale(inout Work[_] z, I64 fbits) {
+    Bool neg = z[0].neg;
+    for j in 0..fbits {
+        _ = z_mul_add(z, 2, 0);
+    }
+    z[0].neg = neg && z[0].used > 0;
+}
+
+// Stores the literal's minimal bytes at lits[at..], returning their count (at most 513).
+export I64 lit_put[b](inout Work[_] z, inout U8[b] lits, I64 at) {
+    I64 nbytes = z_len(z);
+    if (nbytes == 0) {
+        return 0;
+    }
+    I64 low = low_byte(z);
+    for k in 0..nbytes {
+        lits[at + k] = z_byte(z, k, low);
+    }
+    return nbytes;
+}
+
+// Loads the Z stored at lits[at..at + nbytes) into the work buffer.
+export void lit_get[b](in U8[b] lits, I64 at, I64 nbytes, inout Work[_] z) {
+    z_clear(z);
+    if (nbytes == 0) {
+        return;
+    }
+    Bool neg = lits[at + nbytes - 1] >= 0x80;
+    // The magnitude: the bytes themselves, or for a negative value their two's complement.
+    U64 borrow = 1;
+    for k in 0..nbytes {
+        U64 v = lits[at + k] as U64;
+        if (neg) {
+            v = (255 - v) + borrow;
+            borrow = v >> 8;
+            v = v & 0xFF;
+        }
+        z[0].limb[k / 8] = z[0].limb[k / 8] | (v << (8 * (k % 8)));
+    }
+    z[0].used = (nbytes + 7) / 8;
+    z[0].neg = neg;
+    z_trim(z);
+}
+
+// The low 64 bits of the stored Z, as two's complement.
+export U64 lit_bits[b](in U8[b] lits, I64 at, I64 nbytes) {
+    U64 v = 0;
+    for k in 0..8 {
+        U64 byte = 0;
+        if (k < nbytes) {
+            byte = lits[at + k] as U64;
+        } else if (nbytes > 0 && lits[at + nbytes - 1] >= 0x80) {
+            byte = 0xFF;
+        }
+        v = v | (byte << (8 * k));
+    }
+    return v;
+}
+
+// Whether the stored Z is a value of type ty (the C2003 range check of a literal).
+export Bool lit_fits[b](in U8[b] lits, I64 at, I64 nbytes, I64 ty) {
+    if (nbytes == 0) {
+        return true;
+    }
+    if (ty_limbs(ty) && ty_signed(ty)) {
+        // The minimal two's complement bytes of a value of a signed w-bit type are at most
+        // w / 8, and any w / 8 bytes are such a value (a 128-bit fixed point's raw value).
+        return nbytes <= ty_width(ty) / 8;
+    }
+    if (ty_wide(ty)) {
+        // A value of an unsigned w-bit type is not negative, and its minimal two's complement
+        // bytes are at most w / 8, or w / 8 + 1 whose last is 0.
+        I64 nb = ty_width(ty) / 8;
+        return lits[at + nbytes - 1] < 0x80 && (nbytes <= nb || (nbytes == nb + 1 && lits[at + nb] == 0));
+    }
+    Bool neg = lits[at + nbytes - 1] >= 0x80;
+    if (nbytes == 9 && !neg && lits[at + 8] == 0) {
+        return ty == TY_U64;
+    }
+    if (nbytes > 8) {
+        return false;
+    }
+    U64 v = lit_bits(lits, at, nbytes);
+    if (neg) {
+        return ty_signed(ty) && (0 -% v) <= min_mag(ty);
+    }
+    return v <= max_mag(ty);
+}
+
+// L as T (FORM_CHECKED), L as% T (FORM_WRAP) or L as| T (FORM_SAT) for the literal stored at
+// lits[at..at + nbytes): a conversion decided at compile time (D-17). Out of range, the
+// checked form is E_NARROW with operation `unassigned`, operand and exact the literal's Z, and
+// limit the violated bound of T (SPEC-01 IM-26, IM-184), and the saturating form that bound,
+// whose low 64 bits are the value for a wide T (OQ-272).
+export void fold_lit_convert[r, b](inout Folded[r] f, I64 form, in U8[b] lits, I64 at, I64 nbytes, I64 to) {
+    begin(f, OP_UNASSIGNED, form, TY_Z, to);
+    U64 low = lit_bits(lits, at, nbytes);
+    if (lit_fits(lits, at, nbytes, to) || form == FORM_WRAP) {
+        value(f, to, ty_wrap(to, low));
+        return;
+    }
+    if (form == FORM_SAT) {
+        if (lits[at + nbytes - 1] >= 0x80 && ty_wide(to)) {
+            value(f, to, 0);
+        } else if (lits[at + nbytes - 1] >= 0x80) {
+            value(f, to, ty_min(to));
+        } else if (ty_wide(to)) {
+            value(f, to, 0xFFFFFFFFFFFFFFFF);
+        } else {
+            value(f, to, ty_max(to));
+        }
+        return;
+    }
+    if (form != FORM_CHECKED) {
+        f[0].fault = -1;
+        return;
+    }
+    f[0].fault = F_NARROW;
+    f[0].nops = 1;
+    f[0].op_ty[0] = TY_Z;
+    f[0].has_exact = true;
+    f[0].lit_at = at;
+    f[0].lit_len = nbytes;
+    Bool neg = lits[at + nbytes - 1] >= 0x80;
+    if (ty_wide(to)) {
+        // A wide limit is named by limit_bits 0 (the minimum) or 1 (the maximum).
+        if (neg) {
+            set_limit(f, to, 0);
+        } else {
+            set_limit(f, to, 1);
+        }
+    } else if (neg) {
+        set_limit(f, to, ty_min(to));
+    } else {
+        set_limit(f, to, ty_max(to));
+    }
+}
+
+// ---------------------------------------------------------------- rendering
+
+// The decimal digits of the Z in the work buffer, with `-` when negative (zero is `0`
+// whatever its sign). Consumes it.
+export void z_render[b](inout emit.Writer[_] w, inout U8[b] dst, inout Work[_] z) {
+    I64[142] chunk;   // 1,272 digits in chunks of 9
+    I64 n = 0;
+    if (z[0].neg && z[0].used > 0) {
+        emit.w_byte(w, dst, '-');
+    }
+    while (n == 0 || z[0].used > 0) {
+        chunk[n] = z_div_chunk(z) as I64;
+        n += 1;
+    }
+    n -= 1;
+    emit.w_i64(w, dst, chunk[n]);
+    while (n > 0) {
+        n -= 1;
+        I64 v = chunk[n];
+        I64 scale = 100000000;
+        while (scale > 0) {
+            emit.w_byte(w, dst, (48 + (v / scale) % 10) as U8);
+            scale = scale / 10;
+        }
+    }
+}
+
+export void render_type[b](inout emit.Writer[_] w, inout U8[b] dst, I64 ty, Bool lowercase) {
+    if (ty_q(ty)) {
+        // `Q16.16`, or `q16_16` in an operation identifier (SPEC-01 9.8).
+        if (lowercase) {
+            emit.w_byte(w, dst, 'q');
+        } else {
+            emit.w_byte(w, dst, 'Q');
+        }
+        emit.w_i64(w, dst, ty_width(ty) - q_frac(ty));
+        if (lowercase) {
+            emit.w_byte(w, dst, '_');
+        } else {
+            emit.w_byte(w, dst, '.');
+        }
+        emit.w_i64(w, dst, q_frac(ty));
+        return;
+    }
+    if (ty == TY_BOOL) {
+        emit.w_text(w, dst, "Bool");
+        return;
+    }
+    if (ty == TY_Z) {
+        emit.w_byte(w, dst, 'Z');
+        return;
+    }
+    if (ty_signed(ty) && lowercase) {
+        emit.w_byte(w, dst, 'i');
+    } else if (ty_signed(ty)) {
+        emit.w_byte(w, dst, 'I');
+    } else if (lowercase) {
+        emit.w_byte(w, dst, 'u');
+    } else {
+        emit.w_byte(w, dst, 'U');
+    }
+    emit.w_i64(w, dst, ty_width(ty));
+}
+
+// A typed value in the form of SPEC-09 CONF-01: `I64 -5`, `U8 255`, `Bool true`, and a
+// fixed-point value by its storage integer, `Q16.16 raw 65536`.
+export void render_value[b](inout emit.Writer[_] w, inout U8[b] dst, I64 ty, U64 bits) {
+    render_type(w, dst, ty, false);
+    emit.w_byte(w, dst, ' ');
+    if (ty_q(ty)) {
+        emit.w_text(w, dst, "raw ");
+    }
+    if (ty == TY_BOOL) {
+        if (bits != 0) {
+            emit.w_text(w, dst, "true");
+        } else {
+            emit.w_text(w, dst, "false");
+        }
+    } else if (ty_signed(ty)) {
+        emit.w_i64(w, dst, bits as% I64);
+    } else {
+        emit.w_u64(w, dst, bits);
+    }
+}
+
+export void render_code[b](inout emit.Writer[_] w, inout U8[b] dst, I64 code) {
+    switch (code) {
+        case F_OVERFLOW: emit.w_text(w, dst, "E_OVERFLOW");
+        case F_DIV_ZERO: emit.w_text(w, dst, "E_DIV_ZERO");
+        case F_SHIFT: emit.w_text(w, dst, "E_SHIFT");
+        case F_NARROW: emit.w_text(w, dst, "E_NARROW");
+        case F_DOMAIN: emit.w_text(w, dst, "E_DOMAIN");
+        default: emit.w_text(w, dst, "unassigned");
+    }
+}
+
+// The operation identifier of SPEC-01 9.8, for example `add.checked.i64`, `as.wrap.i64.u8`.
+export void render_operation[b, r](inout emit.Writer[_] w, inout U8[b] dst, in Folded[r] f) {
+    if (f[0].name > OP_BUILTIN) {
+        I64 id = f[0].name - OP_BUILTIN;
+        render_builtin(w, dst, id);
+        if (id == BI_RMULH) {
+            emit.w_text(w, dst, ".sat.");
+        } else {
+            emit.w_text(w, dst, ".checked.");
+        }
+        render_type(w, dst, f[0].ty1, true);
+        if (id == BI_QMUL || id == BI_MUL_INT || id == BI_RMULH) {
+            // The second operand's type: `qmul.checked.<a>.<b>.<r>`, `mul_int.checked.<q>.<n>`.
+            emit.w_byte(w, dst, '.');
+            render_type(w, dst, f[0].op_ty[1], true);
+        }
+        if (id == BI_UABS || id == BI_MUL_FULL || id == BI_MULDIV || id == BI_QMUL) {
+            emit.w_byte(w, dst, '.');
+            render_type(w, dst, f[0].ty2, true);
+        }
+        if (f[0].mode != 0) {
+            emit.w_byte(w, dst, '.');
+            render_mode(w, dst, f[0].mode);
+        }
+        return;
+    }
+    switch (f[0].name) {
+        case OP_ADD: emit.w_text(w, dst, "add");
+        case OP_SUB: emit.w_text(w, dst, "sub");
+        case OP_MUL: emit.w_text(w, dst, "mul");
+        case OP_DIV: emit.w_text(w, dst, "div");
+        case OP_REM: emit.w_text(w, dst, "rem");
+        case OP_SHL: emit.w_text(w, dst, "shl");
+        case OP_SHR: emit.w_text(w, dst, "shr");
+        case OP_AND: emit.w_text(w, dst, "and");
+        case OP_OR: emit.w_text(w, dst, "or");
+        case OP_XOR: emit.w_text(w, dst, "xor");
+        case OP_NEG: emit.w_text(w, dst, "neg");
+        case OP_NOT: emit.w_text(w, dst, "not");
+        case OP_AS: emit.w_text(w, dst, "as");
+        default:
+            emit.w_text(w, dst, "unassigned");
+            return;
+    }
+    switch (f[0].form) {
+        case FORM_WRAP: emit.w_text(w, dst, ".wrap.");
+        case FORM_SAT: emit.w_text(w, dst, ".sat.");
+        default: emit.w_text(w, dst, ".checked.");
+    }
+    render_type(w, dst, f[0].ty1, true);
+    if (f[0].name == OP_AS) {
+        emit.w_byte(w, dst, '.');
+        render_type(w, dst, f[0].ty2, true);
+    }
+    if (f[0].mode != 0) {
+        // A fixed-point operation that rounds names its mode (SPEC-01 9.8).
+        emit.w_byte(w, dst, '.');
+        render_mode(w, dst, f[0].mode);
+    }
+}
+
+// The name of built-in id (SPEC-01 IM-134).
+export void render_builtin[b](inout emit.Writer[_] w, inout U8[b] dst, I64 id) {
+    switch (id) {
+        case BI_ABS: emit.w_text(w, dst, "abs");
+        case BI_UABS: emit.w_text(w, dst, "uabs");
+        case BI_MIN: emit.w_text(w, dst, "min");
+        case BI_MAX: emit.w_text(w, dst, "max");
+        case BI_CLAMP: emit.w_text(w, dst, "clamp");
+        case BI_DIV_TRUNC: emit.w_text(w, dst, "div_trunc");
+        case BI_REM_TRUNC: emit.w_text(w, dst, "rem_trunc");
+        case BI_DIV_EUCLID: emit.w_text(w, dst, "div_euclid");
+        case BI_REM_EUCLID: emit.w_text(w, dst, "rem_euclid");
+        case BI_DIV_ROUND: emit.w_text(w, dst, "div_round");
+        case BI_MULDIV: emit.w_text(w, dst, "muldiv");
+        case BI_MUL_FULL: emit.w_text(w, dst, "mul_full");
+        case BI_ADD_RESULT: emit.w_text(w, dst, "add_result");
+        case BI_SUB_RESULT: emit.w_text(w, dst, "sub_result");
+        case BI_MUL_RESULT: emit.w_text(w, dst, "mul_result");
+        case BI_DIV_RESULT: emit.w_text(w, dst, "div_result");
+        case BI_REM_RESULT: emit.w_text(w, dst, "rem_result");
+        case BI_SHL_RESULT: emit.w_text(w, dst, "shl_result");
+        case BI_ISQRT: emit.w_text(w, dst, "isqrt");
+        case BI_ISQRT_ROUND: emit.w_text(w, dst, "isqrt_round");
+        case BI_ROTL: emit.w_text(w, dst, "rotl");
+        case BI_SQRT: emit.w_text(w, dst, "sqrt");
+        case BI_QMUL: emit.w_text(w, dst, "qmul");
+        case BI_MUL_INT: emit.w_text(w, dst, "mul_int");
+        case BI_HADD: emit.w_text(w, dst, "hadd");
+        case BI_RHADD: emit.w_text(w, dst, "rhadd");
+        case BI_RMULH: emit.w_text(w, dst, "rmulh");
+        case BI_RSHR: emit.w_text(w, dst, "rshr");
+        default: emit.w_text(w, dst, "rotr");
+    }
+}
+
+// The name of rounding mode m (SPEC-01 4.5).
+export void render_mode[b](inout emit.Writer[_] w, inout U8[b] dst, I64 m) {
+    switch (m) {
+        case 1: emit.w_text(w, dst, "floor");
+        case 2: emit.w_text(w, dst, "ceil");
+        case 3: emit.w_text(w, dst, "trunc");
+        case 4: emit.w_text(w, dst, "away");
+        case 5: emit.w_text(w, dst, "half_even");
+        case 6: emit.w_text(w, dst, "half_away");
+        case 7: emit.w_text(w, dst, "half_trunc");
+        case 8: emit.w_text(w, dst, "half_up");
+        default: emit.w_text(w, dst, "half_down");
+    }
+}
+
+// Whether the exact of a fault is its literal operand: a literal's conversion to an integer
+// type (to a fixed-point type it is the scaled raw value, fold_lit_q).
+Bool lit_exact[r](in Folded[r] f) {
+    return f[0].lit_at >= 0 && !ty_q(f[0].ty2);
+}
+
+// Loads the exact value of a fault into the work buffer.
+void load_exact[r, b](in Folded[r] f, in U8[b] lits, inout Work[_] z, inout Wide[_] ws, inout WideVal[_] wv) {
+    if (lit_exact(f)) {
+        lit_get(lits, f[0].lit_at, f[0].lit_len, z);
+    } else if (f[0].exact_wide) {
+        ex_load(ws, wv, z);
+    } else {
+        z_load128(z, f[0].exact_neg, f[0].exact_hi, f[0].exact_lo);
+    }
+}
+
+void line_head[b, p](inout emit.Writer[_] w, inout U8[b] dst, in U8[p] prefix, in U8[_] field) {
+    emit.w_text(w, dst, prefix);
+    emit.w_text(w, dst, field);
+    emit.w_byte(w, dst, ' ');
+}
+
+// A value of type ty held in limbs, whose Z is in z (consumed): `I128 <Z>`, or for fixed point
+// its raw value, `Q80.48 raw <Z>`.
+void render_limbs[b](inout emit.Writer[_] w, inout U8[b] dst, I64 ty, inout Work[_] z) {
+    render_type(w, dst, ty, false);
+    emit.w_byte(w, dst, ' ');
+    if (ty_q(ty)) {
+        emit.w_text(w, dst, "raw ");
+    }
+    z_render(w, dst, z);
+}
+
+// The fault lines of SPEC-09 CONF-11 for a faulted f, each after `prefix` and ending in LF:
+// code, operation, operand (one line each), exact (`none` when absent), limit.
+export void render_fault[b, r, n, p](inout emit.Writer[_] w, inout U8[b] dst, in Folded[r] f,
+        in U8[n] lits, inout Work[_] z, inout Wide[_] ws, inout WideVal[_] wv, in U8[p] prefix) {
+    line_head(w, dst, prefix, "code");
+    render_code(w, dst, f[0].fault);
+    emit.w_nl(w, dst);
+    line_head(w, dst, prefix, "operation");
+    render_operation(w, dst, f);
+    emit.w_nl(w, dst);
+    for i in 0..f[0].nops {
+        line_head(w, dst, prefix, "operand");
+        if (f[0].op_ty[i] == TY_Z) {
+            emit.w_text(w, dst, "Z ");
+            lit_get(lits, f[0].lit_at, f[0].lit_len, z);
+            z_render(w, dst, z);
+        } else if (ty_limbs(f[0].op_ty[i])) {
+            wide_load(ws, wv, f[0].op_bits[i] as I64, z);
+            render_limbs(w, dst, f[0].op_ty[i], z);
+        } else {
+            render_value(w, dst, f[0].op_ty[i], f[0].op_bits[i]);
+        }
+        emit.w_nl(w, dst);
+    }
+    line_head(w, dst, prefix, "exact");
+    if (f[0].has_exact) {
+        load_exact(f, lits, z, ws, wv);
+        z_render(w, dst, z);
+    } else {
+        emit.w_text(w, dst, "none");
+    }
+    emit.w_nl(w, dst);
+    line_head(w, dst, prefix, "limit");
+    if (f[0].has_limit && ty_limbs(f[0].limit_ty)) {
+        bound_load(f[0].limit_ty, f[0].limit_bits == 1, z);
+        render_limbs(w, dst, f[0].limit_ty, z);
+    } else if (f[0].has_limit) {
+        render_value(w, dst, f[0].limit_ty, f[0].limit_bits);
+    } else {
+        emit.w_text(w, dst, "none");
+    }
+    emit.w_nl(w, dst);
+}
+
+// ---------------------------------------------------------------- the canonical record
+
+void put_le[b](inout emit.Writer[_] w, inout U8[b] dst, U64 v, I64 nbytes) {
+    for k in 0..nbytes {
+        emit.w_byte(w, dst, ((v >> (8 * k)) & 0xFF) as U8);
+    }
+}
+
+// The tag of a typed value of type ty (SPEC-01 IM-145): its own, or for fixed point tag 31,
+// its storage's tag and f as U16 (IM-146).
+void put_tag[b](inout emit.Writer[_] w, inout U8[b] dst, I64 ty) {
+    if (ty_q(ty)) {
+        emit.w_byte(w, dst, 0x31);
+        emit.w_byte(w, dst, q_storage(ty) as U8);
+        put_le(w, dst, q_frac(ty) as U64, 2);
+        return;
+    }
+    emit.w_byte(w, dst, ty as U8);
+}
+
+// A typed value (IM-145): the tag and w / 8 little-endian bytes (a fixed-point value's raw
+// storage); Bool one byte.
+void put_value[b](inout emit.Writer[_] w, inout U8[b] dst, I64 ty, U64 bits) {
+    put_tag(w, dst, ty);
+    if (ty == TY_BOOL) {
+        emit.w_byte(w, dst, bits as U8);
+    } else {
+        put_le(w, dst, bits, ty_width(ty) / 8);
+    }
+}
+
+// The value at place i, of wide or 128-bit fixed-point type ty (IM-145): the tag and its w / 8
+// bytes.
+void put_wide[b](inout emit.Writer[_] w, inout U8[b] dst, I64 ty, inout Wide[_] ws, inout WideVal[_] wv, I64 i) {
+    put_tag(w, dst, ty);
+    for k in 0..ty_width(ty) / 64 {
+        put_le(w, dst, wv[i].limb[k], 8);
+    }
+}
+
+// The minimum (upper false) or the maximum of wide or 128-bit fixed-point type ty as a typed
+// value (IM-145).
+void put_bound[b](inout emit.Writer[_] w, inout U8[b] dst, I64 ty, Bool upper) {
+    put_tag(w, dst, ty);
+    I64 nbytes = ty_width(ty) / 8;
+    for k in 0..nbytes - 1 {
+        if (upper) {
+            emit.w_byte(w, dst, 0xFF);
+        } else {
+            emit.w_byte(w, dst, 0);
+        }
+    }
+    if (!ty_signed(ty) && upper) {
+        emit.w_byte(w, dst, 0xFF);
+    } else if (!ty_signed(ty)) {
+        emit.w_byte(w, dst, 0);
+    } else if (upper) {
+        emit.w_byte(w, dst, 0x7F);
+    } else {
+        emit.w_byte(w, dst, 0x80);
+    }
+}
+
+// The Z in the work buffer: tag 0F, the U32 byte count, the minimal bytes.
+export void put_z[b](inout emit.Writer[_] w, inout U8[b] dst, inout Work[_] z) {
+    I64 nbytes = z_len(z);
+    emit.w_byte(w, dst, 0x0F);
+    put_le(w, dst, nbytes as U64, 4);
+    if (nbytes > 0) {
+        I64 low = low_byte(z);
+        for k in 0..nbytes {
+            emit.w_byte(w, dst, z_byte(z, k, low));
+        }
+    }
+}
+
+// The stored literal Z, copied as it is.
+void put_lit[b, n](inout emit.Writer[_] w, inout U8[b] dst, in U8[n] lits, I64 at, I64 nbytes) {
+    emit.w_byte(w, dst, 0x0F);
+    put_le(w, dst, nbytes as U64, 4);
+    emit.w_bytes(w, dst, lits, at, nbytes);
+}
+
+// The canonical fault record of a faulted f (SPEC-01 IM-149, `cint-core-1/fault/v2`,
+// read with the compile-time kind of IM-148), at position path:line:column: no revision,
+// no source-map digest, no address, and an empty stack, as cint_ref writes the record of
+// a C6001 diagnostic.
+export void fault_record[b, r, n, p](inout emit.Writer[_] w, inout U8[b] dst, in Folded[r] f,
+        in U8[n] lits, inout Work[_] z, inout Wide[_] ws, inout WideVal[_] wv, in U8[p] path, I64 line, I64 column) {
+    put_le(w, dst, 20, 4);
+    emit.w_text(w, dst, "cint-core-1/fault/v2");
+    put_le(w, dst, f[0].fault as U64, 2);
+    emit.Writer[1] m;
+    U8[1] none;
+    emit.w_measure(m);
+    render_operation(m, none, f);
+    put_le(w, dst, m[0].pos as U64, 4);
+    render_operation(w, dst, f);
+    put_le(w, dst, f[0].nops as U64, 4);
+    for i in 0..f[0].nops {
+        if (f[0].op_ty[i] == TY_Z) {
+            put_lit(w, dst, lits, f[0].lit_at, f[0].lit_len);
+        } else if (ty_limbs(f[0].op_ty[i])) {
+            put_wide(w, dst, f[0].op_ty[i], ws, wv, f[0].op_bits[i] as I64);
+        } else {
+            put_value(w, dst, f[0].op_ty[i], f[0].op_bits[i]);
+        }
+    }
+    if (f[0].has_exact) {
+        emit.w_byte(w, dst, 1);
+        if (lit_exact(f)) {
+            put_lit(w, dst, lits, f[0].lit_at, f[0].lit_len);
+        } else {
+            load_exact(f, lits, z, ws, wv);
+            put_z(w, dst, z);
+        }
+    } else {
+        emit.w_byte(w, dst, 0);
+    }
+    if (f[0].has_limit && ty_limbs(f[0].limit_ty)) {
+        emit.w_byte(w, dst, 1);
+        put_bound(w, dst, f[0].limit_ty, f[0].limit_bits == 1);
+    } else if (f[0].has_limit) {
+        emit.w_byte(w, dst, 1);
+        put_value(w, dst, f[0].limit_ty, f[0].limit_bits);
+    } else {
+        emit.w_byte(w, dst, 0);
+    }
+    put_le(w, dst, p as U64, 4);
+    emit.w_text(w, dst, path);
+    put_le(w, dst, line as U64, 4);
+    put_le(w, dst, column as U64, 4);
+    emit.w_byte(w, dst, 0);
+    emit.w_byte(w, dst, 0);
+    emit.w_byte(w, dst, 0);
+    put_le(w, dst, 0, 4);
+}
+
+// ---------------------------------------------------------------- wide values (box 15 unit 4b)
+
+// The wide integer types I128 to I1024 and U128 to U512 are folded on values of 16 U64 limbs,
+// least significant first, in two's complement extended to 1,024 bits (sign-extended for a
+// signed type, zero-extended for an unsigned one), on the wide value stack of CINTC-02:
+// row k of wv is value k, and ws[0].sp counts the values. A build gives wv its own table of
+// WIDE_VALUES rows (CINTC-14, row 5); a test entry gives it a local array, as many rows as
+// its cases need. A wide literal, constant name, bound, conversion from a narrow type or
+// `mul_full` of narrow operands pushes one value (the caller checks wide_room first, C9004);
+// every other operation reads its wide operands from the top and, without a fault, replaces
+// them with its result in place, so the stack never holds more than one value per pending
+// operand. With a fault the operands stay, and Folded names each wide operand by its place
+// in op_bits, a wide limit by limit_bits 0 (the minimum) or 1 (the maximum), and a wide exact
+// by exact_wide: the exact result stays in ex (a magnitude of ex_used limbs and its sign, as
+// in Work) until the fault is rendered. m holds two operand magnitudes of 17 limbs, rm a
+// remainder, and u, v and q the 32-bit digits of Knuth's algorithm D. cint-boot-1 has no U64
+// view, so every limb array is a field of a record.
+
+export const I64 WIDE_LIMBS = 16;
+export const I64 WIDE_VALUES = 513;
+
+export struct WideVal {
+    U64[16] limb;
+}
+
+export struct Wide {
+    I64 sp;
+    U64[66] ex;
+    I64 ex_used;
+    Bool ex_neg;
+    U64[34] m;
+    U64[17] rm;
+    U64[68] u;
+    U64[34] v;
+    U64[68] q;
+}
+
+export void wide_reset(inout Wide[_] ws, inout WideVal[_] wv) {
+    ws[0].sp = 0;
+}
+
+// Whether the stack has room for one more value (C9004 otherwise, at the caller).
+export Bool wide_room[nw](inout Wide[_] ws, inout WideVal[nw] wv) {
+    return ws[0].sp < nw;
+}
+
+// The place of the top value.
+export I64 wide_top(inout Wide[_] ws, inout WideVal[_] wv) {
+    return ws[0].sp - 1;
+}
+
+// The low 64 bits of the value at place i.
+export U64 wide_low(inout Wide[_] ws, inout WideVal[_] wv, I64 i) {
+    return wv[i].limb[0];
+}
+
+// Whether the value at place i is negative.
+Bool wide_neg(inout Wide[_] ws, inout WideVal[_] wv, I64 i) {
+    return (wv[i].limb[WIDE_LIMBS - 1] >> 63) == 1;
+}
+
+// Extends the value at place i from bit w - 1, w the width of wide type ty: sign-extends it
+// for a signed type, zero-extends it for an unsigned one.
+void wide_extend(inout Wide[_] ws, inout WideVal[_] wv, I64 i, I64 ty) {
+    I64 nl = ty_width(ty) / 64;
+    U64 ext = 0;
+    if (ty_signed(ty) && (wv[i].limb[nl - 1] >> 63) == 1) {
+        ext = ALL;
+    }
+    for k in nl..WIDE_LIMBS {
+        wv[i].limb[k] = ext;
+    }
+}
+
+// Pushes a value of type ty of at most 64 bits, given by its bits (sign-extended for a signed
+// type, zero-extended for an unsigned one).
+export void wide_push_bits(inout Wide[_] ws, inout WideVal[_] wv, I64 ty, U64 bits) {
+    I64 at = ws[0].sp;
+    U64 ext = 0;
+    if (is_neg(ty, bits)) {
+        ext = ALL;
+    }
+    wv[at].limb[0] = bits;
+    for k in 1..WIDE_LIMBS {
+        wv[at].limb[k] = ext;
+    }
+    ws[0].sp += 1;
+}
+
+// Pushes the minimum (upper false) or the maximum of wide type ty.
+export void wide_push_bound(inout Wide[_] ws, inout WideVal[_] wv, I64 ty, Bool upper) {
+    I64 at = ws[0].sp;
+    I64 top = ty_width(ty) / 64 - 1;
+    for k in 0..WIDE_LIMBS {
+        U64 v = 0;
+        if (upper) {
+            v = ALL;
+        }
+        wv[at].limb[k] = v;
+    }
+    // An unsigned type's are 0 and 2^w - 1, once extended.
+    if (ty_signed(ty) && upper) {
+        wv[at].limb[top] = 0x7FFFFFFFFFFFFFFF;
+    } else if (ty_signed(ty)) {
+        wv[at].limb[top] = 0x8000000000000000;
+    }
+    ws[0].sp += 1;
+    wide_extend(ws, wv, ws[0].sp - 1, ty);
+}
+
+// Pushes the Z stored at lits[at..at + nbytes), at most 128 bytes, sign-extended.
+export void wide_push_lit[b](inout Wide[_] ws, inout WideVal[_] wv, in U8[b] lits, I64 at, I64 nbytes) {
+    I64 i = ws[0].sp;
+    U64 ext = 0;
+    if (nbytes > 0 && lits[at + nbytes - 1] >= 0x80) {
+        ext = 0xFF;
+    }
+    for k in 0..WIDE_LIMBS {
+        wv[i].limb[k] = 0;
+    }
+    for k in 0..8 * WIDE_LIMBS {
+        U64 byte = ext;
+        if (k < nbytes) {
+            byte = lits[at + k] as U64;
+        }
+        wv[i].limb[k / 8] = wv[i].limb[k / 8] | (byte << (8 * (k % 8)));
+    }
+    ws[0].sp += 1;
+}
+
+// Pushes the Z stored at lits[at..at + nbytes) modulo 2^w as a value of wide type ty, w its
+// width: L as T or L as% T once fold_lit_convert has decided it (SPEC-01 4.7, D-17).
+export void wide_push_lit_as[b](inout Wide[_] ws, inout WideVal[_] wv, in U8[b] lits, I64 at, I64 nbytes, I64 ty) {
+    I64 nb = nbytes;
+    if (nb > ty_width(ty) / 8) {
+        nb = ty_width(ty) / 8;
+    }
+    wide_push_lit(ws, wv, lits, at, nb);
+    wide_extend(ws, wv, ws[0].sp - 1, ty);
+}
+
+// Sets limb k of the top value (an imported constant's limb rows), then, with the last limb
+// of wide type ty, its sign extension.
+export void wide_put_limb(inout Wide[_] ws, inout WideVal[_] wv, I64 ty, I64 k, U64 v) {
+    I64 i = ws[0].sp - 1;
+    wv[i].limb[k] = v;
+    if (k == ty_width(ty) / 64 - 1) {
+        wide_extend(ws, wv, i, ty);
+    }
+}
+
+// Loads the value at place i into z as a Z.
+export void wide_load(inout Wide[_] ws, inout WideVal[_] wv, I64 i, inout Work[_] z) {
+    z_clear(z);
+    Bool neg = wide_neg(ws, wv, i);
+    U64 carry = 1;
+    for k in 0..WIDE_LIMBS {
+        U64 x = wv[i].limb[k];
+        if (neg) {
+            x = ~x +% carry;
+            if (x != 0) {
+                carry = 0;
+            }
+        }
+        z[0].limb[k] = x;
+    }
+    z[0].used = WIDE_LIMBS;
+    z[0].neg = neg;
+    z_trim(z);
+}
+
+// Loads the exact result in ex into z.
+export void ex_load(inout Wide[_] ws, inout WideVal[_] wv, inout Work[_] z) {
+    z_clear(z);
+    for k in 0..ws[0].ex_used {
+        z[0].limb[k] = ws[0].ex[k];
+    }
+    z[0].used = ws[0].ex_used;
+    z[0].neg = ws[0].ex_neg;
+    z_trim(z);
+}
+
+// ex = the Z in z.
+void ex_from_work(inout Wide[_] ws, inout WideVal[_] wv, inout Work[_] z) {
+    ex_clear(ws, wv);
+    for k in 0..z[0].used {
+        ws[0].ex[k] = z[0].limb[k];
+    }
+    ws[0].ex_used = z[0].used;
+    ws[0].ex_neg = z[0].neg;
+    ex_trim(ws, wv);
+}
+
+// Pushes the exact result modulo 2^w as a value of type ty held in limbs, w its width (the
+// caller checks wide_room).
+export void wide_push_ex(inout Wide[_] ws, inout WideVal[_] wv, I64 ty) {
+    put_ex_at(ws, wv, ty, ws[0].sp);
+    ws[0].sp += 1;
+}
+
+// Loads the minimum (upper false) or the maximum of wide type ty into z.
+void bound_load(I64 ty, Bool upper, inout Work[_] z) {
+    z_clear(z);
+    I64 top = ty_width(ty) / 64 - 1;
+    if (!ty_signed(ty)) {
+        // 0, or 2^w - 1.
+        if (upper) {
+            for k in 0..top + 1 {
+                z[0].limb[k] = ALL;
+            }
+            z[0].used = top + 1;
+        }
+        return;
+    }
+    if (upper) {
+        for k in 0..top {
+            z[0].limb[k] = ALL;
+        }
+        z[0].limb[top] = 0x7FFFFFFFFFFFFFFF;
+    } else {
+        z[0].limb[top] = 0x8000000000000000;
+    }
+    z[0].used = top + 1;
+    z[0].neg = !upper;
+}
+
+// The magnitude of the value at place i into m[o .. o + 17); whether it is negative.
+Bool load_mag(inout Wide[_] ws, inout WideVal[_] wv, I64 i, I64 o) {
+    Bool neg = wide_neg(ws, wv, i);
+    U64 carry = 1;
+    for k in 0..WIDE_LIMBS {
+        U64 x = wv[i].limb[k];
+        if (neg) {
+            x = ~x +% carry;
+            if (x != 0) {
+                carry = 0;
+            }
+        }
+        ws[0].m[o + k] = x;
+    }
+    // The magnitude of -2^1023 is 2^1023, which fits the 16 limbs; m[o + 16] stays 0.
+    ws[0].m[o + WIDE_LIMBS] = 0;
+    return neg;
+}
+
+// The limbs of m[o ..] in use (17 at most).
+I64 mag_used(inout Wide[_] ws, inout WideVal[_] wv, I64 o) {
+    I64 n = 17;
+    while (n > 0 && ws[0].m[o + n - 1] == 0) {
+        n -= 1;
+    }
+    return n;
+}
+
+void ex_clear(inout Wide[_] ws, inout WideVal[_] wv) {
+    for k in 0..WORK_LIMBS {
+        ws[0].ex[k] = 0;
+    }
+    ws[0].ex_used = 0;
+    ws[0].ex_neg = false;
+}
+
+void ex_trim(inout Wide[_] ws, inout WideVal[_] wv) {
+    while (ws[0].ex_used > 0 && ws[0].ex[ws[0].ex_used - 1] == 0) {
+        ws[0].ex_used -= 1;
+    }
+    if (ws[0].ex_used == 0) {
+        ws[0].ex_neg = false;
+    }
+}
+
+// The bit length of the exact magnitude.
+I64 ex_bits(inout Wide[_] ws, inout WideVal[_] wv) {
+    if (ws[0].ex_used == 0) {
+        return 0;
+    }
+    U64 top = ws[0].ex[ws[0].ex_used - 1];
+    I64 n = 0;
+    while (top != 0) {
+        top = top >> 1;
+        n += 1;
+    }
+    return 64 * (ws[0].ex_used - 1) + n;
+}
+
+// Whether the exact magnitude is 2^k.
+Bool ex_is_pow2(inout Wide[_] ws, inout WideVal[_] wv, I64 k) {
+    if (ex_bits(ws, wv) != k + 1) {
+        return false;
+    }
+    for i in 0..ws[0].ex_used {
+        U64 want = 0;
+        if (i == k / 64) {
+            want = (1 as U64) << (k % 64);
+        }
+        if (ws[0].ex[i] != want) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ex = m[o .. o + 17) with sign neg.
+void ex_from_mag(inout Wide[_] ws, inout WideVal[_] wv, I64 o, Bool neg) {
+    ex_clear(ws, wv);
+    for k in 0..17 {
+        ws[0].ex[k] = ws[0].m[o + k];
+    }
+    ws[0].ex_used = 17;
+    ws[0].ex_neg = neg;
+    ex_trim(ws, wv);
+}
+
+// ex = rm with sign neg.
+void ex_from_rm(inout Wide[_] ws, inout WideVal[_] wv, Bool neg) {
+    ex_clear(ws, wv);
+    for k in 0..17 {
+        ws[0].ex[k] = ws[0].rm[k];
+    }
+    ws[0].ex_used = 17;
+    ws[0].ex_neg = neg;
+    ex_trim(ws, wv);
+}
+
+// rm = m[17 ..] - rm, for 0 < rm < m[17 ..]: the remainder taken from the divisor's side.
+void rm_complement(inout Wide[_] ws, inout WideVal[_] wv) {
+    U64 borrow = 0;
+    for k in 0..17 {
+        U64 x = ws[0].m[17 + k];
+        U64 y = ws[0].rm[k];
+        U64 d = x -% y -% borrow;
+        if (x < y || (x == y && borrow == 1)) {
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        ws[0].rm[k] = d;
+    }
+}
+
+// Whether m[0 ..] >= m[17 ..] as magnitudes.
+Bool mag_ge(inout Wide[_] ws, inout WideVal[_] wv) {
+    I64 k = 17;
+    while (k > 0) {
+        k -= 1;
+        if (ws[0].m[k] != ws[0].m[17 + k]) {
+            return ws[0].m[k] > ws[0].m[17 + k];
+        }
+    }
+    return true;
+}
+
+// ex = (-1)^na m[0 ..] + (-1)^nb m[17 ..].
+void ex_add(inout Wide[_] ws, inout WideVal[_] wv, Bool na, Bool nb) {
+    ex_clear(ws, wv);
+    if (na == nb) {
+        U64 carry = 0;
+        for k in 0..17 {
+            U64 a = ws[0].m[k];
+            U64 s = a +% ws[0].m[17 + k];
+            U64 c1 = 0;
+            if (s < a) {
+                c1 = 1;
+            }
+            U64 t = s +% carry;
+            if (t < s) {
+                c1 = 1;
+            }
+            ws[0].ex[k] = t;
+            carry = c1;
+        }
+        ws[0].ex[17] = carry;
+        ws[0].ex_used = 18;
+        ws[0].ex_neg = na;
+    } else {
+        I64 big = 0;
+        I64 small = 17;
+        Bool neg = na;
+        if (!mag_ge(ws, wv)) {
+            big = 17;
+            small = 0;
+            neg = nb;
+        }
+        U64 borrow = 0;
+        for k in 0..17 {
+            U64 a = ws[0].m[big + k];
+            U64 b = ws[0].m[small + k];
+            U64 d = a -% b -% borrow;
+            if (a < b || (a == b && borrow == 1)) {
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            ws[0].ex[k] = d;
+        }
+        ws[0].ex_used = 17;
+        ws[0].ex_neg = neg;
+    }
+    ex_trim(ws, wv);
+}
+
+// ex = m[0 ..] * m[17 ..] with sign neg, from 32-bit partial products.
+void ex_mul(inout Wide[_] ws, inout WideVal[_] wv, Bool neg) {
+    ex_clear(ws, wv);
+    I64 na = mag_used(ws, wv, 0);
+    I64 nb = mag_used(ws, wv, 17);
+    for i in 0..na {
+        U64 a = ws[0].m[i];
+        U64 a0 = a & M32;
+        U64 a1 = a >> 32;
+        U64 carry = 0;
+        for j in 0..nb {
+            U64 b = ws[0].m[17 + j];
+            U64 b0 = b & M32;
+            U64 b1 = b >> 32;
+            U64 p00 = a0 * b0;
+            U64 p01 = a0 * b1;
+            U64 p10 = a1 * b0;
+            U64 p11 = a1 * b1;
+            U64 mid = (p00 >> 32) + (p01 & M32) + (p10 & M32);
+            U64 lo = (p00 & M32) | ((mid & M32) << 32);
+            U64 hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+            // hi:lo + ex[i + j] + carry is below 2^128.
+            U64 s = lo +% ws[0].ex[i + j];
+            if (s < lo) {
+                hi += 1;
+            }
+            U64 t = s +% carry;
+            if (t < s) {
+                hi += 1;
+            }
+            ws[0].ex[i + j] = t;
+            carry = hi;
+        }
+        ws[0].ex[i + nb] = carry;
+    }
+    ws[0].ex_used = na + nb;
+    ws[0].ex_neg = neg;
+    ex_trim(ws, wv);
+}
+
+// ex = m[0 ..] * 2^k with sign neg, for 0 <= k < 1024.
+void ex_shl(inout Wide[_] ws, inout WideVal[_] wv, Bool neg, I64 k) {
+    ex_clear(ws, wv);
+    I64 q = k / 64;
+    I64 r = k % 64;
+    for i in 0..17 {
+        U64 x = ws[0].m[i];
+        if (r == 0) {
+            ws[0].ex[i + q] = ws[0].ex[i + q] | x;
+        } else {
+            ws[0].ex[i + q] = ws[0].ex[i + q] | (x <<% r);
+            ws[0].ex[i + q + 1] = x >> (64 - r);
+        }
+    }
+    ws[0].ex_used = 18 + q;
+    ws[0].ex_neg = neg;
+    ex_trim(ws, wv);
+}
+
+// ex = ex + 1 in magnitude.
+void ex_inc(inout Wide[_] ws, inout WideVal[_] wv) {
+    I64 k = 0;
+    while (true) {
+        ws[0].ex[k] = ws[0].ex[k] +% 1;
+        if (ws[0].ex[k] != 0) {
+            break;
+        }
+        k += 1;
+    }
+    if (k + 1 > ws[0].ex_used) {
+        ws[0].ex_used = k + 1;
+    }
+}
+
+// Whether the exact result is a value of type ty.
+Bool ex_fits(inout Wide[_] ws, inout WideVal[_] wv, I64 ty) {
+    I64 w = ty_width(ty);
+    if (!ty_signed(ty)) {
+        return ex_bits(ws, wv) == 0 || (!ws[0].ex_neg && ex_bits(ws, wv) <= w);
+    }
+    if (ex_bits(ws, wv) <= w - 1) {
+        return true;
+    }
+    return ws[0].ex_neg && ex_is_pow2(ws, wv, w - 1);
+}
+
+// Writes the exact result modulo 2^w as a value of wide type ty (w its width) at place i.
+void put_ex_at(inout Wide[_] ws, inout WideVal[_] wv, I64 ty, I64 i) {
+    I64 nl = ty_width(ty) / 64;
+    U64 carry = 1;
+    for k in 0..WIDE_LIMBS {
+        U64 x = 0;
+        if (k < nl) {
+            x = ws[0].ex[k];
+            if (ws[0].ex_neg) {
+                x = ~x +% carry;
+                if (ws[0].ex[k] != 0) {
+                    carry = 0;
+                }
+            }
+        }
+        wv[i].limb[k] = x;
+    }
+    wide_extend(ws, wv, i, ty);
+}
+
+// -1, 0 or 1 as the value at place i is below, equal to or above the value at place j.
+I64 wide_order(inout Wide[_] ws, inout WideVal[_] wv, I64 i, I64 j) {
+    Bool si = wide_neg(ws, wv, i);
+    Bool sj = wide_neg(ws, wv, j);
+    if (si != sj) {
+        if (si) {
+            return -1;
+        }
+        return 1;
+    }
+    I64 k = WIDE_LIMBS;
+    while (k > 0) {
+        k -= 1;
+        U64 x = wv[i].limb[k];
+        U64 y = wv[j].limb[k];
+        if (x != y) {
+            if (x < y) {
+                return -1;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Copies the value at place j to place i.
+void wide_copy(inout Wide[_] ws, inout WideVal[_] wv, I64 i, I64 j) {
+    for k in 0..WIDE_LIMBS {
+        wv[i].limb[k] = wv[j].limb[k];
+    }
+}
+
+// Records the wide operand at place i of type ty in f.
+void wide_operand[r](inout Folded[r] f, I64 ty, I64 i) {
+    operand(f, ty, i as U64);
+}
+
+// Applies the form to the exact result in ex (SPEC-01 4.1 to 4.3) for type ty, wide or (for
+// muldiv) not: with the operands at places base .. sp - 1, replaces them by the value, or
+// for the checked form outside the type, E_OVERFLOW with the violated bound, the operands
+// left in place.
+void settle_wide[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 ty, I64 base) {
+    if (!ty_limbs(ty)) {
+        U64 lo = 0;
+        if (ws[0].ex_used > 0) {
+            lo = ws[0].ex[0];
+        }
+        Bool neg = ws[0].ex_neg;
+        if (ex_fits(ws, wv, ty) || f[0].form == FORM_WRAP) {
+            U64 bits = lo;
+            if (neg) {
+                bits = 0 -% lo;
+            }
+            ws[0].sp = base;
+            value(f, ty, ty_wrap(ty, bits));
+            return;
+        }
+        if (f[0].form == FORM_SAT) {
+            ws[0].sp = base;
+            value(f, ty, ty_max(ty));
+            if (neg) {
+                value(f, ty, ty_min(ty));
+            }
+            return;
+        }
+        f[0].fault = F_OVERFLOW;
+        f[0].has_exact = true;
+        f[0].exact_wide = true;
+        f[0].exact_neg = neg;
+        if (neg) {
+            set_limit(f, ty, ty_min(ty));
+        } else {
+            set_limit(f, ty, ty_max(ty));
+        }
+        return;
+    }
+    if (ex_fits(ws, wv, ty) || f[0].form == FORM_WRAP) {
+        put_ex_at(ws, wv, ty, base);
+        ws[0].sp = base + 1;
+        value(f, ty, wide_low(ws, wv, base));
+        return;
+    }
+    if (f[0].form == FORM_SAT) {
+        ws[0].sp = base;
+        wide_push_bound(ws, wv, ty, !ws[0].ex_neg);
+        value(f, ty, wide_low(ws, wv, base));
+        return;
+    }
+    f[0].fault = F_OVERFLOW;
+    f[0].has_exact = true;
+    f[0].exact_wide = true;
+    f[0].exact_neg = ws[0].ex_neg;
+    if (ws[0].ex_neg) {
+        set_limit(f, ty, 0);
+    } else {
+        set_limit(f, ty, 1);
+    }
+}
+
+// Knuth's algorithm D (TAOCP vol. 2, 4.3.1; Warren, Hacker's Delight 9-2) on 32-bit digits
+// held in U64 cells, so every product fits: the magnitude in ex divided by m[17 ..], which is
+// not zero; the quotient goes to ex (sign kept) and the remainder to rm.
+void ex_divide(inout Wide[_] ws, inout WideVal[_] wv) {
+    // The divisor's digits v[0 .. n) and the dividend's u[0 .. mm), least significant first.
+    for k in 0..17 {
+        ws[0].v[2 * k] = ws[0].m[17 + k] & M32;
+        ws[0].v[2 * k + 1] = ws[0].m[17 + k] >> 32;
+    }
+    I64 n = 34;
+    while (n > 0 && ws[0].v[n - 1] == 0) {
+        n -= 1;
+    }
+    for k in 0..68 {
+        ws[0].u[k] = 0;
+        ws[0].q[k] = 0;
+    }
+    I64 mm = 2 * ws[0].ex_used;
+    for k in 0..ws[0].ex_used {
+        ws[0].u[2 * k] = ws[0].ex[k] & M32;
+        ws[0].u[2 * k + 1] = ws[0].ex[k] >> 32;
+    }
+    while (mm > 0 && ws[0].u[mm - 1] == 0) {
+        mm -= 1;
+    }
+    for k in 0..17 {
+        ws[0].rm[k] = 0;
+    }
+    Bool neg = ws[0].ex_neg;
+    if (mm < n) {
+        // The quotient is 0 and the remainder the dividend.
+        for k in 0..mm {
+            ws[0].rm[k / 2] = ws[0].rm[k / 2] | (ws[0].u[k] << (32 * (k % 2)));
+        }
+        ex_clear(ws, wv);
+        return;
+    }
+    if (n == 1) {
+        U64 d = ws[0].v[0];
+        U64 r = 0;
+        I64 j = mm;
+        while (j > 0) {
+            j -= 1;
+            U64 t = (r << 32) | ws[0].u[j];
+            ws[0].q[j] = t / d;
+            r = t % d;
+        }
+        ws[0].rm[0] = r;
+    } else {
+        // Normalize: shift both so that the divisor's top digit has its high bit set.
+        I64 s = 0;
+        U64 top = ws[0].v[n - 1];
+        while ((top & 0x80000000) == 0) {
+            top = top << 1;
+            s += 1;
+        }
+        if (s > 0) {
+            I64 k = n - 1;
+            while (k > 0) {
+                ws[0].v[k] = ((ws[0].v[k] << s) | (ws[0].v[k - 1] >> (32 - s))) & M32;
+                k -= 1;
+            }
+            ws[0].v[0] = (ws[0].v[0] << s) & M32;
+            ws[0].u[mm] = ws[0].u[mm - 1] >> (32 - s);
+            k = mm - 1;
+            while (k > 0) {
+                ws[0].u[k] = ((ws[0].u[k] << s) | (ws[0].u[k - 1] >> (32 - s))) & M32;
+                k -= 1;
+            }
+            ws[0].u[0] = (ws[0].u[0] << s) & M32;
+        }
+        U64 vt = ws[0].v[n - 1];
+        U64 vs = ws[0].v[n - 2];
+        I64 j = mm - n + 1;
+        while (j > 0) {
+            j -= 1;
+            U64 num = (ws[0].u[j + n] << 32) | ws[0].u[j + n - 1];
+            U64 qhat = num / vt;
+            U64 rhat = num % vt;
+            while (qhat > M32 || qhat * vs > ((rhat << 32) | ws[0].u[j + n - 2])) {
+                qhat -= 1;
+                rhat += vt;
+                if (rhat > M32) {
+                    break;
+                }
+            }
+            // u[j .. j + n] -= qhat * v[0 .. n).
+            I64 borrow = 0;
+            U64 carry = 0;
+            for i in 0..n {
+                U64 p = qhat * ws[0].v[i] + carry;
+                carry = p >> 32;
+                I64 t = (ws[0].u[i + j] as I64) - ((p & M32) as I64) - borrow;
+                ws[0].u[i + j] = (t as% U64) & M32;
+                borrow = 0;
+                if (t < 0) {
+                    borrow = 1;
+                }
+            }
+            I64 last = (ws[0].u[j + n] as I64) - (carry as I64) - borrow;
+            ws[0].u[j + n] = (last as% U64) & M32;
+            if (last < 0) {
+                // qhat was one too large: add the divisor back once.
+                qhat -= 1;
+                U64 c = 0;
+                for i in 0..n {
+                    U64 acc = ws[0].u[i + j] + ws[0].v[i] + c;
+                    ws[0].u[i + j] = acc & M32;
+                    c = acc >> 32;
+                }
+                ws[0].u[j + n] = (ws[0].u[j + n] + c) & M32;
+            }
+            ws[0].q[j] = qhat;
+        }
+        // The remainder: u[0 .. n) shifted back.
+        for k in 0..n {
+            U64 d = ws[0].u[k] >> s;
+            if (s > 0) {
+                d = d | ((ws[0].u[k + 1] << (32 - s)) & M32);
+            }
+            ws[0].rm[k / 2] = ws[0].rm[k / 2] | (d << (32 * (k % 2)));
+        }
+    }
+    ex_clear(ws, wv);
+    for k in 0..mm {
+        ws[0].ex[k / 2] = ws[0].ex[k / 2] | (ws[0].q[k] << (32 * (k % 2)));
+    }
+    ws[0].ex_used = (mm + 1) / 2;
+    ws[0].ex_neg = neg;
+    ex_trim(ws, wv);
+}
+
+// Whether the remainder rm is zero.
+Bool rm_zero(inout Wide[_] ws, inout WideVal[_] wv) {
+    for k in 0..17 {
+        if (ws[0].rm[k] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// -1, 0 or 1 as 2 rm is below, equal to or above the divisor m[17 ..].
+I64 rm_half(inout Wide[_] ws, inout WideVal[_] wv) {
+    I64 k = 18;
+    while (k > 0) {
+        k -= 1;
+        U64 twice = 0;
+        if (k < 17) {
+            twice = ws[0].rm[k] <<% 1;
+        }
+        if (k > 0) {
+            twice = twice | (ws[0].rm[k - 1] >> 63);
+        }
+        U64 d = 0;
+        if (k < 17) {
+            d = ws[0].m[17 + k];
+        }
+        if (twice != d) {
+            if (twice > d) {
+                return 1;
+            }
+            return -1;
+        }
+    }
+    return 0;
+}
+
+// The rounding of SPEC-01 4.5 (round_quotient) on the truncated quotient magnitude in ex,
+// its remainder rm and divisor m[17 ..]: 1 more when the mode rounds away from zero; then
+// the quotient's sign neg.
+void round_wide(inout Wide[_] ws, inout WideVal[_] wv, Bool neg, I64 mode) {
+    Bool up = false;
+    if (!rm_zero(ws, wv)) {
+        switch (mode) {
+            case 1: up = neg;
+            case 2: up = !neg;
+            case 3: up = false;
+            case 4: up = true;
+            default:
+                I64 h = rm_half(ws, wv);
+                if (h > 0) {
+                    up = true;
+                } else if (h == 0) {
+                    switch (mode) {
+                        case 5: up = (ws[0].ex[0] & 1) != 0;
+                        case 6: up = true;
+                        case 7: up = false;
+                        case 8: up = !neg;
+                        default: up = neg;
+                    }
+                }
+        }
+    }
+    if (up) {
+        ex_inc(ws, wv);
+    }
+    ws[0].ex_neg = neg;
+    ex_trim(ws, wv);
+}
+
+// The integer square root of the magnitude m[0 ..] into ex (the largest r with r * r <= m),
+// bit by bit as isqrt64; the remainder m - r * r goes to rm. m[17 ..] holds r + bit.
+void ex_isqrt(inout Wide[_] ws, inout WideVal[_] wv) {
+    for k in 0..17 {
+        ws[0].rm[k] = ws[0].m[k];
+    }
+    ex_clear(ws, wv);
+    I64 used = mag_used(ws, wv, 0);
+    if (used == 0) {
+        return;
+    }
+    U64 top = ws[0].m[used - 1];
+    I64 tb = 0;
+    while (top != 0) {
+        top = top >> 1;
+        tb += 1;
+    }
+    // bit = 2^n, the largest power of 4 that is at most the magnitude.
+    I64 n = 64 * (used - 1) + tb - 1;
+    n = n - n % 2;
+    ws[0].ex_used = 17;
+    while (n >= 0) {
+        for k in 0..17 {
+            ws[0].m[17 + k] = ws[0].ex[k];
+        }
+        I64 bl = n / 64;
+        U64 bv = (1 as U64) << (n % 64);
+        U64 c = bv;
+        I64 k = bl;
+        while (c != 0 && k < 17) {
+            U64 s = ws[0].m[17 + k] +% c;
+            c = 0;
+            if (s < ws[0].m[17 + k]) {
+                c = 1;
+            }
+            ws[0].m[17 + k] = s;
+            k += 1;
+        }
+        for i in 0..17 {
+            U64 hi = 0;
+            if (i + 1 < 17) {
+                hi = ws[0].ex[i + 1] <<% 63;
+            }
+            ws[0].ex[i] = (ws[0].ex[i] >> 1) | hi;
+        }
+        Bool ge = true;
+        I64 j = 17;
+        while (j > 0) {
+            j -= 1;
+            if (ws[0].rm[j] != ws[0].m[17 + j]) {
+                ge = ws[0].rm[j] > ws[0].m[17 + j];
+                break;
+            }
+        }
+        if (ge) {
+            U64 borrow = 0;
+            for i in 0..17 {
+                U64 x = ws[0].rm[i];
+                U64 y = ws[0].m[17 + i];
+                U64 d = x -% y -% borrow;
+                if (x < y || (x == y && borrow == 1)) {
+                    borrow = 1;
+                } else {
+                    borrow = 0;
+                }
+                ws[0].rm[i] = d;
+            }
+            ws[0].ex[bl] = ws[0].ex[bl] | bv;
+        }
+        n -= 2;
+    }
+    ex_trim(ws, wv);
+}
+
+// Whether the remainder rm exceeds the root in ex.
+Bool rm_above_root(inout Wide[_] ws, inout WideVal[_] wv) {
+    I64 j = 17;
+    while (j > 0) {
+        j -= 1;
+        if (ws[0].rm[j] != ws[0].ex[j]) {
+            return ws[0].rm[j] > ws[0].ex[j];
+        }
+    }
+    return false;
+}
+
+// shift_count for the wide count at place i (RT-OQ-52): one outside 0 to w - 1, a high limb
+// included, is E_SHIFT.
+I64 wide_count[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 ty, I64 i) {
+    Bool small = !wide_neg(ws, wv, i);
+    for k in 1..WIDE_LIMBS {
+        if (wv[i].limb[k] != 0) {
+            small = false;
+        }
+    }
+    if (!small || wv[i].limb[0] > (ty_width(ty) - 1) as U64) {
+        f[0].fault = F_SHIFT;
+        set_limit(f, TY_I64, (ty_width(ty) - 1) as U64);
+        return -1;
+    }
+    return wv[i].limb[0] as I64;
+}
+
+// a << k or a >> k on narrow type ty (OP_SHL checked or wrapping, OP_SHR checked) for a
+// count k of wide type tb at the top of the wide stack, which it leaves unless it faults.
+export void fold_shift_by_wide[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 name, I64 form, I64 ty, U64 a,
+        I64 tb) {
+    I64 ib = wide_top(ws, wv);
+    begin(f, name, form, ty, 0);
+    operand(f, ty, a);
+    wide_operand(f, tb, ib);
+    I64 k = wide_count(f, ws, wv, ty, ib);
+    if (k < 0) {
+        return;
+    }
+    ws[0].sp = ib;
+    narrow_shift(f, name, ty, a, k);
+}
+
+// a op b for the binary operators of SPEC-01 4 on wide type ty, as fold_binary: with a at
+// place sp - 2 and b at sp - 1, or for a shift, a at sp - 1 and the count's bits b of type tb
+// of at most 64 bits, or a at sp - 2 and a wide count at sp - 1.
+export void fold_wide_binary[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 name, I64 form, I64 ty, I64 tb, U64 b) {
+    begin(f, name, form, ty, 0);
+    if (name == OP_SHL || name == OP_SHR) {
+        I64 ia = wide_top(ws, wv);
+        I64 k = 0;
+        if (ty_wide(tb)) {
+            // A wide count, at the top, above the value (RT-OQ-52).
+            ia -= 1;
+            wide_operand(f, ty, ia);
+            wide_operand(f, tb, ia + 1);
+            k = wide_count(f, ws, wv, ty, ia + 1);
+        } else {
+            wide_operand(f, ty, ia);
+            operand(f, tb, b);
+            k = shift_count(f, ty, tb, b);
+        }
+        if (k < 0) {
+            return;
+        }
+        if (name == OP_SHL) {
+            ex_shl(ws, wv, load_mag(ws, wv, ia, 0), k);
+            settle_wide(f, ws, wv, ty, ia);
+            return;
+        }
+        // An arithmetic shift right of the two's complement, floor(a / 2^k), in place: limb i
+        // reads limbs i + q and i + q + 1, which are not yet written.
+        I64 q = k / 64;
+        I64 s = k % 64;
+        U64 ext = 0;
+        if (wide_neg(ws, wv, ia)) {
+            ext = ALL;
+        }
+        for i in 0..WIDE_LIMBS {
+            U64 lo = ext;
+            U64 hi = ext;
+            if (i + q < WIDE_LIMBS) {
+                lo = wv[ia].limb[i + q];
+            }
+            if (i + q + 1 < WIDE_LIMBS) {
+                hi = wv[ia].limb[i + q + 1];
+            }
+            if (s == 0) {
+                wv[ia].limb[i] = lo;
+            } else {
+                wv[ia].limb[i] = (lo >> s) | (hi <<% (64 - s));
+            }
+        }
+        ws[0].sp = ia + 1;
+        value(f, ty, wide_low(ws, wv, ia));
+        return;
+    }
+    I64 ia = wide_top(ws, wv) - 1;
+    I64 ib = wide_top(ws, wv);
+    wide_operand(f, ty, ia);
+    wide_operand(f, ty, ib);
+    if (name == OP_AND || name == OP_OR || name == OP_XOR) {
+        for i in 0..WIDE_LIMBS {
+            U64 x = wv[ia].limb[i];
+            U64 y = wv[ib].limb[i];
+            if (name == OP_AND) {
+                x = x & y;
+            } else if (name == OP_OR) {
+                x = x | y;
+            } else {
+                x = x ^ y;
+            }
+            wv[ia].limb[i] = x;
+        }
+        ws[0].sp = ia + 1;
+        value(f, ty, wide_low(ws, wv, ia));
+        return;
+    }
+    Bool na = load_mag(ws, wv, ia, 0);
+    Bool nb = load_mag(ws, wv, ib, 17);
+    if (name == OP_ADD) {
+        ex_add(ws, wv, na, nb);
+        settle_wide(f, ws, wv, ty, ia);
+    } else if (name == OP_SUB) {
+        ex_add(ws, wv, na, !nb && mag_used(ws, wv, 17) > 0);
+        settle_wide(f, ws, wv, ty, ia);
+    } else if (name == OP_MUL) {
+        ex_mul(ws, wv, na != nb);
+        settle_wide(f, ws, wv, ty, ia);
+    } else if (name == OP_DIV || name == OP_REM) {
+        // Floor division (SPEC-01 4.4): q = floor(a / b) and r = a - b * q.
+        if (mag_used(ws, wv, 17) == 0) {
+            f[0].fault = F_DIV_ZERO;
+            return;
+        }
+        ex_from_mag(ws, wv, 0, false);
+        ex_divide(ws, wv);
+        Bool adjust = na != nb && !rm_zero(ws, wv);
+        if (name == OP_DIV) {
+            if (adjust) {
+                ex_inc(ws, wv);
+            }
+            ws[0].ex_neg = na != nb;
+            ex_trim(ws, wv);
+        } else if (adjust) {
+            rm_complement(ws, wv);
+            ex_from_rm(ws, wv, nb);
+        } else {
+            ex_from_rm(ws, wv, na);
+        }
+        settle_wide(f, ws, wv, ty, ia);
+    } else {
+        f[0].fault = -1;
+    }
+}
+
+// OP_NEG (checked), OP_NOT, and OP_SUB with FORM_WRAP for `-%a` (0 -% a), on the wide value at
+// the top. As fold_unary.
+export void fold_wide_unary[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 name, I64 form, I64 ty) {
+    begin(f, name, form, ty, 0);
+    I64 ia = wide_top(ws, wv);
+    if (name == OP_SUB) {
+        // The operands of 0 -% a, which cannot fault, are not recorded.
+        ex_from_mag(ws, wv, 0, !load_mag(ws, wv, ia, 0));
+        settle_wide(f, ws, wv, ty, ia);
+        return;
+    }
+    wide_operand(f, ty, ia);
+    if (name == OP_NOT) {
+        for i in 0..WIDE_LIMBS {
+            wv[ia].limb[i] = ~wv[ia].limb[i];
+        }
+        wide_extend(ws, wv, ia, ty);
+        value(f, ty, wide_low(ws, wv, ia));
+        return;
+    }
+    ex_from_mag(ws, wv, 0, !load_mag(ws, wv, ia, 0));
+    settle_wide(f, ws, wv, ty, ia);
+}
+
+// a cmp b on the wide values at the top (a below b), popping both (SPEC-01 4.9).
+export Bool fold_wide_compare(inout Wide[_] ws, inout WideVal[_] wv, I64 cmp) {
+    I64 order = wide_order(ws, wv, wide_top(ws, wv) - 1, wide_top(ws, wv));
+    ws[0].sp -= 2;
+    switch (cmp) {
+        case CMP_EQ: return order == 0;
+        case CMP_NE: return order != 0;
+        case CMP_LT: return order < 0;
+        case CMP_LE: return order <= 0;
+        case CMP_GT: return order > 0;
+        default: return order >= 0;
+    }
+}
+
+// a as T (FORM_CHECKED: E_NARROW outside T), a as% T (FORM_WRAP) and a as| T (FORM_SAT: the
+// bound of T on the value's side; OQ-272), SPEC-01 4.7, with a wide side: a wide source at the
+// top, replaced by a wide result or popped for a result of at most 64 bits; or a source of at
+// most 64 bits, given by its bits a, whose wide result is pushed (the caller checks wide_room).
+export void fold_wide_convert[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 form, I64 from, U64 a, I64 to) {
+    begin(f, OP_AS, form, from, to);
+    if (!ty_wide(from)) {
+        // Every value of at most 64 bits is a value of every signed wide type, and every one
+        // that is not negative a value of every unsigned one.
+        operand(f, from, a);
+        wide_push_bits(ws, wv, from, a);
+        I64 at = wide_top(ws, wv);
+        if (ty_signed(to) || !is_neg(from, a)) {
+            value(f, to, a);
+        } else if (form == FORM_WRAP) {
+            wide_extend(ws, wv, at, to);
+            value(f, to, wide_low(ws, wv, at));
+        } else if (form == FORM_SAT) {
+            ws[0].sp = at;
+            wide_push_bound(ws, wv, to, false);
+            value(f, to, 0);
+        } else {
+            ws[0].sp = at;
+            f[0].fault = F_NARROW;
+            set_exact(f, true, 0, magnitude(from, a));
+            set_limit(f, to, 0);
+        }
+        return;
+    }
+    I64 ia = wide_top(ws, wv);
+    wide_operand(f, from, ia);
+    Bool na = load_mag(ws, wv, ia, 0);
+    ex_from_mag(ws, wv, 0, na);
+    Bool fits = false;
+    if (ty_wide(to)) {
+        fits = ex_fits(ws, wv, to);
+    } else {
+        U64 lo = 0;
+        if (ws[0].ex_used > 0) {
+            lo = ws[0].ex[0];
+        }
+        fits = ws[0].ex_used <= 1 && ((!na && lo <= max_mag(to)) || (na && lo <= min_mag(to)));
+    }
+    if (fits || form == FORM_WRAP) {
+        if (ty_wide(to)) {
+            put_ex_at(ws, wv, to, ia);
+            value(f, to, wide_low(ws, wv, ia));
+        } else {
+            ws[0].sp = ia;
+            value(f, to, ty_wrap(to, wide_low(ws, wv, ia)));
+        }
+        return;
+    }
+    if (form == FORM_SAT) {
+        ws[0].sp = ia;
+        if (ty_wide(to)) {
+            wide_push_bound(ws, wv, to, !na);
+            value(f, to, wide_low(ws, wv, ia));
+        } else if (na) {
+            value(f, to, ty_min(to));
+        } else {
+            value(f, to, ty_max(to));
+        }
+        return;
+    }
+    f[0].fault = F_NARROW;
+    f[0].has_exact = true;
+    f[0].exact_wide = true;
+    f[0].exact_neg = na;
+    if (ty_wide(to)) {
+        if (na) {
+            set_limit(f, to, 0);
+        } else {
+            set_limit(f, to, 1);
+        }
+    } else if (na) {
+        set_limit(f, to, ty_min(to));
+    } else {
+        set_limit(f, to, ty_max(to));
+    }
+}
+
+// Built-in id with operands of wide type ty at the top of the stack, or `mul_full` of
+// operands of at most 64 bits given by their bits a and b, whose wide result is pushed (the
+// caller checks wide_room); as fold_builtin (SPEC-01 2.4, 4.3 to 4.10). A rotation's count
+// is not wide (its bits b, of type kty), so its value alone is on the stack.
+export void fold_wide_builtin[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 id, I64 mode, I64 ty, I64 rty, U64 a,
+        U64 b, I64 kty) {
+    I64 ty2 = 0;
+    if (id == BI_UABS || id == BI_MUL_FULL || id == BI_MULDIV) {
+        ty2 = rty;
+    }
+    begin(f, OP_BUILTIN + id, FORM_CHECKED, ty, ty2);
+    f[0].mode = mode;
+    if (id == BI_MUL_FULL && !ty_wide(ty)) {
+        operand(f, ty, a);
+        operand(f, ty, b);
+        for k in 0..34 {
+            ws[0].m[k] = 0;
+        }
+        ws[0].m[0] = magnitude(ty, a);
+        ws[0].m[17] = magnitude(ty, b);
+        ex_mul(ws, wv, is_neg(ty, a) != is_neg(ty, b));
+        I64 at = ws[0].sp;
+        ws[0].sp += 1;
+        settle_wide(f, ws, wv, rty, at);
+        return;
+    }
+    if (id == BI_ROTL || id == BI_ROTR) {
+        I64 at = wide_top(ws, wv);
+        wide_operand(f, ty, at);
+        operand(f, kty, b);
+        I64 k = shift_count(f, ty, kty, b);
+        if (k < 0) {
+            return;
+        }
+        wide_rotate(ws, wv, ty, at, id == BI_ROTL, k);
+        value(f, ty, wide_low(ws, wv, at));
+        return;
+    }
+    I64 base = ws[0].sp - builtin_values(id);
+    for i in 0..builtin_values(id) {
+        wide_operand(f, ty, base + i);
+    }
+    Bool na = load_mag(ws, wv, base, 0);
+    Bool nb = false;
+    if (builtin_values(id) > 1) {
+        nb = load_mag(ws, wv, base + 1, 17);
+    }
+    switch (id) {
+        case BI_ABS:
+            ex_from_mag(ws, wv, 0, false);
+            settle_wide(f, ws, wv, ty, base);
+        case BI_UABS:
+            ex_from_mag(ws, wv, 0, false);
+            settle_wide(f, ws, wv, rty, base);
+        case BI_MIN, BI_MAX:
+            Bool lt = wide_order(ws, wv, base, base + 1) < 0;
+            if (lt != (id == BI_MIN)) {
+                wide_copy(ws, wv, base, base + 1);
+            }
+            ws[0].sp = base + 1;
+            value(f, ty, wide_low(ws, wv, base));
+        case BI_CLAMP:
+            if (wide_order(ws, wv, base + 1, base + 2) > 0) {
+                f[0].fault = F_DOMAIN;
+                return;
+            }
+            if (wide_order(ws, wv, base, base + 1) < 0) {
+                wide_copy(ws, wv, base, base + 1);
+            }
+            if (wide_order(ws, wv, base, base + 2) > 0) {
+                wide_copy(ws, wv, base, base + 2);
+            }
+            ws[0].sp = base + 1;
+            value(f, ty, wide_low(ws, wv, base));
+        case BI_DIV_TRUNC, BI_REM_TRUNC, BI_DIV_EUCLID, BI_REM_EUCLID, BI_DIV_ROUND:
+            if (mag_used(ws, wv, 17) == 0) {
+                f[0].fault = F_DIV_ZERO;
+                return;
+            }
+            ex_from_mag(ws, wv, 0, false);
+            ex_divide(ws, wv);
+            Bool euclid = (id == BI_DIV_EUCLID || id == BI_REM_EUCLID) && na && !rm_zero(ws, wv);
+            if (id == BI_DIV_ROUND) {
+                round_wide(ws, wv, na != nb, mode);
+            } else if (id == BI_DIV_TRUNC || id == BI_DIV_EUCLID) {
+                if (euclid) {
+                    ex_inc(ws, wv);
+                }
+                ws[0].ex_neg = na != nb;
+                ex_trim(ws, wv);
+            } else if (euclid) {
+                rm_complement(ws, wv);
+                ex_from_rm(ws, wv, false);
+            } else {
+                ex_from_rm(ws, wv, na);
+            }
+            settle_wide(f, ws, wv, ty, base);
+        case BI_MULDIV:
+            ex_mul(ws, wv, false);
+            Bool nc = load_mag(ws, wv, base + 2, 17);
+            if (mag_used(ws, wv, 17) == 0) {
+                f[0].fault = F_DIV_ZERO;
+                return;
+            }
+            ex_divide(ws, wv);
+            round_wide(ws, wv, (na != nb) != nc, mode);
+            settle_wide(f, ws, wv, rty, base);
+        case BI_MUL_FULL:
+            ex_mul(ws, wv, na != nb);
+            settle_wide(f, ws, wv, rty, base);
+        case BI_ISQRT, BI_ISQRT_ROUND:
+            if (na) {
+                f[0].fault = F_DOMAIN;
+                return;
+            }
+            ex_isqrt(ws, wv);
+            if (id == BI_ISQRT_ROUND && !rm_zero(ws, wv) &&
+                    (mode == 2 || mode == 4 || (mode > 4 && rm_above_root(ws, wv)))) {
+                // Up for ceil and away, and for a half mode when a > root^2 + root.
+                ex_inc(ws, wv);
+            }
+            settle_wide(f, ws, wv, ty, base);
+        default:
+            f[0].fault = -1;
+    }
+}
+
+// ---------------------------------------------------------------- 128-bit fixed point (games wave G2b)
+//
+// A fixed-point value of 128-bit storage (OQ-292) is held in limbs as an I128's (ty_limbs), and
+// add, sub, neg, abs, min, max and the comparisons are the wide integers' on its raw value.
+// Multiplication, division, square root, qmul, mul_int and the conversions with such a side
+// form the exact result on the wide stack (a product of 256 bits, a conversion of I1024 to
+// Q1.127 of 1,151), round it once by the mode and settle it as fold_q_binary does.
+
+// m[o ..] = the magnitude of an operand of type ty: the value at place i when ty is held in
+// limbs, else bits; whether it is negative.
+Bool load_operand(inout Wide[_] ws, inout WideVal[_] wv, I64 ty, I64 i, U64 bits, I64 o) {
+    if (ty_limbs(ty)) {
+        return load_mag(ws, wv, i, o);
+    }
+    for k in 0..17 {
+        ws[0].m[o + k] = 0;
+    }
+    ws[0].m[o] = magnitude(ty, bits);
+    return is_neg(ty, bits);
+}
+
+// Records an operand of type ty: its place i when it is held in limbs, else its bits.
+void any_operand[r](inout Folded[r] f, I64 ty, I64 i, U64 bits) {
+    if (ty_limbs(ty)) {
+        wide_operand(f, ty, i);
+    } else {
+        operand(f, ty, bits);
+    }
+}
+
+// The exact magnitude in ex (of at most 17 limbs) times 2^-k with sign neg: for k > 0 divided
+// by 2^k and rounded by mode, for k < 0 shifted left by -k.
+void ex_scale(inout Wide[_] ws, inout WideVal[_] wv, Bool neg, I64 k, I64 mode) {
+    if (k > 0) {
+        for j in 0..17 {
+            ws[0].m[17 + j] = 0;
+        }
+        ws[0].m[17 + k / 64] = (1 as U64) << (k % 64);
+        ex_divide(ws, wv);
+        round_wide(ws, wv, neg, mode);
+    } else if (k < 0) {
+        for j in 0..17 {
+            ws[0].m[j] = ws[0].ex[j];
+        }
+        ex_shl(ws, wv, neg, -k);
+    }
+}
+
+// a * b (form FORM_CHECKED, FORM_WRAP or FORM_SAT) and a / b (checked) on 128-bit fixed-point
+// type ty, a at place sp - 2 and b at sp - 1, rounded by mode as fold_q_binary.
+export void fold_wide_q_binary[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 name, I64 form, I64 mode,
+        I64 ty) {
+    begin(f, name, form, ty, 0);
+    f[0].mode = mode;
+    I64 ia = wide_top(ws, wv) - 1;
+    wide_operand(f, ty, ia);
+    wide_operand(f, ty, ia + 1);
+    Bool na = load_mag(ws, wv, ia, 0);
+    Bool nb = load_mag(ws, wv, ia + 1, 17);
+    if (name == OP_MUL) {
+        ex_mul(ws, wv, na != nb);
+        ex_scale(ws, wv, na != nb, q_frac(ty), mode);
+    } else {
+        if (mag_used(ws, wv, 17) == 0) {
+            f[0].fault = F_DIV_ZERO;
+            return;
+        }
+        ex_shl(ws, wv, false, q_frac(ty));
+        ex_divide(ws, wv);
+        round_wide(ws, wv, na != nb, mode);
+    }
+    settle_wide(f, ws, wv, ty, ia);
+}
+
+// sqrt, qmul and mul_int as fold_q_builtin where a of type ty, b of type tb or the result
+// type rty is held in limbs: the operands held in limbs at the top in order, replaced by a
+// result held in limbs or popped for one of at most 64 bits; with neither operand held in
+// limbs, the result is pushed (the caller checks wide_room).
+export void fold_wide_q_builtin[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 id, I64 mode, I64 ty, I64 tb,
+        I64 rty, U64 a, U64 b) {
+    I64 ty2 = 0;
+    if (id == BI_QMUL) {
+        ty2 = rty;
+    }
+    begin(f, OP_BUILTIN + id, FORM_CHECKED, ty, ty2);
+    f[0].mode = mode;
+    I64 base = ws[0].sp;
+    Bool two = id != BI_SQRT;
+    if (two && ty_limbs(tb)) {
+        base -= 1;
+    }
+    if (ty_limbs(ty)) {
+        base -= 1;
+    }
+    I64 ib = base;
+    if (ty_limbs(ty)) {
+        ib += 1;
+    }
+    any_operand(f, ty, base, a);
+    Bool na = load_operand(ws, wv, ty, base, a, 0);
+    if (!two) {
+        if (na) {
+            f[0].fault = F_DOMAIN;
+            return;
+        }
+        // round(sqrt(A * 2^f)) from the root of A * 2^f, below 2^255, and its remainder.
+        ex_shl(ws, wv, false, q_frac(ty));
+        for j in 0..17 {
+            ws[0].m[j] = ws[0].ex[j];
+        }
+        ex_isqrt(ws, wv);
+        if (!rm_zero(ws, wv) && (mode == 2 || mode == 4 || (mode > 4 && rm_above_root(ws, wv)))) {
+            ex_inc(ws, wv);
+        }
+        settle_wide(f, ws, wv, ty, base);
+        return;
+    }
+    any_operand(f, tb, ib, b);
+    Bool nb = load_operand(ws, wv, tb, ib, b, 17);
+    ex_mul(ws, wv, na != nb);
+    if (id == BI_MUL_INT) {
+        settle_wide(f, ws, wv, ty, base);
+        return;
+    }
+    ex_scale(ws, wv, na != nb, q_frac(ty) + q_frac(tb) - q_frac(rty), mode);
+    settle_wide(f, ws, wv, rty, base);
+}
+
+// a as T, a as% T and a as| T (form) as fold_q_convert where `from` or `to` is held in limbs:
+// a source held in limbs at the top, replaced by a result held in limbs or popped for one of
+// at most 64 bits; or a source of at most 64 bits given by its bits a, whose result is pushed
+// (the caller checks wide_room).
+export void fold_wide_q_convert[r](inout Folded[r] f, inout Wide[_] ws, inout WideVal[_] wv, I64 form, I64 mode, I64 from,
+        U64 a, I64 to) {
+    begin(f, OP_AS, form, from, to);
+    f[0].mode = mode;
+    I64 at = ws[0].sp;
+    if (ty_limbs(from)) {
+        at -= 1;
+    }
+    any_operand(f, from, at, a);
+    Bool neg = load_operand(ws, wv, from, at, a, 0);
+    I64 sf = 0;
+    I64 tf = 0;
+    if (ty_q(from)) {
+        sf = q_frac(from);
+    }
+    if (ty_q(to)) {
+        tf = q_frac(to);
+    }
+    if (tf >= sf) {
+        ex_shl(ws, wv, neg, tf - sf);
+    } else {
+        ex_from_mag(ws, wv, 0, neg);
+        ex_scale(ws, wv, neg, sf - tf, mode);
+    }
+    settle_wide(f, ws, wv, to, at);
+    if (f[0].fault == F_OVERFLOW) {
+        f[0].fault = F_NARROW;
+    }
+}
+
+// The value at place i of unsigned wide type ty rotated left (left true) or right by k bits,
+// 0 <= k < w (SPEC-01 4.10), in place: m[0 ..) holds the w / 64 source limbs.
+void wide_rotate(inout Wide[_] ws, inout WideVal[_] wv, I64 ty, I64 i, Bool left, I64 k) {
+    I64 nl = ty_width(ty) / 64;
+    I64 d = k;
+    if (!left && k != 0) {
+        d = ty_width(ty) - k;
+    }
+    I64 q = d / 64;
+    I64 s = d % 64;
+    for j in 0..nl {
+        ws[0].m[j] = wv[i].limb[j];
+    }
+    for j in 0..nl {
+        U64 hi = ws[0].m[(j - q + nl) % nl];
+        U64 lo = ws[0].m[(j - q - 1 + 2 * nl) % nl];
+        if (s == 0) {
+            wv[i].limb[j] = hi;
+        } else {
+            wv[i].limb[j] = (hi <<% s) | (lo >> (64 - s));
+        }
+    }
+}
+
+// ---------------------------------------------------------------- test entries
+
+// compiler/tests/run.py computes every expected value with cint_ref (ref/cint_ref/arith.py
+// and faults.py) and the frozen expectations, and compares.
+
+const U64 FNV_BASIS = 0xcbf29ce484222325;
+const U64 FNV_PRIME = 0x100000001b3;
+
+U64 fnv[b](U64 h, in U8[b] data, I64 nbytes) {
+    U64 x = h;
+    for i in 0..nbytes {
+        x = (x ^ (data[i] as U64)) *% FNV_PRIME;
+    }
+    return x;
+}
+
+// The outcome text of f: `value <typed value>` or the fault lines with the prefix
+// `diagnostic.fault.`, each ending in LF; or with what == 1 the fault record at t.ci:7:9
+// (empty for a value). Returns the byte count, -1 when the measure and emit passes differ.
+I64 outcome[b, r, n](inout U8[b] buf, in Folded[r] f, in U8[n] lits, inout Work[_] z, inout Wide[_] ws, inout WideVal[_] wv, I64 what) {
+    emit.Writer[1] w;
+    for pass in 0..2 {
+        if (pass == 0) {
+            emit.w_measure(w);
+        } else {
+            emit.w_emit(w, w[0].pos);
+        }
+        if (what == 1) {
+            if (f[0].fault != F_NONE) {
+                fault_record(w, buf, f, lits, z, ws, wv, "t.ci", 7, 9);
+            }
+        } else if (f[0].fault == F_NONE) {
+            emit.w_text(w, buf, "value ");
+            render_value(w, buf, f[0].ty, f[0].bits);
+            emit.w_nl(w, buf);
+        } else {
+            render_fault(w, buf, f, lits, z, ws, wv, "diagnostic.fault.");
+        }
+    }
+    if (emit.w_finish(w) != emit.W_OK) {
+        return -1;
+    }
+    return w[0].pos;
+}
+
+// What `what` asks of the outcome of f. what 0: FNV-1a of the outcome text; 1: FNV-1a of
+// the record; 2 and 3: their byte counts; 4: FNV-1a of the text and then the record.
+U64 digest[b, r, n](inout U8[b] buf, in Folded[r] f, in U8[n] lits, inout Work[_] z, inout Wide[_] ws, inout WideVal[_] wv, I64 what) {
+    U64 h = FNV_BASIS;
+    for part in 0..2 {
+        if (what == part || what == part + 2 || what == 4) {
+            I64 nbytes = outcome(buf, f, lits, z, ws, wv, part);
+            if (nbytes < 0) {
+                return 1;
+            }
+            if (what == part + 2) {
+                return nbytes as U64;
+            }
+            h = fnv(h, buf, nbytes);
+        }
+    }
+    return h;
+}
+
+// One operation: OP_NEG and OP_NOT take a; OP_AS converts a of type ty to tb (form
+// checked or wrap); the others are fold_binary. `what` as for digest.
+export U64 op_test(I64 name, I64 form, I64 ty, U64 a, I64 tb, U64 b, I64 what) {
+    Folded[1] f;
+    Work[1] z;
+    Wide[1] ws;
+    WideVal[2] wv;
+    U8[1] lits;
+    U8[4096] buf;
+    if (name == OP_NEG || name == OP_NOT) {
+        fold_unary(f, name, ty, a);
+    } else if (name == OP_AS) {
+        fold_convert(f, form, ty, a, tb);
+    } else {
+        fold_binary(f, name, form, ty, a, tb, b);
+    }
+    return digest(buf, f, lits, z, ws, wv, what);
+}
+
+// Every second operand of an 8-bit type at once: the FNV-1a of the outcome text followed
+// by the record, concatenated over a op b for b from the minimum of tb to its maximum.
+// OP_NEG, OP_NOT, and OP_AS run over every a instead (a is ignored; for OP_AS, tb is the
+// target). CMP_* comparisons are name 100 + cmp, as `value Bool ...` lines.
+export U64 row_test(I64 name, I64 form, I64 ty, U64 a, I64 tb) {
+    Folded[1] f;
+    Work[1] z;
+    Wide[1] ws;
+    WideVal[2] wv;
+    U8[1] lits;
+    U8[4096] buf;
+    U64 h = FNV_BASIS;
+    I64 src = tb;
+    if (name == OP_NEG || name == OP_NOT || name == OP_AS) {
+        src = ty;
+    }
+    I64 lo = 0;
+    if (ty_signed(src)) {
+        lo = -128;
+    }
+    for v in lo..lo + 256 {
+        U64 x = (v as% U64);
+        if (name >= 100) {
+            begin(f, OP_UNASSIGNED, FORM_CHECKED, ty, 0);
+            Bool c = fold_compare(name - 100, ty, a, x);
+            value(f, TY_BOOL, 0);
+            if (c) {
+                f[0].bits = 1;
+            }
+        } else if (name == OP_NEG || name == OP_NOT) {
+            fold_unary(f, name, ty, x);
+        } else if (name == OP_AS) {
+            fold_convert(f, form, ty, x, tb);
+        } else {
+            fold_binary(f, name, form, ty, a, tb, x);
+        }
+        for part in 0..2 {
+            I64 nbytes = outcome(buf, f, lits, z, ws, wv, part);
+            if (nbytes < 0) {
+                return 1;
+            }
+            h = fnv(h, buf, nbytes);
+        }
+    }
+    return h;
+}
+
+// Digit i of test literal (kind, ndigits, seed): kind 0 decimal, 1 hexadecimal, 2 octal,
+// 3 binary, each (seed + 7 * i) mod base with a nonzero first digit and a `_` after every
+// fifth digit when seed is odd; kind 4 the hexadecimal 1 followed by ndigits - 1 zeros; kind 5
+// ndigits hexadecimal F; kind 6 the decimal digits of |seed|; kind 7 balanced ternary, the
+// trit (seed + 7 * i) mod 3 written 0, P, N, with a nonzero first trit and a `_` after every
+// fifth trit when seed is odd; kind 8 ndigits balanced-ternary P. Negative when seed < 0.
+I64 base_of(I64 kind) {
+    switch (kind) {
+        case 0, 6: return 10;
+        case 2: return 8;
+        case 3: return 2;
+        case 7, 8: return 3;
+        default: return 16;
+    }
+}
+
+I64 digit_count(I64 kind, I64 ndigits, I64 seed) {
+    if (kind != 6) {
+        return ndigits;
+    }
+    I64 n = 1;
+    I64 v = seed;
+    if (v < 0) {
+        v = -v;
+    }
+    v = v / 10;
+    while (v != 0) {
+        v = v / 10;
+        n += 1;
+    }
+    return n;
+}
+
+U8 digit_char(I64 kind, I64 i, I64 ndigits, I64 seed) {
+    I64 base = base_of(kind);
+    I64 d = 0;
+    if (kind == 4) {
+        if (i == 0) {
+            d = 1;
+        }
+    } else if (kind == 5) {
+        d = 15;
+    } else if (kind == 8) {
+        d = 1;
+    } else if (kind == 6) {
+        I64 v = seed;
+        if (v < 0) {
+            v = -v;
+        }
+        for k in 0..ndigits - 1 - i {
+            v = v / 10;
+        }
+        d = v % 10;
+    } else {
+        I64 s = seed % base;
+        if (s < 0) {
+            s = -s;
+        }
+        d = (s + 7 * i) % base;
+        if (i == 0 && d == 0) {
+            d = 1;
+        }
+    }
+    if (kind == 7 || kind == 8) {
+        if (d == 1) {
+            return 'P';
+        }
+        if (d == 2) {
+            return 'N';
+        }
+    }
+    if (d < 10) {
+        return (48 + d) as U8;
+    }
+    return (87 + d) as U8;
+}
+
+// lit_digits, or lit_trits for balanced ternary (base 3) with the literal's sign neg.
+I64 feed[n](inout Work[_] z, in U8[n] text, I64 start, I64 ndigits, I64 base, Bool neg) {
+    if (base == 3) {
+        return lit_trits(z, text, start, ndigits, neg);
+    }
+    return lit_digits(z, text, start, ndigits, base);
+}
+
+// Builds test literal (kind, ndigits, seed) in z, feeding the digits 4,000 bytes at a time.
+I64 build_literal(inout Work[_] z, I64 kind, I64 ndigits, I64 seed) {
+    U8[4096] text;
+    I64 n = digit_count(kind, ndigits, seed);
+    Bool sep = (kind <= 3 || kind == 7) && seed % 2 != 0;
+    lit_start(z, seed < 0);
+    I64 i = 0;
+    I64 status = LIT_OK;
+    while (i < n) {
+        I64 used = 0;
+        while (i < n && used < 4000) {
+            text[used] = digit_char(kind, i, n, seed);
+            used += 1;
+            i += 1;
+            if (sep && i % 5 == 0 && i < n) {
+                text[used] = '_';
+                used += 1;
+            }
+        }
+        status = feed(z, text, 0, used, base_of(kind), seed < 0);
+    }
+    return status;
+}
+
+// Test literal (kind, ndigits, seed). what 0: the status; 1: the stored byte count; 2: FNV-1a
+// of the stored bytes; 3: FNV-1a of the decimal rendering; 4: its byte count; 5: 1 when
+// the rendering read back as a decimal literal stores the same bytes; 6: the bit length.
+export U64 lit_test(I64 kind, I64 ndigits, I64 seed, I64 what) {
+    Work[1] z;
+    U8[1100] lits;
+    U8[1100] again;
+    U8[1300] buf;
+    I64 status = build_literal(z, kind, ndigits, seed);
+    if (what == 0) {
+        return status as U64;
+    }
+    if (status != LIT_OK) {
+        return 0;
+    }
+    if (what == 6) {
+        return z_bits(z) as U64;
+    }
+    I64 n = lit_put(z, lits, 0);
+    if (what == 1) {
+        return n as U64;
+    }
+    if (what == 2) {
+        return fnv(FNV_BASIS, lits, n);
+    }
+    lit_get(lits, 0, n, z);
+    emit.Writer[1] w;
+    emit.w_emit(w, 1300);
+    z_render(w, buf, z);
+    if (what == 3) {
+        return fnv(FNV_BASIS, buf, w[0].pos);
+    }
+    if (what == 4) {
+        return w[0].pos as U64;
+    }
+    I64 skip = 0;
+    if (buf[0] == '-') {
+        skip = 1;
+    }
+    lit_start(z, skip == 1);
+    if (lit_digits(z, buf, skip, w[0].pos - skip, 10) != LIT_OK) {
+        return 0;
+    }
+    if (lit_put(z, again, 0) != n) {
+        return 0;
+    }
+    for k in 0..n {
+        if (again[k] != lits[k]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// The conversion of test literal (kind, ndigits, seed) to type `to` with `form`, stored at
+// offset 5 of the literal table: what 0 to 4 as for digest; 5: 1 when the literal is a
+// value of `to`; 6: the bits of the result.
+export U64 lit_convert_test(I64 kind, I64 ndigits, I64 seed, I64 form, I64 to, I64 what) {
+    Folded[1] f;
+    Work[1] z;
+    Wide[1] ws;
+    WideVal[2] wv;
+    U8[1100] lits;
+    U8[4096] buf;
+    if (build_literal(z, kind, ndigits, seed) != LIT_OK) {
+        return 0;
+    }
+    I64 n = lit_put(z, lits, 5);
+    if (what == 5) {
+        if (lit_fits(lits, 5, n, to)) {
+            return 1;
+        }
+        return 0;
+    }
+    fold_lit_convert(f, form, lits, 5, n, to);
+    if (what == 6) {
+        return f[0].bits;
+    }
+    return digest(buf, f, lits, z, ws, wv, what);
+}
+
+// Feeds text to lit_digits (lit_trits for base 3, with sign neg) in one call (split -1) or in
+// two calls at offset split, with an empty chunk before, between, and after them when empty
+// is 1. Returns the last status.
+I64 chunk_feed[n](inout Work[_] z, in U8[n] text, I64 base, I64 split, I64 empty, Bool neg) {
+    I64 status = LIT_OK;
+    if (empty == 1) {
+        status = feed(z, text, 0, 0, base, neg);
+    }
+    if (split < 0) {
+        status = feed(z, text, 0, n, base, neg);
+    } else {
+        status = feed(z, text, 0, split, base, neg);
+        if (empty == 1) {
+            status = feed(z, text, split, 0, base, neg);
+        }
+        status = feed(z, text, split, n - split, base, neg);
+    }
+    if (empty == 1) {
+        status = feed(z, text, n, 0, base, neg);
+    }
+    return status;
+}
+
+// Chunk boundaries (LS-27, D-17): text k fed as chunk_feed feeds it, negative when neg is 1.
+// Text k: 0 hexadecimal `01`, 1 hexadecimal `0_1`, 2 hexadecimal `00f_f`, 3 binary `0_0_1_0`,
+// 4 octal `0017`, 5 hexadecimal `0`, 6 hexadecimal `0_0`, 7 decimal `0`, 8 decimal `1_0`,
+// 9 balanced ternary `0P_N`, 10 balanced ternary `N0P`, 11 balanced ternary `0_0`.
+// what 0: the status; 1: the stored byte count; 2: FNV-1a of the stored bytes; 3: FNV-1a of
+// the decimal rendering of the buffer as built; 4: its byte count; 5: the low 64 bits of
+// the stored Z.
+export U64 chunk_test(I64 k, I64 neg, I64 split, I64 empty, I64 what) {
+    Work[1] z;
+    U8[16] lits;
+    U8[64] buf;
+    Bool minus = neg == 1;
+    lit_start(z, minus);
+    I64 status = LIT_BAD_DIGIT;
+    if (k == 0) {
+        status = chunk_feed(z, "01", 16, split, empty, minus);
+    } else if (k == 1) {
+        status = chunk_feed(z, "0_1", 16, split, empty, minus);
+    } else if (k == 2) {
+        status = chunk_feed(z, "00f_f", 16, split, empty, minus);
+    } else if (k == 3) {
+        status = chunk_feed(z, "0_0_1_0", 2, split, empty, minus);
+    } else if (k == 4) {
+        status = chunk_feed(z, "0017", 8, split, empty, minus);
+    } else if (k == 5) {
+        status = chunk_feed(z, "0", 16, split, empty, minus);
+    } else if (k == 6) {
+        status = chunk_feed(z, "0_0", 16, split, empty, minus);
+    } else if (k == 7) {
+        status = chunk_feed(z, "0", 10, split, empty, minus);
+    } else if (k == 8) {
+        status = chunk_feed(z, "1_0", 10, split, empty, minus);
+    } else if (k == 9) {
+        status = chunk_feed(z, "0P_N", 3, split, empty, minus);
+    } else if (k == 10) {
+        status = chunk_feed(z, "N0P", 3, split, empty, minus);
+    } else if (k == 11) {
+        status = chunk_feed(z, "0_0", 3, split, empty, minus);
+    }
+    if (what == 0) {
+        return status as U64;
+    }
+    I64 nbytes = lit_put(z, lits, 0);
+    if (what == 1) {
+        return nbytes as U64;
+    }
+    if (what == 2) {
+        return fnv(FNV_BASIS, lits, nbytes);
+    }
+    if (what == 5) {
+        return lit_bits(lits, 0, nbytes);
+    }
+    emit.Writer[1] w;
+    emit.w_emit(w, 64);
+    z_render(w, buf, z);
+    if (what == 3) {
+        return fnv(FNV_BASIS, buf, w[0].pos);
+    }
+    return w[0].pos as U64;
+}
+
+// The D-17 bounds. k 0, 1: the OQ-147 maximum exact (2^4096 - 1) * 2^63, positive and
+// negative; k 2: 2^4096 - 1 rendered and read back; k 3: the same digits ending in 6,
+// which is 2^4096 (C1023). what 0: the Z byte count (with its 5-byte prefix); 1: FNV-1a of
+// the encoded Z; 2: the decimal digit count with sign; 3: FNV-1a of the decimal; 4: the
+// literal status after reading the rendering back; 5: limits agree with this module.
+export U64 bound_test(I64 k, I64 what) {
+    Work[1] z;
+    U8[1300] buf;
+    if (what == 5) {
+        if (limits.FOLD_LIMBS == WORK_LIMBS && limits.LITERAL_BYTES_MAX == LIT_BYTES_MAX) {
+            return 1;
+        }
+        return 0;
+    }
+    z_clear(z);
+    if (k <= 1) {
+        z[0].limb[0] = 0x8000000000000000;
+        for i in 1..64 {
+            z[0].limb[i] = ALL;
+        }
+        z[0].limb[64] = 0x7FFFFFFFFFFFFFFF;
+        z[0].used = 65;
+        z[0].neg = k == 1;
+    } else {
+        for i in 0..64 {
+            z[0].limb[i] = ALL;
+        }
+        z[0].used = 64;
+    }
+    emit.Writer[1] w;
+    emit.w_emit(w, 1300);
+    if (what <= 1) {
+        put_z(w, buf, z);
+        if (what == 0) {
+            return w[0].pos as U64;
+        }
+        return fnv(FNV_BASIS, buf, w[0].pos);
+    }
+    z_render(w, buf, z);
+    if (what == 2) {
+        return w[0].pos as U64;
+    }
+    if (what == 3) {
+        return fnv(FNV_BASIS, buf, w[0].pos);
+    }
+    if (k == 3) {
+        buf[w[0].pos - 1] = '6';
+    }
+    lit_start(z, false);
+    I64 status = lit_digits(z, buf, 0, w[0].pos, 10);
+    if (what == 4) {
+        return status as U64;
+    }
+    // what 6: 1 when the value read back is 2^4096 - 1 again.
+    if (z[0].used != 64) {
+        return 0;
+    }
+    for i in 0..64 {
+        if (z[0].limb[i] != ALL) {
+            return 0;
+        }
+    }
+    return 1;
+}

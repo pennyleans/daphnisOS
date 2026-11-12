@@ -1,0 +1,352 @@
+// user/ci/core/dec.ci: decimal fixed point for ccalc (docs/specs/2026-11-07-bp-basics.md section 3, BP-1). A value
+// is a count of units m (|m| at most 2^63 - 1) at a scale s of 0 to 18 digits: m / 10^s. Every result is exact, or
+// cut toward zero and marked (cut() is then true), or fails by name (fail() is then not 0). Products and the
+// numerators of quotients are held in 128 bits, four 32-bit limbs, so nothing is lost before the cut.
+
+export const I64 SCALE_MAX = 18;
+export const I64 M = 9223372036854775807;
+
+export const I64 E_NONE = 0;
+export const I64 E_OVERFLOW = 1;
+export const I64 E_ZERO = 2;
+export const I64 E_INTEGER = 3;
+export const I64 E_EXPONENT = 4;
+export const I64 E_NEGATIVE = 5;
+export const I64 E_SCALE = 6;
+
+I64 err = 0;
+Bool was_cut = false;
+I64 rm = 0;          // the result: units and scale
+I64 rs = 0;
+U64[4] w;            // the wide register, little-endian 32-bit limbs
+U64[4] q;
+U64 rem = 0;
+const U64 LIMB = 4294967296;
+
+export I64 fail() { return err; }
+export Bool cut() { return was_cut; }
+export I64 units() { return rm; }
+export I64 scale() { return rs; }
+
+// Clears the failure and the mark before an expression.
+export void reset() {
+    err = E_NONE;
+    was_cut = false;
+}
+
+export void raise(I64 e) {
+    if (err == E_NONE) { err = e; }
+}
+
+void result(I64 m, I64 s) {
+    rm = m;
+    rs = s;
+}
+
+void w_set(U64 v) {
+    w[0] = v % LIMB;
+    w[1] = v / LIMB;
+    w[2] = 0;
+    w[3] = 0;
+}
+
+// w = a * b, a and b below 2^64.
+void w_mul(U64 a, U64 b) {
+    U64[2] x;
+    U64[2] y;
+    x[0] = a % LIMB;
+    x[1] = a / LIMB;
+    y[0] = b % LIMB;
+    y[1] = b / LIMB;
+    for k in 0..4 {
+        w[k] = 0;
+    }
+    for i in 0..2 {
+        U64 carry = 0;
+        for j in 0..2 {
+            U64 t = x[i] * y[j] + w[i + j] + carry;   // at most (2^32 - 1)^2 + 2 (2^32 - 1) = 2^64 - 1
+            w[i + j] = t % LIMB;
+            carry = t / LIMB;
+        }
+        w[i + 2] = w[i + 2] + carry;
+    }
+}
+
+// w = w * 10; false when it passes 128 bits.
+Bool w_mul10() {
+    U64 carry = 0;
+    for k in 0..4 {
+        U64 t = w[k] * 10 + carry;
+        w[k] = t % LIMB;
+        carry = t / LIMB;
+    }
+    return carry == 0;
+}
+
+// q = w / d and rem = w % d, d from 1 to 2^63 - 1, by bits.
+void w_div(U64 d) {
+    U64 r = 0;
+    for k in 0..4 {
+        q[k] = 0;
+    }
+    I64 b = 127;
+    while (b >= 0) {
+        I64 limb = b / 32;
+        I64 bit = b % 32;
+        r = r * 2 + ((w[limb] >> (bit as U64)) & 1);
+        if (r >= d) {
+            r = r - d;
+            q[limb] = q[limb] + ((1 as U64) << (bit as U64));
+        }
+        b = b - 1;
+    }
+    rem = r;
+}
+
+// q below 2^63, as a count of units.
+Bool q_fits() {
+    return q[3] == 0 && q[2] == 0 && q[1] < 2147483648;
+}
+
+I64 q_value() {
+    return (q[1] * LIMB + q[0]) as I64;
+}
+
+void q_to_w() {
+    for k in 0..4 {
+        w[k] = q[k];
+    }
+}
+
+Bool w_fits() {
+    return w[3] == 0 && w[2] == 0 && w[1] < 2147483648;
+}
+
+I64 w_value() {
+    return (w[1] * LIMB + w[0]) as I64;
+}
+
+Bool w_zero() {
+    return w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] == 0;
+}
+
+U64 mag(I64 m) {
+    if (m < 0) { return (0 - m) as U64; }
+    return m as U64;
+}
+
+I64 signed(I64 v, Bool neg) {
+    if (neg) { return 0 - v; }
+    return v;
+}
+
+// m times 10^k, or the overflow.
+I64 up(I64 m, I64 k) {
+    I64 v = m;
+    for i in 0..k {
+        if (v > M / 10 || v < 0 - M / 10) {
+            raise(E_OVERFLOW);
+            return 0;
+        }
+        v = v * 10;
+    }
+    return v;
+}
+
+// The value with the zeros at the end of its fraction taken off.
+export void trim(I64 m, I64 s) {
+    I64 v = m;
+    I64 k = s;
+    while (k > 0 && v % 10 == 0) {
+        v = v / 10;
+        k = k - 1;
+    }
+    result(v, k);
+}
+
+// The integer a value is, or E_INTEGER.
+export I64 integer(I64 m, I64 s) {
+    trim(m, s);
+    if (rs != 0) {
+        raise(E_INTEGER);
+        return 0;
+    }
+    return rm;
+}
+
+export void plus(I64 am, I64 sa, I64 bm, I64 sb) {
+    I64 s = sa;
+    if (sb > s) { s = sb; }
+    I64 a = up(am, s - sa);
+    I64 b = up(bm, s - sb);
+    if (err != E_NONE) { return; }
+    if ((b > 0 && a > M - b) || (b < 0 && a < 0 - M - b)) {
+        raise(E_OVERFLOW);
+        return;
+    }
+    result(a + b, s);
+}
+
+export void minus(I64 am, I64 sa, I64 bm, I64 sb) {
+    plus(am, sa, 0 - bm, sb);
+}
+
+// The wide register at scale s, cut to at most SCALE_MAX digits and to 63 bits, as the result.
+void settle(I64 s, Bool neg) {
+    I64 k = s;
+    while (k > 0 && (k > SCALE_MAX || !w_fits())) {
+        w_div(10);
+        if (rem != 0) { was_cut = true; }
+        q_to_w();
+        k = k - 1;
+    }
+    if (!w_fits()) {
+        raise(E_OVERFLOW);
+        return;
+    }
+    result(signed(w_value(), neg), k);
+}
+
+export void times(I64 am, I64 sa, I64 bm, I64 sb) {
+    w_mul(mag(am), mag(bm));
+    settle(sa + sb, (am < 0) != (bm < 0));
+}
+
+// a / b at scale t (at least as many digits as a has past b's), cut and marked when it does not end there.
+export void quot(I64 am, I64 sa, I64 bm, I64 sb, I64 t) {
+    if (bm == 0) {
+        raise(E_ZERO);
+        return;
+    }
+    I64 st = t;
+    if (sa - sb > st) { st = sa - sb; }
+    w_set(mag(am));
+    for i in 0..st + sb - sa {
+        if (!w_mul10()) {
+            raise(E_OVERFLOW);
+            return;
+        }
+    }
+    w_div(mag(bm));
+    if (!q_fits()) {
+        raise(E_OVERFLOW);
+        return;
+    }
+    I64 v = signed(q_value(), (am < 0) != (bm < 0));
+    if (rem != 0) {
+        was_cut = true;
+        result(v, st);
+    } else {
+        trim(v, st);
+    }
+}
+
+// The remainder of two integers as cint's % gives it: floored, its sign the divisor's.
+export void rest(I64 am, I64 sa, I64 bm, I64 sb) {
+    I64 a = integer(am, sa);
+    I64 b = integer(bm, sb);
+    if (err != E_NONE) { return; }
+    if (b == 0) {
+        raise(E_ZERO);
+        return;
+    }
+    result(a % b, 0);
+}
+
+// a to the integer power n, 0 to 63.
+export void raise_to(I64 am, I64 sa, I64 nm, I64 ns) {
+    I64 n = integer(nm, ns);
+    if (err != E_NONE) { return; }
+    if (n < 0 || n > 63) {
+        raise(E_EXPONENT);
+        return;
+    }
+    I64 m = 1;
+    I64 s = 0;
+    for i in 0..n {
+        times(m, s, am, sa);
+        if (err != E_NONE) { return; }
+        m = rm;
+        s = rs;
+    }
+    result(m, s);
+}
+
+// The square root at scale t (at least half of a's), cut and marked unless exact; by bisection on the wide square.
+export void root(I64 am, I64 sa, I64 t) {
+    if (am < 0) {
+        raise(E_NEGATIVE);
+        return;
+    }
+    I64 st = t;
+    if ((sa + 1) / 2 > st) { st = (sa + 1) / 2; }
+    w_set(am as U64);
+    for i in 0..2 * st - sa {
+        if (!w_mul10()) {
+            raise(E_OVERFLOW);
+            return;
+        }
+    }
+    U64[4] n;
+    for k in 0..4 {
+        n[k] = w[k];
+    }
+    U64 lo = 0;
+    U64 hi = M as U64;
+    while (lo < hi) {
+        U64 mid = lo + (hi - lo + 1) / 2;
+        w_mul(mid, mid);
+        I64 c = 0;
+        I64 k = 3;
+        while (c == 0 && k >= 0) {
+            if (w[k] < n[k]) { c = -1; }
+            if (w[k] > n[k]) { c = 1; }
+            k = k - 1;
+        }
+        if (c <= 0) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    w_mul(lo, lo);
+    Bool exact = true;
+    for k in 0..4 {
+        exact = exact && w[k] == n[k];
+    }
+    if (lo > M as U64) {
+        raise(E_OVERFLOW);
+        return;
+    }
+    if (exact) {
+        trim(lo as I64, st);
+    } else {
+        was_cut = true;
+        result(lo as I64, st);
+    }
+}
+
+// Integer shifts: a << n and a >> n (toward minus infinity), n from 0 to 63.
+export void shift(I64 am, I64 sa, I64 nm, I64 ns, Bool left) {
+    I64 a = integer(am, sa);
+    I64 n = integer(nm, ns);
+    if (err != E_NONE) { return; }
+    if (n < 0 || n > 63) {
+        raise(E_EXPONENT);
+        return;
+    }
+    I64 v = a;
+    for i in 0..n {
+        if (left) {
+            if (v > M / 2 || v < 0 - M / 2) {
+                raise(E_OVERFLOW);
+                return;
+            }
+            v = v * 2;
+        } else {
+            v = v / 2;      // cint's / floors, so this is the shift toward minus infinity
+        }
+    }
+    result(v, 0);
+}
+// SPDX-License-Identifier: Apache-2.0

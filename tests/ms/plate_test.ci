@@ -1,0 +1,82 @@
+// tests/ms/plate_test.ci: hosted model tests of MS-5's plate and message motion (user/ci/kit/plate.ci;
+// docs/specs/2026-11-10-ms-motion-shadows.md sections 4 and 6, items 4 and 8). The values are tools/check-hdesk.py's
+// plate_* twin. Run by check.sh: cint test --root . tests/ms/plate_test.ci
+
+import user.ci.kit.anim;
+import user.ci.kit.plate;
+
+test "gate 4: a plate opening is mid after 8 steps and open after 16; closing, gone after 10" {
+    anim.Anim o = plate.open(anim.rest(0), 0, true);
+    assert(anim.value(o, anim.steps(8)) == 946);
+    assert(anim.value(o, anim.steps(16)) == 1000 && !anim.running(o, anim.steps(16)));
+    anim.Anim c = plate.close(anim.rest(1000), 0, true);
+    assert(anim.value(c, anim.steps(5)) == 675);
+    assert(anim.value(c, anim.steps(10)) == 0 && !anim.running(c, anim.steps(10)));
+}
+
+test "gate 8: the bar message is in after 16 steps; out, gone 20 steps after its hold" {
+    anim.Anim i = plate.msg_in(anim.rest(0), 0, true);
+    assert(anim.value(i, anim.steps(8)) == 946 && anim.value(i, anim.steps(16)) == 1000);
+    anim.Anim o = plate.msg_out(anim.rest(1000), anim.steps(400), true);
+    assert(anim.value(o, anim.steps(410)) == 675 && anim.value(o, anim.steps(420)) == 0);
+}
+
+test "law 4: with animations off every change is at its end at once" {
+    anim.Anim o = plate.open(anim.rest(0), 0, false);
+    assert(anim.value(o, 0) == 1000 && !anim.running(o, 0));
+    anim.Anim c = plate.close(anim.rest(1000), 0, false);
+    assert(anim.value(c, 0) == 0);
+}
+
+test "a close starts from where the opening stands" {
+    anim.Anim o = plate.open(anim.rest(0), 0, true);
+    anim.Anim c = plate.close(o, anim.steps(8), true);
+    assert(anim.value(c, anim.steps(8)) == 946 && anim.value(c, anim.steps(18)) == 0);
+}
+
+test "opacity, scale, insets, radii and the drop at their ends, and never moving backward" {
+    assert(plate.alpha(0) == 0 && plate.alpha(1000) == 256 && plate.alpha(500) == 128);
+    assert(plate.scale(0) == 960 && plate.scale(1000) == 1000);
+    assert(plate.inset(608, 1000) == 0 && plate.inset(608, 0) == 12);
+    assert(plate.radius(24, 1000) == 24 && plate.radius(24, 0) == 23);
+    assert(plate.drop(0, 1) == -8 && plate.drop(0, 2) == -16 && plate.drop(1000, 2) == 0);
+    for p in 0..1000 {
+        assert(plate.alpha(p) <= plate.alpha(p + 1) && plate.scale(p) <= plate.scale(p + 1));
+        assert(plate.inset(608, p) >= plate.inset(608, p + 1) && plate.drop(p, 2) <= plate.drop(p + 1, 2));
+    }
+}
+
+test "gate 7 (MS-8): a float moved by key is mid after 10 steps and there after 20; a frame between, rounded down" {
+    anim.Anim m = plate.move(anim.rest(0), 0, true);
+    assert(anim.value(m, anim.steps(10)) == 946);
+    assert(anim.value(m, anim.steps(20)) == 1000 && !anim.running(m, anim.steps(20)));
+    assert(plate.between(100, 340, 946) == 327 && plate.between(340, 100, 946) == 112);
+    assert(plate.between(100, 340, 0) == 100 && plate.between(100, 340, 1000) == 340);
+    anim.Anim off = plate.move(anim.rest(0), 0, false);
+    assert(anim.value(off, 0) == 1000);
+    I64 h = 0;
+    I64[10] ab = [0, 1920, 1920, 0, 100, -37, -500, 64, 7, 7];
+    for p in 0..1001 {
+        for k in 0..5 {
+            h = (h * 31 + plate.between(ab[2 * k], ab[2 * k + 1], p) + 10000) % 1000000007;   // + 10000: none negative
+        }
+    }
+    assert(h == 915474160);
+}
+
+test "every progress at four UI scales equals the twin's (tools/check-hdesk.py plate_*)" {
+    I64 h = 0;
+    for p in 0..1001 {
+        for k in 0..4 {
+            I64 sc = 1;
+            if (k == 1) { sc = 2; }
+            if (k == 2) { sc = 3; }
+            if (k == 3) { sc = 6; }
+            I64[7] v = [plate.alpha(p), plate.scale(p), plate.inset(304 * sc, p), plate.inset(36 * sc, p),
+                        plate.radius(12 * sc, p), plate.radius(18 * sc, p), plate.drop(p, sc)];
+            for q in 0..7 { h = (h * 31 + v[q] + 1000) % 1000000007; }   // + 1000: the drop is negative
+        }
+    }
+    assert(h == 937956272);
+}
+// SPDX-License-Identifier: Apache-2.0

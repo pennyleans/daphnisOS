@@ -1,0 +1,101 @@
+// user/ci/keyed.ci: keyed [SHELL [PATH [LOG]]], the K-9 gate's driver (docs/specs/2026-11-07-k-kit2.md section 3), in
+// no flavor's image: check-cish.sh runs it on Linux and puts it in an image of its own for Daphnis (cish, keyed,
+// /bin/cat, and kd/ holding alpha, alps and beta/). It runs SHELL on a pty (user/ci/typist.ci) and types at cish's
+// line editor (user/ci/cish/edit.ci): Ctrl+L; Up and Down; Ctrl+A, Ctrl+E, Ctrl+B, Ctrl+F and the arrows; Backspace
+// and Delete; Ctrl+W, Ctrl+U, Ctrl+K and Ctrl+Left; Tab on a directory, a prefix two names share, a second Tab (the
+// list), a command; Ctrl+C at PS1 and at PS2, asking $? after; a line longer than a row; Ctrl+D on an empty line.
+// It waits for each command's output, or for the editor's own drawing where that is the step, and prints one line
+// a step, so cish under Daphnis and on Linux print the same lines. Before it types at a new line it waits, without a
+// line, for the prompt: the editor draws it once the terminal is raw, so no key is typed ahead to the pty's own
+// discipline (which would echo it, and take Ctrl+C as SIGINT). With LOG, tools/check-cish.py draws the bytes in
+// the terminal twin of tools/check-tiler.py and compares the last screen.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.ptyctl;
+import user.ci.typist;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+void main(in U8[_] a) {
+    typist.start(b"keyed", a);
+    typist.wait_for(b"start", b"@> ");
+    // 1. Ctrl+L: the screen cleared, the prompt and the line at its top
+    typist.keys(b"echo c''lear\x0c");
+    typist.wait_for(b"Ctrl+L", b"\x1b[2J\x1b[H\r@> echo c''lear\x1b[J");
+    typist.keys(b"\r");
+    typist.wait_for(b"Enter", b"\nclear\r\n");
+    typist.until(b"prompt", b"@> ");
+    // 2. the history: Up gives the last line back, Down past Up the newer one
+    typist.keys(b"echo h''ist\r");
+    typist.wait_for(b"echo", b"\nhist\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"\x1b[A");
+    typist.wait_for(b"Up", b"\r@> echo h''ist\x1b[J");
+    typist.keys(b"2\r");
+    typist.wait_for(b"Up, then typing", b"\nhist2\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"\x1b[A\x1b[A\x1b[B\r");
+    typist.wait_for(b"Up Up Down", b"\nhist2\r\n");
+    typist.until(b"prompt", b"@> ");
+    // 3. moving and deleting
+    typist.keys(b"cho e''dit\x01e\r");
+    typist.wait_for(b"Ctrl+A", b"\nedit\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"echo fb\x02\x02\x06-\x05!\r");
+    typist.wait_for(b"Ctrl+B Ctrl+F Ctrl+E", b"\nf-b!\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"echo ab\x1b[DX\x1b[C\x7fY\r");
+    typist.wait_for(b"Left Right Backspace", b"\naXY\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"echo zQR\x1b[D\x1b[D\x1b[3~\r");
+    typist.wait_for(b"Delete", b"\nzR\r\n");
+    typist.until(b"prompt", b"@> ");
+    // 4. kills
+    typist.keys(b"echo k''ill junk\x17\r");
+    typist.wait_for(b"Ctrl+W", b"\nkill\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"garbage\x15echo u''k\r");
+    typist.wait_for(b"Ctrl+U", b"\nuk\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"echo k''k tail\x1b[1;5D\x0b\r");
+    typist.wait_for(b"Ctrl+Left Ctrl+K", b"\nkk\r\n");
+    typist.until(b"prompt", b"@> ");
+    // 5. completion
+    typist.keys(b"cd kd\t");
+    typist.wait_for(b"Tab, a directory", b"\r@> cd kd/\x1b[J");
+    typist.keys(b"\r");
+    typist.wait_for(b"OSC 2", b"kd\x07@> ");
+    typist.keys(b"echo al\t");
+    typist.wait_for(b"Tab, a shared prefix", b"\r@> echo alp\x1b[J");
+    typist.keys(b"\t\t");
+    typist.wait_for(b"Tab Tab, the list", b"\nalpha           alps\r");
+    typist.keys(b"h\t\r");
+    typist.wait_for(b"Tab, a file", b"\nalpha\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"ec\t");
+    typist.wait_for(b"Tab, a command", b"\r@> echo \x1b[J");
+    typist.keys(b"c''md\r");
+    typist.wait_for(b"the command", b"\ncmd\r\n");
+    typist.until(b"prompt", b"@> ");
+    // 6. Ctrl+C at PS1 and at PS2: the text dropped, $? 130
+    typist.keys(b"echo n''ever\x03");
+    typist.wait_for(b"Ctrl+C", b"^C\r");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"echo s=$?\r");
+    typist.wait_for(b"status", b"\ns=130\r\n");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"if true\r");
+    typist.wait_for(b"PS2", b"\n> ");
+    typist.keys(b"\x03");
+    typist.wait_for(b"Ctrl+C at PS2", b"^C\r");
+    typist.until(b"prompt", b"@> ");
+    typist.keys(b"echo p=$?\r");
+    typist.wait_for(b"status", b"\np=130\r\n");
+    typist.until(b"prompt", b"@> ");
+    // 7. a line longer than a row, edited on its first row
+    typist.keys(b"echo wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww\x01\x1b[1;5C v\r");
+    typist.wait_for(b"a long line", b"\nv wwwwwwww");
+    // 8. Ctrl+D on an empty line ends the shell
+    typist.wait_for(b"prompt", b"@> ");
+    typist.keys(b"\x04");
+    typist.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

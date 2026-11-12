@@ -1,0 +1,99 @@
+// src/grants.ci: the arithmetic of the grant word (GR-1 A, AC-1a) and of taking a grant back (GV-1a,
+// docs/specs/2026-11-11-gv-revoke.md section 2). Pure: src/fs.ci keeps each process's word and ceiling and calls
+// these; the hosted tests prove the properties (tests/gv/grants_test.ci).
+//
+// A process holds a word of grants and a ceiling. It may take for itself any grant within its ceiling (grant, 1000);
+// one past it needs the desk's yes (grant_ask, 1004), which adds the bit to the word and not to the ceiling. Ring 0
+// (KERN) holds every grant and is neither given nor taken here. When ring 0 ends, the word keeps nothing beyond the
+// ceiling (GV-1c): what a process took while it held ring 0 does not outlast it.
+
+export const U64 DISK = 1;
+export const U64 NET = 2;
+export const U64 AUDIO = 4;
+export const U64 KERN = 8;
+export const U64 ALL = 7;                  // disk, net and audio: what a ceiling can hold, and what revoke can take
+
+// AC-1a: the bits of want a process with word `held_word` and ceiling `ceiling` cannot take for itself: neither held
+// nor within the ceiling. 0 in ring 0. A bit here needs the desk's yes.
+export U64 beyond(U64 held_word, U64 ceiling, U64 want) {
+    if ((held_word & KERN) != 0) {
+        return 0;
+    }
+    return want & ~KERN & ~held_word & ~ceiling;
+}
+
+// GV-1a: a word revoke takes: disk, net or audio bits only. Ring 0 and any unknown bit are refused.
+export Bool revocable(U64 word) {
+    return (word & ~ALL) == 0;
+}
+
+// The process's word holds at least one of word's bits.
+export Bool holds(U64 held_word, U64 word) {
+    return (held_word & word) != 0;
+}
+
+// GV-1a: the word and the ceiling after word is revoked. The bits leave both, so they are no longer held and no
+// longer within the ceiling: beyond() names them again, and the only way back is the desk's yes.
+export U64 word_after(U64 held_word, U64 word) {
+    return held_word & ~word;
+}
+
+export U64 ceiling_after(U64 ceiling, U64 word) {
+    return ceiling & ~word;
+}
+
+// GV-1c (GV-R2, section 2a): the word of a process whose ring 0 ends. Ring 0 goes, and with it every grant bit
+// beyond the ceiling: in ring 0 beyond() is 0 for every bit, so the word may hold bits no prompt gave. A bit the
+// desk said yes to before ring 0 is beyond the ceiling as well and goes too; the way back is the prompt.
+export U64 after_ring0(U64 held_word, U64 ceiling) {
+    return held_word & ceiling & ALL;
+}
+
+// grant (1000), `want` asked by a process with word `held_word` and ceiling `ceiling`: the answer, and the word
+// afterwards. In order:
+//   an unknown bit: -EINVAL, nothing changes;
+//   ring 0 asked by a process that does not hold it: -EPERM, nothing changes (a process may keep or drop ring 0,
+//     never take it);
+//   ring 0 held and not asked: ring 0 ends with this call, whatever it answers (after_ring0), and the rest is
+//     judged as for any process outside ring 0 (GV-1c);
+//   a bit beyond the ceiling and not held: -EACCES, and the word is not `want`;
+//   else 0, and the word is `want`.
+// So 0 always means the word is exactly `want`, and a call that leaves ring 0 out always ends ring 0.
+export const I64 SET_EINVAL = 22;
+export const I64 SET_EPERM = 1;
+export const I64 SET_EACCES = 13;
+
+// The word the rest of a valid grant call is judged against: the word as it is, or the word after ring 0's end when
+// the call leaves ring 0 out.
+U64 set_base(U64 held_word, U64 ceiling, U64 want) {
+    if ((held_word & KERN) != 0 && (want & KERN) == 0) {
+        return after_ring0(held_word, ceiling);
+    }
+    return held_word;
+}
+
+export I64 set_answer(U64 held_word, U64 ceiling, U64 want) {
+    if ((want & ~(ALL | KERN)) != 0) {
+        return 0 - SET_EINVAL;
+    }
+    if ((want & KERN) != 0 && (held_word & KERN) == 0) {
+        return 0 - SET_EPERM;
+    }
+    if (beyond(set_base(held_word, ceiling, want), ceiling, want) != 0) {
+        return 0 - SET_EACCES;
+    }
+    return 0;
+}
+
+export U64 set_word(U64 held_word, U64 ceiling, U64 want) {
+    I64 r = set_answer(held_word, ceiling, want);
+    if (r == 0) {
+        return want;
+    }
+    if (r == 0 - SET_EACCES) {
+        return set_base(held_word, ceiling, want);
+    }
+    return held_word;
+}
+
+// SPDX-License-Identifier: Apache-2.0

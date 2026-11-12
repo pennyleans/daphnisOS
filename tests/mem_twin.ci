@@ -1,0 +1,21 @@
+// tests/mem_twin.ci: the hosted twin of the allocator sequence of the mem flavor. It runs
+// src/allocdemo.ci, the code the kernel runs, on the hosted runtime and compares the six state
+// hashes with the 384 hex digits given as its one program argument (check.sh passes the hash
+// lines of the kernel's transcript). Any difference is a failed assertion.
+
+import src.allocdemo;
+import src.text;
+
+void main(in U8[_] args) {
+    I64[20] f;
+    U8[192] h;
+    U8[384] hex;
+    allocdemo.run(f, h);
+    text.hex_bytes(h, 192, hex);
+    assert(len(args) == 385);
+    for i in 0..384 {
+        assert(args[i] == hex[i]);
+    }
+    "match\n";
+}
+// SPDX-License-Identifier: Apache-2.0

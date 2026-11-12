@@ -1,0 +1,53 @@
+// Bounded account-store reads and selection of the primary or previous copy.
+import user.ci.acct;
+import user.ci.shctl;
+
+export I64 read(in U8[_] fp, inout U8[_] buf) {
+    I64 fd = shctl.sh_open(fp, 0, 0);
+    if (fd < 0) { return fd; }
+    I64 n = 0;
+    U8[512] b;
+    I64 got = shctl.fd_read(fd, b);
+    while (got > 0 && got <= len(buf) - n && n + got <= 4096) {
+        for k in 0..got { buf[n + k] = b[k]; }
+        n = n + got;
+        got = shctl.fd_read(fd, b);
+    }
+    I64 c = shctl.fd_close(fd);
+    if (got < 0) { return got; }
+    if (got > 0) { return -27; } // EFBIG: the complete file must fit.
+    return n;
+}
+
+// We accept a complete account set only when a parent can administer it.
+export I64 valid(in U8[_] buf, I64 n) {
+    acct.clear();
+    if (n < 0) { return -1; }
+    I64 p = acct.parse(buf, n);
+    if (p > 0 && acct.parents() > 0) { return p; }
+    acct.clear();
+    return -1;
+}
+
+Bool primary_whole = false;
+
+// Whether the last load took the file in place. False when it took the previous copy: the file in place is then
+// absent or does not read, and a writer must not move it over the copy (user/ci/acctput.ci).
+export Bool from_primary() { return primary_whole; }
+
+// Only two absent files mean first boot. An unreadable or invalid pair requires recovery.
+export I64 load(inout U8[_] buf) {
+    primary_whole = false;
+    I64 n = read(b"/home/.daphnis/accounts", buf);
+    I64 p = valid(buf, n);
+    if (p > 0) {
+        primary_whole = true;
+        return p;
+    }
+    I64 n2 = read(b"/home/.daphnis/accounts.prev", buf);
+    I64 p2 = valid(buf, n2);
+    if (p2 > 0) { return p2; }
+    if (n == -2 && n2 == -2) { return 0; }
+    return -1;
+}
+// SPDX-License-Identifier: Apache-2.0

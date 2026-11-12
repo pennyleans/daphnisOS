@@ -1,0 +1,65 @@
+import user.ci.http;
+
+void feed(in U8[_] bytes) {
+    U8[1] body;
+    for i in 0..len(bytes) { _ = http.take(bytes[i..i + 1], body); }
+}
+
+Bool same(in U8[_] a, in U8[_] b) {
+    if (len(a) != len(b)) { return false; }
+    for i in 0..len(a) { if (a[i] != b[i]) { return false; } }
+    return true;
+}
+
+test "location survives every header byte boundary" {
+    http.start();
+    feed(b"HTTP/1.1 302 Found\r\nlOcAtIoN: \t../next?x=1#f \t\r\nContent-Length: 0\r\n\r\n");
+    U8[100] to;
+    I64 n = http.location(to);
+    assert(n == 13);
+    assert(same(to[0..n], b"../next?x=1#f"));
+    assert(http.status() == 302 && http.done());
+}
+
+test "missing and empty location are distinct" {
+    U8[8] to;
+    http.start();
+    feed(b"HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n");
+    assert(http.location(to) == -1);
+    http.start();
+    feed(b"HTTP/1.1 302 Found\r\nLocation: \t\r\nContent-Length: 0\r\n\r\n");
+    assert(http.location(to) == 0);
+}
+
+test "duplicate location stays invalid after another duplicate" {
+    http.start();
+    feed(b"HTTP/1.1 302 Found\r\nLocation: /a\r\nLocation: /b\r\nLocation: /c\r\n\r\n");
+    U8[8] to;
+    assert(http.location(to) == -2);
+}
+
+test "small output refuses rather than truncating" {
+    http.start();
+    feed(b"HTTP/1.1 302 Found\r\nLocation: /longer\r\n\r\n");
+    U8[3] to;
+    assert(http.location(to) == -2);
+}
+
+test "overlong field refuses rather than truncating" {
+    http.start();
+    feed(b"HTTP/1.1 302 Found\r\nLocation: ");
+    for i in 0..4097 { feed(b"a"); }
+    feed(b"\r\n\r\n");
+    U8[4096] to;
+    assert(http.location(to) == -2);
+}
+
+test "a new response clears the previous location" {
+    http.start();
+    feed(b"HTTP/1.1 302 Found\r\nLocation: /before\r\n\r\n");
+    http.start();
+    feed(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    U8[20] to;
+    assert(http.location(to) == -1 && http.done());
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,141 @@
+import state;
+import keys;
+import cur;
+import edit;
+import search;
+import wrap;
+import buf;
+
+void vertical(inout I64[_] r, inout U8[_] t, I64 rows, Bool shift) {
+    if (wrap.on(r[state.R_WRAP])) {
+        I64 gs = r[state.R_GAP_START];
+        I64 ge = r[state.R_GAP_END];
+        if (r[state.R_GOAL] < 0) {
+            r[state.R_GOAL] = wrap.goal_col_gap(t, gs, ge, r[state.R_HEAD], r[state.R_COLS]);
+        }
+        cur.go(r, wrap.vertical_gap(t, gs, ge, r[state.R_HEAD], r[state.R_GOAL], r[state.R_COLS], rows), shift);
+    } else {
+        cur.vertical(r, t, rows, shift);
+    }
+}
+
+export void dispatch(inout I64[_] r, inout U8[_] t, inout I64[_] u, inout U8[_] ub,
+                     inout U8[_] clip, inout U8[_] f, I64 k, I64 rows) {
+    r[state.R_MSG] = state.MSG_NONE;
+    if (k != keys.M_CTRL + 'q') {
+        r[state.R_QUIT_ARMED] = 0;
+    }
+    if (r[state.R_MODE] == state.MODE_REPLACE_WITH || r[state.R_MODE] == state.MODE_REPLACE_ASK) {
+        search.replace_key(r, t, u, ub, f, k);
+        return;
+    }
+    if (r[state.R_MODE] != state.MODE_EDIT) {
+        search.key(r, t, f, k);
+        return;
+    }
+    Bool shift = (k & keys.M_SHIFT) != 0;
+    I64 base = k & ~keys.M_SHIFT;
+    I64 page = max(rows - 3, 1);
+    if (r[state.R_DESK] == 1) {
+        page = max(rows - 2, 1);
+    }
+
+    if (k >= 32 && k < keys.K_UP) {
+        U8[4] s;
+        I64 w = keys.encode(k, s);
+        edit.type_text(r, t, u, ub, s[0..w]);
+        return;
+    }
+
+    if (base != keys.K_BACKSPACE) {
+        edit.end_run(r);
+    }
+    switch (base) {
+        case keys.K_LEFT: cur.left(r, t, shift);
+        case keys.K_RIGHT: cur.right(r, t, shift);
+        case keys.K_UP: vertical(r, t, -1, shift);
+        case keys.K_DOWN: vertical(r, t, 1, shift);
+        case keys.K_HOME: cur.home(r, t, shift);
+        case keys.K_END: cur.end(r, t, shift);
+        case keys.K_PGUP: vertical(r, t, -page, shift);
+        case keys.K_PGDN: vertical(r, t, page, shift);
+        case keys.K_LEFT + keys.M_CTRL: cur.word_left(r, t, shift);
+        case keys.K_RIGHT + keys.M_CTRL: cur.word_right(r, t, shift);
+        case keys.K_HOME + keys.M_CTRL: cur.doc_start(r, shift);
+        case keys.K_END + keys.M_CTRL: cur.doc_end(r, t, shift);
+        case keys.K_ENTER: edit.enter(r, t, u, ub);
+        case keys.K_TAB: edit.tab(r, t, u, ub);
+        case keys.K_BACKSPACE: edit.backspace(r, t, u, ub);
+        case keys.K_DELETE: edit.delete_forward(r, t, u, ub);
+        case keys.K_F3: search.again(r, t, f, shift);
+        case keys.M_CTRL + 'a': edit.select_all(r, t);
+        case keys.M_CTRL + 'c': {
+            edit.copy_sel(r, t, clip);
+            r[state.R_MSG] = state.MSG_COPIED;
+        }
+        case keys.M_CTRL + 'x': edit.cut(r, t, u, ub, clip);
+        case keys.M_CTRL + 'v': edit.paste(r, t, u, ub, clip);
+        case keys.M_CTRL + 'z': {
+            if (shift) {
+                edit.redo_cmd(r, t, u, ub);
+            } else {
+                edit.undo_cmd(r, t, u, ub);
+            }
+        }
+        case keys.M_CTRL + 'y': edit.redo_cmd(r, t, u, ub);
+        case keys.M_CTRL + 's': {
+            if (r[state.R_UNTITLED] == 1) {
+                search.open_save_as(r);
+            } else {
+                r[state.R_REQ] = r[state.R_REQ] | state.REQ_SAVE;
+            }
+        }
+        case keys.M_CTRL + 'q': edit.quit(r);
+        case keys.M_CTRL + 'f': search.open_find(r);
+        case keys.M_CTRL + 'g': search.open_line(r);
+        case keys.M_CTRL + 'r': search.open_replace(r);
+        case keys.M_CTRL + 'w': {
+            r[state.R_WRAP] = wrap.toggle(r[state.R_WRAP]);
+            r[state.R_GOAL] = -1;
+            r[state.R_LEFT] = 0;
+            r[state.R_MSG] = state.MSG_WRAP_OFF;
+            if (wrap.on(r[state.R_WRAP])) {
+                r[state.R_MSG] = state.MSG_WRAP_ON;
+            }
+        }
+        case keys.K_ESC: {
+            cur.go(r, r[state.R_HEAD], false);
+        }
+        default: r[state.R_REQ] = r[state.R_REQ] | state.REQ_BELL;
+    }
+}
+
+test "VIEW-2: wrap's widest row is the grid's" {
+    assert(wrap.WRAP_MAX == state.MAX_COLS);
+}
+
+test "VIEW-2: moving by rows reads around the gap and leaves it in place" {
+    U8[13] s = b"aaa bbb ccc\nd";
+    for g in 0..len(s) + 1 {
+        I64[64] r;
+        U8[16] t;
+        buf.reset(r, t);
+        assert(buf.insert(r, t, 0, s));
+        buf.move_gap(r, t, g);
+        r[state.R_WRAP] = 1;
+        r[state.R_COLS] = 6;
+        r[state.R_GOAL] = -1;
+        cur.go(r, 2, false);
+        vertical(r, t, 1, false);
+        assert(r[state.R_HEAD] == 6);
+        vertical(r, t, 1, false);
+        assert(r[state.R_HEAD] == 10);
+        vertical(r, t, 1, false);
+        assert(r[state.R_HEAD] == 13);
+        vertical(r, t, -2, false);
+        assert(r[state.R_HEAD] == 6);
+        vertical(r, t, -5, false);
+        assert(r[state.R_HEAD] == 0);
+        assert(r[state.R_GAP_START] == g && r[state.R_GAP_END] == g + 3);
+    }
+}

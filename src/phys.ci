@@ -1,0 +1,13 @@
+// src/phys.ci: the view shim, as cint sees it. There are no pointers: physical memory is
+// reached by copying a range into an `out` view or from an `in` view. rt/phys.c checks the
+// range against the windows it allows (docs/memory.md) and a refusal is a canonical
+// host.error.<name> fault record with the status as its operand.
+
+export extern unrestricted void phys_read8(U64 base, out U8[_] dst);
+export extern unrestricted void phys_write8(U64 base, in U8[_] src);
+export extern unrestricted void phys_read64(U64 base, out U64[_] dst);
+export extern unrestricted void phys_write64(U64 base, in U64[_] src);
+
+// The physical address of the Multiboot information structure that the loader passed.
+export extern observe U64 mb_info();
+// SPDX-License-Identifier: Apache-2.0

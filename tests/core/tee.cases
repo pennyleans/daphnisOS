@@ -1,0 +1,18 @@
+# tests/core/tee.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree. The tree is
+# compared after each case (CT-2).
+ | text.txt | -
+t1 | text.txt | -
+t1 t2 | long.txt | -
+text.txt | nonl.txt | -
+-a text.txt | nonl.txt | -
+-a t1 | nonl.txt | -
+t1 | empty | -
+t1 | bin.dat | -
+box | text.txt | -
+nodir/x t1 | text.txt | -
+-i t1 | text.txt | -
+-ai t1 text.txt | nonl.txt | -
+-- t1 | text.txt | -
+- | text.txt | D-21
+-x t1 | text.txt | D-1

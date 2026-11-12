@@ -1,0 +1,24 @@
+{
+  "id": "undo-backspace-run",
+  "rules": [
+    "UNDO-2"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    3,
+    3
+  ],
+  "chunks": [
+    "7f",
+    "7f",
+    "7f",
+    "1a"
+  ],
+  "expect": {
+    "text": "abc"
+  }
+}

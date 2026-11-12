@@ -1,0 +1,498 @@
+// src/acpi.ci: HW-2 (docs/specs/2026-11-06-hw-hardware.md section 5), the firmware's ACPI tables, read only. The RSDP
+// comes from the loader's tag (Multiboot 2: 15, the ACPI 2 copy, else 14), else from a scan of 0xE0000 to 0xFFFFF
+// under BIOS. Every table's checksum is checked over its length before a field is taken. The
+// XSDT (or the RSDT) gives the FADT, MADT, MCFG and HPET. From the FADT: the 8042 bit of IAPC_BOOT_ARCH, the PM1a and
+// PM1b control blocks, SCI_INT, the reset register, SMI_CMD and ACPI_ENABLE, and the DSDT, whose \_S5 package a byte
+// scan finds (src/acpitab.ci; no AML interpreter). From the MADT: the local APIC entries, the IOAPIC and PCAT_COMPAT;
+// from the MCFG, the ECAM base of segment 0; from the HPET, its base. rt/phys.c lets these reads through only inside
+// a reserved, ACPI or NVS entry of the loader's map (rt/boot.c rt_boot_firmware_range).
+//
+// The tables are read whatever the line says; they are printed (one machine block) only with daphnis.acpi=1, so no
+// golden moves. With daphnis.poweroff=1, rt_exit ends the machine through S5 (rt/start.c) with what init hands it.
+
+import src.serial;
+import src.text;
+import src.phys;
+import src.bootarg;
+import src.bootinfo;
+import src.pci;
+import src.acpitab;
+
+export const I64 TABLE_MAX = 1048576;   // a table longer than 1 MiB is refused
+
+extern unrestricted void poweroff_set(U64 pm1a, U64 pm1b, U64 typa, U64 typb);
+extern unrestricted void poweroff_acpi(U64 smi_cmd, U64 enable);
+extern unrestricted void poweroff_events(U64 pm1a_evt, U64 pm1b_evt, U64 pm1_evt_len);
+extern unrestricted void poweroff_gpe(U64 gpe0, U64 gpe0_len, U64 gpe1, U64 gpe1_len);
+extern unrestricted void ps2_absent();
+
+Bool found = false;
+U64 rsdp_at = 0;
+I64 revision = 0;
+U64 root = 0;                  // the XSDT, or the RSDT when the RSDP has none
+Bool wide = false;             // the root's entries are 8 bytes (XSDT)
+I64 tables = 0;
+U64 fadt = 0;
+U64 madt = 0;
+U64 mcfg = 0;
+U64 hpet = 0;
+U64 dsdt = 0;
+export U64 pm1a = 0;
+export U64 pm1b = 0;
+export I64 sci = -1;
+export Bool has_8042 = true;
+export I64 boot_arch = -1;
+export U64 reset_addr = 0;
+export I64 reset_space = -1;
+export I64 reset_value = -1;
+export I64 cpus = 0;
+export U64 ioapic = 0;
+export Bool pcat = false;
+export U64 ecam = 0;
+export I64 ecam_first = 0;
+export I64 ecam_last = -1;
+export U64 hpet_base = 0;
+export I64 s5a = -1;
+export I64 s5b = -1;
+export U64 smi = 0;                // SMI_CMD and ACPI_ENABLE: rt_exit's handshake to ACPI mode before S5
+export U64 smi_enable = 0;
+export U64 pm1a_evt = 0;           // PM1a_EVT_BLK, PM1b_EVT_BLK and their length; GPE0_BLK and GPE1_BLK and theirs:
+export U64 pm1b_evt = 0;           // rt_exit clears the fixed status and the GPEs before S5
+export U64 pm1_evt_len = 0;
+export U64 gpe0 = 0;
+export U64 gpe0_len = 0;
+export U64 gpe1 = 0;
+export U64 gpe1_len = 0;
+
+// True when the n bytes of b from at sum to 0 modulo 256.
+export Bool sums_zero[m](in U8[m] b, I64 at, I64 n) {
+    U64 s = 0;
+    for k in 0..n {
+        s += b[at + k] as U64;
+    }
+    return s % 256 == 0;
+}
+
+// A table's checksum over its whole length, read in pieces: true when it sums to 0.
+Bool table_sum(U64 pa, I64 n) {
+    U64 s = 0;
+    I64 at = 0;
+    while (at < n) {
+        I64 c = n - at;
+        if (c > 4096) { c = 4096; }
+        phys.phys_read8(pa + at as U64, piece[0..c]);
+        for k in 0..c {
+            s += piece[k] as U64;
+        }
+        at += c;
+    }
+    return s % 256 == 0;
+}
+
+// The length of the table at pa when its header reads, its length is 36 to TABLE_MAX and its checksum holds; else 0.
+// sig gets its 4-byte signature.
+I64 table_ok(U64 pa, inout U8[4] sig) {
+    if (pa == 0) {
+        return 0;
+    }
+    U8[36] h;
+    phys.phys_read8(pa, h);
+    I64 n = acpitab.le(h, 4, 4) as I64;
+    if (n < 36 || n > TABLE_MAX || !table_sum(pa, n)) {
+        return 0;
+    }
+    for k in 0..4 { sig[k] = h[k]; }
+    return n;
+}
+
+// The RSDP at pa (20 bytes, 36 from revision 2): "RSD PTR ", the first 20 bytes summing to 0, and for revision 2
+// the extended checksum over its length.
+Bool rsdp_ok(U64 pa) {
+    U8[36] r;
+    phys.phys_read8(pa, r[0..20]);
+    if (!is_rsdp(r)) {
+        return false;
+    }
+    if (r[15] >= 2) {
+        phys.phys_read8(pa, r);
+        I64 n = acpitab.le(r, 20, 4) as I64;
+        if (n < 36 || n > 36 || !sums_zero(r, 0, 36)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The first 20 bytes of r are an RSDP: the signature and its checksum.
+export Bool is_rsdp[n](in U8[n] r) {
+    U8[8] want = [82, 83, 68, 32, 80, 84, 82, 32];   // "RSD PTR "
+    for k in 0..8 {
+        if (r[k] != want[k]) { return false; }
+    }
+    return sums_zero(r, 0, 20);
+}
+
+// The RSDP in the loader's tag (15 first, then 14): the RSDP bytes are the tag's body, a copy at no physical
+// address, so its root pointers are taken from it here. True when one was there and checks.
+U8[8192] block;                // the loader's block (a local over 4 KiB needs rt's scratch, which the kernel has not)
+U8[4127] dpiece;               // a 4 KiB piece of the DSDT and the 31 bytes after it (the longest \_S5 a scan takes)
+U8[4096] piece;                // a table's bytes, read in pieces (sums, the BIOS scan, the MADT and MCFG)
+
+Bool from_tag() {
+    I64 protocol = bootinfo.boot_info(block);
+    if (protocol != 2) {
+        return false;
+    }
+    I64 total = acpitab.le(block, 0, 4) as I64;
+    if (total > 8192) { total = 8192; }
+    for want in 0..2 {
+        I64 tag = 15 - want;
+        I64 at = 8;
+        while (at + 8 <= total) {
+            I64 kind = acpitab.le(block, at, 4) as I64;
+            I64 sz = acpitab.le(block, at + 4, 4) as I64;
+            if (kind == 0 || sz < 8 || at + sz > total) {
+                at = total;
+            } else {
+                if (kind == tag && sz >= 8 + 20) {
+                    U8[36] r;
+                    I64 n = sz - 8;
+                    if (n > 36) { n = 36; }
+                    for k in 0..n { r[k] = block[at + 8 + k]; }
+                    if (is_rsdp(r)) {
+                        take_rsdp(r, n, 0);
+                        return true;
+                    }
+                }
+                at = (at + sz + 7) & ~7;
+            }
+        }
+    }
+    return false;
+}
+
+void take_rsdp(in U8[36] r, I64 n, U64 pa) {
+    found = true;
+    rsdp_at = pa;
+    revision = r[15] as I64;
+    root = acpitab.le(r, 16, 4);
+    wide = false;
+    if (revision >= 2 && n >= 32 && acpitab.le(r, 24, 8) != 0) {
+        root = acpitab.le(r, 24, 8);
+        wide = true;
+    }
+}
+
+// Under BIOS: 0xE0000 to 0xFFFFF on 16-byte boundaries. The EBDA's segment word is at 0x40E, in the null page the
+// kernel leaves unmapped, so the EBDA is not searched; SeaBIOS and the boards' CSMs put the RSDP in the BIOS area.
+Bool from_scan() {
+    return scan(0xE0000, 0x20000);
+}
+
+Bool scan(U64 lo, I64 n) {
+    I64 at = 0;
+    while (at < n) {
+        I64 c = n - at;
+        if (c > 4096) { c = 4096; }
+        phys.phys_read8(lo + at as U64, piece[0..c]);
+        I64 k = 0;
+        while (k + 20 <= c) {
+            if (piece[k] == 82 && piece[k + 1] == 83 && piece[k + 2] == 68 && rsdp_ok(lo + (at + k) as U64)) {
+                U8[36] r;
+                phys.phys_read8(lo + (at + k) as U64, r[0..20]);
+                I64 m = 20;
+                if (r[15] >= 2) {
+                    phys.phys_read8(lo + (at + k) as U64, r);
+                    m = 36;
+                }
+                take_rsdp(r, m, lo + (at + k) as U64);
+                return true;
+            }
+            k += 16;
+        }
+        at += 4096;
+    }
+    return false;
+}
+
+Bool sig_is(in U8[4] s, in U8[4] want) {
+    for k in 0..4 {
+        if (s[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+// The root's entries: each table's signature kept for the four this file reads.
+void walk_root() {
+    U8[4] sig;
+    I64 n = table_ok(root, sig);
+    if (n == 0) {
+        found = false;
+        return;
+    }
+    I64 w = 4;
+    if (wide) { w = 8; }
+    I64 entries = (n - 36) / w;
+    for i in 0..entries {
+        U8[8] e;
+        phys.phys_read8(root + (36 + w * i) as U64, e[0..w]);
+        U64 pa = acpitab.le(e, 0, w);
+        U8[4] s;
+        if (table_ok(pa, s) > 0) {
+            tables += 1;
+            if (sig_is(s, "FACP")) { fadt = pa; }
+            if (sig_is(s, "APIC")) { madt = pa; }
+            if (sig_is(s, "MCFG")) { mcfg = pa; }
+            if (sig_is(s, "HPET")) { hpet = pa; }
+        }
+    }
+}
+
+// The FADT's fields (ACPI 6.5 table 5.9 offsets); the X_ forms when the table is long enough and they are set.
+export void fadt_fields[m](in U8[m] f, I64 n) {
+    sci = acpitab.le(f, 46, 2) as I64;
+    pm1a = acpitab.le(f, 64, 4);
+    pm1b = acpitab.le(f, 68, 4);
+    dsdt = acpitab.le(f, 40, 4);
+    smi = acpitab.smi_cmd(f, n);
+    smi_enable = acpitab.acpi_enable(f, n);
+    pm1a_evt = acpitab.io_block(f, n, 56, 148);
+    pm1b_evt = acpitab.io_block(f, n, 60, 160);
+    pm1_evt_len = acpitab.block_len(f, n, 88) as U64;
+    gpe0 = acpitab.io_block(f, n, 80, 220);
+    gpe0_len = acpitab.block_len(f, n, 92) as U64;
+    gpe1 = acpitab.io_block(f, n, 84, 232);
+    gpe1_len = acpitab.block_len(f, n, 93) as U64;
+    if (n >= 111 && f[8] >= 3) {         // IAPC_BOOT_ARCH is reserved before FADT revision 3 (ACPI 2.0): an 8042 then
+        boot_arch = acpitab.le(f, 109, 2) as I64;
+        has_8042 = (boot_arch & 2) != 0;
+    }
+    if (n >= 129) {
+        reset_space = f[116] as I64;
+        reset_addr = acpitab.le(f, 120, 8);
+        reset_value = f[128] as I64;
+    }
+    if (n >= 148 && acpitab.le(f, 140, 8) != 0) {
+        dsdt = acpitab.le(f, 140, 8);
+    }
+    if (n >= 184 && f[172] == 1 && acpitab.le(f, 176, 8) != 0) {
+        pm1a = acpitab.le(f, 176, 8);
+    }
+    if (n >= 196 && f[184] == 1 && acpitab.le(f, 188, 8) != 0) {
+        pm1b = acpitab.le(f, 188, 8);
+    }
+}
+
+// The MADT: processor local APIC entries (type 0, enabled), the first IOAPIC (type 1), PCAT_COMPAT.
+export void madt_fields[n](in U8[n] m, I64 lim) {
+    pcat = (acpitab.le(m, 40, 4) & 1) != 0;
+    I64 at = 44;
+    while (at + 2 <= lim) {
+        I64 kind = m[at] as I64;
+        I64 sz = m[at + 1] as I64;
+        if (sz < 2 || at + sz > lim) {
+            at = lim;
+        } else {
+            if (kind == 0 && sz >= 8 && (acpitab.le(m, at + 4, 4) & 1) != 0) { cpus += 1; }
+            if (kind == 9 && sz >= 16 && (acpitab.le(m, at + 8, 4) & 1) != 0) { cpus += 1; }
+            if (kind == 1 && sz >= 12 && ioapic == 0) { ioapic = acpitab.le(m, at + 4, 4); }
+            at += sz;
+        }
+    }
+}
+
+// The MCFG's first allocation with segment 0: the ECAM base and its bus range.
+export void mcfg_fields[n](in U8[n] m, I64 lim) {
+    I64 at = 44;
+    while (at + 16 <= lim) {
+        if (acpitab.le(m, at + 8, 2) == 0 && ecam == 0) {
+            ecam = acpitab.le(m, at, 8);
+            ecam_first = m[at + 10] as I64;
+            ecam_last = m[at + 11] as I64;
+        }
+        at += 16;
+    }
+}
+
+// The DSDT's bytes in pieces of 4 KiB, each with the 31 bytes after it, for \_S5 (src/acpitab.ci s5_find).
+void find_s5() {
+    U8[4] sig;
+    I64 n = table_ok(dsdt, sig);
+    if (n == 0) {
+        return;
+    }
+    I64 at = 36;
+    while (at < n) {
+        I64 c = n - at;
+        if (c > 4127) { c = 4127; }
+        phys.phys_read8(dsdt + at as U64, dpiece[0..c]);
+        I64 stop = c;
+        if (stop > 4096) { stop = 4096; }
+        I64[2] typ;
+        if (acpitab.s5_find(dpiece, stop, c, typ)) {
+            s5a = typ[0];
+            s5b = typ[1];
+            return;
+        }
+        at += 4096;
+    }
+}
+
+// Reads every table and hands the S5 values to rt; prints the machine block with daphnis.acpi=1.
+export void init() {
+    if (!from_tag() && !from_scan()) {
+        if (bootarg.has_word("daphnis.acpi=1")) {
+            serial.serial_write("daphnis: acpi none\n");
+        }
+        return;
+    }
+    walk_root();
+    if (!found) {
+        if (bootarg.has_word("daphnis.acpi=1")) {
+            serial.serial_write("daphnis: acpi root refused\n");
+        }
+        return;
+    }
+    U8[4] sig;
+    if (fadt != 0) {
+        U8[256] f;
+        I64 n = table_ok(fadt, sig);
+        if (n > 256) { n = 256; }
+        phys.phys_read8(fadt, f[0..n]);
+        fadt_fields(f, n);
+        find_s5();
+    }
+    if (madt != 0) {
+        I64 n = table_ok(madt, sig);
+        if (n > 4096) { n = 4096; }
+        phys.phys_read8(madt, piece[0..n]);
+        madt_fields(piece, n);
+    }
+    if (mcfg != 0) {
+        I64 n = table_ok(mcfg, sig);
+        if (n > 4096) { n = 4096; }
+        phys.phys_read8(mcfg, piece[0..n]);
+        mcfg_fields(piece, n);
+    }
+    if (hpet != 0) {
+        U8[56] h;
+        phys.phys_read8(hpet, h);
+        hpet_base = acpitab.le(h, 44, 8);
+    }
+    pci.use_ecam(ecam, ecam_first, ecam_last);
+    if (!has_8042) {
+        ps2_absent();                            // HW-3: rt/ps2.c leaves ports 0x60 and 0x64 alone
+    }   // configuration through ECAM from here on, where there is one
+    if (s5a >= 0 && pm1a != 0 && pm1a < 0x10000 && pm1b < 0x10000) {
+        poweroff_set(pm1a, pm1b, s5a as U64, s5b as U64);
+        poweroff_acpi(smi, smi_enable);
+        poweroff_events(pm1a_evt, pm1b_evt, pm1_evt_len);
+        poweroff_gpe(gpe0, gpe0_len, gpe1, gpe1_len);
+    }
+    if (bootarg.has_word("daphnis.acpi=1")) {
+        report();
+    }
+}
+
+void put_dec(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+void put_hex(U64 v) {
+    serial.serial_write("0x");
+    Bool any = false;
+    for i in 0..16 {
+        U8 nib = ((v >> (4 * (15 - i)) as U64) & 15) as U8;
+        if (nib != 0 || any || i == 15) {
+            serial.serial_putc(text.hex_digit(nib));
+            any = true;
+        }
+    }
+}
+
+void report() {
+    serial.serial_write("daphnis: acpi rsdp revision ");
+    put_dec(revision);
+    if (wide) { serial.serial_write(" xsdt "); } else { serial.serial_write(" rsdt "); }
+    put_hex(root);
+    serial.serial_write(" tables ");
+    put_dec(tables);
+    serial.serial_write("\ndaphnis: acpi fadt sci ");
+    put_dec(sci);
+    serial.serial_write(" pm1a ");
+    put_hex(pm1a);
+    serial.serial_write(" pm1b ");
+    put_hex(pm1b);
+    serial.serial_write(" 8042 ");
+    if (has_8042) { serial.serial_write("yes"); } else { serial.serial_write("no"); }
+    serial.serial_write(" reset ");
+    put_hex(reset_addr);
+    serial.serial_write(" s5 ");
+    put_dec(s5a);
+    serial.serial_write(" ");
+    put_dec(s5b);
+    serial.serial_write(" smi ");
+    put_hex(smi);
+    serial.serial_write(" enable ");
+    put_hex(smi_enable);
+    serial.serial_write(" evt ");
+    put_hex(pm1a_evt);
+    serial.serial_write(" ");
+    put_hex(pm1b_evt);
+    serial.serial_write(" gpe ");
+    put_hex(gpe0);
+    serial.serial_write("/");
+    put_hex(gpe0_len);
+    serial.serial_write(" ");
+    put_hex(gpe1);
+    serial.serial_write("/");
+    put_hex(gpe1_len);
+    serial.serial_write("\ndaphnis: acpi madt cpus ");
+    put_dec(cpus);
+    serial.serial_write(" ioapic ");
+    put_hex(ioapic);
+    serial.serial_write(" pcat ");
+    if (pcat) { serial.serial_write("yes"); } else { serial.serial_write("no"); }
+    serial.serial_write("\ndaphnis: acpi mcfg ");
+    if (ecam == 0) {
+        serial.serial_write("none");
+    } else {
+        put_hex(ecam);
+        serial.serial_write(" buses ");
+        put_dec(ecam_first);
+        serial.serial_write(" to ");
+        put_dec(ecam_last);
+    }
+    serial.serial_write(" hpet ");
+    put_hex(hpet_base);
+    serial.serial_write("\n");
+    I64[64] devs;
+    U32[64] ids;
+    U32[64] classes;
+    I64 n = pci.list(devs, ids, classes);
+    for i in 0..n {
+        serial.serial_write("daphnis: pci ");
+        put_hex2(((devs[i] / 256) % 256) as U64);
+        serial.serial_write(":");
+        put_hex2((devs[i] % 32) as U64);
+        serial.serial_write(".");
+        put_dec((devs[i] / 32) % 8);
+        serial.serial_write(" ");
+        put_hex((ids[i] & 0xFFFF) as U64);
+        serial.serial_write(":");
+        put_hex((ids[i] >> 16) as U64);
+        serial.serial_write(" class ");
+        put_hex(classes[i] as U64);
+        serial.serial_write("\n");
+    }
+}
+
+void put_hex2(U64 v) {
+    serial.serial_putc(text.hex_digit(((v >> 4) & 15) as U8));
+    serial.serial_putc(text.hex_digit((v & 15) as U8));
+}
+// SPDX-License-Identifier: Apache-2.0

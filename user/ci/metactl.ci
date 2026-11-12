@@ -1,0 +1,20 @@
+// user/ci/metactl.ci: the rows of tier C-2 (user/ci/host.c, CI_ROWS_META with CI_ROWS_CORE; docs/specs/
+// 2026-11-07-bu2-meta.md section 6), one per call; each returns the call's value or -errno.
+//   co_chmod(path, mode): chmod of the 07777 bits, following a link
+//   co_umask(mask): umask; the old mask
+//   co_utimens(path, atime, mtime, follow): utimensat; each time in seconds, T_OMIT or T_NOW; follow 0 sets a
+//     link's own times
+//   co_link(from, to, follow): linkat; follow 1 links what a link at from names, 0 the link itself
+//   co_uname(buf): struct utsname into buf (at least UTS_BYTES): sysname, nodename, release, version, machine and
+//     domainname, UTS_FIELD bytes each, NUL padded
+export extern unrestricted I64 co_chmod(in U8[_] path, I64 mode);
+export extern unrestricted I64 co_umask(I64 mask);
+export extern unrestricted I64 co_utimens(in U8[_] path, I64 atime, I64 mtime, I64 follow);
+export extern unrestricted I64 co_link(in U8[_] from, in U8[_] to, I64 follow);
+export extern unrestricted I64 co_uname(out U8[_] buf);
+
+export const I64 T_OMIT = -1;
+export const I64 T_NOW = -2;
+export const I64 UTS_FIELD = 65;
+export const I64 UTS_BYTES = 390;
+// SPDX-License-Identifier: Apache-2.0

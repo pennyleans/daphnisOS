@@ -1,0 +1,34 @@
+{
+ "id": "desk-not-found-beside-the-prompt",
+ "rules": [
+  "RUN-7",
+  "FIND-2"
+ ],
+ "desk": true,
+ "text": "ab",
+ "size": [
+  4,
+  24
+ ],
+ "sel": [
+  0,
+  0
+ ],
+ "chunks": [
+  "06",
+  "7a"
+ ],
+ "expect": {
+  "text": "ab",
+  "sel": [
+   0,
+   0
+  ],
+  "screen": [
+   "ab",
+   "",
+   "",
+   "find: z  not found  1:1"
+  ]
+ }
+}

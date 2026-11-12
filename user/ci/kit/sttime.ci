@@ -1,0 +1,510 @@
+// user/ci/kit/sttime.ci: Settings' Date and Time page (RS-SET4 of stage RS; frame 36, approved by DN-58, l 2026-11-11
+// 17:15Z; its Time Zone control frame 47, design note 63, DN-61), a page module on kit/stpage.ci. The clock in mono 40
+// with the date beside it and Set at the right; then Time Zone (a menu button showing the city), 24-Hour Time (a
+// switch) and Week Starts On (Sunday | Monday).
+//
+// The Time Zone control opens a plate 4 px under the button, its right edge on the button's: 240 wide, radius 8,
+// SURF1, High shadow, 6 in and 6 apart; a 32 px MANTLE pill find field with the lens and the caret, "Search" in INK_DIM
+// while empty; under it 28 px pill rows 2 apart, the city in BODY at the left and today's offset ("UTC-05:00") in mono
+// 11 INK_DIM at the right; eight rows show, the rest scroll, a 4 px thumb in an 8 px gutter; fewer rows, a shorter
+// plate (frame 47's typed inset), none, the field alone. The mark is the FILL
+// pill (its city and offset in ON_FILL); the plate opens with the chosen city marked fourth from the top. Typing
+// narrows the list to the cities whose name begins with the letters, any case, and marks the top row; no match is an
+// empty list and nothing more (DN-46). Up and Down move the mark; Enter or a press takes it; Esc or a press outside
+// closes unchanged; Backspace to empty restores the whole list at the chosen city. The plate reaches 172 + 288 below
+// the content box's top, past a 480 px window's foot: the host draws the page's rows to plate_bottom(), and on a
+// DRAW repaints to the deeper of the old and the new plate_bottom(), since typing can shorten the plate.
+//
+// The cities and their offsets are user/ci/core/tz.ci's (RS-TZa); the clock reads tz.local(). The host tells the time
+// (set_now, seconds since 1970 UTC), the zone (a city index, -1 for UTC: no /home/.daphnis-zone), 24-hour or not and
+// the week's first day; the page returns SET (the clock: RS-CLK, through the frame 17 prompt), ZONE (arg the city;
+// the zone file only an elevated process writes, so the prompt for a person who is not a Parent), HOUR24 (arg 1 or
+// 0) and WEEK (arg 0 Sunday, 1 Monday) for the host to do. The page writes no file.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.pen;
+import user.ci.kit.shape;
+import user.ci.kit.shade;
+import user.ci.kit.blend;
+import user.ci.kit.stpage;
+import user.ci.kit.clocktext;
+import user.ci.core.tz;
+
+export const I64 SET = 16;             // stpage.ACT + 0
+export const I64 ZONE = 17;
+export const I64 HOUR24 = 18;
+export const I64 WEEK = 19;
+
+export const I64 F_NONE = 0;
+export const I64 F_SET = 1;
+export const I64 F_ZONE = 2;
+export const I64 F_H24 = 3;
+export const I64 F_WEEK = 4;
+
+export const I64 PLATE_W = 240;        // frame 47
+export const I64 PLATE_H = 288;        // 6, the field's 32, 6, eight rows (238), 6: the tallest plate
+export const I64 FIELD_H = 32;
+export const I64 TZ_ROW = 28;
+export const I64 TZ_PITCH = 30;
+export const I64 SHOWN = 8;
+export const I64 Q_MAX = 24;
+
+I64 now = 0;
+I64 zone = -1;
+Bool h24 = true;
+I64 week = 0;
+I64 fs = F_NONE;
+Bool kbd = false;
+I64 a1 = 0;
+Bool can_set = true;                   // Set can work: the host's clock_settime answers (PR 357)
+
+Bool open_ = false;                    // the Time Zone plate
+U8[24] q;
+I64 qn = 0;
+I64[512] hits;                         // the cities the letters narrow to, in name order
+I64 nh = 0;
+I64 mark = 0;                          // the list's row under the mark
+I64 first_ = 0;                        // the list's first row shown
+I64 hov = -1;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+// --- what the host tells ---
+
+export void set_now(I64 t) { now = t; }
+export void set_zone(I64 city) { zone = city; }
+export void set_24(Bool on) { h24 = on; }
+export void set_week(I64 first_day) { week = first_day; }
+
+// Whether Set can work (the kernel sets the clock); when not, its button is drawn at 40 percent and inert: Tab passes
+// it, a press on it does nothing (note 58, DN-46: no caption says why). The clock and the date still show.
+export void set_can_set(Bool on) {
+    can_set = on;
+    if (!can_set && fs == F_SET) { fs = F_NONE; }
+}
+export I64 arg() { return a1; }
+export I64 focused() { return fs; }
+export Bool picking() { return open_; }
+export I64 marked() { return mark; }
+export I64 first() { return first_; }
+
+export void open() {
+    fs = F_NONE;
+    kbd = false;
+    open_ = false;
+}
+
+// The keyboard moves in from the sidebar, at the first stop (Tab) or the last (Shift+Tab); whether a stop took it.
+export Bool enter() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(1);
+}
+
+export Bool enter_last() {
+    kbd = true;
+    fs = F_NONE;
+    return tab(-1);
+}
+
+// The stops in reading order: Set, Time Zone, 24-Hour Time, Week Starts On (F_SET to F_WEEK less one).
+Bool tab(I64 d) {
+    I64 can = 15;
+    if (!can_set) { can = 14; }
+    I64 t = stpage.tab_to(fs - 1, d, 4, can);
+    fs = t + 1;
+    return t >= 0;
+}
+
+I64 act(I64 a, I64 x) {
+    a1 = x;
+    return a;
+}
+
+// --- text (user/ci/kit/clocktext.ci, RS-TZb) ---
+
+// The clock's text for now in the zone into t: "01:59" on 24 hours, "1:59 AM" on 12; its length.
+export I64 clock_text(inout U8[_] t) { return clocktext.hm(t, 0, zone, now, h24); }
+
+// The date's text, "Monday, November 9, 2026", into t; its length.
+export I64 date_text(inout U8[_] t) { return clocktext.long_date(t, 0, zone, now, true); }
+
+// City c's offset at t0 as "UTC-05:00" into t; its length.
+export I64 offset_text(I64 c, I64 t0, inout U8[_] t) { return clocktext.utc(t, 0, c, t0); }
+
+// The zone's name for the button: the city, or UTC.
+I64 zone_text(inout U8[_] t) {
+    if (zone < 0) { return stpage.put(t, 0, b"UTC"); }
+    return min(tz.city(zone, t), len(t));
+}
+
+// --- the list ---
+
+// Rows the list holds: every city, or those the letters narrow to.
+export I64 rows() {
+    if (qn == 0) { return tz.cities(); }
+    return nh;
+}
+
+// The city of list row k.
+export I64 city_of(I64 k) {
+    if (qn == 0) { return k; }
+    return hits[k];
+}
+
+U8 fold(U8 c) {
+    if (c >= 'A' && c <= 'Z') { return c + 32; }
+    return c;
+}
+
+void narrow() {
+    nh = 0;
+    U8[48] t;
+    for i in 0..tz.cities() {
+        I64 n = tz.city(i, t);
+        if (n >= qn && nh < len(hits)) {
+            Bool same = true;
+            for k in 0..qn {
+                if (fold(t[k]) != fold(q[k])) { same = false; }
+            }
+            if (same) {
+                hits[nh] = i;
+                nh = nh + 1;
+            }
+        }
+    }
+}
+
+void reveal() {
+    if (mark < first_) { first_ = mark; }
+    if (mark >= first_ + SHOWN) { first_ = mark - SHOWN + 1; }
+    first_ = max(0, min(first_, rows() - SHOWN));
+}
+
+// The whole list, the chosen city marked fourth from the top.
+void at_chosen() {
+    qn = 0;
+    mark = max(0, zone);
+    first_ = max(0, min(mark - 3, rows() - SHOWN));
+    hov = -1;
+}
+
+// The plate opens: the find field ready, the list at the chosen city.
+export void pick() {
+    open_ = true;
+    at_chosen();
+}
+
+// A letter typed while the plate is open: the list narrows and its top row is marked.
+export I64 typed(U8 c) {
+    if (!open_ || qn >= Q_MAX || c < ' ' || c > '~') { return stpage.NONE; }
+    q[qn] = c;
+    qn = qn + 1;
+    narrow();
+    mark = 0;
+    first_ = 0;
+    return stpage.DRAW;
+}
+
+// The marked row taken: ZONE when it changes the zone; the plate closes.
+I64 take(I64 k) {
+    open_ = false;
+    if (k < 0 || k >= rows()) { return stpage.DRAW; }
+    I64 c = city_of(k);
+    if (c == zone) { return stpage.DRAW; }
+    return act(ZONE, c);
+}
+
+// --- geometry ---
+
+I64 clock_y(I64 y0) { return y0 + stpage.BODY; }
+I64 rows_y(I64 y0) { return y0 + stpage.BODY + stpage.ROW + stpage.GAP; }
+
+// Frame 48: the page's height from y0, the plate left out (it lies over what is below); a box less tall scrolls it
+// (kit/stbox.ci).
+export I64 tall() { return stpage.row_y(rows_y(0), 2) + stpage.ROW + stpage.FOOT; }
+
+// Frame 48: the keyboard's row, from the page's top (y0 = 0): its top and bottom, -1 while the keyboard is not in the
+// page. The host gives them to kit/stbox.ci reveal after each key, so the row stays whole under the head.
+// With the plate open, the Time Zone row it hangs from.
+export I64 focus_top() {
+    if (!kbd || fs == F_NONE) { return -1; }
+    if (fs == F_SET) { return clock_y(0); }
+    return stpage.row_y(rows_y(0), fs - F_ZONE);
+}
+
+export I64 focus_bottom() {
+    if (!kbd || fs == F_NONE) { return -1; }
+    return focus_top() + stpage.ROW;
+}
+
+I64 set_w() { return stpage.bw(b"Set", 3, faces.NAME); }
+I64 plate_x(I64 cr) { return cr - PLATE_W; }
+I64 plate_y(I64 y0) { return rows_y(y0) + 40; }
+I64 list_y(I64 y0) { return plate_y(y0) + 6 + FIELD_H + 6; }
+
+// The plate's height for the rows it shows: the field alone for none.
+export I64 plate_h() {
+    I64 r = min(rows(), SHOWN);
+    if (r == 0) { return 6 + FIELD_H + 6; }
+    return PLATE_H - TZ_PITCH * (SHOWN - r);
+}
+
+// The 1x row under the plate, to which the page draws while the plate is open; it may lie past yb.
+export I64 plate_bottom(I64 y0) { return plate_y(y0) + plate_h(); }
+
+// DN-51 frame 26: whether (px, py) of the page is on the picker's find field (the Text pointer).
+export Bool find_at(I64 y0, I64 cr, I64 px, I64 py) {
+    I64 fy = plate_y(y0) + 6;
+    return open_ && px >= plate_x(cr) + 6 && px < cr - 6 && py >= fy && py < fy + FIELD_H;
+}
+
+// --- drawing ---
+
+void plate_row(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 y) {
+    I64 px = plate_x(cr);
+    I64 py = plate_y(y0);
+    I64 ph = plate_h();
+    shade.shade_row(row, pen.x(cx - stpage.PAD), pen.x(cr + stpage.PAD), pen.row_y(), pen.x(px), pen.y(py),
+                    pen.x(px + PLATE_W), pen.y(py + ph), stpage.M_RAD, stpage.M_SHADOW, tokens.theme(), pen.zoom());
+    if (!stpage.on(y, py, ph)) { return; }
+    pen.round(row, px, py, px + PLATE_W, py + ph, stpage.M_RAD, tok(tokens.SURF1));
+    I64 fy = py + 6;                                           // the find field
+    if (stpage.on(y, fy, FIELD_H)) {
+        pen.round(row, px + 6, fy, px + PLATE_W - 6, fy + FIELD_H, 16, tok(tokens.MANTLE));
+        shape.lens(row, pen.row_y(), pen.x(px + 18), pen.y(fy + 8), pen.zoom(), tok(tokens.INK_DIM));
+        I64 tx = px + 42;
+        I64 e = 0;
+        if (qn == 0) {
+            pen.rect(row, tx, fy + 8, tx + 2, fy + 24, tok(tokens.INK));
+            e = pen.text(row, tx + 8, stpage.base(fy, FIELD_H), px + PLATE_W - 18, b"Search", 6, tok(tokens.INK_DIM),
+                         faces.BODY);
+        } else {
+            e = pen.text(row, tx, stpage.base(fy, FIELD_H), px + PLATE_W - 22, q, qn, tok(tokens.INK), faces.BODY);
+            I64 cx1 = tx + stpage.tw(q, qn, faces.BODY) + 1;
+            pen.rect(row, cx1, fy + 8, cx1 + 2, fy + 24, tok(tokens.INK));
+        }
+    }
+    I64 ly = list_y(y0);
+    I64 n = rows();
+    U8[48] t;
+    for i in 0..SHOWN {
+        I64 k = first_ + i;
+        if (k >= n) { break; }
+        I64 ry = ly + TZ_PITCH * i;
+        if (!stpage.on(y, ry, TZ_ROW)) { continue; }
+        I64 rx0 = px + 6;
+        I64 rx1 = px + PLATE_W - 14;
+        U32 fg = tok(tokens.INK);
+        U32 dim = tok(tokens.INK_DIM);
+        if (k == mark) {
+            pen.round(row, rx0, ry, rx1, ry + TZ_ROW, 14, tok(tokens.FILL));
+            fg = tok(tokens.ON_FILL);
+            dim = fg;
+        } else if (k == hov) {
+            pen.round(row, rx0, ry, rx1, ry + TZ_ROW, 14, tok(tokens.BAR_RULE));
+        }
+        I64 c = city_of(k);
+        I64 on_ = offset_text(c, now, t);
+        I64 ox = rx1 - 10 - stpage.tw(t, on_, faces.SHORTCUT);
+        I64 e = pen.text_right(row, rx1 - 10, stpage.base(ry, TZ_ROW), t, on_, dim, faces.SHORTCUT);
+        I64 cn = min(tz.city(c, t), len(t));
+        e = pen.text(row, rx0 + 10, stpage.base(ry, TZ_ROW), ox - 8, t, cn, fg, faces.BODY);
+    }
+    if (n > SHOWN) {                                           // the thumb, in the 8 px gutter
+        I64 lh = TZ_PITCH * SHOWN - 2;
+        I64 th = max(18, lh * SHOWN / n);
+        I64 ty = ly + (lh - th) * first_ / (n - SHOWN);
+        if (stpage.on(y, ty, th)) {
+            pen.round(row, px + PLATE_W - 10, ty, px + PLATE_W - 6, ty + th, 2,
+                      blend.mix_px(tok(tokens.SURF1), tok(tokens.INK_DIM), 128));
+        }
+    }
+}
+
+// The 1x row y of the page from (cx, y0) to (cr, yb), through the pen; y may run to plate_bottom() while the plate is
+// open.
+export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
+    stpage.title(row, cx, y0, cr, b"Date and Time", 13, y);
+    I64 ry = clock_y(y0);
+    U8[40] t;
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        I64 n = clock_text(t);
+        I64 e = pen.text(row, cx, ry + 34, cr - set_w() - 8, t, n, tok(tokens.INK), faces.CLOCK);
+        I64 dx = cx + stpage.tw(t, n, faces.CLOCK) + 14;
+        n = date_text(t);
+        e = pen.text(row, dx, ry + 31, cr - set_w() - 8, t, n, tok(tokens.INK_DIM), faces.BODY);
+        I64 bx = stpage.row_button(row, cr, ry, b"Set", 3);
+        if (!can_set && stpage.on(y, ry, stpage.ROW)) { stpage.fade(row, bx, cr); }
+        if (kbd && fs == F_SET) { stpage.focus(row, bx, ry + 4, cr, ry + 36, stpage.R_CTRL); }
+    }
+    I64 top = rows_y(y0);
+    ry = top;                                                  // Time Zone
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, cr - stpage.MENU_W - 8, b"Time Zone", 9);
+        if (stpage.on(y, ry + 4, stpage.BTN)) {
+            I64 n = zone_text(t);
+            stpage.menu_button(row, cr - stpage.MENU_W, ry + 4, stpage.MENU_W, t, n, faces.BODY);
+        }
+        if (kbd && fs == F_ZONE && !open_) {
+            stpage.focus(row, cr - stpage.MENU_W, ry + 4, cr, ry + 36, stpage.R_CTRL);
+        }
+    }
+    stpage.rule_before(row, cx, top, cr, 1);
+    ry = stpage.row_y(top, 1);                                 // 24-Hour Time
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, cr - stpage.SW_W - 8, b"24-Hour Time", 12);
+        if (stpage.on(y, ry + 8, stpage.SW_H)) { stpage.switch_at(row, cr, ry + 8, h24); }
+        if (kbd && fs == F_H24) { stpage.focus(row, cr - stpage.SW_W, ry + 8, cr, ry + 32, 12); }
+    }
+    stpage.rule_before(row, cx, top, cr, 2);
+    ry = stpage.row_y(top, 2);                                 // Week Starts On
+    if (stpage.on(y, ry - 4, stpage.ROW + 8)) {
+        stpage.label(row, cx, ry, stpage.ROW, cr - stpage.SEG_W - 8, b"Week Starts On", 14);
+        if (stpage.on(y, ry + 4, stpage.BTN)) {
+            stpage.seg(row, cr - stpage.SEG_W, ry + 4, stpage.SEG_W, b"Sunday|Monday", 2, week);
+        }
+        if (kbd && fs == F_WEEK) { stpage.focus(row, cr - stpage.SEG_W, ry + 4, cr, ry + 36, 16); }
+    }
+    if (open_) { plate_row(row, cx, y0, cr, y); }
+}
+
+// --- the pointer ---
+
+// The list row under (px, py) while the plate is open, or -1.
+I64 row_under(I64 y0, I64 cr, I64 px, I64 py) {
+    I64 x0 = plate_x(cr) + 6;
+    if (px < x0 || px >= plate_x(cr) + PLATE_W - 14) { return -1; }
+    I64 ly = list_y(y0);
+    for i in 0..SHOWN {
+        I64 ry = ly + TZ_PITCH * i;
+        if (first_ + i < rows() && py >= ry && py < ry + TZ_ROW) { return first_ + i; }
+    }
+    return -1;
+}
+
+// The pointer at (px, py): the plate's row it lights; whether that changed.
+export Bool hover(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    if (!open_) { return false; }
+    I64 h = row_under(y0, cr, px, py);
+    if (h == hov) { return false; }
+    hov = h;
+    return true;
+}
+
+// The wheel over the open plate: d rows on.
+export Bool scroll(I64 d) {
+    if (!open_) { return false; }
+    I64 f = first_;
+    first_ = max(0, min(first_ + d, rows() - SHOWN));
+    return f != first_;
+}
+
+// A press at (px, py).
+export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
+    kbd = false;
+    if (open_) {
+        I64 x0 = plate_x(cr);
+        I64 p0 = plate_y(y0);
+        if (px >= x0 && px < x0 + PLATE_W && py >= p0 && py < p0 + plate_h()) {
+            I64 k = row_under(y0, cr, px, py);
+            if (k < 0) { return stpage.NONE; }
+            return take(k);
+        }
+        open_ = false;                                         // a press outside closes it, unchanged
+        return stpage.DRAW;
+    }
+    I64 ry = clock_y(y0);
+    if (can_set && py >= ry + 4 && py < ry + 36 && px >= cr - set_w() && px < cr) {
+        fs = F_SET;
+        return act(SET, 0);
+    }
+    ry = rows_y(y0);
+    if (py >= ry + 4 && py < ry + 36 && px >= cr - stpage.MENU_W && px < cr) {
+        fs = F_ZONE;
+        pick();
+        return stpage.DRAW;
+    }
+    ry = stpage.row_y(rows_y(y0), 1);
+    if (py >= ry + 8 && py < ry + 32 && px >= cr - stpage.SW_W && px < cr) {
+        fs = F_H24;
+        return act(HOUR24, flip(h24));
+    }
+    ry = stpage.row_y(rows_y(y0), 2);
+    if (py >= ry + 4 && py < ry + 36) {
+        I64 p = stpage.seg_hit(cr - stpage.SEG_W, stpage.SEG_W, 2, px);
+        if (p < 0) { return stpage.NONE; }
+        fs = F_WEEK;
+        if (p == week) { return stpage.DRAW; }
+        return act(WEEK, p);
+    }
+    return stpage.NONE;
+}
+
+I64 flip(Bool b) {
+    if (b) { return 0; }
+    return 1;
+}
+
+// --- the keyboard ---
+
+// A key. With the plate open: Up and Down move the mark, Enter takes it, Esc closes, Backspace takes a letter back
+// (letters come by typed()), Tab and Shift+Tab close it unchanged and go on. Else Tab and Shift+Tab step through Set,
+// Time Zone, 24-Hour Time and Week Starts On, past either end to the sidebar (BACK); Enter or Space presses Set,
+// opens the plate and flips the switch; Left and Right choose the week's first day. An arrow with no stop shows the
+// ring on the first.
+export I64 key(I64 code) {
+    if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
+    if (open_ && stpage.is_tab(code)) { open_ = false; }
+    if (open_) {
+        I64 n = rows();
+        if (code == stpage.K_ESC) {
+            open_ = false;
+            return stpage.DRAW;
+        }
+        if (code == stpage.K_ENTER) { return take(mark); }
+        if (code == stpage.K_UP || code == stpage.K_DOWN) {
+            if (n == 0) { return stpage.NONE; }
+            if (code == stpage.K_UP) { mark = max(0, mark - 1); } else { mark = min(n - 1, mark + 1); }
+            reveal();
+            return stpage.DRAW;
+        }
+        if (code == stpage.K_BACKSPACE) {
+            if (qn == 0) { return stpage.NONE; }
+            qn = qn - 1;
+            if (qn == 0) {
+                at_chosen();
+            } else {
+                narrow();
+                mark = 0;
+                first_ = 0;
+            }
+            return stpage.DRAW;
+        }
+        return stpage.NONE;
+    }
+    if (stpage.is_tab(code)) {
+        if (tab(stpage.tab_d(code))) { return stpage.DRAW; }
+        return stpage.BACK;
+    }
+    if (fs == F_NONE) {
+        if (stpage.is_arrow(code) && tab(1)) { return stpage.DRAW; }
+        return stpage.NONE;
+    }
+    if (fs == F_WEEK && (code == stpage.K_LEFT || code == stpage.K_RIGHT)) {
+        I64 w = 1;
+        if (code == stpage.K_LEFT) { w = 0; }
+        if (w == week) { return stpage.DRAW; }
+        return act(WEEK, w);
+    }
+    if (stpage.is_arrow(code)) { return stpage.DRAW; }       // nothing to move inside the stop: the ring shows
+    if (!stpage.is_press(code)) { return stpage.NONE; }
+    if (fs == F_SET) { return act(SET, 0); }
+    if (fs == F_ZONE) {
+        pick();
+        return stpage.DRAW;
+    }
+    if (fs == F_H24) { return act(HOUR24, flip(h24)); }
+    return stpage.NONE;
+}
+// SPDX-License-Identifier: Apache-2.0

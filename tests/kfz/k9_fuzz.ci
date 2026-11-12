@@ -1,0 +1,264 @@
+// tests/kfz/k9_fuzz.ci: each entry of k1 to k4 called with words at random from a fixed seed, so a run is the same
+// run every time. kz_ptr() and kz_len() (k0_kit.ci) lean toward the edges: the ends of the map, USER_HI, the kernel's
+// half, the end of the address space, 0, each bound and one past it. After every call: the answer is one the entry
+// may give, no byte outside the bytes it may write changed (the read-only page never), the pool holds what it held
+// for a call that takes nothing, and no wrong caller moved a grant, the tiler or the focus. A failing case stops its
+// test with `case` as the operand the fault record shows; the seed and that number replay it.
+// G4 (the kernel read of PR 344): a fuzzed process that is not the desk's child is made as the kernel makes one, by
+// fork from the kit's parent (kz_spawn), and ends by exit and its parent's wait4 (kz_reap); every RESPAWN cases the
+// fuzzed ones end and are made again, into the slots they left, so a word a slot keeps from its last process shows.
+
+const I64 CASES = 400;
+const I64 RESPAWN = 100;
+
+// Stops the test, naming case c, unless ok.
+void kz_check(Bool ok, I64 c) {
+    if (!ok) {
+        assert(c == -1);
+    }
+}
+
+// True when no mapped byte changed outside [lo, lo + n), and refills p when one inside did.
+Bool kz_only(I64 p, U64 lo, U64 n) {
+    U64 hi = kz_upto(lo, n);
+    Bool ok = kz_kept_outside(p, lo, hi);
+    if (n > 0 && kz_changed(p, lo, kz_upto(lo, 128)) > 0) {
+        kz_fill(p);
+    }
+    if (!ok) {
+        kz_fill(p);
+    }
+    return ok;
+}
+
+Bool kz_in[n](I64 r, in I64[n] set) {
+    for k in 0..n {
+        if (set[k] == r) {
+            return true;
+        }
+    }
+    return false;
+}
+
+test "fuzz facts (1007) and sysinfo (99): seed 0x1007" {
+    kz_seed = 0x1007;
+    I64 p = kz_spawn(1000, fs.GRANT_ALL, 0);
+    I64 q = kz_spawn(1001, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    I64[7] may = [facts.CPU_BYTES, facts.PROCESS_BYTES, facts.DISPLAY_BYTES, E_NOENT, E_INVAL, E_FAULT, 0];
+    for c in 0..CASES {
+        U64 r = kz_rand();
+        U64 kind = r % 8;
+        if ((r >> 3) % 8 == 0) { kind = kz_rand(); }
+        U64 id = 0;
+        U64 pick = (r >> 6) % 4;
+        if (pick == 1) { id = q as U64; }
+        if (pick == 2) { id = (kz_rand() % 70); }
+        if (pick == 3) { id = kz_rand(); }
+        U64 buf = kz_ptr();
+        U64 n = kz_len(88);
+        I64 got = kz_call(p, NR_FACTS, kind, id, buf, n, 0, 0);
+        kz_check(kz_in(got, may) && got != 0, c);
+        U64 wrote = n;
+        if (wrote > 104) { wrote = 104; }
+        if (got < 0 && got != E_FAULT) { wrote = 0; }
+        kz_check(kz_only(p, buf, wrote), c);
+        U64 info = kz_ptr();
+        got = kz_call(p, NR_SYSINFO, info, kz_rand(), kz_rand(), 0, 0, 0);
+        kz_check(got == 0 || got == E_FAULT, c);
+        kz_check(kz_only(p, info, 112), c);
+        kz_check(kz_pool() == pool, c);
+        if (c % RESPAWN == RESPAWN - 1) {
+            I64[2] was = [p, q];
+            kz_reap(q);
+            kz_reap(p);
+            p = kz_spawn(1000, fs.GRANT_ALL, 0);
+            q = kz_spawn(1001, fs.GRANT_ALL, 0);
+            kz_check(p == was[0] && q == was[1], c);
+            pool = kz_pool();
+        }
+    }
+    kz_reap(q);
+    kz_reap(p);
+}
+
+test "fuzz statfs (137), fstatfs (138) and prctl (157): seed 0x137" {
+    kz_seed = 0x137;
+    I64 p = kz_spawn(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    I64[7] may = [0, E_FAULT, E_NOENT, E_NOTDIR, -36, E_BADF, E_INVAL];
+    for c in 0..CASES {
+        U64 r = kz_rand();
+        U64 path = kz_ptr();
+        U64 pick = r % 5;
+        if (pick == 0) { path = kz_path(p, 0, "/"); }
+        if (pick == 1) { path = kz_path(p, 0, "/dev/fb0"); }
+        if (pick == 2) { path = kz_path(p, 0, "/nothing/at/all"); }
+        U64 buf = kz_ptr();
+        I64 got = kz_call(p, NR_STATFS, path, buf, 0, 0, 0, 0);
+        kz_check(kz_in(got, may) && got != E_BADF && got != E_INVAL, c);
+        kz_check(kz_only(p, buf, 120), c);
+        U64 fd = (r >> 8) % 6;
+        if (fd == 5) { fd = kz_rand(); }
+        buf = kz_ptr();
+        got = kz_call(p, NR_FSTATFS, fd, buf, 0, 0, 0, 0);
+        kz_check(got == 0 || got == E_FAULT || got == E_BADF, c);
+        kz_check(fd < 3 || got == E_BADF, c);
+        kz_check(kz_only(p, buf, 120), c);
+        U64 op = 15 + (r >> 16) % 2;
+        if ((r >> 20) % 8 == 0) { op = kz_rand(); }
+        U64 arg = kz_ptr();
+        got = kz_call(p, NR_PRCTL, op, arg, kz_rand(), 0, 0, 0);
+        kz_check(got == 0 || got == E_FAULT || got == E_INVAL, c);
+        kz_check(comm[p * 16 + 15] == 0, c);                // the name always ends in a NUL
+        U64 wrote = 0;
+        if (op == 16) { wrote = 16; }
+        kz_check(kz_only(p, arg, wrote), c);
+        kz_check(kz_pool() == pool, c);
+        if (c % RESPAWN == RESPAWN - 1) {
+            I64 was = p;
+            kz_reap(p);
+            p = kz_spawn(1000, fs.GRANT_ALL, 0);
+            kz_check(p == was && comm[p * 16] == comm[kz_init * 16], c);
+            pool = kz_pool();
+        }
+    }
+    kz_reap(p);
+}
+
+test "fuzz revoke (1008), login (1003) and home (1006) from every caller: seed 0x1008" {
+    kz_seed = 0x1008;
+    I64 d = kz_desk();
+    I64 w = kz_child(d, 1000);
+    I64 c0 = kz_child(d, 0);
+    I64 other = kz_spawn(1000, fs.GRANT_ALL, 0);
+    I64 r0 = kz_spawn(0, fs.GRANT_ALL, fs.GRANT_KERN);
+    fs.grant_add(w, fs.GRANT_ALL);
+    I64[6] may_revoke = [0, 1, 2, E_PERM, E_INVAL, E_SRCH];
+    for c in 0..CASES {
+        U64 r = kz_rand();
+        I64[5] who = [d, w, c0, other, r0];
+        I64 caller = who[(r % 5) as I64];
+        U64 creds = kz_creds();
+        // revoke
+        U64 vp = vpid[w] as U64;
+        if ((r >> 4) % 3 == 1) { vp = kz_rand() % 200; }
+        if ((r >> 4) % 3 == 2) { vp = kz_rand(); }
+        U64 word = (r >> 8) % 8;
+        if ((r >> 12) % 4 == 0) { word = kz_rand(); }
+        I64 got = kz_call(caller, NR_REVOKE, vp, word, kz_ptr(), 0, 0, 0);
+        kz_check(kz_in(got, may_revoke), c);
+        kz_check(caller == d || (got == E_PERM && kz_creds() == creds), c);
+        kz_check(got > 0 || kz_creds() == creds, c);
+        // login: anyone but c0 is refused and changes nothing; c0 is a fresh desk child again after a login
+        creds = kz_creds();
+        U64 uid = kz_len(65535);
+        U64 gid = kz_len(65535);
+        U64 ceil = (r >> 16) % 8;
+        if ((r >> 20) % 4 == 0) { ceil = kz_rand(); }
+        got = kz_call(caller, NR_LOGIN, uid, gid, ceil, 0, 0, 0);
+        kz_check(got == 0 || got == E_PERM || got == E_INVAL, c);
+        kz_check(got == 0 || kz_creds() == creds, c);
+        kz_check(got != 0 || (caller == c0 && uid >= 1 && uid <= 65535 && gid <= 65535 && ceil < 8), c);
+        if (got == 0) {
+            kz_check(fs.uid_of(c0) == uid as I64 && (fs.grant_of(c0) & fs.GRANT_KERN) == 0, c);
+            kz_end(c0);
+            c0 = kz_child(d, 0);
+        }
+        // home
+        creds = kz_creds();
+        I64 made = fs.created_count();
+        got = kz_call(caller, NR_HOME, kz_ptr(), kz_len(65535), kz_len(65535), 0, 0, 0);
+        kz_check(got < 0 && fs.created_count() == made && kz_creds() == creds, c);
+        kz_check(caller == d || got == E_PERM, c);
+        kz_check(kz_only(caller, 0, 0), c);
+    }
+    kz_reap(r0);
+    kz_reap(other);
+    kz_end(c0);
+    kz_end(w);
+    kz_end(d);
+}
+
+test "fuzz the tiler's requests 0x468C to 0x4693 and their neighbors from the tiler and others: seed 0x468C" {
+    kz_seed = 0x468C;
+    I64 c = kz_spawn(1000, fs.GRANT_ALL, 0);
+    I64 cfd = kz_fb(c);
+    I64 d = kz_desk();
+    I64 t = kz_child(d, 1000);
+    I64[8] may = [0, E_PERM, E_FAULT, E_INVAL, E_SRCH, E_NOTTY, E_BADF, E_ROFS];   // E_ROFS: SAVE, no volume
+    for k in 0..CASES {
+        U64 r = kz_rand();
+        Bool tiler = r % 2 == 0;
+        I64 p = c;
+        U64 fd = cfd as U64;
+        if (tiler) {
+            p = d;
+            fd = kz_fb_fd as U64;
+        }
+        if ((r >> 1) % 8 == 0) { fd = 1; }
+        if ((r >> 1) % 8 == 1) { fd = kz_rand(); }
+        U64 req = 0x468C + (r >> 4) % 8;
+        if ((r >> 8) % 8 == 0) { req = req | ((kz_rand() & 0xFFFFFFFF) << 32); }
+        if ((r >> 8) % 8 == 1) { req = tile.FBIO_TILER | 0x100000000; }
+        U64 creds = kz_creds();
+        I64 fp = focus_p;
+        I64 got = kz_call(p, NR_IOCTL, fd, req, kz_ptr(), 0, 0, 0);
+        kz_check(kz_in(got, may) || got == -19, k);
+        kz_check(tile.tiler_pid() == d, k);
+        kz_check(tiler || (kz_creds() == creds && focus_p == fp), k);
+        kz_check((fs.grant_of(t) & fs.GRANT_KERN) == 0 && (fs.grant_of(c) & fs.GRANT_KERN) == 0, k);
+        kz_check(kz_only(p, 0, 0), k);
+    }
+    kz_end(t);
+    kz_end(d);
+    kz_reap(c);
+}
+
+test "fuzz open with O_NOFOLLOW and rename by another uid: a link never opens, a refusal moves nothing: seed 0x20000" {
+    kz_seed = 0x20000;
+    I64 r = kz_spawn(0, fs.GRANT_ALL, 0);
+    I64 t = kz_make_tree(r);
+    I64 u = kz_spawn(1000, fs.GRANT_ALL, 0);
+    for c in 0..CASES {
+        U64 x = kz_rand();
+        U64 flags = KZ_O_NOFOLLOW | (kz_rand() & (3 | KZ_O_CREAT | KZ_O_EXCL | KZ_O_TRUNC | KZ_O_DIRECTORY | 0x800));
+        if ((x >> 3) % 8 == 0) { flags = flags | ((kz_rand() & 0xFFFFFFFF) << 32); }
+        I64 pick = (x % 4) as I64;
+        I64 got = 0;
+        if (pick == 0) { got = kz_open(r, t, "d/lf", flags); }
+        if (pick == 1) { got = kz_open(r, t, "d/ln", flags); }
+        if (pick == 2) { got = kz_open(r, t, "dl", flags); }
+        if (pick == 3) {                                     // no name in the kit's pages: a stat's bytes are one
+            kz_fill(r);
+            got = kz_call(r, NR_OPEN, kz_ptr(), flags, 0x1A4, 0, 0, 0);
+        }
+        kz_check(got < 0, c);                                // the last component is a link, or the path is bad
+        if (got >= 0) {
+            _ = kz_call(r, 3, got as U64, 0, 0, 0, 0, 0);
+        }
+        kz_check(kz_size(r, t, "d/f") == 3 && kz_size(r, t, "d/nothing") == E_NOENT, c);
+        // another uid renames at random among the tree's names: d is not its to write, s/root is not its entry
+        U64 y = kz_rand();
+        I64 a = (y % 5) as I64;
+        I64 b = ((y >> 4) % 5) as I64;
+        I64 rr = 0;
+        if (a == 0 && b == 1) { rr = kz_rename(u, t, "d/f", "s/x"); }
+        if (a == 0 && b != 1) { rr = kz_rename(u, t, "d/f", "d/g"); }
+        if (a == 1) { rr = kz_rename(u, t, "s/root", "s/y"); }
+        if (a == 2) { rr = kz_rename(u, t, "d", "s/d"); }
+        if (a == 3) { rr = kz_rename(u, t, "s/root", "d/root"); }
+        if (a == 4) { rr = kz_call(u, NR_RENAME, kz_ptr(), kz_ptr(), 0, 0, 0, 0); }
+        kz_check(rr < 0, c);
+        kz_check(kz_size(r, t, "d/f") == 3 && kz_size(r, t, "s/root") == 0, c);
+        if (c % RESPAWN == RESPAWN - 1) {
+            I64 was = u;
+            kz_reap(u);
+            u = kz_spawn(1000, fs.GRANT_ALL, 0);
+            kz_check(u == was, c);
+        }
+    }
+    kz_reap(u);
+    kz_reap(r);
+}
+// SPDX-License-Identifier: Apache-2.0

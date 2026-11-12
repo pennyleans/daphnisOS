@@ -1,0 +1,7 @@
+// user/ci/tilepoint.ci: a pixel window that asks for the pointer's place (BP-6, docs/specs/2026-11-07-bp-basics.md
+// section 4a), a row of user/ci/host.c built only into a program that imports this file and tilewin.ci
+// (CI_ROWS_POINT), so no other program's bytes change:
+//   win_point(on): EV_ABS (type 3, code 0 x or 1 y, in the surface's pixels, -1 off it) from the desk into this
+//     process's queue, and the clicks over its surface without a grab (FBIO_TILE_POINT); 0, or -errno
+export extern unrestricted I64 win_point(I64 on);
+// SPDX-License-Identifier: Apache-2.0

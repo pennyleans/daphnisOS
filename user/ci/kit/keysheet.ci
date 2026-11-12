@@ -1,0 +1,230 @@
+// user/ci/kit/keysheet.ci: the shortcut sheet (frame 27, DN-51: builds as drawn; note 46 applies: no "Esc closes"),
+// opened by Super+/ and by Show All on Settings' Keyboard page. A plate 900 wide (the screen less 32 when narrower),
+// radius 16, SURF2, shadow High (MS-3 level 3), centered on the screen, with no dim under it (note 68 item 8). Padding
+// 28 top and bottom, 32 at the sides: "Shortcuts" in TITLE; 24 under its line three columns 40 apart, DESK, WINDOWS
+// and FILES AND SYSTEM, each its label in LABEL, INK_DIM, then 12 below, rows 30 high: the action in BODY, INK, at
+// the left; the chord's keys at the right, each on a keycap 20 high, radius 4, a 1 px RULE ring, its name in SHORTCUT,
+// INK_DIM, 6 in at each side, 4 between keycaps.
+//
+// Every row is a chord the desk answers in the image (tests/rs/keysheet_test.ci holds the list, read against
+// hdesk.ci's chord, the switcher and Index's keys on 2026-11-12; the three screenshot keys, frame 43's words, read
+// against kit/shotdesk.ci once RS-SHOT landed). Console's copy and paste are left out until the
+// desk has a clipboard (design 2026-11-12 08:15Z). Esc, Super+/ again or a press outside the plate closes it, with no hint.
+//
+// Coordinates are logical pixels; row_at draws device row y at zoom z (1 or 2). The state is this module's.
+import user.ci.kit.tokens;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.shape;
+import user.ci.kit.shade;
+
+export const I64 W = 900;
+export const I64 MARGIN = 16;          // the least room left at each side of a narrow screen
+export const I64 RAD = 16;
+export const I64 SHADOW = 3;           // High
+export const I64 PAD_Y = 28;
+export const I64 PAD_X = 32;
+export const I64 TITLE_H = 24;
+export const I64 GAP = 24;
+export const I64 COL_GAP = 40;
+export const I64 LAB_H = 13;
+export const I64 LAB_GAP = 12;
+export const I64 ROW = 30;
+export const I64 KEY_H = 20;
+export const I64 KEY_R = 4;
+export const I64 KEY_SIDE = 6;
+export const I64 KEY_GAP = 4;
+export const I64 COLS = 3;
+export const I64 MOST = 9;             // the longest column's rows
+
+export const I64 STAY = 0;
+export const I64 CLOSE = -1;
+
+const I64 K_ESC = 1;
+
+// The rows (load's text), a line each: column, keys parted by spaces, a tab, the action (frame 27's words).
+const I64 N = 32;
+U8[640] TABLE;
+
+void load(in U8[_] t) {
+    for k in 0..min(len(t), 639) { TABLE[k] = t[k]; }
+}
+
+I64[32] r_col;
+I64[32] r_keys;                        // the row's start in TABLE: its keys, then the tab
+I64[32] r_kn;
+I64[32] r_act;
+I64[32] r_an;
+I64 n_rows = 0;
+
+Bool up = false;
+I64 ax = 0;
+I64 ay = 0;
+I64 aw = W;
+
+U32 tok(I64 t) { return tokens.word(t); }
+
+void parse() {
+    if (n_rows > 0) { return; }
+    load(b"0Super\tOpen the Super plane\n0Super Tab\tSwitch windows\n0Super 1-9\tGo to a desktop\n0Super Shift 1-9\tSend window\n0Super C\tCalendar\n0Super ,\tSettings\n0Super L\tLock\n0Super /\tThis sheet\n1Super Enter\tNew Console, tiled\n1Super Q\tClose the window\n1Super F\tFloat or tile\n1Super Z\tFill the desk, and back\n1Super M\tMinimize\n1Super Shift M\tRestore\n1Super Arrow\tMove focus\n1Super Shift Arrow\tMove window\n1Super Ctrl Arrow\tResize\n2Ctrl L\tType a path in Index\n2Alt Enter\tProperties\n2Menu\tRight-click menu\n2Print\tWhole screen\n2Super Shift S\tAn area\n2Alt Print\tThe focused window\n2Super Shift R\tRestart\n2Super Shift Q\tShut Down\n");
+    I64 k = 0;
+    while (k < len(TABLE) && TABLE[k] != 0 && n_rows < N) {
+        I64 r = n_rows;
+        r_col[r] = TABLE[k] as I64 - 48;
+        I64 s = k + 1;
+        I64 e = s;
+        while (TABLE[e] != '\t') { e = e + 1; }
+        r_keys[r] = s;
+        r_kn[r] = e - s;
+        I64 a = e + 1;
+        I64 b = a;
+        while (TABLE[b] != '\n') { b = b + 1; }
+        r_act[r] = a;
+        r_an[r] = b - a;
+        n_rows = r + 1;
+        k = b + 1;
+    }
+}
+
+export I64 rows() {
+    parse();
+    return n_rows;
+}
+
+// Row r's column, keys and action into k and t; their lengths through kn (returns the action's).
+export I64 row_text(I64 r, inout U8[_] k, inout I64[1] kn, inout U8[_] t) {
+    parse();
+    kn[0] = r_kn[r];
+    for q in 0..r_kn[r] { k[q] = TABLE[r_keys[r] + q]; }
+    for q in 0..r_an[r] { t[q] = TABLE[r_act[r] + q]; }
+    return r_an[r];
+}
+
+export I64 column(I64 r) {
+    parse();
+    return r_col[r];
+}
+
+export I64 height() { return PAD_Y + TITLE_H + GAP + LAB_H + LAB_GAP + ROW * MOST + PAD_Y; }
+
+export Bool is_up() { return up; }
+
+// The sheet up, centered in an area sw x sh (logical; the desk's plane under the bar).
+export void open(I64 sw, I64 sh) {
+    parse();
+    aw = min(W, sw - 2 * MARGIN);
+    ax = (sw - aw) / 2;
+    ay = max(0, (sh - height()) / 2);
+    up = true;
+}
+
+export void close() { up = false; }
+
+// A key while the sheet is up: Esc closes it; every other key stays with it.
+export I64 key(I64 code) {
+    if (code == K_ESC) {
+        up = false;
+        return CLOSE;
+    }
+    return STAY;
+}
+
+// Whether the logical point (px, py) is on the plate.
+export Bool hit(I64 px, I64 py) { return up && px >= ax && px < ax + aw && py >= ay && py < ay + height(); }
+
+I64 col_w() { return (aw - 2 * PAD_X - (COLS - 1) * COL_GAP) / COLS; }
+
+// The keycaps' width for keys k[0..n] (parted by spaces).
+export I64 keys_w(in U8[_] k, I64 n) {
+    I64 w = 0;
+    I64 s = 0;
+    for q in 0..n + 1 {
+        if (q == n || k[q] == ' ') {
+            if (q > s) {
+                if (w > 0) { w = w + KEY_GAP; }
+                w = w + KEY_SIDE + ctext.width(k[s..q], q - s, faces.SHORTCUT, 1) + KEY_SIDE;
+            }
+            s = q + 1;
+        }
+    }
+    return w;
+}
+
+// The plate's left and top in the area open() was given (logical); its width.
+export I64 left() { return ax; }
+export I64 top() { return ay; }
+export I64 width() { return aw; }
+
+// Row y (device) of the sheet at zoom z on theme th, its shadow and its plate, at its place in the area, over row.
+export void row_at(inout U32[_] row, I64 y, I64 z, I64 th) {
+    if (!up) { return; }
+    I64 x0 = ax * z;
+    I64 y0 = ay * z;
+    I64 x1 = (ax + aw) * z;
+    I64 y1 = (ay + height()) * z;
+    if (y < y0 - shade.reach_up(SHADOW, th, z) || y >= y1 + shade.reach_down(SHADOW, th, z)) { return; }
+    I64 sd = shade.reach_side(SHADOW, th, z);
+    shade.shade_row(row, max(x0 - sd, 0), min(x1 + sd, len(row)), y, x0, y0, x1, y1, RAD, SHADOW, th, z);
+    plate_row(row, y, x0, y0, z);
+}
+
+// Row y (device) of the plate alone from its device top left (ox, oy) at zoom z: the host casts its shadow.
+export void plate_row(inout U32[_] row, I64 y, I64 ox, I64 oy, I64 z) {
+    if (!up) { return; }
+    I64 x1 = ox + aw * z;
+    I64 y1 = oy + height() * z;
+    if (y < oy || y >= y1) { return; }
+    shape.rounded(row, y, ox, oy, x1, y1, RAD * z, tok(tokens.SURF2));
+    I64 tx = PAD_X;
+    I64 e = ctext.text(row, y, ox + tx * z, oy + (PAD_Y + 19) * z, x1 - PAD_X * z, b"Shortcuts", 9, tok(tokens.INK),
+                       faces.TITLE, z);
+    I64 cy = PAD_Y + TITLE_H + GAP;
+    I64 cw = col_w();
+    for c in 0..COLS {
+        I64 cx = ox + (tx + c * (cw + COL_GAP)) * z;
+        I64 cx1 = cx + cw * z;
+        if (c == 0) { e = ctext.text(row, y, cx, oy + (cy + 10) * z, cx1, b"DESK", 4, tok(tokens.INK_DIM), faces.LABEL, z); }
+        if (c == 1) { e = ctext.text(row, y, cx, oy + (cy + 10) * z, cx1, b"WINDOWS", 7, tok(tokens.INK_DIM), faces.LABEL, z); }
+        if (c == 2) {
+            e = ctext.text(row, y, cx, oy + (cy + 10) * z, cx1, b"FILES AND SYSTEM", 16, tok(tokens.INK_DIM), faces.LABEL,
+                           z);
+        }
+    }
+    I64[3] at;
+    for c in 0..COLS { at[c] = 0; }
+    for r in 0..n_rows {
+        I64 c = r_col[r];
+        I64 ry = cy + LAB_H + LAB_GAP + ROW * at[c];
+        at[c] = at[c] + 1;
+        if (y < oy + ry * z || y >= oy + (ry + ROW) * z) { continue; }
+        I64 cx = tx + c * (cw + COL_GAP);
+        I64 kw = keys_w(TABLE[r_keys[r]..r_keys[r] + r_kn[r]], r_kn[r]);
+        e = ctext.text(row, y, ox + cx * z, oy + (ry + 20) * z, ox + (cx + cw - kw - 12) * z,
+                       TABLE[r_act[r]..r_act[r] + r_an[r]], r_an[r], tok(tokens.INK), faces.BODY, z);
+        caps(row, y, z, ox, oy, cx + cw - kw, ry + (ROW - KEY_H) / 2, r);
+    }
+}
+
+// Row r's keycaps from (kx, ky), logical within the plate at device (ox, oy).
+void caps(inout U32[_] row, I64 y, I64 z, I64 ox, I64 oy, I64 kx, I64 ky, I64 r) {
+    I64 s = r_keys[r];
+    I64 n = r_kn[r];
+    I64 x = kx;
+    I64 q0 = 0;
+    for q in 0..n + 1 {
+        if (q == n || TABLE[s + q] == ' ') {
+            if (q > q0) {
+                I64 tw = ctext.width(TABLE[s + q0..s + q], q - q0, faces.SHORTCUT, 1);
+                I64 w = KEY_SIDE + tw + KEY_SIDE;
+                shape.ring(row, y, ox + x * z, oy + ky * z, ox + (x + w) * z, oy + (ky + KEY_H) * z, KEY_R * z, z,
+                           tok(tokens.RULE));
+                I64 e = ctext.text(row, y, ox + (x + KEY_SIDE) * z, oy + (ky + 14) * z, ox + (x + w) * z, TABLE[s + q0..s + q],
+                                   q - q0, tok(tokens.INK_DIM), faces.SHORTCUT, z);
+                x = x + w + KEY_GAP;
+            }
+            q0 = q + 1;
+        }
+    }
+}
+
+// SPDX-License-Identifier: Apache-2.0

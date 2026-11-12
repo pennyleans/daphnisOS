@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/whatwg/html",
+  "commit": "5fcc2318395821db61e353705e6368ad9a000af5",
+  "path": "source",
+  "bytes": 8096625,
+  "sha256": "79758127c6aa3856e8d9036de0c1df17a8bfcf5aa96d886a2b6a6435661fb375",
+  "license": "LICENSE",
+  "sections": [
+    "prescan a byte stream to determine its encoding",
+    "get an attribute",
+    "get an XML encoding",
+    "algorithm for extracting a character encoding from a meta element"
+  ],
+  "transformation": "none; original pinned source bytes retained"
+}

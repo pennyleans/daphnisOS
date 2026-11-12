@@ -1,0 +1,864 @@
+// src/e1000.ci: HW-7 (docs/specs/2026-11-06-hw-hardware.md section 5, row HW-7; ruling HW-4 A), the Intel e1000
+// family's ring and register core: the 82540EM (QEMU's `e1000`) and the 82574L (QEMU's `e1000e`). BAR 0 through
+// rt/mmio.c, a reset, the MAC from RAL0 and RAH0, CTRL.SLU, legacy 16-byte descriptors in two rings of 32, polled,
+// never by an interrupt. src/net.ci is the front: it owns the 2 KiB buffers (the N-1 shape) and the record, and
+// calls this module where it calls src/virtio.ci for virtio-net.
+//
+// The receive filter takes unicast to the MAC and broadcast only (NW-6): no promiscuous mode, the multicast table
+// cleared. The device strips the frame check sequence (RCTL.SECRC), so a frame is what virtio-net gives, but that a
+// frame shorter than 60 bytes arrives padded to 60 with zeros, as it does on any real wire.
+// QEMU's `e1000` model holds every received frame for one second after RCTL is written (its flush timer), so the
+// boot ARP's reply enters at tick 101 there, not tick 1; `e1000e` and a real 8254x have no such wait.
+//
+// A legacy ring whose head equals its tail is empty, so a ring of 32 holds 31. Receive: a buffer is a slot 0..31 of
+// the front; each descriptor is given a slot's buffer (ring_slot remembers which), so the front may return slots in
+// any order. 31 slots are out at most; the 32nd waits (spare) until a frame is taken. Transmit: 31 frames in flight at
+// most (TX_ROOM), each descriptor asks for its status (RS), and reap() counts the ones the device has sent.
+//
+// HW-7 part 2 adds the PCH layer for one device of the I219 family, the MSI board's I219-V (8086:15bc): ULP off, the
+// PHY out of SMBus mode over MDIC, the software semaphore, the PHY and MAC resets with their waits in time (below,
+// "the PCH layer"). No other I219 ID is in the table. Before it opens anything, probe_pch reads that device's PCI
+// configuration and BAR 0 registers and prints them, writing nothing; the MAC address is never printed (PRIV-1).
+// Offsets and steps are Linux v6.12's drivers/net/ethernet/intel/e1000e, cited by file and line.
+
+import src.serial;
+import src.text;
+import src.pci;
+import src.phys;
+import src.frames;
+import src.pit;
+
+// rt/mmio.c's rows (src/mmio.ci's externs, declared here as src/pci.ci does: this module is emitted before that one)
+extern unrestricted I64 mmio_map(U64 base, U64 len);
+extern observe U32 mmio_in32(U64 addr);
+extern unrestricted void mmio_out32(U64 addr, U32 val);
+
+export const I64 RING = 32;            // descriptors in each ring
+export const I64 TX_ROOM = 31;         // frames in flight at most
+const I64 SPIN = 2000000;              // a bounded wait: MMIO reads (about 1 us each on a board)
+const U64 WINDOW = 0x20000;            // the register window of BAR 0, 128 KiB
+const U32 ID_82540EM = 0x100E8086;     // device << 16 | vendor
+const U32 ID_82574L = 0x10D38086;
+const U32 ID_I219_V7 = 0x15BC8086;     // hw.h:84 E1000_DEV_ID_PCH_CNP_I219_V7, the MSI board's (lspci 00:1f.6)
+
+const U64 R_CTRL = 0x0000;
+const U64 R_STATUS = 0x0008;
+const U64 R_ICR = 0x00C0;
+const U64 R_IMC = 0x00D8;
+const U64 R_RCTL = 0x0100;
+const U64 R_TCTL = 0x0400;
+const U64 R_TIPG = 0x0410;
+const U64 R_RDBAL = 0x2800;
+const U64 R_RDBAH = 0x2804;
+const U64 R_RDLEN = 0x2808;
+const U64 R_RDH = 0x2810;
+const U64 R_RDT = 0x2818;
+const U64 R_TDBAL = 0x3800;
+const U64 R_TDBAH = 0x3804;
+const U64 R_TDLEN = 0x3808;
+const U64 R_TDH = 0x3810;
+const U64 R_TDT = 0x3818;
+const U64 R_MTA = 0x5200;              // 128 words
+const U64 R_RAL0 = 0x5400;
+const U64 R_RAH0 = 0x5404;
+
+const U64 CTRL_ASDE = 0x20;            // auto speed detection
+const U64 CTRL_SLU = 0x40;             // set link up
+const U64 CTRL_RST = 0x4000000;        // bit 26
+const U64 CTRL_CLEAR = 0xC0000088;     // PHY_RST (31), VME (30), ILOS (7), LRST (3): all off
+const U64 STATUS_LU = 0x2;
+const U64 RAH_AV = 0x80000000;
+const U64 RCTL_EN = 0x2;
+const U64 RCTL_BAM = 0x8000;           // broadcast accepted
+const U64 RCTL_SECRC = 0x4000000;      // the frame check sequence stripped; BSIZE 00 is 2048 bytes
+const U64 TCTL_EN = 0x2;
+const U64 TCTL_PSP = 0x8;              // short frames padded
+const U64 TCTL_CT_COLD = 0x400F0;      // collision threshold 15, collision distance 64
+const U64 TIPG = 0x60200A;             // IPGT 10, IPGR1 8, IPGR2 6: the 802.3 values for copper
+const U64 RX_DD = 0x1;
+const U64 RX_EOP = 0x2;
+const U64 TX_CMD = 0x0B;               // EOP, IFCS, RS
+const U64 TX_DD = 0x1;
+
+I64 dev = pci.NONE;
+U64 reg = 0;                           // BAR 0
+U64 rx_ring = 0;
+U64 tx_ring = 0;
+U64 rx_buf = 0;                        // slot s's frame is at rx_buf + s * stride (the front's buffers)
+U64 tx_buf = 0;
+I64 step = 0;
+I64 rx_next = 0;                       // the next descriptor the device will complete
+I64 rx_tail = 0;                       // RDT: the next descriptor to give a buffer
+I64[32] ring_slot;                     // the slot whose buffer each receive descriptor holds
+I64 spare = -1;                        // a slot the full ring had no room for
+I64 rx_bytes = -1;                     // the frame take() returned last: its length, or -1 for one in error
+I64 tx_tail = 0;                       // TDT
+I64 tx_clean = 0;                      // the oldest descriptor not yet seen done
+U8[6] mac;
+
+U64 r(U64 at) { return mmio_in32(reg + at) as U64; }
+void w(U64 at, U64 v) { mmio_out32(reg + at, (v & 0xFFFFFFFF) as U32); }
+
+// A zeroed pool frame's physical address, or 0.
+U64 frame() {
+    I64 f = frames.alloc(1);
+    if (f < 0) {
+        return 0;
+    }
+    U64 a = frames.frame_addr(f) as U64;
+    U64[512] z;
+    for k in 0..512 { z[k] = 0; }
+    phys.phys_write64(a, z);
+    return a;
+}
+
+// --- HW-7 part 2, step 1: the I219-V read as it is (probe_pch) ---
+
+void put_hex32(U64 v) {
+    serial.serial_write("0x");
+    for k in 0..8 {
+        serial.serial_putc(text.hex_digit(((v >> (28 - 4 * k) as U64) & 15) as U8));
+    }
+}
+
+void say(in U8[_] what, U64 v) {
+    serial.serial_write("daphnis: i219: ");
+    serial.serial_write(what);
+    serial.serial_write(" ");
+    put_hex32(v);
+    serial.serial_write("\n");
+}
+
+// BAR 0 register at, read once. None of the registers probe_pch reads clears or changes on a read (ICR and the
+// statistics do, and are not read).
+U64 peek(U64 at) { return mmio_in32(reg + at) as U64; }
+
+// The Arch board's I219-V, read and printed, one line a register, `daphnis: i219: NAME 0xVALUE`; nothing is written
+// to the device or its configuration space. False when there is none. When the firmware left memory decoding off
+// (PCI command bit 1), BAR 0 is not read either: turning it on would be a write.
+export Bool probe_pch() {
+    I64[64] devs;
+    U32[64] ids;
+    U32[64] classes;
+    I64 n = pci.list(devs, ids, classes);
+    I64 d = pci.NONE;
+    for k in 0..n {
+        if (d == pci.NONE && ids[k] == ID_I219_V7) {
+            d = devs[k];
+        }
+    }
+    if (d == pci.NONE) {
+        return false;
+    }
+    serial.serial_write("daphnis: i219: 8086:15bc found, read only: nothing is written\n");
+    say("pci command and status", pci.read32(d, 0x04) as U64);
+    say("pci class and revision", pci.read32(d, 0x08) as U64);
+    say("pci bar 0", pci.read32(d, 0x10) as U64);
+    say("pci subsystem", pci.read32(d, 0x2C) as U64);
+    say("pci desc ring status (e1000.h:79, 0xe4; FLUSH_DESC_REQUIRED 0x100, :80)", pci.read32(d, 0xE4) as U64);
+    if ((pci.read32(d, 0x04) & 2) == 0) {
+        serial.serial_write("daphnis: i219: memory decoding is off; BAR 0 not read\n");
+        return true;
+    }
+    reg = pci.mem_bar(d);
+    if (reg == 0 || mmio_map(reg, WINDOW) != 0) {
+        serial.serial_write("daphnis: i219: BAR 0 not mapped; not read\n");
+        reg = 0;
+        return true;
+    }
+    say("CTRL (regs.h:7, 0x00000)", peek(0x00000));
+    say("STATUS (regs.h:8, 0x00008)", peek(0x00008));
+    say("STRAP (ich8lan.h:193, 0x0000c)", peek(0x0000C));
+    say("FEXTNVM6 (regs.h:22, 0x00010)", peek(0x00010));
+    say("CTRL_EXT (regs.h:11, 0x00018)", peek(0x00018));
+    say("MDIC (regs.h:13, 0x00020)", peek(0x00020));
+    say("FEXTNVM4 (regs.h:20, 0x00024)", peek(0x00024));
+    say("FEXTNVM (regs.h:18, 0x00028)", peek(0x00028));
+    say("FEXTNVM7 (regs.h:23, 0x000e4)", peek(0x000E4));
+    say("EXTCNF_CTRL (regs.h:52, 0x00f00)", peek(0x00F00));
+    say("EXTCNF_SIZE (regs.h:53, 0x00f08; length 0 means no LCD configuration, ich8lan.c:2220)", peek(0x00F08));
+    say("PHY_CTRL (regs.h:54, 0x00f10)", peek(0x00F10));
+    say("IOSFPC (regs.h:59, 0x00f28)", peek(0x00F28));
+    say("TDLEN0 (regs.h:98, 0x03808)", peek(0x03808));
+    say("TARC0 (regs.h:106, 0x03840)", peek(0x03840));
+    say("RAH0 AV only, the address withheld (PRIV-1) (regs.h:110, 0x05404)", peek(0x05404) & RAH_AV);
+    say("H2ME (ich8lan.h:50, 0x05b50)", peek(0x05B50));
+    say("FWSM (regs.h:215, 0x05b54)", peek(0x05B54));
+    say("FEXTNVM9 (regs.h:25, 0x05bb4)", peek(0x05BB4));
+    say("FEXTNVM11 (regs.h:26, 0x05bbc)", peek(0x05BBC));
+    reg = 0;
+    serial.serial_write("daphnis: i219: read done, the device not opened\n");
+    return true;
+}
+
+// --- HW-7 part 2: the PCH layer, for 8086:15bc only (the MSI board's I219-V, a Cannon Lake PCH: e1000_pch_cnp) ---
+//
+// Linux v6.12 drivers/net/ethernet/intel/e1000e is the reference, cited by file and line: the PHY's way out of ULP
+// and SMBus mode (ich8lan.c:295-430, e1000_init_phy_workarounds_pchlan; :1299-1455, e1000_disable_ulp_lpt_lp), the
+// PHY reset (phy.c:2138-2175, ich8lan.c:2939-3035), the MAC reset (ich8lan.c:4764-4882) and the MAC from RAR0, which
+// the hardware loads from the NVM at reset (nvm.c:518; ich8lan.c sets no read_mac_addr of its own). Every wait is in
+// time, on the PIT (wait_us), never a count of register reads, and the 20 ms after CTRL.RST touch no BAR 0 register
+// (ich8lan.c:4830: "cannot issue a flush here because it hangs the hardware").
+//
+// Not here, and so said when it matters: the NVM's extended configuration and OEM bits that Linux writes to the PHY
+// after its reset (ich8lan.c e1000_sw_lcd_config_ich8lan, e1000_oem_bits_config_ich8lan); the K1 and platform power
+// workarounds that follow a link (ich8lan.c:1456 on); the descriptor flush (netdev.c:3873-3896): when the device asks
+// for one, open() refuses rather than reset a MAC that would hang.
+
+
+const U64 R_CTRL_EXT = 0x0018;         // regs.h:11
+const U64 R_MDIC = 0x0020;             // regs.h:13
+const U64 R_FEXTNVM3 = 0x003C;         // regs.h:19
+const U64 R_FEXTNVM7 = 0x00E4;         // regs.h:23
+const U64 R_EXTCNF_CTRL = 0x0F00;      // regs.h:52
+const U64 R_KABGTXD = 0x3004;          // regs.h:107
+const U64 R_H2ME = 0x5B50;             // ich8lan.h:50
+const U64 R_FWSM = 0x5B54;             // regs.h:215
+const U64 R_FEXTNVM11 = 0x5BBC;        // regs.h:26
+
+const U64 CTRL_GIO_MASTER_DISABLE = 0x4;     // defines.h
+const U64 CTRL_FRCSPD = 0x800;               // defines.h:190
+const U64 CTRL_FRCDPX = 0x1000;              // defines.h:191
+const U64 CTRL_LANPHYPC_OVERRIDE = 0x10000;  // defines.h:192
+const U64 CTRL_LANPHYPC_VALUE = 0x20000;     // defines.h:193
+const U64 CTRL_PHY_RST = 0x80000000;         // defines.h:204
+const U64 CTRL_EXT_LPCD = 0x4;               // defines.h:35
+const U64 CTRL_EXT_FORCE_SMBUS = 0x800;      // defines.h:37
+const U64 STATUS_GIO_MASTER_ENABLE = 0x80000;
+const U64 STATUS_LAN_INIT_DONE = 0x200;      // defines.h:221
+const U64 STATUS_PHYRA = 0x400;              // defines.h:222
+const U64 EXTCNF_SWFLAG = 0x20;              // defines.h:337
+const U64 EXTCNF_GATE_PHY_CFG = 0x80;        // defines.h:338
+const U64 FWSM_RSPCIPHY = 0x40;              // ich8lan.h:33
+const U64 FWSM_ULP_CFG_DONE = 0x400;         // ich8lan.h:43
+const U64 FWSM_FW_VALID = 0x8000;            // ich8lan.h:35
+const U64 H2ME_ULP = 0x800;                  // ich8lan.h:53
+const U64 H2ME_ENFORCE_SETTINGS = 0x1000;    // ich8lan.h:54
+const U64 FEXTNVM3_CFG_COUNTER_MASK = 0x0C000000;   // ich8lan.h:74
+const U64 FEXTNVM3_CFG_COUNTER_50MS = 0x08000000;   // ich8lan.h:75
+const U64 FEXTNVM7_DISABLE_SMB_PERST = 0x20;        // ich8lan.h:87
+const U64 FEXTNVM11_DISABLE_MULR_FIX = 0x2000;      // ich8lan.h:91
+const U64 KABGTXD_BGSQLBIAS = 0x50000;              // defines.h:349
+const U64 MDIC_OP_WRITE = 0x04000000;        // defines.h:798
+const U64 MDIC_OP_READ = 0x08000000;         // defines.h:799
+const U64 MDIC_READY = 0x10000000;           // defines.h:800
+const U64 MDIC_ERROR = 0x40000000;           // defines.h:801
+const I64 PCI_DESC_RING_STATUS = 0xE4;       // e1000.h:79
+const U64 FLUSH_DESC_REQUIRED = 0x100;       // e1000.h:80
+
+// PHY registers as (page, register): ich8lan.h:166-181, phy.h
+const U64 PG_PORT_CTRL = 769;                // BM_PORT_CTRL_PAGE
+const U64 RG_CV_SMB_CTRL = 23;               // CV_SMB_CTRL, PHY_REG(769, 23)
+const U64 CV_SMB_FORCE_SMBUS = 0x1;
+const U64 RG_PORT_GEN_CFG = 17;              // BM_PORT_GEN_CFG, PHY_REG(769, 17)
+const U64 WUC_HOST_WU_BIT = 0x10;            // BM_WUC_HOST_WU_BIT
+const U64 PG_PM = 770;
+const U64 RG_HV_PM_CTRL = 17;                // HV_PM_CTRL, PHY_REG(770, 17)
+const U64 HV_PM_K1_ENABLE = 0x4000;
+const U64 PG_ULP = 779;
+const U64 RG_ULP_CONFIG1 = 16;               // I218_ULP_CONFIG1, PHY_REG(779, 16)
+const U64 ULP_START = 0x1;
+const U64 ULP_CLEAR = 0x1D74;                // IND, STICKY_ULP, INBAND_EXIT, WOL_HOST, RESET_TO_SMBUS,
+                                             // EN_ULP_LANPHYPC, DIS_CLR_STICKY_ON_PERST, DISABLE_SMB_PERST
+const U64 RG_PHYSID1 = 2;                    // MII_PHYSID1, page 0
+const U64 RG_PHYSID2 = 3;
+
+Bool pch = false;                            // the device found is the board's I219-V
+U64 phy_val = 0;                             // the value of the last PHY read
+I64 t_last = 0;                              // the PIT count at the last clock read
+I64 t_counts = 0;                            // PIT input cycles since clock_start
+
+// --- time, on the PIT's channel 0 (port I/O only: a wait reads no device register) ---
+
+void clock_start() {
+    t_last = pit.latched();
+    t_counts = 0;
+}
+
+// Microseconds since clock_start. The count runs down from pit.USER_DIVISOR once a tick; two reads here are far less
+// than a tick apart, so a step longer than half a tick is not time (an interrupt's own latch between ours) and counts 0.
+I64 clock_us() {
+    I64 now = pit.latched();
+    I64 d = t_last - now;
+    if (d < 0) {
+        d += pit.USER_DIVISOR;
+    }
+    if (d > pit.USER_DIVISOR / 2) {
+        d = 0;
+    }
+    t_last = now;
+    t_counts += d;
+    return t_counts * 1000000 / pit.INPUT_HZ;
+}
+
+// True when channel 0's count moves: a PIT programmed but gated (some firmware gates the 8254) would let every wait
+// run to its bound.
+Bool pit_moves() {
+    I64 a = pit.latched();
+    I64 k = 0;
+    while (k < 1000000) {
+        if (pit.latched() != a) {
+            return true;
+        }
+        k += 1;
+    }
+    return false;
+}
+
+// Waits us microseconds, reading the PIT only. 64M PIT reads bound it, should the PIT not run.
+void wait_us(I64 us) {
+    clock_start();
+    I64 k = 0;
+    while (clock_us() < us && k < 64000000) { k += 1; }
+}
+
+void wait_ms(I64 ms) {
+    wait_us(1000 * ms);
+}
+
+void flush() {
+    _ = r(R_STATUS);                   // e1e_flush (e1000.h): a read that posts the writes before it
+}
+
+void i219_say(in U8[_] what) {
+    serial.serial_write("daphnis: i219: ");
+    serial.serial_write(what);
+    serial.serial_write("\n");
+}
+
+// --- the PHY over MDIC (phy.c:129-280) and its pages (phy.c:2796-2860, :3019-3027) ---
+
+// One MDIC transaction at PHY address addr. Ready is polled every 50 us, 1,920 times at most (E1000_GEN_POLL_TIMEOUT
+// x 3); success is READY, no ERROR, and the register echoed back. No retry: Linux turns its retry off in these flows.
+Bool mdic(U64 addr, U64 reg_n, U64 op, U64 data) {
+    w(R_MDIC, (data & 0xFFFF) | (reg_n << 16) | (addr << 21) | op);
+    U64 m = 0;
+    I64 i = 0;
+    Bool came = false;
+    while (!came && i < 1920) {
+        wait_us(50);
+        m = r(R_MDIC);
+        came = (m & MDIC_READY) != 0;
+        i += 1;
+    }
+    phy_val = m & 0xFFFF;
+    return came && (m & MDIC_ERROR) == 0 && ((m >> 16) & 0x1F) == reg_n;
+}
+
+// The PHY address of a page: 1 from page 768 (HV_INTC_FC_PAGE_START), else 2. A register above 15 is reached by
+// first writing its page, shifted left 5, to register 31 (IGP01E1000_PHY_PAGE_SELECT) at address 1 (phy.c:338-342).
+// Page 768 is selected as page 0. Pages 1 to 767 (the debug registers) and 800 (wake-up) are not used here.
+Bool phy_select(U64 page, U64 reg_n) {
+    if (reg_n <= 15) {
+        return true;
+    }
+    U64 sel = page;
+    if (sel == 768) {
+        sel = 0;
+    }
+    return mdic(1, 31, MDIC_OP_WRITE, sel << 5);
+}
+
+U64 phy_addr_of(U64 page) {
+    if (page >= 768) {
+        return 1;
+    }
+    return 2;
+}
+
+Bool phy_read(U64 page, U64 reg_n) {
+    return phy_select(page, reg_n) && mdic(phy_addr_of(page), reg_n, MDIC_OP_READ, 0);
+}
+
+Bool phy_write(U64 page, U64 reg_n, U64 v) {
+    return phy_select(page, reg_n) && mdic(phy_addr_of(page), reg_n, MDIC_OP_WRITE, v);
+}
+
+// --- the software semaphore (ich8lan.c:1815-1890) and the ME's hold on the PHY's reset (:2114-2126) ---
+
+// Waits up to 100 ms for EXTCNF_CTRL.SWFLAG to be free, sets it, and waits up to 1 s to read it back as ours.
+Bool swflag_take() {
+    I64 k = 0;
+    while (k < 100 && (r(R_EXTCNF_CTRL) & EXTCNF_SWFLAG) != 0) {
+        wait_ms(1);
+        k += 1;
+    }
+    if (k == 100) {
+        return false;
+    }
+    w(R_EXTCNF_CTRL, r(R_EXTCNF_CTRL) | EXTCNF_SWFLAG);
+    k = 0;
+    while (k < 1000 && (r(R_EXTCNF_CTRL) & EXTCNF_SWFLAG) == 0) {
+        wait_ms(1);
+        k += 1;
+    }
+    if (k == 1000) {
+        w(R_EXTCNF_CTRL, r(R_EXTCNF_CTRL) & (0xFFFFFFFF ^ EXTCNF_SWFLAG));
+        return false;
+    }
+    return true;
+}
+
+void swflag_give() {
+    U64 v = r(R_EXTCNF_CTRL);
+    if ((v & EXTCNF_SWFLAG) != 0) {
+        w(R_EXTCNF_CTRL, v & (0xFFFFFFFF ^ EXTCNF_SWFLAG));
+    }
+}
+
+// True when the ME blocks a PHY reset: FWSM.RSPCIPHY still clear after 30 waits of 10 ms.
+Bool reset_blocked() {
+    I64 k = 0;
+    while ((r(R_FWSM) & FWSM_RSPCIPHY) == 0) {
+        if (k == 30) {
+            return true;
+        }
+        wait_ms(10);
+        k += 1;
+    }
+    return false;
+}
+
+// --- the PHY's power cycle (ich8lan.c:254-292), its reset (phy.c:2138-2175, ich8lan.c:2911-3035) ---
+
+// LANPHYPC toggled: the PHY is power-cycled into PCIe mode. Then up to 21 waits of 5 ms for CTRL_EXT.LPCD, and 30 ms.
+void toggle_lanphypc() {
+    w(R_FEXTNVM3, (r(R_FEXTNVM3) & (0xFFFFFFFF ^ FEXTNVM3_CFG_COUNTER_MASK)) | FEXTNVM3_CFG_COUNTER_50MS);
+    U64 c = (r(R_CTRL) | CTRL_LANPHYPC_OVERRIDE) & (0xFFFFFFFF ^ CTRL_LANPHYPC_VALUE);
+    w(R_CTRL, c);
+    flush();
+    wait_us(20);
+    w(R_CTRL, c & (0xFFFFFFFF ^ CTRL_LANPHYPC_OVERRIDE));
+    flush();
+    I64 k = 0;
+    Bool done = false;
+    while (!done && k <= 20) {
+        wait_ms(5);
+        done = (r(R_CTRL_EXT) & CTRL_EXT_LPCD) != 0;
+        k += 1;
+    }
+    wait_ms(30);
+}
+
+// STATUS.LAN_INIT_DONE: polled every 200 us, 1,500 times at most, then cleared for the next reset (:2911-2932).
+void lan_init_done() {
+    I64 k = 0;
+    while (k < 1500 && (r(R_STATUS) & STATUS_LAN_INIT_DONE) == 0) {
+        wait_us(200);
+        k += 1;
+    }
+    if (k == 1500) {
+        i219_say("the NVM's basic configuration did not report done (LAN_INIT_DONE); going on, as Linux does");
+    }
+    w(R_STATUS, r(R_STATUS) & (0xFFFFFFFF ^ STATUS_LAN_INIT_DONE));
+}
+
+// After a reset of the PHY: 10 ms, the configuration-done wait, PHYRA cleared (:5746-5770, e1000_get_cfg_done_ich8lan),
+// then 10 ms more and the host wake-up bit cleared (:2939-2972, e1000_post_phy_reset_ich8lan).
+void after_phy_reset() {
+    wait_ms(10);
+    lan_init_done();
+    U64 s = r(R_STATUS);
+    if ((s & STATUS_PHYRA) != 0) {
+        w(R_STATUS, s & (0xFFFFFFFF ^ STATUS_PHYRA));
+    }
+    if (reset_blocked()) {
+        return;
+    }
+    wait_ms(10);
+    if (!swflag_take()) {                                        // e1e_rphy takes the semaphore itself (phy.c:2864)
+        return;
+    }
+    if (phy_read(PG_PORT_CTRL, RG_PORT_GEN_CFG)) {
+        _ = phy_write(PG_PORT_CTRL, RG_PORT_GEN_CFG, phy_val & (0xFFFF ^ WUC_HOST_WU_BIT));
+    }
+    swflag_give();
+}
+
+// The PHY alone reset by CTRL.PHY_RST, 100 us held (phy->reset_delay_us), 300 us to settle (phy.c:2138-2175).
+void phy_reset() {
+    if (reset_blocked()) {
+        return;
+    }
+    Bool held = swflag_take();
+    U64 c = r(R_CTRL);
+    w(R_CTRL, c | CTRL_PHY_RST);
+    flush();
+    wait_us(100);
+    w(R_CTRL, c);
+    flush();
+    wait_us(300);
+    if (held) {
+        swflag_give();
+    }
+    after_phy_reset();
+}
+
+// True when the PHY answers its ID (PHYSID1, PHYSID2 at page 0, two tries). Then, with no valid ME firmware, SMBus is
+// unforced in the PHY and in the MAC (ich8lan.c:176-247, e1000_phy_is_accessible_pchlan, pch_lpt and later).
+Bool phy_answers() {
+    Bool got = false;
+    I64 k = 0;
+    while (!got && k < 2) {
+        got = phy_read(0, RG_PHYSID1) && phy_val != 0xFFFF && phy_read(0, RG_PHYSID2) && phy_val != 0xFFFF;
+        k += 1;
+    }
+    if (!got) {
+        return false;
+    }
+    if ((r(R_FWSM) & FWSM_FW_VALID) == 0) {
+        if (phy_read(PG_PORT_CTRL, RG_CV_SMB_CTRL)) {
+            _ = phy_write(PG_PORT_CTRL, RG_CV_SMB_CTRL, phy_val & (0xFFFF ^ CV_SMB_FORCE_SMBUS));
+        }
+        w(R_CTRL_EXT, r(R_CTRL_EXT) & (0xFFFFFFFF ^ CTRL_EXT_FORCE_SMBUS));
+    }
+    return true;
+}
+
+// --- ULP off (ich8lan.c:1299-1455, e1000_disable_ulp_lpt_lp with force) ---
+
+// False when the ME did not finish (2.5 s) or the PHY never answered its SMBus control register. Linux warns and goes
+// on either way (:312); so does pch_phy_init.
+Bool ulp_off() {
+    if ((r(R_FWSM) & FWSM_FW_VALID) != 0) {
+        w(R_H2ME, (r(R_H2ME) & (0xFFFFFFFF ^ H2ME_ULP)) | H2ME_ENFORCE_SETTINGS);
+        I64 k = 0;
+        while ((r(R_FWSM) & FWSM_ULP_CFG_DONE) != 0) {
+            if (k == 250) {
+                return false;
+            }
+            wait_ms(10);
+            k += 1;
+        }
+        w(R_H2ME, r(R_H2ME) & (0xFFFFFFFF ^ H2ME_ENFORCE_SETTINGS));
+        return true;
+    }
+    if (!swflag_take()) {
+        return false;
+    }
+    toggle_lanphypc();
+    Bool ok = phy_read(PG_PORT_CTRL, RG_CV_SMB_CTRL);
+    if (!ok) {
+        w(R_CTRL_EXT, r(R_CTRL_EXT) | CTRL_EXT_FORCE_SMBUS);   // the MAC may be in PCIe mode: try over SMBus
+        wait_ms(50);
+        ok = phy_read(PG_PORT_CTRL, RG_CV_SMB_CTRL);
+    }
+    if (ok) {
+        _ = phy_write(PG_PORT_CTRL, RG_CV_SMB_CTRL, phy_val & (0xFFFF ^ CV_SMB_FORCE_SMBUS));
+        w(R_CTRL_EXT, r(R_CTRL_EXT) & (0xFFFFFFFF ^ CTRL_EXT_FORCE_SMBUS));
+        ok = phy_read(PG_PM, RG_HV_PM_CTRL);
+    }
+    if (ok) {
+        _ = phy_write(PG_PM, RG_HV_PM_CTRL, phy_val | HV_PM_K1_ENABLE);
+        ok = phy_read(PG_ULP, RG_ULP_CONFIG1);
+    }
+    if (ok) {
+        U64 v = phy_val & (0xFFFF ^ ULP_CLEAR);
+        _ = phy_write(PG_ULP, RG_ULP_CONFIG1, v);
+        _ = phy_write(PG_ULP, RG_ULP_CONFIG1, v | ULP_START);   // commits: auto ULP configuration starts
+        w(R_FEXTNVM7, r(R_FEXTNVM7) & (0xFFFFFFFF ^ FEXTNVM7_DISABLE_SMB_PERST));
+    }
+    swflag_give();
+    phy_reset();
+    wait_ms(50);
+    return ok;
+}
+
+// The PHY brought out of ULP and SMBus mode and reset (ich8lan.c:295-430). False when it never answers; then the
+// device is not opened.
+Bool pch_phy_init() {
+    w(R_EXTCNF_CTRL, r(R_EXTCNF_CTRL) | EXTCNF_GATE_PHY_CFG);
+    if (!ulp_off()) {
+        i219_say("ULP did not turn off cleanly; going on, as Linux does");
+    }
+    if (!swflag_take()) {
+        i219_say("the PHY semaphore (SWFLAG) is held by another; not opened");
+        return false;
+    }
+    Bool ok = phy_answers();
+    if (!ok) {
+        w(R_CTRL_EXT, r(R_CTRL_EXT) | CTRL_EXT_FORCE_SMBUS);   // try the PHY over SMBus first
+        wait_ms(50);
+        ok = phy_answers();
+    }
+    if (!ok) {
+        if (reset_blocked()) {
+            swflag_give();
+            i219_say("the PHY does not answer and the ME blocks its power cycle; not opened");
+            return false;
+        }
+        toggle_lanphypc();
+        ok = phy_answers();
+        if (!ok) {
+            w(R_CTRL_EXT, r(R_CTRL_EXT) & (0xFFFFFFFF ^ CTRL_EXT_FORCE_SMBUS));
+            ok = phy_answers();
+        }
+    }
+    swflag_give();
+    if (!ok) {
+        i219_say("the PHY does not answer over MDIC, in PCIe or SMBus mode; not opened");
+        return false;
+    }
+    phy_reset();
+    return true;
+}
+
+// --- the MAC's reset (ich8lan.c:4764-4882), after the descriptor check (netdev.c:3873-3896) ---
+
+// False when the device asks for a descriptor flush, which this driver does not do.
+Bool pch_reset() {
+    w(R_FEXTNVM11, r(R_FEXTNVM11) | FEXTNVM11_DISABLE_MULR_FIX);
+    if (r(R_TDLEN) != 0 && ((pci.read32(dev, PCI_DESC_RING_STATUS) as U64) & FLUSH_DESC_REQUIRED) != 0) {
+        i219_say("the descriptor rings ask for a flush (FLUSH_DESC_REQUIRED), which this driver does not do; not opened");
+        return false;
+    }
+    w(R_CTRL, r(R_CTRL) | CTRL_GIO_MASTER_DISABLE);              // e1000e_disable_pcie_master (mac.c)
+    I64 k = 0;
+    while (k < 800 && (r(R_STATUS) & STATUS_GIO_MASTER_ENABLE) != 0) {
+        wait_us(100);
+        k += 1;
+    }
+    w(R_IMC, 0xFFFFFFFF);
+    w(R_RCTL, 0);
+    w(R_TCTL, TCTL_PSP);
+    flush();
+    wait_ms(10);
+    U64 c = r(R_CTRL);
+    if (!reset_blocked()) {
+        c = c | CTRL_PHY_RST;
+    }
+    _ = swflag_take();                                           // Linux goes on without it too; the reset clears it
+    w(R_CTRL, c | CTRL_RST);
+    wait_ms(20);                                                 // no BAR 0 access: a flush here hangs the MAC
+    if ((c & CTRL_PHY_RST) != 0) {
+        after_phy_reset();
+    } else {
+        lan_init_done();
+    }
+    w(R_IMC, 0xFFFFFFFF);
+    _ = r(R_ICR);
+    w(R_KABGTXD, r(R_KABGTXD) | KABGTXD_BGSQLBIAS);
+    return true;
+}
+
+// True when one of the family's devices this driver runs is on a bus: QEMU's 82540EM and 82574L, and the board's
+// I219-V (8086:15bc), which takes the PCH layer. Nothing is touched.
+export Bool find() {
+    I64[64] devs;
+    U32[64] ids;
+    U32[64] classes;
+    I64 n = pci.list(devs, ids, classes);
+    for k in 0..n {
+        if (dev == pci.NONE && (ids[k] == ID_82540EM || ids[k] == ID_82574L || ids[k] == ID_I219_V7)) {
+            dev = devs[k];
+            pch = ids[k] == ID_I219_V7;
+        }
+    }
+    return dev != pci.NONE;
+}
+
+// Gives slot s's buffer to the device, or keeps it (spare) while the ring holds 31.
+export void give(I64 s) {
+    if ((rx_tail + 1) % RING == rx_next) {
+        spare = s;
+        return;
+    }
+    U64[2] d = [rx_buf + (s * step) as U64, 0];
+    phys.phys_write64(rx_ring + (16 * rx_tail) as U64, d);
+    ring_slot[rx_tail] = s;
+    rx_tail = (rx_tail + 1) % RING;
+    w(R_RDT, rx_tail as U64);
+}
+
+// The device found by find(), reset and running: the front's buffers are rx and tx, slot s at s * stride. False
+// when BAR 0 cannot be mapped, the reset does not end, the pool has no frame for a ring, or there is no MAC.
+export Bool open(U64 rx, U64 tx, I64 stride) {
+    if (dev == pci.NONE) {
+        return false;
+    }
+    reg = pci.mem_bar(dev);
+    if (reg == 0) {
+        return false;
+    }
+    pci.enable_mem_dma(dev);
+    if (mmio_map(reg, WINDOW) != 0) {
+        return false;
+    }
+    I64 t = 0;
+    if (pch) {
+        if (!pit.pit_is_programmed(pit.USER_DIVISOR)) {
+            i219_say("the PIT is not running, so no wait can be timed; not opened");
+            return false;
+        }
+        if (!pit_moves()) {
+            i219_say("the PIT's count does not move, so no wait can be timed; not opened");
+            return false;
+        }
+        if (!pch_phy_init() || !pch_reset()) {
+            return false;
+        }
+    } else {
+        w(R_IMC, 0xFFFFFFFF);                                // no interrupts: polled
+        w(R_CTRL, r(R_CTRL) | CTRL_RST);
+        while (t < SPIN && (r(R_CTRL) & CTRL_RST) != 0) { t += 1; }
+        if (t == SPIN) {
+            return false;
+        }
+    }
+    w(R_IMC, 0xFFFFFFFF);
+    _ = r(R_ICR);
+    U64 lo = r(R_RAL0);
+    U64 hi = r(R_RAH0);
+    if ((lo == 0 && (hi & 0xFFFF) == 0) || (lo == 0xFFFFFFFF && (hi & 0xFFFF) == 0xFFFF)) {
+        if (pch) {
+            i219_say("RAR0 holds no MAC address after the NVM's autoload; not opened");
+        }
+        return false;
+    }
+    for i in 0..4 {
+        mac[i] = ((lo >> (8 * i) as U64) & 0xFF) as U8;
+    }
+    mac[4] = (hi & 0xFF) as U8;
+    mac[5] = ((hi >> 8) & 0xFF) as U8;
+    w(R_RAH0, (hi & 0xFFFF) | RAH_AV);
+    if (pch) {
+        for k in 0..32 {                                     // a PCH has 32 multicast table words (ich8lan.c:698)
+            w(R_MTA + (4 * k) as U64, 0);
+        }
+        // copper link by autonegotiation: forced speed and duplex off (ich8lan.c:5194-5205)
+        w(R_CTRL, (r(R_CTRL) | CTRL_SLU | CTRL_ASDE) & (0xFFFFFFFF ^ (CTRL_CLEAR | CTRL_FRCSPD | CTRL_FRCDPX)));
+    } else {
+        for k in 0..128 {
+            w(R_MTA + (4 * k) as U64, 0);
+        }
+        w(R_CTRL, (r(R_CTRL) | CTRL_SLU | CTRL_ASDE) & (0xFFFFFFFF ^ CTRL_CLEAR));
+    }
+    rx_ring = frame();
+    tx_ring = frame();
+    if (rx_ring == 0 || tx_ring == 0) {
+        if (pch) {
+            i219_say("the pool has no frame for a descriptor ring; not opened");
+        }
+        return false;
+    }
+    rx_buf = rx;
+    tx_buf = tx;
+    step = stride;
+    rx_next = 0;
+    rx_tail = 0;
+    spare = -1;
+    tx_tail = 0;
+    tx_clean = 0;
+    w(R_RDBAL, rx_ring & 0xFFFFFFFF);
+    w(R_RDBAH, rx_ring >> 32);
+    w(R_RDLEN, (16 * RING) as U64);
+    w(R_RDH, 0);
+    w(R_RDT, 0);
+    w(R_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
+    for s in 0..RING {
+        give(s);
+    }
+    w(R_TDBAL, tx_ring & 0xFFFFFFFF);
+    w(R_TDBAH, tx_ring >> 32);
+    w(R_TDLEN, (16 * RING) as U64);
+    w(R_TDH, 0);
+    w(R_TDT, 0);
+    w(R_TIPG, TIPG);
+    w(R_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT_COLD);
+    if (pch) {
+        // The link, when a wire is there: up to 3 s by the PIT (autonegotiation takes about 2 s). open() is true with
+        // the link down too; link() says, and the front goes on (a cable plugged later comes up by itself).
+        I64 k = 0;
+        while (k < 300 && (r(R_STATUS) & STATUS_LU) == 0) {     // 300 waits of 10 ms (wait_ms restarts the clock)
+            wait_ms(10);
+            k += 1;
+        }
+        if ((r(R_STATUS) & STATUS_LU) == 0) {
+            i219_say("opened; no link yet (no cable, or the far end is still negotiating)");
+        } else {
+            i219_say("opened; link up");
+        }
+        say("STATUS at open (speed bits 6-7, full duplex bit 0; defines.h:211-217)", r(R_STATUS));
+        return true;
+    }
+    t = 0;
+    while (t < SPIN && (r(R_STATUS) & STATUS_LU) == 0) { t += 1; }   // the link, when a wire is there
+    return true;
+}
+
+export Bool link() {
+    return dev != pci.NONE && reg != 0 && (r(R_STATUS) & STATUS_LU) != 0;
+}
+
+export U8 mac_byte(I64 i) {
+    return mac[i];
+}
+
+// The slot of the next frame the device has received, or -1 when there is none; its length is then took_len():
+// -1 for a frame in error or one that did not end in its buffer. The spare slot, if one waits, takes the room.
+// With every slot at the front (32 frames taken, none polled) the ring is empty and nothing is read.
+export I64 take() {
+    if (rx_next == rx_tail) {
+        return -1;                     // the device holds no buffer: this descriptor's DD is a lap old
+    }
+    U64[2] d;
+    phys.phys_read64(rx_ring + (16 * rx_next) as U64, d);
+    U64 status = (d[1] >> 32) & 0xFF;
+    if ((status & RX_DD) == 0) {
+        return -1;
+    }
+    U64 errors = (d[1] >> 40) & 0xFF;
+    rx_bytes = -1;
+    if ((status & RX_EOP) != 0 && errors == 0) {
+        rx_bytes = (d[1] & 0xFFFF) as I64;
+    }
+    I64 s = ring_slot[rx_next];
+    rx_next = (rx_next + 1) % RING;
+    if (spare >= 0) {
+        I64 held = spare;
+        spare = -1;
+        give(held);
+    }
+    return s;
+}
+
+export I64 took_len() {
+    return rx_bytes;
+}
+
+// True when the device has completed the next receive descriptor (its DD bit, read from memory, no register): what
+// take() would return. NW-1's wait spins on it while a TCP connection is open (src/net.ci has_rx).
+export Bool ready() {
+    if (rx_next == rx_tail) {
+        return false;
+    }
+    U64[2] d;
+    phys.phys_read64(rx_ring + (16 * rx_next) as U64, d);
+    return (((d[1] >> 32) & 0xFF) & RX_DD) != 0;
+}
+
+// Sends the nbytes bytes of slot s's transmit buffer. The front keeps at most TX_ROOM frames in flight.
+export void send(I64 s, I64 nbytes) {
+    U64[2] d = [tx_buf + (s * step) as U64, (nbytes as U64) | (TX_CMD << 24)];
+    phys.phys_write64(tx_ring + (16 * tx_tail) as U64, d);
+    tx_tail = (tx_tail + 1) % RING;
+    w(R_TDT, tx_tail as U64);
+}
+
+// The frames the device has sent since the last call.
+export I64 reap() {
+    I64 n = 0;
+    Bool more = true;
+    while (more && tx_clean != tx_tail) {
+        U64[2] d;
+        phys.phys_read64(tx_ring + (16 * tx_clean) as U64, d);
+        if (((d[1] >> 32) & TX_DD) == 0) {
+            more = false;
+        } else {
+            tx_clean = (tx_clean + 1) % RING;
+            n += 1;
+        }
+    }
+    return n;
+}
+// SPDX-License-Identifier: Apache-2.0

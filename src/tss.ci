@@ -1,0 +1,34 @@
+// src/tss.ci: the 64-bit TSS descriptor (SDM vol. 3, 8.2.3), pure so the hosted tests run it.
+// A descriptor is two 8-byte words: limit[15:0], base[23:0] at bit 16, type 0x89 (an available
+// 64-bit TSS, present, DPL 0) at bit 40, limit[19:16] at bit 48, base[31:24] at bit 56; then
+// base[63:32].
+
+export U64 tss_desc_lo(U64 base, U64 limit) {
+    U64 kind = 0x89;
+    return (limit & 0xFFFF) | ((base & 0xFFFFFF) <<% 16) | (kind <<% 40) | (((limit >> 16) & 0xF) <<% 48) | (((base >> 24) & 0xFF) <<% 56);
+}
+
+export U64 tss_desc_hi(U64 base) {
+    return base >> 32;
+}
+
+// Where IST entry n (1 to 7) of the TSS starts, in bytes: 36 + 8 * (n - 1). Not a multiple of 8.
+export I64 ist_offset(I64 n) {
+    return 36 + 8 * (n - 1);
+}
+
+// The IST index an exception's gate uses: #DF 1, #NMI 2, #PF 3, others 0 (none).
+export I64 ist_of(I64 vector) {
+    I64 ist = 0;
+    if (vector == 8) {
+        ist = 1;
+    }
+    if (vector == 2) {
+        ist = 2;
+    }
+    if (vector == 14) {
+        ist = 3;
+    }
+    return ist;
+}
+// SPDX-License-Identifier: Apache-2.0

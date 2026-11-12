@@ -1,0 +1,115 @@
+$ 600 text.txt
+-- tree
+~ text.txt f 0600 47 4eb69a7d087144a6
+status 0
+$ 0644 text.txt
+status 0
+$ 4755 text.txt nonl.txt
+-- tree
+~ nonl.txt f 4755 21 e421985de8560d2d
+~ text.txt f 4755 47 4eb69a7d087144a6
+status 0
+$ u+x,go-r text.txt
+-- tree
+~ text.txt f 0700 47 4eb69a7d087144a6
+status 0
+$ a=rX text.txt look/run.sh
+-- tree
+~ look/run.sh f 0555 19 a4e0317eafab5cf1
+~ text.txt f 0444 47 4eb69a7d087144a6
+status 0
+$ -w text.txt
+-- tree
+~ text.txt f 0444 47 4eb69a7d087144a6
+status 0
+$ +t text.txt
+-- tree
+~ text.txt f 1644 47 4eb69a7d087144a6
+status 0
+$ o+t text.txt
+status 0
+$ =t text.txt
+-- tree
+~ text.txt f 1000 47 4eb69a7d087144a6
+status 0
+$ = text.txt
+-- tree
+~ text.txt f 0000 47 4eb69a7d087144a6
+status 0
+$ u=g,g=o text.txt
+-- tree
+~ text.txt f 0444 47 4eb69a7d087144a6
+status 0
+$ o=u text.txt
+-- tree
+~ text.txt f 0646 47 4eb69a7d087144a6
+status 0
+$ u=s,g+s text.txt
+-- tree
+~ text.txt f 6044 47 4eb69a7d087144a6
+status 0
+$ go-rx look
+-- tree
+~ look d 0700
+status 0
+$ -R go-rx look
+-- tree
+~ look d 0700
+~ look/.dot f 0600 7 e084a3683ef795d1
+~ look/a.txt f 0600 6 b6a98d9ce9a2d914
+~ look/b.txt f 0600 420 b4483cd89463a476
+~ look/run.sh f 0700 19 a4e0317eafab5cf1
+~ look/sp ace.txt f 0600 6 9d39745403e5faf6
+~ look/sub d 0700
+~ look/sub/c.txt f 0600 2 a3a5e715f0cc574a
+~ look/sub/inner d 0700
+~ look/sub/inner/d.txt f 0600 6 940a68104d3b6904
+status 0
+$ -R u=rwX,go= box
+-- tree
+~ box d 0700
+~ box/a.txt f 0600 2 87428fc522803d31
+~ box/in d 0700
+~ box/in/b.txt f 0600 4 f288623ee73a16eb
+~ box/in/deep d 0700
+~ box/in/deep/c.txt f 0600 6 7cc744f8a470f6b2
+status 0
+$ -R a+rwX box
+-- tree
+~ box d 0777
+~ box/a.txt f 0666 2 87428fc522803d31
+~ box/in d 0777
+~ box/in/b.txt f 0666 4 f288623ee73a16eb
+~ box/in/deep d 0777
+~ box/in/deep/c.txt f 0666 6 7cc744f8a470f6b2
+status 0
+$ -- 600 text.txt
+-- tree
+~ text.txt f 0600 47 4eb69a7d087144a6
+status 0
+$ +x missing text.txt
+-- stderr
+chmod: missing: No such file or directory
+-- tree
+~ text.txt f 0755 47 4eb69a7d087144a6
+status 1
+$ 9 text.txt
+-- stderr
+chmod: invalid mode
+status 2
+$ u+q text.txt
+-- stderr
+chmod: invalid mode
+status 2
+$ u text.txt
+-- stderr
+chmod: invalid mode
+status 2
+$ 600
+-- stderr
+chmod: missing operand
+status 2
+$ -v 600 text.txt
+-- stderr
+chmod: not supported: -v
+status 2

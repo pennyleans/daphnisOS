@@ -1,0 +1,31 @@
+# tests/core/head.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6).
+long.txt | - | -
+text.txt | - | -
+ | long.txt | -
+- | text.txt | -
+-n 3 text.txt | - | -
+-n3 text.txt | - | -
+-n 0 text.txt | - | -
+-n 400 long.txt | - | -
+-n +2 text.txt | - | D-3
+-1 text.txt | - | -
+-2 | text.txt | -
+-c 5 text.txt | - | -
+-c5 nonl.txt | - | -
+-c 0 text.txt | - | -
+-c 9000 long.txt | - | -
+-c 600 bin.dat | - | -
+-n 3 -c 5 text.txt | - | -
+-n 2 text.txt nonl.txt empty | - | -
+-n 2 text.txt - nonl.txt | ws.txt | -
+missing text.txt | - | -
+text.txt missing nonl.txt | - | -
+-n 1 look text.txt | - | -
+-n 1 look/sp ace.txt | - | -
+-- text.txt | - | -
+-n | - | D-3
+-n x text.txt | - | D-3
+-n -3 text.txt | - | D-13
+-c -3 text.txt | - | D-13
+-q text.txt nonl.txt | - | D-1
+-v text.txt | - | D-1

@@ -1,0 +1,270 @@
+// tests/hw/gpt_test.ci: hosted tests of src/gpt.ci (HW-4m's stick), the GUID partition table read as the device's
+// word: sound tables, and tables that lie.
+// cint test --root . tests/hw/gpt_test.ci
+
+import src.gpt;
+
+void put(inout U8[512] b, I64 at, U64 v, I64 n) {
+    for k in 0..n {
+        b[at + k] = ((v >> (8 * k) as U64) & 0xFF) as U8;
+    }
+}
+
+void seal(inout U8[512] h) {
+    put(h, 16, 0, 4);
+    put(h, 16, gpt.crc_final(gpt.crc_update(0xFFFFFFFF, h, 0, 92)), 4);
+}
+
+// The header tools/build-stick.sh's sfdisk writes for a 16 MiB stick: 128 entries at LBA 2, usable 34 to 32734.
+void stick(inout U8[512] h) {
+    for k in 0..512 { h[k] = 0; }
+    U8[8] sig = [0x45, 0x46, 0x49, 0x20, 0x50, 0x41, 0x52, 0x54];
+    for k in 0..8 { h[k] = sig[k]; }
+    put(h, 8, 0x10000, 4);
+    put(h, 12, 92, 4);
+    put(h, 24, 1, 8);
+    put(h, 32, 32767, 8);
+    put(h, 40, 34, 8);
+    put(h, 48, 32734, 8);
+    put(h, 72, 2, 8);
+    put(h, 80, 128, 4);
+    put(h, 84, 128, 4);
+    put(h, 88, 0x12345678, 4);
+    seal(h);
+}
+
+test "CRC32 is IEEE 802.3's" {
+    U8[9] check = [0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39];   // "123456789"
+    assert(gpt.crc_final(gpt.crc_update(0xFFFFFFFF, check, 0, 9)) == 0xCBF43926);
+    U64 c = gpt.crc_update(0xFFFFFFFF, check, 0, 4);
+    assert(gpt.crc_final(gpt.crc_update(c, check, 4, 5)) == 0xCBF43926);     // carried across pieces
+}
+
+test "a sound header" {
+    U8[512] h;
+    stick(h);
+    I64[5] g;
+    assert(gpt.header(h, 32768, g) == 1);
+    assert(g[0] == 2 && g[1] == 128 && g[2] == 0x12345678 && g[3] == 34 && g[4] == 32734);
+}
+
+test "no signature, and a protective MBR" {
+    U8[512] h;
+    for k in 0..512 { h[k] = 0; }
+    I64[5] g;
+    assert(gpt.header(h, 32768, g) == 0);
+    assert(!gpt.protective(h));
+    h[446 + 4] = 0xEE;
+    assert(!gpt.protective(h));                            // no boot signature
+    h[510] = 0x55;
+    h[511] = 0xAA;
+    assert(gpt.protective(h));
+    h[446 + 4] = 0x83;
+    h[446 + 16 * 3 + 4] = 0xEE;
+    assert(gpt.protective(h));                             // in any of the four slots
+}
+
+test "headers that lie" {
+    U8[512] h;
+    I64[5] g;
+    stick(h);
+    h[100] = 1;                                            // past the CRC's 92 bytes: not covered, still sound
+    assert(gpt.header(h, 32768, g) == 1);
+    h[40] = 35;                                            // a covered byte changed, CRC not
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 80, 0xFFFFFFFF, 4);                             // 2^32 - 1 entries
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 80, 0, 4);                                      // none
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 84, 0, 4);                                      // entry size 0
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 84, 256, 4);                                    // a size this reader does not take
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 72, 0xFFFFFFFFFFFFFFF0, 8);                     // the array past the end, near 2^64
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 48, 40000, 8);                                  // the usable range past the device
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 40, 20, 8);                                     // usable from 20: the array (2 to 33) runs into it
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 40, 30000, 8);
+    put(h, 48, 100, 8);                                    // last before first
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 24, 2, 8);                                      // not at LBA 1
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    put(h, 12, 600, 4);                                    // a header bigger than its sector
+    seal(h);
+    assert(gpt.header(h, 32768, g) == -1);
+    stick(h);
+    assert(gpt.header(h, 20, g) == -1);                    // a device too small for a table
+}
+
+// The unique GUIDs tools/build-stick.sh gives its partitions, 6461706E-6869-7300-0000-00000000000N, on disk: N is
+// the last byte (4 the ESP, 5 the volume).
+void stick_uid(inout U8[16] g, U8 last) {
+    U8[16] d = [0x6E, 0x70, 0x61, 0x64, 0x69, 0x68, 0x00, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    for k in 0..16 { g[k] = d[k]; }
+    g[15] = last;
+}
+
+Bool same16(in U8[16] a, in U8[16] b) {
+    Bool eq = true;
+    for k in 0..16 { eq = eq && a[k] == b[k]; }
+    return eq;
+}
+
+// One entry of type t (0 unused, 1 Linux, 2 the ESP) from first to last at entry slot e; a used one's unique GUID is
+// the stick's with N = 4 + e.
+void ent(inout U8[512] b, I64 e, I64 t, U64 first, U64 last) {
+    U8[16] linux = [0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4];
+    U8[16] esp = [0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B];
+    I64 at = 128 * e;
+    for k in 0..128 { b[at + k] = 0; }
+    U8[16] g;
+    stick_uid(g, (4 + e) as U8);
+    for k in 0..16 {
+        if (t == 1) { b[at + k] = linux[k]; }
+        if (t == 2) { b[at + k] = esp[k]; }
+        if (t != 0) { b[at + 16 + k] = g[k]; }
+    }
+    put(b, at + 32, first, 8);
+    put(b, at + 40, last, 8);
+}
+
+test "entries: the stick's two partitions" {
+    U8[512] b;
+    ent(b, 0, 2, 2048, 4095);
+    ent(b, 1, 1, 4096, 30719);
+    ent(b, 2, 0, 0, 0);
+    ent(b, 3, 0, 0, 0);
+    I64[2] r;
+    U8[16] u;
+    U8[16] want;
+    assert(gpt.entry(b, 0, 34, 32734, r, u) == 2 && r[0] == 2048 && r[1] == 4095);
+    stick_uid(want, 4);
+    assert(same16(u, want));
+    assert(gpt.entry(b, 128, 34, 32734, r, u) == 1 && r[0] == 4096 && r[1] == 30719);
+    stick_uid(want, 5);
+    assert(same16(u, want));                               // the volume's unique GUID, beside its bounds (HW-12)
+    assert(gpt.entry(b, 256, 34, 32734, r, u) == 0);
+    assert(!gpt.overlap(2048, 4095, 4096, 30719));
+}
+
+test "entries that lie" {
+    U8[512] b;
+    I64[2] r;
+    U8[16] u;
+    ent(b, 0, 1, 5000, 4096);                              // last before first
+    assert(gpt.entry(b, 0, 34, 32734, r, u) == -1);
+    ent(b, 0, 1, 2, 4096);                                 // over the table
+    assert(gpt.entry(b, 0, 34, 32734, r, u) == -1);
+    ent(b, 0, 1, 4096, 32735);                             // past the usable range
+    assert(gpt.entry(b, 0, 34, 32734, r, u) == -1);
+    ent(b, 0, 1, 4096, 0xFFFFFFFFFFFFFFFF);                // near 2^64
+    assert(gpt.entry(b, 0, 34, 32734, r, u) == -1);
+    ent(b, 0, 2, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF);  // another kind, still bounded
+    assert(gpt.entry(b, 0, 34, 32734, r, u) == -1);
+    ent(b, 0, 2, 2048, 8191);
+    ent(b, 1, 1, 4096, 30719);                             // the volume over the ESP
+    I64[2] a;
+    assert(gpt.entry(b, 0, 34, 32734, a, u) == 2 && gpt.entry(b, 128, 34, 32734, r, u) == 1);
+    assert(gpt.overlap(r[0], r[1], a[0], a[1]));
+    assert(gpt.overlap(10, 10, 10, 10) && !gpt.overlap(10, 19, 20, 29) && gpt.overlap(10, 20, 20, 29));
+}
+
+// HW-12: the text of a GUID, all of the literal.
+Bool gt_guid[n](in U8[n] s, inout U8[16] g) {
+    return gpt.guid(s, 0, n, g);
+}
+
+// HW-12: the boot line, all of the literal, names uid.
+Bool gt_names[n](in U8[n] line, in U8[16] uid) {
+    return gpt.names(line, n, "daphnis.disk.write=", uid);
+}
+
+test "a GUID's text to its on-disk bytes, either case" {
+    U8[16] g;
+    U8[16] want;
+    stick_uid(want, 5);
+    assert(gt_guid("6461706E-6869-7300-0000-000000000005", g) && same16(g, want));
+    assert(gt_guid("6461706e-6869-7300-0000-000000000005", g) && same16(g, want));   // as lsblk prints it
+    stick_uid(want, 4);
+    assert(gt_guid("6461706E-6869-7300-0000-000000000004", g) && same16(g, want));
+    U8[16] linux = [0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4];
+    assert(gt_guid("0FC63DAF-8483-4772-8E79-3D69D8477DE4", g) && same16(g, linux));
+    assert(gt_guid("0fc63daf-8483-4772-8E79-3d69D8477de4", g) && same16(g, linux));
+    U8[16] esp = [0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B];
+    assert(gt_guid("C12A7328-F81F-11D2-BA4B-00A0C93EC93B", g) && same16(g, esp));
+    U8[16] all = [0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89];
+    assert(gt_guid("76543210-BA98-FEDC-abcd-ef0123456789", g) && same16(g, all));   // every digit
+    assert(gpt.guid("w=76543210-BA98-FEDC-ABCD-EF0123456789 ", 2, 36, g) && same16(g, all));
+}
+
+test "texts that are not a GUID" {
+    U8[16] g;
+    assert(!gt_guid("6461706E-6869-7300-0000-00000000000", g));          // 35 bytes
+    assert(!gt_guid("6461706E-6869-7300-0000-0000000000050", g));        // 37
+    assert(!gt_guid("6461706E6-869-7300-0000-000000000005", g));         // a dash one place late
+    assert(!gt_guid("6461706E-68697-300-0000-000000000005", g));
+    assert(!gt_guid("6461706E-6869-73000-000-000000000005", g));
+    assert(!gt_guid("6461706E-6869-7300-00000-00000000005", g));
+    assert(!gt_guid("6461706E 6869-7300-0000-000000000005", g));         // a space for a dash
+    assert(!gt_guid("(461706E-6869-7300-0000-00000000000)", g));
+    assert(!gt_guid("6461706E-6869-7300-0000-00000000000-", g));         // a dash for a digit
+    // the bytes on each side of the digits' ranges
+    assert(!gt_guid("/461706E-6869-7300-0000-000000000005", g));
+    assert(!gt_guid(":461706E-6869-7300-0000-000000000005", g));
+    assert(!gt_guid("@461706E-6869-7300-0000-000000000005", g));
+    assert(!gt_guid("G461706E-6869-7300-0000-000000000005", g));
+    assert(!gt_guid("`461706E-6869-7300-0000-000000000005", g));
+    assert(!gt_guid("g461706E-6869-7300-0000-000000000005", g));
+    assert(!gt_guid("6461706E-6869-7300-0000-00000000000G", g));         // the last digit
+    assert(!gpt.guid("6461706E-6869-7300-0000-000000000005", 0, 0, g));
+}
+
+test "the boot line names a partition by its unique GUID, whole" {
+    U8[16] vol;
+    stick_uid(vol, 5);
+    assert(gt_names("daphnis.disk.write=6461706e-6869-7300-0000-000000000005", vol));
+    assert(gt_names("daphnis.disk.write=6461706E-6869-7300-0000-000000000005", vol));
+    assert(gt_names("console=ttyS0 daphnis.disk.write=6461706E-6869-7300-0000-000000000005 quiet", vol));
+    assert(gt_names(
+        "daphnis.disk.write=6461706E-6869-7300-0000-000000000004 daphnis.disk.write=6461706e-6869-7300-0000-000000000005",
+        vol));                                             // the second word
+    assert(!gt_names("daphnis.disk.write=6461706E-6869-7300-0000-000000000004", vol));   // the ESP's
+    assert(!gt_names("daphnis.disk.write=6461706E-6869-7300-0000-100000000005", vol));   // one byte from the end
+    assert(!gt_names("daphnis.disk.write=7461706E-6869-7300-0000-000000000005", vol));   // the first byte
+    assert(!gt_names("xdaphnis.disk.write=6461706E-6869-7300-0000-000000000005", vol));
+    assert(!gt_names("daphnis.disk.write=6461706E-6869-7300-0000-000000000005,", vol));
+    assert(!gt_names("daphnis.disk.write=6461706E-6869-7300-0000-0000000000051", vol));
+    assert(!gt_names("daphnis.disk.write=6461706E-6869-7300-0000-00000000005", vol));
+    assert(!gt_names("daphnis.disk.read=6461706E-6869-7300-0000-000000000005", vol));
+    assert(!gt_names("daphnis.disk.wrote=6461706E-6869-7300-0000-000000000005", vol));   // a key of the same length
+    assert(!gt_names("daphnis.disk.write=QEMU_HARDDISK", vol));
+    assert(!gt_names("", vol));
+    // a line cut before the word ends
+    assert(!gpt.names("daphnis.disk.write=6461706E-6869-7300-0000-000000000005", 54, "daphnis.disk.write=", vol));
+    // a GUID of all zeros is never named
+    U8[16] zero;
+    for k in 0..16 { zero[k] = 0; }
+    assert(!gt_names("daphnis.disk.write=00000000-0000-0000-0000-000000000000", zero));
+}
+// SPDX-License-Identifier: Apache-2.0

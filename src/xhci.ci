@@ -1,0 +1,1314 @@
+// src/xhci.ci: HW-4 (docs/specs/2026-11-06-hw-hardware.md section 5, row HW-4), a USB keyboard and mouse through xHCI.
+// The controller is found by class 0C:03:30 on any bus (src/pci.ci walks the bridges), its BAR mapped uncached through
+// rt/mmio.c. init: the BIOS handoff (USBLEGSUP, OS owned), a reset, the device context base array, one command ring,
+// one event ring of one segment, the scratchpad buffers the controller asks for, then the root hub's ports in order.
+// A port with a device gets Enable Slot, Address Device, the device and configuration descriptors, and when it has a
+// boot-protocol keyboard (interface 03:01:01) or mouse (03:01:02) that is still wanted: SET_CONFIGURATION,
+// SET_PROTOCOL boot, SET_IDLE 0, Configure Endpoint for the interface's first interrupt IN endpoint, and a transfer
+// ring of 8 TRBs with 7 posted. No hubs, no interrupts: poll() reads the event ring at the scheduler's tick (src/proc.ci),
+// hands each report to src/usbhid.ci and queues its events in src/input.ci, and posts the TRB again.
+//
+// HP-1 (hot plug): a keyboard or mouse plugged in after init is taken when one is missing, and one pulled out lets go
+// of every key and button it held and gives its slot and frames back. The controller tells of each port's change
+// with a Port Status Change event; poll() handles one changed port a turn, a new device after 100 ms of debounce
+// (timed, never waited in poll). A disk plugged in or pulled out after init is not handled.
+//
+// HW-4m: a port whose device is neither and has a mass-storage interface (08:06:50, src/usbscsi.ci finds it) gets
+// SET_CONFIGURATION and Configure Endpoint for its bulk OUT and bulk IN endpoints, a transfer ring each. bulk() moves
+// one buffer on one of them and waits for its event; src/usbms.ci builds the disk's commands from that.
+//
+// Every structure is a frame of the pool (4 KiB, aligned), reached through phys_read64 and phys_write64; the
+// controller's registers through mmio_in32 and mmio_out32. Every wait is a bounded loop: a device or a controller
+// that does not answer is skipped and printed, never waited on. Nothing prints without a controller, so no golden
+// moves on a QEMU without qemu-xhci.
+
+import src.serial;
+import src.text;
+import src.phys;
+import src.frames;
+import src.pci;
+import src.input;
+import src.keyrep;
+import src.usbhid;
+import src.usbscsi;
+
+// rt/mmio.c's rows (src/mmio.ci's externs, declared here as src/pci.ci does)
+extern unrestricted I64 mmio_map(U64 base, U64 len);
+extern observe U32 mmio_in32(U64 addr);
+extern unrestricted void mmio_out32(U64 addr, U32 val);
+extern observe I64 us_now();
+
+const I64 SPIN = 2000000;              // a bounded wait: MMIO reads (about 1 us each on a board)
+const U64 TRB_NORMAL = 1;
+const U64 TRB_SETUP = 2;
+const U64 TRB_DATA = 3;
+const U64 TRB_STATUS = 4;
+const U64 TRB_LINK = 6;
+const U64 TRB_ENABLE_SLOT = 9;
+const U64 TRB_ADDRESS = 11;
+const U64 TRB_CONFIGURE = 12;
+const U64 EV_TRANSFER = 32;
+const U64 EV_COMMAND = 33;
+const U64 EV_PORT = 34;                // a Port Status Change event (HP-1)
+const I64 RING = 64;                   // the command ring and EP0's: 63 TRBs and a link
+const I64 IRING = 8;                   // an interrupt endpoint's: 8 TRBs and a link
+const I64 POSTED = 7;                  // of them, the TRBs out at once: never all 8. post() rewrites the link TRB with the
+                                       // next lap's cycle bit when it fills slot 7; with one slot free that happens only
+                                       // after an event from the new lap, so the controller has crossed the link. With
+                                       // all 8 out, the event for slot 7 rewrote the link while a controller could still
+                                       // stand on it: the cycle no longer matched and the endpoint stopped, with no event
+                                       // (the board, 2026-11-10: the keys ended while the desk ran)
+const I64 EVENTS = 256;
+export const I64 BULK_MS = 5000;       // a bulk transfer's answer: a disk that has not given it by then has failed
+export const I64 SYNC_MS = 30000;      // SYNCHRONIZE CACHE's status: a stick's whole cache onto its flash
+export const I64 STALL = 6;            // the completion code of a stalled endpoint
+export const I64 NO_ANSWER = 255;      // bulk()'s code for no event in BULK_MS
+
+export Bool on = false;                // a controller is up
+U64 cap = 0;                           // the capability registers' base (the BAR)
+U64 op = 0;
+U64 rt = 0;
+U64 db = 0;
+I64 ports = 0;
+I64 slots = 0;
+I64 csz = 32;                          // the context size, 32 or 64 bytes (HCCPARAMS1 CSZ)
+U64 dcbaa = 0;
+U64 cmd = 0;                           // the command ring
+I64 cmd_at = 0;
+U64 cmd_cycle = 1;
+U64 evt = 0;                           // the event ring's one segment
+I64 evt_at = 0;
+U64 evt_cycle = 1;
+U64 erst = 0;
+U64 inctx = 0;                         // the input context, one for all commands
+U64 buf = 0;                           // descriptors read on EP0
+U64 cc_param = 0;                      // the last command completion: its TRB pointer, code and slot
+I64 cc_code = -1;
+I64 cc_slot = 0;
+I64 tx_code = -1;                      // the last EP0 transfer event's completion code and residue
+I64 tx_left = 0;
+I64 tx_slot = 0;                       // and whose it was: bulk() takes only its own endpoint's
+I64 tx_dci = 0;
+
+// Per device, at most three: 0 the keyboard, 1 the mouse, 2 the disk (HW-4m), which has no interrupt endpoint.
+I64[3] d_slot;
+Bool[9] held;                          // slot ids 1 to 8 its own Enable Slot gave this driver, not yet given back
+I64[2] d_dci;                          // the interrupt IN endpoint's device context index
+U64[3] d_ep0;                          // EP0's transfer ring
+I64[3] d_ep0_at;
+U64[3] d_ep0_cycle;
+U64[2] d_ring;                         // the interrupt endpoint's transfer ring
+I64[2] d_ring_at;
+U64[2] d_ring_cycle;
+U64[2] d_data;                         // its 8 report buffers, 64 bytes apart
+U8[16] last;                           // the keyboard's last report (8 bytes), the mouse's buttons (byte 8)
+Bool[2] halted;                        // an error stopped the endpoint: poll() resets it and posts its ring again
+I64[2] d_port;                         // HP-1: the root hub port the keyboard and the mouse are on, 0 for none
+const I64 HP_PORTS = 64;               // HP-1: ports watched for a change (a root hub has at most 255; boards, a few dozen)
+const I64 DEBOUNCE_US = 100000;        // USB 2.0's TATTDB: 100 ms from a connect to the port's reset
+Bool[64] p_change;                     // HP-1: a Port Status Change event came for the port
+Bool[64] p_tried;                      // a device on the port was enumerated (taken or skipped) since it connected
+I64[64] p_seen;                        // when a connect was seen, us_now(); 0 for none waiting
+I64[2] errors;
+
+// The disk's bulk endpoints: 0 OUT, 1 IN.
+Bool disk_on = false;                  // a disk is configured and answers
+I64 ms_port = 0;
+I64 ms_speed = 0;
+I64 ms_iface = 0;
+I64[2] b_addr;                         // the endpoint's address
+I64[2] b_dci;
+I64[2] b_mps;
+I64[2] b_burst;
+U64[2] b_ring;                         // its transfer ring, 63 TRBs and a link, one TRB out at a time
+I64[2] b_at;
+U64[2] b_cycle;
+
+U32 r32(U64 a) { return mmio_in32(a); }
+void w32(U64 a, U64 v) { mmio_out32(a, (v & 0xFFFFFFFF) as U32); }
+void w64(U64 a, U64 v) {
+    w32(a, v & 0xFFFFFFFF);
+    w32(a + 4, v >> 32);
+}
+
+void put_dec(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+void put_hex(U64 v) {
+    serial.serial_write("0x");
+    Bool any = false;
+    for i in 0..16 {
+        U8 nib = ((v >> (4 * (15 - i)) as U64) & 15) as U8;
+        if (nib != 0 || any || i == 15) {
+            serial.serial_putc(text.hex_digit(nib));
+            any = true;
+        }
+    }
+}
+
+// A zeroed pool frame's physical address, or 0.
+U64 frame() {
+    I64 f = frames.alloc(1);
+    if (f < 0) {
+        return 0;
+    }
+    U64 a = frames.frame_addr(f) as U64;
+    U64[512] z;
+    for k in 0..512 { z[k] = 0; }
+    phys.phys_write64(a, z);
+    return a;
+}
+
+U64 rd64(U64 a) {
+    U64[1] v;
+    phys.phys_read64(a, v);
+    return v[0];
+}
+
+void wr64(U64 a, U64 v) {
+    U64[1] w = [v];
+    phys.phys_write64(a, w);
+}
+
+// A TRB at a: the parameter, then status and control, the control word (and its cycle bit) last.
+void trb(U64 a, U64 param, U64 status, U64 control) {
+    U64[1] p = [param];
+    phys.phys_write64(a, p);
+    U64[1] s = [status | (control << 32)];
+    phys.phys_write64(a + 8, s);
+}
+
+// A ring of n TRBs at ring: a link TRB at its end back to its start, toggling the cycle.
+void link(U64 ring, I64 n) {
+    trb(ring + (16 * (n - 1)) as U64, ring, 0, (TRB_LINK << 10) | 2);
+}
+
+// --- time, on the controller's own clock ---
+
+// MFINDEX (runtime base + 0) counts microframes, 125 us each, in 14 bits while the controller runs: the one clock
+// there is before the PIT starts. elapsed_ms keeps a running total from the last reading.
+U64 mf_last = 0;
+I64 mf_us = 0;
+
+void clock_start() {
+    mf_last = (r32(rt) as U64) & 0x3FFF;
+    mf_us = 0;
+}
+
+I64 clock_ms() {
+    U64 m = (r32(rt) as U64) & 0x3FFF;
+    U64 d = (m + 0x4000 - mf_last) & 0x3FFF;
+    mf_last = m;
+    mf_us += (d * 125) as I64;
+    return mf_us / 1000;
+}
+
+// About ms milliseconds (bounded by SPIN reads, should the clock not move).
+void delay(I64 ms) {
+    clock_start();
+    I64 t = 0;
+    while (clock_ms() < ms && t < SPIN) { t += 1; }
+}
+
+// --- the event ring ---
+
+// The next event, consumed: its type (0 with none) and fields into the globals; ERDP moves past it.
+U64 next_event() {
+    U64 a = evt + (16 * evt_at) as U64;
+    U64 w1 = rd64(a + 8);
+    U64 ctl = w1 >> 32;
+    if ((ctl & 1) != evt_cycle) {
+        return 0;
+    }
+    U64 param = rd64(a);
+    U64 status = w1 & 0xFFFFFFFF;
+    U64 kind = (ctl >> 10) & 63;
+    evt_at += 1;
+    if (evt_at == EVENTS) {
+        evt_at = 0;
+        evt_cycle = 1 - evt_cycle;
+    }
+    w64(rt + 0x38, (evt + (16 * evt_at) as U64) | 8);   // ERDP, EHB cleared by its write
+    I64 code = (status >> 24) as I64;
+    I64 slot = (ctl >> 24) as I64;
+    if (kind == EV_COMMAND) {
+        cc_param = param;
+        cc_code = code;
+        cc_slot = slot;
+    } else if (kind == EV_PORT) {
+        I64 p = ((param >> 24) & 0xFF) as I64;               // HP-1: the port's change is read at the next poll
+        if (p >= 1 && p < HP_PORTS) {
+            p_change[p] = true;
+        }
+    } else if (kind == EV_TRANSFER) {
+        I64 dci = ((ctl >> 16) & 31) as I64;
+        for d in 0..2 {
+            if (d_slot[d] == slot && slot != 0 && dci == d_dci[d]) {
+                report(d, param, code);
+                return kind;
+            }
+        }
+        tx_code = code;
+        tx_left = (status & 0xFFFFFF) as I64;
+        tx_slot = slot;
+        tx_dci = dci;
+    }
+    return kind;
+}
+
+// Waits for the next completion of kind; true when it came.
+Bool wait_for(U64 kind) {
+    clock_start();
+    I64 t = 0;
+    while (clock_ms() < 500 && t < SPIN) {
+        U64 k = next_event();
+        if (k == kind) {
+            return true;
+        }
+        t += 1;
+    }
+    return false;
+}
+
+// A command: its TRB on the ring, the doorbell, its completion; the code (1 success), -1 without one. The completion
+// is matched to the TRB by its pointer, so a late completion of an earlier command (a Stop Endpoint after a timeout)
+// is passed over, not taken for this one's.
+I64 command(U64 param, U64 status, U64 control) {
+    U64 at = cmd + (16 * cmd_at) as U64;
+    trb(at, param, status, control | cmd_cycle);
+    cmd_at += 1;
+    if (cmd_at == RING - 1) {
+        U64 l = cmd + (16 * (RING - 1)) as U64;
+        trb(l, cmd, 0, (TRB_LINK << 10) | 2 | cmd_cycle);
+        cmd_at = 0;
+        cmd_cycle = 1 - cmd_cycle;
+    }
+    cc_code = -1;
+    w32(db, 0);
+    for k in 0..4 {
+        if (!wait_for(EV_COMMAND)) {
+            return -1;
+        }
+        if (cc_param == at) {
+            return cc_code;
+        }
+    }
+    return -1;
+}
+
+// --- control transfers on EP0 ---
+
+void ep0_trb(I64 d, U64 param, U64 status, U64 control) {
+    trb(d_ep0[d] + (16 * d_ep0_at[d]) as U64, param, status, control | d_ep0_cycle[d]);
+    d_ep0_at[d] += 1;
+    if (d_ep0_at[d] == RING - 1) {
+        trb(d_ep0[d] + (16 * (RING - 1)) as U64, d_ep0[d], 0, (TRB_LINK << 10) | 2 | d_ep0_cycle[d]);
+        d_ep0_at[d] = 0;
+        d_ep0_cycle[d] = 1 - d_ep0_cycle[d];
+    }
+}
+
+// A request on device d's EP0: setup (type, request, value, index, length), an IN data stage of length bytes into buf
+// when length > 0, the status stage. True when it completed (success or a short packet).
+Bool ctl_req(I64 d, U64 rtype, U64 req, U64 value, U64 index, U64 length) {
+    U64 setup = rtype | (req << 8) | (value << 16) | (index << 32) | (length << 48);
+    U64 trt = 0;
+    if (length > 0) { trt = 3; }
+    ep0_trb(d, setup, 8, (TRB_SETUP << 10) | 0x40 | (trt << 16));
+    if (length > 0) {
+        ep0_trb(d, buf, length, (TRB_DATA << 10) | 0x10000);
+        ep0_trb(d, 0, 0, (TRB_STATUS << 10) | 0x20);
+    } else {
+        ep0_trb(d, 0, 0, (TRB_STATUS << 10) | 0x20 | 0x10000);
+    }
+    tx_code = -1;
+    w32(db + (4 * d_slot[d]) as U64, 1);
+    clock_start();
+    I64 t = 0;
+    while (clock_ms() < 500 && t < SPIN) {
+        U64 k = next_event();
+        if (k == EV_TRANSFER && tx_code >= 0) {
+            return tx_code == 1 || tx_code == 13;
+        }
+        t += 1;
+    }
+    tx_code = -2;                                            // no answer in 500 ms
+    return false;
+}
+
+// --- the interrupt endpoint ---
+
+// Posts device d's report TRB k: an 8-byte normal TRB, interrupt on completion and on a short packet.
+void post(I64 d) {
+    U64 at = d_ring[d] + (16 * d_ring_at[d]) as U64;
+    U64 data = d_data[d] + (64 * d_ring_at[d]) as U64;
+    trb(at, data, 8, (TRB_NORMAL << 10) | 0x20 | 0x4 | d_ring_cycle[d]);
+    d_ring_at[d] += 1;
+    if (d_ring_at[d] == IRING) {
+        trb(d_ring[d] + (16 * IRING) as U64, d_ring[d], 0, (TRB_LINK << 10) | 2 | d_ring_cycle[d]);
+        d_ring_at[d] = 0;
+        d_ring_cycle[d] = 1 - d_ring_cycle[d];
+    }
+}
+
+// A transfer event for device d's interrupt endpoint at TRB pointer at: its report into input, the TRB posted again.
+// The pointer is the controller's: one outside the ring is checked before any arithmetic and is no report.
+void report(I64 d, U64 at, I64 code) {
+    if (code == 26 || code == 27) {
+        return;                                              // Stopped: recover() stopped it and posts afresh
+    }
+    if (code != 1 && code != 13) {
+        // a stall, babble or transaction error halts the endpoint: no TRB is posted again until poll() resets it
+        errors[d] += 1;
+        if (errors[d] <= 3) {
+            serial.serial_write("daphnis: usb: report error ");
+            put_dec(code);
+            serial.serial_write(", the endpoint is reset\n");
+        }
+        halted[d] = true;
+        return;
+    }
+    U64 lo = d_ring[d];
+    if (at < lo || at >= lo + (16 * IRING) as U64) {
+        return;                                              // no TRB of its ring: none completed, none to post again
+    }
+    I64 k = ((at - lo) / 16) as I64;
+    U8[8] r;
+    phys.phys_read8(d_data[d] + (64 * k) as U64, r);
+    if (d == 0) {
+        key_report(r);
+    } else {
+        mouse_report(r);
+    }
+    post(d);
+    w32(db + (4 * d_slot[d]) as U64, d_dci[d] as U64);
+}
+
+void key_report(in U8[8] r) {
+    if (usbhid.rollover(r)) {
+        return;
+    }
+    U8[8] was;
+    for k in 0..8 { was[k] = last[k]; }
+    I64[16] keys;
+    I64[16] values;
+    I64 n = usbhid.key_events(was, r, keys, values);
+    I64 t = us_now();
+    for i in 0..n {
+        input.usb_key(keys[i], values[i], t);
+    }
+    for k in 0..8 { last[k] = r[k]; }
+}
+
+void mouse_report(in U8[8] r) {
+    input.usb_mouse(r[0] as I64, usbhid.signed8(r[1]), usbhid.signed8(r[2]), usbhid.signed8(r[3]));
+}
+
+// --- bring-up ---
+
+// The BIOS hands the controller over (USBLEGSUP: OS owned set, BIOS owned clear) and its SMIs are turned off. The
+// extended capabilities (at most 64) are walked first and their offsets kept; false, with nothing written, when one's
+// two registers lie past the BAR's span bytes. Then each kept one is read again and the legacy support one written.
+Bool handoff(U64 span) {
+    U64[64] seen;
+    I64 n = 0;
+    U64 x = ((r32(cap + 0x10) >> 16) as U64) * 4;
+    while (x != 0 && n < 64) {
+        if (x + 8 > span) {
+            return false;
+        }
+        seen[n] = x;
+        n += 1;
+        U64 next = ((r32(cap + x) as U64) >> 8) & 0xFF;
+        if (next == 0) {
+            x = 0;
+        } else {
+            x = x + next * 4;
+        }
+    }
+    for i in 0..n {
+        U64 a = cap + seen[i];
+        U64 v = r32(a) as U64;
+        if ((v & 0xFF) == 1) {
+            w32(a, v | 0x1000000);
+            I64 t = 0;
+            while (t < SPIN && ((r32(a) as U64) & 0x10000) != 0) { t += 1; }
+            if (t == SPIN) {
+                serial.serial_write("daphnis: usb: the firmware kept the controller; taking it\n");
+                w32(a, ((r32(a) as U64) & 0xFFFEFFFF) | 0x1000000);
+            }
+            U64 s = r32(a + 4) as U64;
+            w32(a + 4, (s & 0x1FFF1FEE) | 0xE0000000);   // SMI enables off, the SMI events cleared
+        }
+    }
+    return true;
+}
+
+Bool reset() {
+    w32(op, (r32(op) as U64) & 0xFFFFFFFE);                 // run off
+    I64 t = 0;
+    while (t < SPIN && ((r32(op + 4) as U64) & 1) == 0) { t += 1; }      // halted
+    w32(op, 2);                                             // HCRST
+    t = 0;
+    while (t < SPIN && (((r32(op) as U64) & 2) != 0 || ((r32(op + 4) as U64) & 0x800) != 0)) { t += 1; }
+    return t < SPIN;
+}
+
+// The controller's PCI command register with the bits of up set and those of down cleared.
+void pci_command(I64 dev, U32 up, U32 down) {
+    U32 c = pci.read32(dev, 4) & 0xFFFF;
+    pci.write32(dev, 4, (c | up) & ~down);
+}
+
+// The controller up: true when it runs. Until its registers are checked inside the BAR only memory decoding is turned
+// on, so a controller refused there masters the bus as the firmware left it; once accepted it may master the bus, and
+// a later failure turns that off again.
+Bool start() {
+    I64 dev = pci.find_class(0x0C0330);
+    if (dev < 0) {
+        return false;
+    }
+    U64 bar = pci.mem_bar(dev);
+    U64 span = pci.mem_bar_size(dev);
+    serial.serial_write("daphnis: usb: xhci at bus ");
+    put_dec(dev / 256);
+    serial.serial_write(" slot ");
+    put_dec(dev % 32);
+    serial.serial_write(" bar ");
+    put_hex(bar);
+    serial.serial_write("\n");
+    if (bar == 0 || span == 0 || mmio_map(bar, span) != 0) {
+        serial.serial_write("daphnis: usb: the controller's registers cannot be mapped\n");
+        return false;
+    }
+    if (span < 0x20) {                                      // the capability registers themselves
+        serial.serial_write("daphnis: usb: the controller names registers past its BAR\n");
+        return false;
+    }
+    pci_command(dev, 2, 0);                                 // memory decoding alone: the registers, no DMA
+    cap = bar;
+    U64 caplen = (r32(cap) as U64) & 0xFF;
+    U64 hcs1 = r32(cap + 4) as U64;
+    U64 hcs2 = r32(cap + 8) as U64;
+    U64 hcc1 = r32(cap + 0x10) as U64;
+    U64 dboff = (r32(cap + 0x14) as U64) & 0xFFFFFFFC;
+    U64 rtoff = (r32(cap + 0x18) as U64) & 0xFFFFFFE0;
+    slots = (hcs1 & 0xFF) as I64;
+    ports = ((hcs1 >> 24) & 0xFF) as I64;
+    if (slots > 8) { slots = 8; }
+    // Every register the driver touches inside the BAR: the operational ones with a port register set a port, the
+    // doorbells of the command ring and of each slot enabled, the runtime ones to interrupter 0's last, and in
+    // handoff the extended capabilities. A controller that names one past it is not driven.
+    if (caplen + 0x400 + (16 * ports) as U64 > span || dboff + (4 * (slots + 1)) as U64 > span || rtoff + 0x40 > span ||
+        !handoff(span)) {
+        serial.serial_write("daphnis: usb: the controller names registers past its BAR\n");
+        return false;
+    }
+    op = cap + caplen;
+    db = cap + dboff;
+    rt = cap + rtoff;
+    if ((hcc1 & 4) != 0) { csz = 64; }
+    pci.enable_mem_dma(dev);
+    if (!run_up(hcs2)) {
+        pci_command(dev, 0, 4);                             // given up: bus mastering off
+        return false;
+    }
+    return true;
+}
+
+// The accepted controller reset, its rings and scratchpad given, and running: true when it runs.
+Bool run_up(U64 hcs2) {
+    if (!reset()) {
+        serial.serial_write("daphnis: usb: the controller did not reset\n");
+        return false;
+    }
+    dcbaa = frame();
+    cmd = frame();
+    evt = frame();
+    erst = frame();
+    inctx = frame();
+    buf = frame();
+    if (dcbaa == 0 || cmd == 0 || evt == 0 || erst == 0 || inctx == 0 || buf == 0) {
+        serial.serial_write("daphnis: usb: no frames\n");
+        return false;
+    }
+    I64 sp = (((hcs2 >> 21) & 31) << 5 | ((hcs2 >> 27) & 31)) as I64;
+    if (sp > 0) {
+        U64 arr = frame();
+        if (arr == 0 || sp > 512) {
+            return false;
+        }
+        for k in 0..sp {
+            U64 f = frame();
+            if (f == 0) {
+                return false;
+            }
+            wr64(arr + (8 * k) as U64, f);
+        }
+        wr64(dcbaa, arr);
+    }
+    link(cmd, RING);
+    wr64(erst, evt);
+    wr64(erst + 8, EVENTS as U64);
+    w32(op + 0x38, slots as U64);                           // CONFIG: MaxSlotsEn
+    w64(op + 0x30, dcbaa);                                  // DCBAAP
+    w64(op + 0x18, cmd | 1);                                // CRCR, RCS 1
+    w32(rt + 0x28, 1);                                      // ERSTSZ
+    w64(rt + 0x38, evt);                                    // ERDP
+    w64(rt + 0x30, erst);                                   // ERSTBA, last
+    w32(op, 1);                                             // run, no interrupts: polled
+    I64 t = 0;
+    while (t < SPIN && ((r32(op + 4) as U64) & 1) != 0) { t += 1; }
+    if (t == SPIN) {
+        serial.serial_write("daphnis: usb: the controller did not run\n");
+        return false;
+    }
+    for k in 0..SPIN / 4 { _ = r32(op + 4); }                // about half a second on a board: the ports connect
+    serial.serial_write("daphnis: usb: ");
+    put_dec(ports);
+    serial.serial_write(" ports, ");
+    put_dec(slots);
+    serial.serial_write(" slots, ");
+    put_dec(sp);
+    serial.serial_write(" scratchpad pages\n");
+    return true;
+}
+
+// Port p (from 1): its PORTSC register.
+U64 portsc(I64 p) { return op + 0x400 + (16 * (p - 1)) as U64; }
+
+// Port p enabled after a reset when it needs one: its speed (1 full, 2 low, 3 high, 4 and up super), 0 when it has
+// no device or will not enable.
+I64 port_up(I64 p) {
+    U64 a = portsc(p);
+    U64 v = r32(a) as U64;
+    if ((v & 0x200) == 0) {
+        w32(a, 1 << 9);                                     // port power
+        for t in 0..SPIN / 20 { v = r32(a) as U64; }
+    }
+    if ((v & 1) == 0) {
+        return 0;
+    }
+    if ((v & 2) == 0) {
+        w32(a, (v & 0x0E00C3E0) | 0x10);                // port reset; the change bits left as they are
+        I64 t = 0;
+        while (t < SPIN && ((r32(a) as U64) & 0x200000) == 0) { t += 1; }
+        v = r32(a) as U64;
+        w32(a, (v & 0x0E00C3E0) | 0x200000);               // clear PRC
+        delay(20);                                          // USB 2.0's reset recovery, 10 ms at least
+    }
+    v = r32(a) as U64;
+    if ((v & 3) != 3) {
+        return 0;
+    }
+    return ((v >> 10) & 15) as I64;
+}
+
+// The input context's dword w of context c (0 the input control context, 1 the slot, 2 EP0, ...).
+U64 ictx(I64 c, I64 w) { return inctx + (c * csz + 4 * w) as U64; }
+
+void put32(U64 a, U64 v) {
+    U8[4] b;
+    for k in 0..4 { b[k] = ((v >> (8 * k) as U64) & 0xFF) as U8; }
+    phys.phys_write8(a, b);
+}
+
+U64 get8(U64 a) {
+    U8[1] b;
+    phys.phys_read8(a, b);
+    return b[0] as U64;
+}
+
+U64 get16(U64 a) { return get8(a) | (get8(a + 1) << 8); }
+
+void clear_ictx() {
+    U64[512] z;
+    for k in 0..512 { z[k] = 0; }
+    phys.phys_write64(inctx, z);
+}
+
+// Device d on port p at speed: a slot, its address, EP0. True when it answers. Place d names no EP0 ring until this
+// call takes one, so a caller that gives back d_ep0[d] after a failure gives back only that.
+Bool address(I64 d, I64 p, I64 speed) {
+    d_ep0[d] = 0;
+    I64 code = command(0, 0, TRB_ENABLE_SLOT << 10);
+    if (code != 1 || cc_slot <= 0 || cc_slot > slots) {
+        serial.serial_write("daphnis: usb: port ");
+        put_dec(p);
+        serial.serial_write(": no slot\n");
+        return false;
+    }
+    I64 s = cc_slot;
+    if (held[s]) {                                           // a controller that lies: the slot's device keeps it
+        serial.serial_write("daphnis: usb: port ");
+        put_dec(p);
+        serial.serial_write(": the controller gave slot ");
+        put_dec(s);
+        serial.serial_write(", which is in use\n");
+        return false;
+    }
+    held[s] = true;
+    d_slot[d] = s;                                           // from here a failure gives the slot back
+    U64 octx = frame();
+    U64 ring = frame();
+    if (octx == 0 || ring == 0) {
+        unframe(octx);                                       // the pool ran out: the one taken goes back
+        unframe(ring);
+        return false;
+    }
+    wr64(dcbaa + (8 * s) as U64, octx);
+    d_ep0[d] = ring;
+    d_ep0_at[d] = 0;
+    d_ep0_cycle[d] = 1;
+    link(ring, RING);
+    U64 mps = 8;
+    if (speed == 3) { mps = 64; }
+    if (speed >= 4) { mps = 512; }
+    clear_ictx();
+    put32(ictx(0, 1), 3);                                    // add the slot and EP0
+    put32(ictx(1, 0), ((speed as U64) << 20) | 0x8000000);   // speed, one context entry
+    put32(ictx(1, 1), (p as U64) << 16);                     // root hub port
+    put32(ictx(2, 1), 0x6 | 0x20 | (mps << 16));    // CErr 3, control, max packet
+    put32(ictx(2, 2), ring | 1);
+    put32(ictx(2, 3), ring >> 32);
+    put32(ictx(2, 4), 8);                                    // average TRB length
+    delay(2);
+    code = command(inctx, 0, (TRB_ADDRESS << 10) | ((s as U64) << 24));
+    delay(5);                                                // SET_ADDRESS's recovery, 2 ms at least
+    if (code != 1) {
+        serial.serial_write("daphnis: usb: port ");
+        put_dec(p);
+        serial.serial_write(": address refused (");
+        put_dec(code);
+        serial.serial_write(")\n");
+        return false;
+    }
+    return true;
+}
+
+// The first boot-protocol interface (03:01:want) of the configuration in buf (n bytes) and its first interrupt IN
+// endpoint: the interface number, endpoint address, max packet and interval into the four, true when found.
+Bool find_boot(I64 n, I64 want, inout I64[4] got) {
+    I64 at = 0;
+    Bool inside = false;
+    while (at + 2 <= n) {
+        I64 l = get8(buf + at as U64) as I64;
+        I64 t = get8(buf + (at + 1) as U64) as I64;
+        if (l < 2) {
+            return false;
+        }
+        if (t == 4 && at + 9 <= n) {
+            inside = get8(buf + (at + 5) as U64) == 3 && get8(buf + (at + 6) as U64) == 1 &&
+                get8(buf + (at + 7) as U64) == want as U64;
+            if (inside) { got[0] = get8(buf + (at + 2) as U64) as I64; }
+        }
+        if (t == 5 && inside && at + 7 <= n) {
+            I64 ea = get8(buf + (at + 2) as U64) as I64;
+            I64 attr = get8(buf + (at + 3) as U64) as I64;
+            if ((ea & 0x80) != 0 && (attr & 3) == 3) {
+                got[1] = ea;
+                got[2] = (get16(buf + (at + 4) as U64) & 0x7FF) as I64;
+                got[3] = get8(buf + (at + 6) as U64) as I64;
+                return true;
+            }
+        }
+        at += l;
+    }
+    return false;
+}
+
+// The xHCI interval of an interrupt endpoint: 2^interval x 125 us.
+I64 interval(I64 speed, I64 b) {
+    if (speed >= 3) {
+        if (b < 1) { return 0; }
+        if (b > 16) { return 15; }
+        return b - 1;
+    }
+    I64 v = 3;                                               // 1 ms
+    I64 fr = b;
+    while (fr > 1 && v < 10) {
+        fr = fr / 2;
+        v += 1;
+    }
+    return v;
+}
+
+// A device's setup stopped at step what: printed with the last EP0 completion code (-2 no answer in 500 ms).
+Bool why(I64 p, in U8[_] what) {
+    serial.serial_write("daphnis: usb: port ");
+    put_dec(p);
+    serial.serial_write(": ");
+    serial.serial_write(what);
+    serial.serial_write(" failed (");
+    put_dec(tx_code);
+    serial.serial_write(")\n");
+    return false;
+}
+
+// Device d's descriptors, read on EP0: the device's (EP0's max packet evaluated when a low or full speed device says
+// other than 8), then its first configuration whole, at most 1,024 bytes of it, left in buf with its value in
+// cfg_value. True when every request was answered; a refusal is printed.
+U64 cfg_value = 0;
+I64 cfg_total = 0;
+
+Bool describe(I64 d, I64 p, I64 speed) {
+    if (!ctl_req(d, 0x80, 6, 0x0100, 0, 8)) {                // the device descriptor's first 8: bMaxPacketSize0
+        return why(p, "device descriptor (8)");
+    }
+    U64 mps0 = get8(buf + 7);
+    if (speed <= 2 && mps0 != 8 && mps0 != 0) {
+        clear_ictx();
+        put32(ictx(0, 1), 2);                                // EP0 evaluated
+        put32(ictx(2, 1), 0x6 | 0x20 | (mps0 << 16));
+        if (command(inctx, 0, 0x3400 | ((d_slot[d] as U64) << 24)) != 1) {
+            return why(p, "evaluate context");
+        }
+    }
+    if (!ctl_req(d, 0x80, 6, 0x0100, 0, 18)) {               // GET_DESCRIPTOR device
+        return why(p, "device descriptor");
+    }
+    if (!ctl_req(d, 0x80, 6, 0x0200, 0, 9)) {                // the configuration's first 9 bytes
+        return why(p, "configuration (9)");
+    }
+    cfg_total = get16(buf + 2) as I64;
+    cfg_value = get8(buf + 5);
+    if (cfg_total > 1024) { cfg_total = 1024; }
+    if (!ctl_req(d, 0x80, 6, 0x0200, 0, cfg_total as U64)) {
+        return why(p, "configuration");
+    }
+    return true;
+}
+
+// The keyboard (d 0, protocol 1) or the mouse (d 1, protocol 2) on device d's slot: configured, its endpoint and 7
+// of its ring's 8 TRBs posted (POSTED). True when it runs.
+Bool configure(I64 d, I64 p, I64 speed) {
+    if (!describe(d, p, speed)) {
+        return false;
+    }
+    I64 total = cfg_total;
+    U64 value = cfg_value;
+    I64[4] got;
+    if (!find_boot(total, d + 1, got)) {
+        return why(p, "no boot interface");
+    }
+    I64 epn = got[1] & 15;
+    I64 dci = 2 * epn + 1;
+    U64 ring = frame();
+    U64 data = frame();
+    if (ring == 0 || data == 0) {
+        return why(p, "no frames");
+    }
+    if (!ctl_req(d, 0x00, 9, value, 0, 0)) {                 // SET_CONFIGURATION
+        return why(p, "SET_CONFIGURATION");
+    }
+    if (!ctl_req(d, 0x21, 0x0B, 0, got[0] as U64, 0)) {      // SET_PROTOCOL boot
+        return why(p, "SET_PROTOCOL");
+    }
+    _ = ctl_req(d, 0x21, 0x0A, 0, got[0] as U64, 0);        // SET_IDLE 0: a report on change only (a mouse may stall it)
+    d_ring[d] = ring;
+    d_ring_at[d] = 0;
+    d_ring_cycle[d] = 1;
+    d_data[d] = data;
+    clear_ictx();
+    put32(ictx(0, 1), 1 | ((1 as U64) << dci as U64));               // add the slot and the endpoint
+    put32(ictx(1, 0), ((speed as U64) << 20) | ((dci as U64) << 27));
+    put32(ictx(1, 1), (p as U64) << 16);
+    put32(ictx(1 + dci, 0), (interval(speed, got[3]) as U64) << 16);
+    put32(ictx(1 + dci, 1), 0x6 | 0x38 | ((got[2] as U64) << 16));   // CErr 3, interrupt IN
+    put32(ictx(1 + dci, 2), ring | 1);
+    put32(ictx(1 + dci, 3), ring >> 32);
+    put32(ictx(1 + dci, 4), 8 | ((got[2] as U64) << 16));
+    I64 code = command(inctx, 0, (TRB_CONFIGURE << 10) | ((d_slot[d] as U64) << 24));
+    if (code != 1) {
+        serial.serial_write("daphnis: usb: configure endpoint refused (");
+        put_dec(code);
+        serial.serial_write(")\n");
+        return false;
+    }
+    d_dci[d] = dci;
+    for k in 0..POSTED { post(d); }
+    w32(db + (4 * d_slot[d]) as U64, dci as U64);
+    return true;
+}
+
+// --- the disk's bulk endpoints (HW-4m) ---
+
+// Configure Endpoint for the disk's two bulk endpoints, each on a cleared ring from its start; again drops them
+// first, which puts a stopped or halted endpoint back to running with its data toggle (its sequence number at
+// SuperSpeed) at 0. True when the controller took it.
+Bool ms_endpoints(Bool again) {
+    U64[64] z;                                               // 512 bytes: this runs under a syscall (blk, usbms)
+    for k in 0..64 { z[k] = 0; }
+    U64 both = ((1 as U64) << b_dci[0] as U64) | ((1 as U64) << b_dci[1] as U64);
+    I64 top = b_dci[0];
+    if (b_dci[1] > top) { top = b_dci[1]; }
+    clear_ictx();
+    if (again) { put32(ictx(0, 0), both); }                  // drop
+    put32(ictx(0, 1), 1 | both);                             // add the slot and both
+    put32(ictx(1, 0), ((ms_speed as U64) << 20) | ((top as U64) << 27));
+    put32(ictx(1, 1), (ms_port as U64) << 16);
+    for e in 0..2 {
+        for k in 0..8 { phys.phys_write64(b_ring[e] + (512 * k) as U64, z); }
+        link(b_ring[e], RING);
+        b_at[e] = 0;
+        b_cycle[e] = 1;
+        U64 kind = 0x10;                                     // bulk OUT
+        if (e == 1) { kind = 0x30; }                         // bulk IN
+        I64 c = 1 + b_dci[e];
+        put32(ictx(c, 1), 0x6 | kind | ((b_burst[e] as U64) << 8) | ((b_mps[e] as U64) << 16));   // CErr 3
+        put32(ictx(c, 2), b_ring[e] | 1);
+        put32(ictx(c, 3), b_ring[e] >> 32);
+        put32(ictx(c, 4), 1024);                             // average TRB length
+    }
+    return command(inctx, 0, (TRB_CONFIGURE << 10) | ((d_slot[2] as U64) << 24)) == 1;
+}
+
+// The disk on device 2's slot: its storage interface found, configured, both bulk endpoints running. True when it
+// is one and they run; a device without the interface says nothing here.
+Bool storage(I64 p, I64 speed) {
+    if (!describe(2, p, speed)) {
+        return false;
+    }
+    U8[1024] cfg;
+    phys.phys_read8(buf, cfg);
+    I64[7] got;
+    if (!usbscsi.find_bulk(cfg, cfg_total, got)) {
+        return false;
+    }
+    b_ring[0] = frame();
+    b_ring[1] = frame();
+    if (b_ring[0] == 0 || b_ring[1] == 0) {
+        return why(p, "no frames");
+    }
+    if (!ctl_req(2, 0x00, 9, cfg_value, 0, 0)) {             // SET_CONFIGURATION
+        return why(p, "SET_CONFIGURATION");
+    }
+    ms_port = p;
+    ms_speed = speed;
+    ms_iface = got[0];
+    for e in 0..2 {
+        b_addr[e] = got[1 + 3 * e];
+        b_dci[e] = 2 * (b_addr[e] & 15) + e;
+        b_mps[e] = got[2 + 3 * e];
+        b_burst[e] = got[3 + 3 * e];
+    }
+    if (!ms_endpoints(false)) {
+        serial.serial_write("daphnis: usb: configure endpoint refused (");
+        put_dec(cc_code);
+        serial.serial_write(")\n");
+        return false;
+    }
+    disk_on = true;
+    return true;
+}
+
+// True when a disk's bulk endpoints run.
+export Bool ms_on() {
+    return disk_on;
+}
+
+// Moves nbytes (1 to 4,096, in one frame) at physical address addr on the disk's bulk endpoint e (0 OUT, 1 IN): one
+// normal TRB, the doorbell, its transfer event polled for BULK_MS. The bytes moved (fewer after a short packet), or
+// the completion code negated: -STALL for a stalled endpoint, -NO_ANSWER when no event came: the endpoint is then
+// stopped and the disk dropped. addr must be a frame the caller holds for the boot (src/usbms.ci's two).
+export I64 bulk(I64 e, U64 addr, I64 nbytes) {
+    return bulk_wait(e, addr, nbytes, BULK_MS);
+}
+
+// bulk, its event polled for ms milliseconds (BULK_MS to SYNC_MS): SYNCHRONIZE CACHE's status, which a stick gives
+// only once its cache is on the medium, gets SYNC_MS (the kernel read's P3); every other transfer BULK_MS.
+export I64 bulk_wait(I64 e, U64 addr, I64 nbytes, I64 ms) {
+    if (ms < BULK_MS || ms > SYNC_MS) {
+        return -NO_ANSWER;
+    }
+    if (!disk_on || e < 0 || e > 1 || nbytes <= 0 || nbytes > 4096) {
+        return -NO_ANSWER;
+    }
+    trb(b_ring[e] + (16 * b_at[e]) as U64, addr, nbytes as U64, (TRB_NORMAL << 10) | 0x20 | 0x4 | b_cycle[e]);
+    b_at[e] += 1;
+    if (b_at[e] == RING - 1) {
+        trb(b_ring[e] + (16 * (RING - 1)) as U64, b_ring[e], 0, (TRB_LINK << 10) | 2 | b_cycle[e]);
+        b_at[e] = 0;
+        b_cycle[e] = 1 - b_cycle[e];
+    }
+    tx_code = -1;
+    w32(db + (4 * d_slot[2]) as U64, b_dci[e] as U64);
+    clock_start();
+    I64 t = 0;
+    while (clock_ms() < ms && t < SPIN * ms / 500) {     // the spin bound, should the clock stop: 10 SPIN for 5 s
+        U64 k = next_event();
+        if (k == EV_TRANSFER && tx_code >= 0 && tx_slot == d_slot[2] && tx_dci == b_dci[e]) {
+            if (tx_code == 1 || tx_code == 13) {
+                return nbytes - tx_left;
+            }
+            return -tx_code;
+        }
+        t += 1;
+    }
+    // No answer: the endpoint is stopped (a bounded command, 500 ms), so the controller drops the TRB, and the disk
+    // is given up for the boot. src/usbms.ci names only frames it holds for the boot in a TRB, so should the stop not
+    // take and the device answer late, its bytes land in a frame nothing else is given.
+    _ = command(0, 0, 0x3C00 | ((b_dci[e] as U64) << 16) | ((d_slot[2] as U64) << 24));       // Stop Endpoint
+    disk_on = false;
+    serial.serial_write("daphnis: usb: storage: no answer in ");
+    put_dec(ms / 1000);
+    serial.serial_write(" s, the disk is dropped\n");
+    return -NO_ANSWER;
+}
+
+// The transport back to its start after a stall or a broken command: with whole, the class request Bulk-Only Mass
+// Storage Reset; then CLEAR_FEATURE(ENDPOINT_HALT) on both endpoints, which zeroes the device's toggles, both
+// stopped (a halted one refuses, which is fine) and configured again from cleared rings, which zeroes the
+// controller's. True when the endpoints run again; false drops the disk.
+export Bool bulk_recover(Bool whole) {
+    if (!disk_on) {
+        return false;
+    }
+    Bool ok = true;
+    if (whole) {
+        ok = ctl_req(2, 0x21, 0xFF, 0, ms_iface as U64, 0);
+    }
+    for e in 0..2 {
+        ok = ctl_req(2, 0x02, 1, 0, b_addr[e] as U64, 0) && ok;
+        _ = command(0, 0, 0x3C00 | ((b_dci[e] as U64) << 16) | ((d_slot[2] as U64) << 24));    // Stop Endpoint
+    }
+    ok = ms_endpoints(true) && ok;
+    if (!ok) {
+        disk_on = false;
+        serial.serial_write("daphnis: usb: storage: the transport did not reset, the disk is dropped\n");
+    }
+    return ok;
+}
+
+// About ms_count milliseconds on the controller's clock, for the disk's driver: a unit that is not ready yet.
+export void wait_ms(I64 ms_count) {
+    if (on) {
+        delay(ms_count);
+    }
+}
+
+// The device addressed in place a (slot s) is tried in place b: its EP0 ring goes with it, and place a names neither
+// its slot nor its ring, so no free place names a live ring.
+void place(I64 a, I64 b, I64 s) {
+    d_slot[b] = s;
+    if (a == b) {
+        return;
+    }
+    d_ep0[b] = d_ep0[a];
+    d_ep0_at[b] = d_ep0_at[a];
+    d_ep0_cycle[b] = d_ep0_cycle[a];
+    d_slot[a] = 0;
+    d_ep0[a] = 0;
+}
+
+// The device on slot s given up: Disable Slot, so a board with more devices than slots still reaches its disk. Only a
+// slot held (this driver's own Enable Slot gave it and it has not given it back) is named. The slot is free again, and
+// its entry in the device context base array cleared, only when the controller confirms; one it does not confirm
+// stays held, so no later Enable Slot answer can take it. True when confirmed.
+Bool release_slot(I64 s) {
+    if (s <= 0 || s > 8 || !held[s]) {
+        return false;
+    }
+    if (command(0, 0, 0x2800 | ((s as U64) << 24)) != 1) {       // Disable Slot
+        serial.serial_write("daphnis: usb: slot ");
+        put_dec(s);
+        serial.serial_write(": Disable Slot not confirmed; the slot stays out of use\n");
+        return false;
+    }
+    wr64(dcbaa + (8 * s) as U64, 0);
+    held[s] = false;
+    return true;
+}
+
+// The controller, then the root hub's ports in order until a keyboard, a mouse and a disk (HW-4m) run. A device is
+// addressed in the first free place of the three; one that is none of them gives its slot back. True when a
+// keyboard runs.
+export Bool init() {
+    for d in 0..2 {
+        d_dci[d] = 0;
+        halted[d] = false;
+        errors[d] = 0;
+    }
+    for d in 0..3 { d_slot[d] = 0; }
+    for d in 0..2 { d_port[d] = 0; }
+    for p in 0..HP_PORTS {
+        p_change[p] = false;
+        p_tried[p] = false;
+        p_seen[p] = 0;
+    }
+    for k in 0..9 { held[k] = false; }
+    for k in 0..16 { last[k] = 0; }
+    disk_on = false;
+    if (!start()) {
+        return false;
+    }
+    on = true;
+    I64 found = 0;                                           // bit 0 the keyboard, 1 the mouse, 2 the disk
+    for p in 1..ports + 1 {
+        if (found < 7) {
+            I64 speed = port_up(p);
+            if (speed > 0) {
+                I64 d = 2;
+                if ((found & 1) == 0) {
+                    d = 0;
+                } else if ((found & 2) == 0) {
+                    d = 1;
+                }
+                Bool ok = address(d, p, speed);
+                I64 s = d_slot[d];
+                d_slot[d] = 0;                               // the place is free again until a device takes it
+                Bool kbd = false;
+                Bool mouse = false;
+                Bool disk = false;
+                I64 at = d;                                  // the place its EP0 ring is in
+                if (ok && (found & 1) == 0) {
+                    d_slot[0] = s;
+                    kbd = configure(0, p, speed);
+                    if (!kbd) { d_slot[0] = 0; }
+                }
+                if (ok && !kbd && (found & 2) == 0) {
+                    place(at, 1, s);
+                    at = 1;
+                    mouse = configure(1, p, speed);
+                    if (!mouse) { d_slot[1] = 0; }
+                }
+                if (ok && !kbd && !mouse && (found & 4) == 0) {
+                    place(at, 2, s);
+                    disk = storage(p, speed);
+                    if (!disk) { d_slot[2] = 0; }
+                }
+                if (p < HP_PORTS) { p_tried[p] = true; }   // HP-1: its later change events find it taken
+                U64 pv = r32(portsc(p)) as U64;
+                w32(portsc(p), (pv & 0x0E00C3E0) | (pv & 0x00FE0000));   // and its connect change is cleared
+                serial.serial_write("daphnis: usb: port ");
+                put_dec(p);
+                serial.serial_write(" speed ");
+                put_dec(speed);
+                if (kbd) {
+                    serial.serial_write(": boot keyboard\n");
+                    found = found | 1;
+                    d_port[0] = p;
+                } else if (mouse) {
+                    serial.serial_write(": boot mouse\n");
+                    found = found | 2;
+                    d_port[1] = p;
+                } else if (disk) {
+                    serial.serial_write(": mass storage\n");
+                    found = found | 4;
+                } else {
+                    serial.serial_write(": skipped\n");
+                    if (s != 0) { _ = release_slot(s); }     // also a slot whose Address Device was refused
+                }
+            }
+        }
+    }
+    return (found & 1) != 0;
+}
+
+// Device d's halted interrupt endpoint started again: Reset Endpoint, its ring cleared and posted afresh, Set TR
+// Dequeue Pointer to the ring's start, the doorbell.
+void recover(I64 d) {
+    halted[d] = false;
+    U64 ep = ((d_dci[d] as U64) << 16) | ((d_slot[d] as U64) << 24);
+    if (command(0, 0, 0x3800 | ep) != 1) {                                   // Reset Endpoint (a halted one)
+        _ = command(0, 0, 0x3C00 | ep);                                      // else Stop Endpoint
+    }
+    U64[512] z;
+    for k in 0..512 { z[k] = 0; }
+    phys.phys_write64(d_ring[d], z);
+    d_ring_at[d] = 0;
+    d_ring_cycle[d] = 1;
+    for k in 0..POSTED { post(d); }
+    _ = command(d_ring[d] | 1, 0, 0x4000 | ep);                          // Set TR Dequeue Pointer, DCS 1
+    w32(db + (4 * d_slot[d]) as U64, d_dci[d] as U64);
+}
+
+// --- HP-1: hot plug ---
+
+// A frame frame() took, given back to the pool; 0 is none.
+void unframe(U64 a) {
+    if (a != 0) {
+        _ = frames.release(((a as I64) - frames.POOL_BASE) / frames.FRAME_BYTES, 1);
+    }
+}
+
+// The keyboard (d 0) or the mouse (d 1) left its port: every key it held goes up and every button it held is let
+// go, as if it had sent an empty report; its slot is disabled and its device context, EP0 ring, interrupt ring and
+// report buffers go back to the pool.
+void gone(I64 d) {
+    if (d == 0) {
+        U8[8] none;
+        for k in 0..8 { none[k] = 0; }
+        key_report(none);
+        keyrep.reset();                // RS-KR: after its keys go up, no repeat of one it held
+    } else {
+        U8[8] none;
+        for k in 0..8 { none[k] = 0; }
+        mouse_report(none);
+    }
+    I64 s = d_slot[d];
+    d_slot[d] = 0;                     // first: no event that comes while the slot is disabled reaches report()
+    d_dci[d] = 0;
+    if (s > 0) {
+        U64 octx = rd64(dcbaa + (8 * s) as U64);
+        if (release_slot(s)) {
+            unframe(octx);
+            unframe(d_ep0[d]);
+            unframe(d_ring[d]);
+            unframe(d_data[d]);
+        }
+    }
+    serial.serial_write("daphnis: usb: port ");
+    put_dec(d_port[d]);
+    if (d == 0) {
+        serial.serial_write(": keyboard gone\n");
+    } else {
+        serial.serial_write(": mouse gone\n");
+    }
+    d_slot[d] = 0;
+    d_dci[d] = 0;
+    d_ep0[d] = 0;
+    d_ring[d] = 0;
+    d_data[d] = 0;
+    halted[d] = false;
+    errors[d] = 0;
+    d_port[d] = 0;
+}
+
+// A device that arrived on port p after init: addressed and configured as init does, as the keyboard when none
+// runs, else as the mouse when none runs. One that is neither, or not wanted, gives its slot and frames back.
+void arrive(I64 p) {
+    p_tried[p] = true;
+    Bool want_k = d_slot[0] == 0;
+    Bool want_m = d_slot[1] == 0;
+    if (!want_k && !want_m) {
+        serial.serial_write("daphnis: usb: port ");
+        put_dec(p);
+        serial.serial_write(": a device after boot, not taken (a keyboard and a mouse run)\n");
+        return;
+    }
+    I64 speed = port_up(p);
+    if (speed <= 0) {
+        return;
+    }
+    I64 d = 1;
+    if (want_k) { d = 0; }
+    Bool ok = address(d, p, speed);
+    I64 s = d_slot[d];
+    U64 ring = d_ep0[d];
+    Bool kbd = false;
+    Bool mouse = false;
+    if (ok && want_k) {
+        kbd = configure(0, p, speed);
+    }
+    if (ok && !kbd && want_m) {
+        if (d == 0) {
+            place(0, 1, s);
+        }
+        mouse = configure(1, p, speed);
+    }
+    serial.serial_write("daphnis: usb: port ");
+    put_dec(p);
+    serial.serial_write(" speed ");
+    put_dec(speed);
+    if (kbd) {
+        serial.serial_write(": boot keyboard, after boot\n");
+        d_port[0] = p;
+        for k in 0..8 { last[k] = 0; }
+        return;
+    }
+    if (mouse) {
+        serial.serial_write(": boot mouse, after boot\n");
+        d_port[1] = p;
+        return;
+    }
+    serial.serial_write(": skipped\n");
+    for k in 0..2 {
+        if (d_slot[k] == s) {
+            d_slot[k] = 0;
+            d_ep0[k] = 0;
+        }
+    }
+    Bool off = true;
+    if (s > 0) {
+        U64 octx = rd64(dcbaa + (8 * s) as U64);
+        off = release_slot(s);
+        if (off) {
+            unframe(octx);
+        }
+    }
+    if (off) {
+        unframe(ring);
+        for k in 0..2 {                // a configure that failed after taking its ring and buffers
+            if (d_slot[k] == 0 && d_ring[k] != 0) {
+                unframe(d_ring[k]);
+                unframe(d_data[k]);
+                d_ring[k] = 0;
+                d_data[k] = 0;
+            }
+        }
+    }
+}
+
+// One changed port: its change bits cleared, then a device that left let go, or one that arrived taken once 100 ms
+// have passed since its connect was seen (until then the port stays pending). True when the port needs another look.
+Bool changed(I64 p) {
+    U64 a = portsc(p);
+    U64 v = r32(a) as U64;
+    w32(a, (v & 0x0E00C3E0) | (v & 0x00FE0000));             // the change bits written back clear them; PED left alone
+    Bool here = (v & 1) != 0;
+    Bool swapped = (v & 0x20000) != 0;                       // CSC: what is there now is not what was taken
+    for d in 0..2 {
+        if (d_port[d] == p && d_slot[d] != 0 && (!here || swapped)) {
+            gone(d);
+            p_tried[p] = false;
+        }
+    }
+    if (!here) {
+        p_tried[p] = false;
+        p_seen[p] = 0;
+        return false;
+    }
+    if (p_tried[p]) {
+        return false;                  // a device it enumerated already (at init, or a change of its own state)
+    }
+    I64 now = us_now();
+    if (p_seen[p] == 0) {
+        p_seen[p] = now;
+        if (p_seen[p] == 0) { p_seen[p] = 1; }
+        return true;
+    }
+    if (now - p_seen[p] < DEBOUNCE_US) {
+        return true;
+    }
+    p_seen[p] = 0;
+    arrive(p);
+    return false;
+}
+
+// At the scheduler's tick: every event waiting, each report into the input queue; one changed port (HP-1), so a plug
+// costs at most one enumeration a turn and a device pulled out is let go before its halted endpoint would be reset;
+// then a halted endpoint reset.
+export void poll() {
+    if (!on) {
+        return;
+    }
+    I64 n = 0;
+    while (n < EVENTS && next_event() != 0) { n += 1; }
+    Bool one = false;
+    for p in 1..HP_PORTS {
+        if (!one && p_change[p] && p <= ports) {
+            p_change[p] = changed(p);
+            one = true;
+        }
+    }
+    for d in 0..2 {
+        if (halted[d] && d_slot[d] != 0 && d_dci[d] != 0) { recover(d); }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

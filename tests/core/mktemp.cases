@@ -1,0 +1,21 @@
+# tests/core/mktemp.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md or - when busybox must agree. The tree is
+# compared after each case (CT-2).
+-u | - | -
+-p . | - | -
+-d -p . | - | -
+-p . x.XXXXXX | - | -
+-d -p box y.XXXXXX | - | -
+abXXXXXX | - | -
+-d abXXXXXXXXX | - | -
+-u -p box z.XXXXXX | - | -
+-t -p . t.XXXXXX | - | -
+box/q.XXXXXX | - | -
+x.XXX | - | -
+ab | - | -
+-q ab | - | -
+-p nodir | - | -
+-q -p nodir | - | -
+-d box/in/deep/c.txt/XXXXXX | - | -
+-x | - | D-1
+a.XXXXXX b.XXXXXX | - | D-3

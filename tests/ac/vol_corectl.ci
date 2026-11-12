@@ -1,0 +1,12 @@
+// tests/ac/vol_corectl.ci: rename, unlink, lstat and sync over tests/ac/vol_shctl.ci's volume; tools/check-authop.py
+// copies it over user/ci/corectl.ci in an isolated root.
+import user.ci.shctl;
+
+export I64 co_rename(in U8[_] from, in U8[_] to) { return shctl.vol_rename(from, to); }
+export I64 co_unlink(in U8[_] path) { return shctl.vol_unlink(path); }
+export I64 co_stat(in U8[_] path, I64 follow, inout I64[_] rec) {
+    assert(follow == 0 && len(rec) >= 16);
+    return shctl.vol_stat(path);
+}
+export I64 co_sync() { return shctl.vol_sync(); }
+// SPDX-License-Identifier: Apache-2.0

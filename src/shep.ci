@@ -1,0 +1,124 @@
+// src/shep.ci: the K4.5 scheduler policy, in cint. It runs a network of three tasks under a
+// fuel quantum, writes a digest of the schedule (which task ran each turn, why the turn ended,
+// and the task's fuel then) and a root of the tasks' event logs. A schedule digest depends on the
+// quantum and not on the compiler; a root depends on neither, unless the network breaks the
+// rules (net 1 does, on purpose, as a control).
+//
+// Networks (the tasks' code is in src/main_shep.ci):
+//   0  tasks 1 and 2 send to task 3, which receives from channel 0 then channel 1, in turn
+//   1  the same, but task 3 takes whichever channel has a value (the control: it must differ)
+//   2  tasks 1 and 2 each wait for the other's message: a deadlock, found and named
+//   3  task 1 receives on a channel it is not the receiver of, task 2 sends on one it is not the sender of: two fault records
+//   4  tasks 1 and 2 each count with a module variable: every task counts from 1
+//   5  task 1 runs its stack into its guard pages: a fault record, the others finish
+//   6  a probe runs task 2's stack into its guard pages and returns its record
+//   7  every task starts with 64 bytes of stack: a stack overflow before any cint call is live
+//   8  task 1 calls an extern that only the kernel may call
+
+import src.serial;
+import src.report;
+import src.taskapi;
+import src.sha256;
+import src.shepwork;
+
+const I64 TASKS = 3;
+
+void open_channels(I64 net) {
+    for id in 0..4 {
+        taskapi.chan_close(id);
+    }
+    if (net == 3) {
+        _ = taskapi.chan_open(0, 0, 2);
+    } else if (net >= 4) {
+        return;
+    } else if (net == 2) {
+        _ = taskapi.chan_open(0, 0, 1);
+        _ = taskapi.chan_open(1, 1, 0);
+    } else {
+        _ = taskapi.chan_open(0, 0, 2);
+        _ = taskapi.chan_open(1, 1, 2);
+    }
+}
+
+// Runs the network to the end. Returns the number of turns, or -1 for a deadlock. res[0..32) is
+// the schedule digest and res[32..64) the root of the logs (both zero after a deadlock).
+export I64 run_net(I64 net, I64 q, Bool trace, inout U8[64] res) {
+    I64[3] done;
+    U8[10] tb;
+    U8[32] d;
+    sha256.Sha256[1] ss;
+    sha256.Sha256[1] rs;
+    I64 left = TASKS;
+    I64 turns = 0;
+    for i in 0..64 {
+        res[i] = 0;
+    }
+    for i in 0..TASKS {
+        done[i] = 0;
+    }
+    taskapi.task_quantum(q);
+    taskapi.task_net(net);
+    taskapi.task_stack_budget(net == 7 ? 64 : 0);
+    open_channels(net);
+    for id in 0..TASKS {
+        _ = taskapi.task_create(id, 0);
+    }
+    sha256.sha_init(ss);
+    while (left > 0) {
+        I64 ran = 0;
+        for id in 0..TASKS {
+            if (done[id] == 0) {
+                I64 st = taskapi.task_run(id);
+                if (st != 6) {
+                    ran += 1;
+                    turns += 1;
+                    shepwork.put_le(tb, 0, id, 1);
+                    shepwork.put_le(tb, 1, st < 0 ? 255 : st, 1);
+                    shepwork.put_le(tb, 2, taskapi.task_fuel(id), 8);
+                    if (trace) {
+                        serial.serial_write("turn ");
+                        report.print_dec(id);
+                        serial.serial_write(" ");
+                        report.print_dec(st < 0 ? 255 : st);
+                        serial.serial_write(" ");
+                        report.print_dec(taskapi.task_fuel(id));
+                        serial.serial_write("\n");
+                    }
+                    sha256.sha_update(ss, tb, 0, 10);
+                }
+                if (st == 1 || st == 3 || st < 0) {
+                    done[id] = 1;
+                    left -= 1;
+                }
+            }
+        }
+        if (ran == 0 && left > 0) {
+            serial.serial_write("deadlock: waiting:");
+            for id in 0..TASKS {
+                if (done[id] == 0) {
+                    serial.serial_write(" task ");
+                    report.print_dec(id + 1);
+                }
+            }
+            serial.serial_write("\n");
+            return -1;
+        }
+    }
+    sha256.sha_final(ss, d);
+    for i in 0..32 {
+        res[i] = d[i];
+    }
+    sha256.sha_init(rs);
+    for id in 0..TASKS {
+        I64 n = taskapi.log_len(id);
+        for i in 0..n {
+            shepwork.root_event(rs, id, i, taskapi.log_kind(id, i), taskapi.log_val(id, i));
+        }
+    }
+    sha256.sha_final(rs, d);
+    for i in 0..32 {
+        res[32 + i] = d[i];
+    }
+    return turns;
+}
+// SPDX-License-Identifier: Apache-2.0

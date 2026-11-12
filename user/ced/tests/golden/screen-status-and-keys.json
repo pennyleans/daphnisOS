@@ -1,0 +1,33 @@
+{
+  "id": "screen-status-and-keys",
+  "rules": [
+    "VIEW-1",
+    "UNDO-5"
+  ],
+  "text": "hi\nthere",
+  "size": [
+    5,
+    60
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "58"
+  ],
+  "expect": {
+    "text": "Xhi\nthere",
+    "sel": [
+      1,
+      1
+    ],
+    "screen": [
+      "Xhi",
+      "there",
+      "",
+      " x [+]                                                  1:2",
+      "^S save  ^Q quit  ^F find  ^X cut  ^Z undo  ^Y redo  ^G line"
+    ]
+  }
+}

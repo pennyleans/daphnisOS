@@ -1,0 +1,30 @@
+{
+  "id": "esc-tail-delete-in-find-stays-text",
+  "rules": [
+    "KEY-2",
+    "FIND-2"
+  ],
+  "text": "alpha beta gamma",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "62657461",
+    "1b",
+    "",
+    "5b337e"
+  ],
+  "expect": {
+    "text": "alpha [3~ gamma",
+    "sel": [
+      9,
+      9
+    ]
+  }
+}

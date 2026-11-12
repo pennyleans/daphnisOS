@@ -1,0 +1,436 @@
+// src/dsp.ci: /dev/dsp, the streams and the mix (AU-3, ruling AU-2 A, docs/specs/2026-11-06-au-audio.md sections 4
+// and 5). One fixed format, signed 16-bit little-endian stereo at 48 kHz, 4 bytes a frame. Up to STREAMS openers,
+// each with a ring of SRING bytes in pool frames taken once at init. A write copies the caller's bytes into its
+// stream's ring whole (a write larger than the ring takes one ring's worth) or waits on the device until they fit.
+//
+// The device is the audio clock. pump(), called each turn of the scheduler, reads the controller's position, keeps
+// the device ring LEAD bytes ahead of it, and fills the gap with the mix: every stream's next frames summed sample by
+// sample with saturation to [-32768, 32767], zeros where a stream has none. What a program writes is a function of
+// the program (its stream digest, printed at close, is its receipt and equals the bytes on Linux); when it is heard
+// and what it is summed with are the device's timing, as a key's arrival is, and no canonical digest holds them.
+//
+// Lines, each printed by the call that causes it, never from pump(): at each close, `audio: stream S frames K chain
+// W` (the bytes the stream was written; what is left of them still plays); at each SNDCTL_DSP_SYNC, once every frame
+// of the stream has been mixed and the controller has read past it, `audio: mix nonzero M chain Z` (the mixed frames
+// that are not silence since the last such line: the gate finds them in the device's capture, in order) and
+// `audio: under U` (times the kernel found the controller past its writes: silence was heard).
+
+import src.serial;
+import src.text;
+import src.phys;
+import src.frames;
+import src.sha256;
+import src.uvm;
+import src.trap;
+import src.hda;
+
+export const I64 STREAMS = 4;
+export const I64 WOULD_BLOCK_DEV = -1001;   // src/input.ci's: src/proc.ci halts for the device and calls again
+const I64 SRING = 16384;                    // a stream's ring: 4,096 frames, about 85 ms
+const I64 SRING_FRAMES = 4;
+const I64 LEAD = 8192;                      // bytes the device ring is kept ahead of the controller: about 43 ms
+const I64 CHUNK = 1024;                     // bytes mixed at a time: 256 frames
+const I64 EAGAIN = 11;
+const I64 EFAULT = 14;
+const I64 EBUSY = 16;
+const I64 ENODEV = 19;
+
+Bool on = false;
+I64[4] s_frame;      // the first pool frame of each stream's ring
+Bool[4] s_open;      // held by a description
+Bool[4] s_busy;      // open, or closed with frames left to mix
+I64[4] s_wr;         // bytes written since open
+I64[4] s_rd;         // bytes mixed since open
+I64[4] s_sync;       // a waiting SNDCTL_DSP_SYNC's mark in the device stream, or -1
+U8[160] ch_h;        // five chains (the streams 0 to 3, the mix 4), 32 bytes of state each
+U8[5120] ch_blk;     // and a block of 1,024 bytes each
+I64[5] ch_fill;
+const I64 MIX = 4;
+I64 mix_nonzero = 0;
+I64 dev_pos = 0;     // the controller's last position in its ring
+I64 played = 0;      // bytes the controller has read since init
+I64 written = 0;     // bytes the kernel has written to the device ring since init
+I64 under = 0;
+I64 last_tick = 0;  // the PIT tick of the last pump: a long gap may hide a lap of the controller
+I64 level = 100;    // SP-1 (SP-R4 B): the mix's level in percent, the system panel's volume; 100 leaves the mix as summed
+I64[4] s_pid;       // the process that opened each stream (the panel's Now Playing)
+const I64 TICK_BYTES = 1920;                // bytes the controller reads in one 100 Hz tick
+
+// Starts the controller and takes the streams' rings: true when /dev/dsp exists.
+export Bool init() {
+    if (hda.init() <= 0) {
+        return false;
+    }
+    for s in 0..STREAMS {
+        s_frame[s] = frames.alloc(SRING_FRAMES);
+        if (s_frame[s] < 0) {
+            serial.serial_write("audio: refused: the pool\n");
+            return false;
+        }
+        s_open[s] = false;
+        s_busy[s] = false;
+        s_sync[s] = -1;
+    }
+    chain_start(MIX);
+    dev_pos = hda.position();
+    last_tick = trap.timer_ticks();
+    on = true;
+    return true;
+}
+
+export Bool present() {
+    return on;
+}
+
+// SP-1: the mix's level, 0 to 100 percent.
+export I64 level_of() {
+    return level;
+}
+
+export void set_level(I64 l) {
+    level = l;
+}
+
+// SP-1: the process that opened the lowest open stream, or -1 (Now Playing); the open streams.
+export I64 player() {
+    for s in 0..STREAMS {
+        if (s_open[s]) {
+            return s_pid[s];
+        }
+    }
+    return -1;
+}
+
+export I64 open_streams() {
+    I64 n = 0;
+    for s in 0..STREAMS {
+        if (s_open[s]) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+// A chain digests a byte stream in blocks of 1,024: H starts as 32 zero bytes, each whole block B makes it
+// SHA-256(H | B), and the end is SHA-256(H | the rest), the rest 0 to 1,023 bytes. tools/check-audio.py computes the
+// same over a file. (A SHA-256 state is a struct, and cint 0.2.12 keeps no struct in a module.)
+void chain_start(I64 c) {
+    for i in 0..32 {
+        ch_h[32 * c + i] = 0;
+    }
+    ch_fill[c] = 0;
+}
+
+void chain_block(I64 c) {
+    U8[1056] t;
+    U8[32] d;
+    for i in 0..32 {
+        t[i] = ch_h[32 * c + i];
+    }
+    for i in 0..ch_fill[c] {
+        t[32 + i] = ch_blk[1024 * c + i];
+    }
+    sha256.sha_digest(t, 0, 32 + ch_fill[c], d);
+    for i in 0..32 {
+        ch_h[32 * c + i] = d[i];
+    }
+    ch_fill[c] = 0;
+}
+
+void chain_add[n](I64 c, in U8[n] b, I64 k) {
+    for i in 0..k {
+        ch_blk[1024 * c + ch_fill[c]] = b[i];
+        ch_fill[c] += 1;
+        if (ch_fill[c] == 1024) {
+            chain_block(c);
+        }
+    }
+}
+
+void chain_end(I64 c, inout U8[32] d) {
+    chain_block(c);
+    for i in 0..32 {
+        d[i] = ch_h[32 * c + i];
+    }
+}
+
+void put_dec(I64 v) {
+    U8[20] d;
+    I64 n = text.dec_digits(v, d);
+    serial.serial_write(d[0..n]);
+}
+
+void put_digest(in U8[32] d) {
+    U8[64] h;
+    text.hex_bytes(d, 32, h);
+    serial.serial_write(h);
+}
+
+// A free stream for a new description opened by pid, or -ENODEV (no device), -EBUSY (STREAMS open).
+export I64 open(I64 pid) {
+    if (!on) {
+        return 0 - ENODEV;
+    }
+    for s in 0..STREAMS {
+        if (!s_busy[s]) {
+            s_open[s] = true;
+            s_busy[s] = true;
+            s_wr[s] = 0;
+            s_rd[s] = 0;
+            s_sync[s] = -1;
+            s_pid[s] = pid;
+            chain_start(s);
+            return s;
+        }
+    }
+    return 0 - EBUSY;
+}
+
+void stream_line(I64 s) {
+    U8[32] d;
+    chain_end(s, d);
+    serial.serial_write("audio: stream ");
+    put_dec(s);
+    serial.serial_write(" frames ");
+    put_dec(s_wr[s] / 4);
+    serial.serial_write(" chain ");
+    put_digest(d);
+    serial.serial_putc(10);
+}
+
+// The last description of stream s is gone: what it wrote still plays; the line when it has all been mixed.
+export void close(I64 s) {
+    s_open[s] = false;
+    s_sync[s] = -1;
+    stream_line(s);
+    if (s_rd[s] >= s_wr[s] - s_wr[s] % 4) {
+        s_busy[s] = false;
+    }
+}
+
+// Copies k bytes from the ring of stream s at stream byte `at` into b (k at most CHUNK; the ring may wrap).
+void ring_read(I64 s, I64 at, inout U8[1024] b, I64 k) {
+    I64 base = frames.frame_addr(s_frame[s]);
+    I64 off = at % SRING;
+    I64 first = k;
+    if (off + k > SRING) {
+        first = SRING - off;
+    }
+    phys.phys_read8((base + off) as U64, b[0..first]);
+    if (first < k) {
+        phys.phys_read8(base as U64, b[first..k]);
+    }
+}
+
+void ring_write(I64 s, I64 at, in U8[1024] b, I64 k) {
+    I64 base = frames.frame_addr(s_frame[s]);
+    I64 off = at % SRING;
+    I64 first = k;
+    if (off + k > SRING) {
+        first = SRING - off;
+    }
+    phys.phys_write8((base + off) as U64, b[0..first]);
+    if (first < k) {
+        phys.phys_write8(base as U64, b[first..k]);
+    }
+}
+
+// write(2) on stream s: n bytes at va of pid, whole; WOULD_BLOCK_DEV until they fit (-EAGAIN when nonblocking).
+export I64 write(I64 pid, I64 s, U64 va, I64 n, Bool nonblock) {
+    I64 take = n;
+    if (take > SRING) {
+        take = SRING;
+    }
+    if (take == 0) {
+        return 0;
+    }
+    if (SRING - (s_wr[s] - s_rd[s]) < take) {
+        if (nonblock) {
+            return 0 - EAGAIN;
+        }
+        return WOULD_BLOCK_DEV;
+    }
+    U8[1024] b;
+    I64 done = 0;
+    while (done < take) {
+        I64 k = take - done;
+        if (k > CHUNK) {
+            k = CHUNK;
+        }
+        if (uvm.peek(pid, va + done as U64, b, k) != k) {
+            return 0 - EFAULT;
+        }
+        ring_write(s, s_wr[s] + done, b, k);
+        chain_add(s, b, k);
+        done += k;
+    }
+    s_wr[s] += take;
+    return take;
+}
+
+// SNDCTL_DSP_SYNC on stream s: 0 once every frame it wrote has been mixed and the controller has read past the
+// last of them, WOULD_BLOCK_DEV before. The first call that waited prints the mix lines when it ends.
+export I64 sync(I64 s) {
+    if (s_sync[s] == -1) {
+        s_sync[s] = -2;
+    }
+    if (s_rd[s] < s_wr[s] - s_wr[s] % 4) {
+        return WOULD_BLOCK_DEV;
+    }
+    if (s_sync[s] == -2) {
+        s_sync[s] = written;
+    }
+    if (played < s_sync[s]) {
+        return WOULD_BLOCK_DEV;
+    }
+    U8[32] d;
+    chain_end(MIX, d);
+    serial.serial_write("audio: mix nonzero ");
+    put_dec(mix_nonzero);
+    serial.serial_write(" chain ");
+    put_digest(d);
+    serial.serial_write("\naudio: under ");
+    put_dec(under);
+    serial.serial_putc(10);
+    chain_start(MIX);
+    mix_nonzero = 0;
+    s_sync[s] = -1;
+    return 0;
+}
+
+// SNDCTL_DSP_RESET: what stream s wrote and was not mixed is dropped.
+export void reset(I64 s) {
+    s_rd[s] = s_wr[s];
+}
+
+// Bytes queued on stream s and not yet heard (SNDCTL_DSP_GETODELAY): the stream's own and the device's lead.
+export I64 delay(I64 s) {
+    I64 lead = written - played;
+    if (lead < 0) {
+        lead = 0;
+    }
+    return s_wr[s] - s_rd[s] + lead;
+}
+
+// Bytes a write of stream s would take now (SNDCTL_DSP_GETOSPACE).
+export I64 space(I64 s) {
+    return SRING - (s_wr[s] - s_rd[s]);
+}
+
+export I64 ring_bytes() {
+    return SRING;
+}
+
+// One CHUNK of the mix into the device ring at `written`.
+void mix_chunk() {
+    I64[512] acc;
+    U8[1024] b;
+    for i in 0..512 {
+        acc[i] = 0;
+    }
+    for s in 0..STREAMS {
+        if (s_busy[s]) {
+            I64 have = s_wr[s] - s_rd[s];
+            have -= have % 4;
+            if (have > CHUNK) {
+                have = CHUNK;
+            }
+            if (have > 0) {
+                ring_read(s, s_rd[s], b, have);
+                for i in 0..have / 2 {
+                    I64 v = (b[2 * i] as I64) | ((b[2 * i + 1] as I64) << 8);
+                    if (v >= 32768) {
+                        v -= 65536;
+                    }
+                    acc[i] += v;
+                }
+                s_rd[s] += have;
+            }
+            if (!s_open[s] && s_rd[s] >= s_wr[s] - s_wr[s] % 4) {
+                s_busy[s] = false;
+            }
+        }
+    }
+    U8[1024] nz;
+    I64 nzn = 0;
+    for f in 0..256 {
+        I64 l = acc[2 * f];
+        I64 r = acc[2 * f + 1];
+        if (level != 100) {
+            l = l * level / 100;       // SP-1: the panel's volume, before the clip
+            r = r * level / 100;
+        }
+        if (l > 32767) { l = 32767; }
+        if (l < -32768) { l = -32768; }
+        if (r > 32767) { r = 32767; }
+        if (r < -32768) { r = -32768; }
+        I64 lu = (l + 65536) % 65536;
+        I64 ru = (r + 65536) % 65536;
+        b[4 * f] = (lu & 0xFF) as U8;
+        b[4 * f + 1] = (lu >> 8) as U8;
+        b[4 * f + 2] = (ru & 0xFF) as U8;
+        b[4 * f + 3] = (ru >> 8) as U8;
+        if (l != 0 || r != 0) {
+            for j in 0..4 {
+                nz[nzn + j] = b[4 * f + j];
+            }
+            nzn += 4;
+            mix_nonzero += 1;
+        }
+    }
+    if (nzn > 0) {
+        chain_add(MIX, nz, nzn);
+    }
+    hda.put(written % hda.RING_BYTES, b);
+    written += CHUNK;
+}
+
+// Zeroes k bytes of the device ring from byte `from` (what the controller has read), so a stall plays silence, not
+// the ring's last lap.
+void silence(I64 from, I64 k) {
+    U8[1024] z;
+    for i in 0..1024 {
+        z[i] = 0;
+    }
+    I64 n = k;
+    if (n > hda.RING_BYTES) {
+        n = hda.RING_BYTES;
+    }
+    I64 at = from;
+    while (n > 0) {
+        I64 c = n;
+        if (c > CHUNK - at % CHUNK) {
+            c = CHUNK - at % CHUNK;
+        }
+        hda.put(at, z[0..c]);
+        at = (at + c) % hda.RING_BYTES;
+        n -= c;
+    }
+}
+
+// One turn: what the controller read since the last turn, then the mix up to LEAD bytes ahead of it.
+export void pump() {
+    if (!on) {
+        return;
+    }
+    I64 pos = hda.position();
+    I64 ring = hda.RING_BYTES;
+    I64 step = (pos - dev_pos + ring) % ring;
+    I64 now = trap.timer_ticks();
+    I64 laps = ((now - last_tick) * TICK_BYTES - step + ring / 2) / ring;   // whole laps a long gap hid, by the timer
+    if (laps < 0) {
+        laps = 0;
+    }
+    last_tick = now;
+    silence(dev_pos, step + laps * ring);
+    played += step + laps * ring;
+    dev_pos = pos;
+    if (written < played) {
+        under += 1;
+        written = played - played % CHUNK + CHUNK;   // the next whole chunk after the controller
+    }
+    while (written - played < LEAD) {
+        mix_chunk();
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

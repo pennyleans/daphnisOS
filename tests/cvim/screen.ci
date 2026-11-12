@@ -1,0 +1,71 @@
+// CV-3 screen replay: packed cases in; for each key, the frame term.ci writes; then the last grid.
+import console;
+import fs;
+import user.ci.cvim.key;
+import user.ci.cvim.state;
+import user.ci.cvim.view;
+import user.ci.cvim.term;
+requires fs.read("/case");
+I64 num(in U8[_] a, I64 p) {
+    I64 v = 0;
+    for i in 0..8 { v = v * 256 + (a[p + 7 - i] as I64); }
+    return v;
+}
+export void main(Grants g) {
+    U8[1048576] all;
+    U8[65536] orig;
+    U8[131072] add;
+    I64[20000] x;
+    I64[16384] r;
+    I64[196608] sp;
+    I64[278528] u;
+    I64[65536] grid;
+    I64[65536] last;
+    I64[1] st;
+    U8[1572864] o;
+    U8[256] name;
+    I64 n = fs.stat(g, "/case/all") catch -1;
+    assert(n >= 8 && n <= len(all));
+    I64 read_n = fs.read(g, "/case/all", 0, all[0..n]) catch -1;
+    assert(read_n == n);
+    I64 p = 8;
+    for c in 0..num(all, 0) {
+        I64 rows = num(all, p);
+        I64 cols = num(all, p + 8);
+        I64 nn = num(all, p + 16);
+        p += 24;
+        assert(rows * cols <= len(grid) && nn <= len(name));
+        for i in 0..nn { name[i] = all[p + i]; }
+        p += nn;
+        I64 nt = num(all, p);
+        I64 nk = num(all, p + 8);
+        p += 16;
+        for i in 0..nt { orig[i] = all[p + i]; }
+        p += nt;
+        key.init(r, x, 64, 256);
+        key.window(r, view.text_rows(rows));
+        assert(key.load(r, x, orig[0..nt], add));
+        r[state.R_SAVED_AT] = r[state.R_U_AT];
+        st[0] = 0;
+        for i in 0..rows * cols { last[i] = -1; }
+        "case {c} {rows} {cols}\n";
+        for k in 0..nk + 1 {
+            if (k > 0) {
+                key.step(r, x, orig[0..nt], add, sp, u, num(all, p));
+                p += 8;
+            }
+            view.compose(r, x, orig[0..nt], add, rows, cols, name[0..nn], grid);
+            I64 at = view.cursor_at(r, x, orig[0..nt], add, rows, cols);
+            I64 w = term.frame(last, grid, rows, cols, k == 0, at, view.shape(r), st, o);
+            assert(w <= len(o));
+            "F {w}\n";
+            _ = console.write(g, o[0..w]);
+        }
+        "G\n";
+        for row in 0..rows {
+            for col in 0..cols { "{grid[row * cols + col]} "; }
+            "\n";
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

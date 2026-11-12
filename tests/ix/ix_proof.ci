@@ -1,0 +1,331 @@
+// tests/ix/ix_proof.ci: frame 32's Index remainder drawn on the host at 1x by Index's kits (kit/indexui.ci and
+// kit/indexbody.ci) with frame 32's kits over them, in the 958 x 667 content box of tests/ff/index_proof.ci, dark and
+// light. Each scene prints `name NAME`, `frame W H` and each row as runs `rgb count`; `python3 tools/index_proof.py
+// OUTPUT DIR` writes NAME.png at 1x and NAME-2x.png at the desk's UI scale 2 (FD-2X A).
+// cint run --root . tests/ix/ix_proof.ci > OUTPUT
+import user.ci.kit.indexui;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.indexbody;
+import user.ci.kit.finder;
+import user.ci.kit.opener;
+import user.ci.kit.indexrename;
+import user.ci.kit.indexprops;
+import user.ci.kit.fileicons;
+import user.ci.kit.indexband;
+import user.ci.kit.shape;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.indextrash;
+
+U32[2048] row;
+U32[2048] tb;
+const I64 W = 958;
+const I64 H = 667;
+Bool in_trash = false;               // the Trash's toolbar (trash_toolbar)
+Bool trash_items = true;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+// The Index window's row y with frame 32's kits over the body.
+void index_row(I64 y) {
+    draw.paint(row, 0, W, tokens.word(tokens.PAPER));
+    if (y < indexui.BAR_H && in_trash) {
+        trash_toolbar(y);
+    } else if (y < indexui.BAR_H) {
+        indexui.toolbar_row(row, y);
+    } else if (y >= H - indexui.STATUS_H) {
+        indexui.status_row(row, y);
+    } else {
+        indexui.side_row(row, y);
+        indexbody.body_row(row, y);
+        if (finder.kept() == 0) {
+            indextrash.empty_row(row, y, indexui.SIDE_W, indexui.BAR_H, W, H - indexui.STATUS_H);
+        }
+        drop_cell(y);
+        indexband.over_row(row, y);
+        indexrename.row_at(row, y);
+    }
+    indextrash.row_at(row, y);
+}
+
+// The Trash's toolbar as indexui draws it once set_trash puts Empty Trash in Sort's slot (the wiring): indexui's own
+// Grid row, its view switch and the pill's end moved left by the button's width less Sort's (found by indexui.hit),
+// and the button in the slot.
+void trash_toolbar(I64 y) {
+    indexui.toolbar_row(tb, y);
+    I64 s0 = -1;
+    I64 s1 = -1;
+    I64 g0 = -1;
+    for x in 0..W {
+        I64 h = indexui.hit(x, 20);
+        if (h == indexui.SORT && s0 < 0) { s0 = x; }
+        if (h == indexui.SORT) { s1 = x + 1; }
+        if (h == indexui.GRID && g0 < 0) { g0 = x; }
+    }
+    I64 p1 = g0 - 2 - 12;                           // the pill's right end, 3 controls' gaps before the switch
+    I64 d = indextrash.button_w() - (s1 - s0);
+    assert(s0 > 0 && g0 > 0 && d >= 0);
+    for x in 0..W { row[x] = tb[x]; }
+    for x in p1 - 6 - d..s0 - d { row[x] = tb[x + d]; }
+    draw.paint(row, s0 - d, s1, tokens.word(tokens.PAPER));
+    indextrash.button_row(row, y, s0 - d, 8, trash_items);
+}
+
+// The drop target's cell as kit/indexbody.ci draws it once it calls indexband.under_row before a cell's icon (the
+// wiring's one line there): SURF1 under the folder icon and its name. The proof draws that cell again here.
+void drop_cell(I64 y) {
+    I64 k = indexband.drop();
+    if (k < 0) { return; }
+    I64 x0 = indexband.box_x0(k);
+    I64 y0 = indexband.box_y0(k);
+    if (y < y0 || y >= y0 + indexbody.CELL_H) { return; }
+    draw.paint(row, x0, x0 + indexbody.CELL_W, tokens.word(tokens.PAPER));
+    indexband.under_row(row, y, k);
+    fileicons.icon_at(row, y, x0 + 32, y0 + 16, fileicons.DIR, 48, 1);
+    U8[256] nb;
+    I64 n = finder.name_of(finder.kept_at(k), nb);
+    I64 w = ctext.width(nb, n, faces.SMALL, 1);
+    I64 base = y0 + 74 + (15 - ctext.ascent(faces.SMALL, 1) - ctext.descent(faces.SMALL, 1)) / 2
+               + ctext.ascent(faces.SMALL, 1);
+    I64 e = ctext.text(row, y, x0 + (indexbody.CELL_W - w) / 2, base, x0 + indexbody.CELL_W, nb, n,
+                       tokens.word(tokens.INK), faces.SMALL, 1);
+}
+
+void index_frame() {
+    "frame {W} {H}\n";
+    for y in 0..H {
+        index_row(y);
+        emit(W);
+    }
+}
+
+void suffix(Bool dark) {
+    if (dark) { "-dark\n"; } else { "-light\n"; }
+}
+
+void places() {
+    indexui.places_clear();
+    indexui.place(indexui.HOME, b"Home");
+    indexui.place(indexui.DOCUMENTS, b"Documents");
+    indexui.place(indexui.DOWNLOADS, b"Downloads");
+    indexui.place(indexui.PICTURES, b"Pictures");
+    indexui.place(indexui.DISK, b"Daphnis");
+    indexui.place(indexui.TRASH, b"Trash");
+}
+
+void add(in U8[_] name, Bool dir, I64 bytes, I64 items) {
+    assert(finder.add(name, dir, bytes, items, opener.kind_of(name, dir, b""), false));
+}
+
+void home_entries() {
+    assert(finder.go(b"/home/ci"));
+    finder.begin();
+    add(b"Documents", true, 0, 3);
+    add(b"Downloads", true, 0, 1);
+    add(b"Pictures", true, 0, 2);
+    add(b"kit", true, 0, 8);
+    add(b"notes.txt", false, 2048, -1);
+    add(b"hello.ci", false, 410, -1);
+    add(b"roundel.ci", false, 6144, -1);
+    add(b"desk.png", false, 421888, -1);
+    add(b"freedoom1.wad", false, 28592816, -1);
+    finder.sort_by(finder.BY_NAME);
+}
+
+void home_chrome(Bool list) {
+    indexui.set_size(W, H);
+    places();
+    indexui.set_nav(true, false, true);
+    indexui.crumbs(indexui.HOME, b"Home");
+    indexui.set_edit(false, false, b"");
+    indexui.set_view(list, b"Name");
+    indexui.set_query(b"");
+    indexui.set_place(0);
+    indexbody.set_box(indexui.SIDE_W, indexui.BAR_H, W, H - indexui.STATUS_H);
+    indexbody.set_list(list);
+}
+
+// F2 on notes.txt (kept entry 7): the field over its cell, the stem selected; in the List, over its row.
+void rename_scenes(Bool dark) {
+    home_entries();
+    finder.select(7);
+    home_chrome(false);
+    indexui.set_status(9, 1);
+    indexrename.begin(b"notes.txt", false);
+    indexrename.at_grid(indexbody.spot_x(7) - 12, indexbody.spot_y(7) - indexbody.CELL_H / 2);
+    "name ix-rename-grid";
+    suffix(dark);
+    index_frame();
+    home_chrome(true);
+    indexrename.at_list(indexbody.spot_x(7), W - 8 - 10 - 128 - 12 - 80 - 12 - 112 - 12, indexbody.spot_y(7) - 14);
+    "name ix-rename-list";
+    suffix(dark);
+    index_frame();
+    indexrename.end();
+}
+
+void props_frame() {
+    I64 h = indexprops.height();
+    "frame {indexprops.W} {h}\n";
+    for y in 0..h {
+        indexprops.row_at(row, y);
+        emit(indexprops.W);
+    }
+}
+
+// Alt+Enter on notes.txt (frame 32's Properties, Opens With as text); its name field with the keyboard; a folder.
+void props_scenes(Bool dark) {
+    indexprops.set_width(indexprops.W);
+    indexprops.set_entry(b"notes.txt", false, fileicons.TEXT);
+    indexprops.set_row(indexprops.TYPE, b"Text");
+    indexprops.set_row(indexprops.SIZE, b"2 KiB");
+    indexprops.set_row(indexprops.LOCATION, b"/home/ci");
+    indexprops.set_row(indexprops.MODIFIED, b"Nov 9, 01:40");
+    indexprops.set_row(indexprops.OPENS_WITH, b"Edit");
+    "name ix-props-file";
+    suffix(dark);
+    props_frame();
+    indexprops.edit();
+    "name ix-props-edit";
+    suffix(dark);
+    props_frame();
+    indexrename.end();
+    indexprops.set_entry(b"kit", true, fileicons.DIR);
+    indexprops.set_row(indexprops.TYPE, b"Folder");
+    indexprops.set_row(indexprops.SIZE, b"8 items");
+    indexprops.set_row(indexprops.LOCATION, b"/home/ci");
+    indexprops.set_row(indexprops.MODIFIED, b"Nov 9, 01:12");
+    indexprops.set_row(indexprops.OPENS_WITH, b"Index");
+    "name ix-props-folder";
+    suffix(dark);
+    props_frame();
+}
+
+void band_place() {
+    indexband.set_grid(indexbody.corner_x(), indexbody.corner_y(), indexbody.cols(), finder.kept());
+    indexband.set_clip(indexui.SIDE_W, indexui.BAR_H, W, H - indexui.STATUS_H);
+}
+
+// A band dragged from the space right of roundel.ci up into notes.txt: both chosen as it passes. Then notes.txt
+// dragged onto kit (the drop ring) while desk.png is cut (40 percent).
+void band_scenes(Bool dark) {
+    home_entries();
+    home_chrome(false);
+    band_place();
+    indexband.press(590, 300, false);
+    assert(indexband.move(380, 230));
+    finder.select(7);
+    finder.toggle(8);
+    assert(indexband.picks(7) && indexband.picks(8) && !indexband.picks(6));
+    indexui.set_status(9, 2);
+    "name ix-band-grid";
+    suffix(dark);
+    index_frame();
+    assert(indexband.release());
+    finder.select(7);
+    indexui.set_status(9, 1);
+    indexband.cut_clear();
+    indexband.cut_mark(4);
+    indexband.drag_press(370, 220);
+    assert(indexband.drag_move(560, 110) && indexband.drop() == 3);
+    "name ix-drag-grid";
+    suffix(dark);
+    index_frame();
+    assert(indexband.drag_release() == 3);
+    indexband.cut_clear();
+}
+
+void trash_chrome(I64 n, I64 chosen) {
+    indexui.set_size(W, H);
+    places();
+    indexui.set_nav(true, false, true);
+    indexui.crumbs(indexui.TRASH, b"Trash");
+    indexui.set_edit(false, false, b"");
+    indexui.set_view(false, b"Name");
+    indexui.set_query(b"");
+    indexui.set_place(5);
+    indexui.set_status(n, chosen);
+    indexbody.set_box(indexui.SIDE_W, indexui.BAR_H, W, H - indexui.STATUS_H);
+    indexbody.set_list(false);
+    indextrash.place(0, 0, W, H);
+    in_trash = true;
+}
+
+I64 kept_named(in U8[_] want) {
+    U8[256] nb;
+    for k in 0..finder.kept() {
+        I64 n = finder.name_of(finder.kept_at(k), nb);
+        if (n == len(want)) {
+            Bool same = true;
+            for q in 0..n {
+                if (nb[q] != want[q]) { same = false; }
+            }
+            if (same) { return k; }
+        }
+    }
+    return -1;
+}
+
+// Frame 32's Trash: three items, draft.txt chosen; Empty Trash asked (frame 23, by a click); Delete Forever of
+// draft.txt asked from the keyboard (the ring on Delete); the Trash empty (the button at 40 percent, the one line).
+void trash_scenes(Bool dark) {
+    assert(finder.go(b"/home/ci/.trash/items"));
+    finder.begin();
+    add(b"draft.txt", false, 2048, -1);
+    add(b"old-desk.png", false, 388096, -1);
+    add(b"scratch", true, 0, 2);
+    finder.sort_by(finder.BY_NAME);
+    I64 k = kept_named(b"draft.txt");
+    assert(k >= 0);
+    finder.select(k);
+    trash_chrome(3, 1);
+    trash_items = true;
+    "name ix-trash-grid";
+    suffix(dark);
+    index_frame();
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    "name ix-trash-ask";
+    suffix(dark);
+    index_frame();
+    indextrash.ask(indextrash.DELETE_FOREVER, 1, b"draft.txt");
+    "name ix-trash-delete";
+    suffix(dark);
+    index_frame();
+    indextrash.close();
+    finder.begin();
+    trash_chrome(0, 0);
+    trash_items = false;
+    "name ix-trash-empty";
+    suffix(dark);
+    index_frame();
+    in_trash = false;
+    trash_items = true;
+}
+
+void scenes(Bool dark) {
+    I64 r = opener.load_default();
+    rename_scenes(dark);
+    props_scenes(dark);
+    band_scenes(dark);
+    trash_scenes(dark);
+}
+
+void main() {
+    tokens.set_theme(tokens.DARK);
+    scenes(true);
+    tokens.set_theme(tokens.LIGHT);
+    scenes(false);
+}
+// SPDX-License-Identifier: Apache-2.0

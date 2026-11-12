@@ -1,0 +1,195 @@
+{
+  "corpus_revision": "c5495c539ca8a79c3c5107f5f14010bcff9a35d5",
+  "counts": {
+    "executed": 7046,
+    "skipped": 4
+  },
+  "skipped": [
+    {
+      "id": "xmlViolation.test:0:Data state",
+      "reason": "DOM infoset coercion is downstream of tokenization"
+    },
+    {
+      "id": "xmlViolation.test:1:Data state",
+      "reason": "DOM infoset coercion is downstream of tokenization"
+    },
+    {
+      "id": "xmlViolation.test:2:Data state",
+      "reason": "DOM infoset coercion is downstream of tokenization"
+    },
+    {
+      "id": "xmlViolation.test:3:Data state",
+      "reason": "DOM infoset coercion is downstream of tokenization"
+    }
+  ],
+  "toolchains": {
+    "gcc": {
+      "total": 7050,
+      "passed": 7042,
+      "failed": 4,
+      "refused": 0,
+      "skipped": 4,
+      "failures": [
+        {
+          "id": "unicodeCharsProblematic.test:0:Data state",
+          "input_sha256": "8a8821b226fa468b6fadc951dad490315bf41b4761d6f3f56917f1d0e50d4dae",
+          "want": [
+            [
+              "Character",
+              "\udfff"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "\ufffd"
+            ]
+          ],
+          "errors": 1
+        },
+        {
+          "id": "unicodeCharsProblematic.test:1:Data state",
+          "input_sha256": "91a681b998555fb475479817b126c94e57e52011fa1842c5d188795a4a05226b",
+          "want": [
+            [
+              "Character",
+              "\ud800"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "\ufffd"
+            ]
+          ],
+          "errors": 1
+        },
+        {
+          "id": "unicodeCharsProblematic.test:2:Data state",
+          "input_sha256": "9c97f0605ba29bc04f1f7a2264a36e93ee17d8ef658d4a09b246f436d239fc7c",
+          "want": [
+            [
+              "Character",
+              "a\udfff"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "a\ufffd"
+            ]
+          ],
+          "errors": 1
+        },
+        {
+          "id": "unicodeCharsProblematic.test:3:Data state",
+          "input_sha256": "03dce54308610046523796eb99cb0594879248bb5413ba974304eb0db89f3f32",
+          "want": [
+            [
+              "Character",
+              "\ud800a"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "\ufffda"
+            ]
+          ],
+          "errors": 1
+        }
+      ],
+      "refusals": [],
+      "binary_sha256": "c87395d8a923166c828f77cabdb07dfd755659fe13f9ed0640f986f46a944e78",
+      "binary_bytes": 1689936
+    },
+    "clang": {
+      "total": 7050,
+      "passed": 7042,
+      "failed": 4,
+      "refused": 0,
+      "skipped": 4,
+      "failures": [
+        {
+          "id": "unicodeCharsProblematic.test:0:Data state",
+          "input_sha256": "8a8821b226fa468b6fadc951dad490315bf41b4761d6f3f56917f1d0e50d4dae",
+          "want": [
+            [
+              "Character",
+              "\udfff"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "\ufffd"
+            ]
+          ],
+          "errors": 1
+        },
+        {
+          "id": "unicodeCharsProblematic.test:1:Data state",
+          "input_sha256": "91a681b998555fb475479817b126c94e57e52011fa1842c5d188795a4a05226b",
+          "want": [
+            [
+              "Character",
+              "\ud800"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "\ufffd"
+            ]
+          ],
+          "errors": 1
+        },
+        {
+          "id": "unicodeCharsProblematic.test:2:Data state",
+          "input_sha256": "9c97f0605ba29bc04f1f7a2264a36e93ee17d8ef658d4a09b246f436d239fc7c",
+          "want": [
+            [
+              "Character",
+              "a\udfff"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "a\ufffd"
+            ]
+          ],
+          "errors": 1
+        },
+        {
+          "id": "unicodeCharsProblematic.test:3:Data state",
+          "input_sha256": "03dce54308610046523796eb99cb0594879248bb5413ba974304eb0db89f3f32",
+          "want": [
+            [
+              "Character",
+              "\ud800a"
+            ]
+          ],
+          "got": [
+            [
+              "Character",
+              "\ufffda"
+            ]
+          ],
+          "errors": 1
+        }
+      ],
+      "refusals": [],
+      "binary_sha256": "2e2ce6ceef1c41b316d2e62eb8aed7889722791696cf7c4777b719f541453f03",
+      "binary_bytes": 1690712
+    }
+  },
+  "sources_sha256": {
+    "user/ci/web/tokenizer.ci": "cd9f5f537045004223d074e8ab4e08eb9403a06c8839fb986286d5818cb53f62",
+    "tests/html/tokenizer_driver.ci": "5695ddb951cfddc2b911c534415945998e0cc10ed6e038bb32db210e10253f7a",
+    "tests/html/tokenizer_host.c": "7be08ccf0a045648ac8666248e7346baafa15e710e290a6d4a5950da37983b49",
+    "tools/html/check-tokenizer.py": "b26fb65e308f314999b817c8a7e43a9778d3fa656b9e57ae1031f7d11618428f"
+  },
+  "cint_sha256": "96e95f6821e0a9d50668a233032bc5a921222179a5ad14b4c270d4b9464099cb",
+  "toolchain_sha256": "312ba9c55ab6f2926573a51960ec5e426b0a7b677d55602b09725cf0979c44f5"
+}

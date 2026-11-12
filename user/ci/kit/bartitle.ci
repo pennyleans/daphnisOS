@@ -1,0 +1,120 @@
+// user/ci/kit/bartitle.ci: RS-TTL (docs/specs/2026-11-11-rs-ttl-bartitle.md; RS spec RS-TTL, frames 40 and 41): a
+// terminal program's title in the window bar and the system bar. No new sequence: the title is OSC 0 or 2, and the
+// unsaved dot is AM section 7's `dirty` report (terms.menu_unsaved).
+//   take() keeps a title as the desk draws it: control characters (C0, DEL, C1) and the line and paragraph
+//   separators (U+2028, U+2029) dropped, each byte that starts no whole UTF-8 character (RFC 3629, as kit/ucode.ci
+//   reads it) kept as U+FFFD, at most MAX bytes cut at a character's end. What it keeps is valid UTF-8 and one line
+//   of text.
+//   fit() cuts a kept title for a smaller buffer at a character's end.
+//   logged() writes a kept title for a desk log line as ASCII, with '|' as '?', so it can neither end the line for
+//   any reader nor make a field of its own.
+//   parts() says what a terminal window's bar draws. A window whose app shows a document (Read, Edit) draws the
+//   title in the name's place, with no icon, and the dot before it while unsaved (frame 40); any other draws its
+//   icon, its name and the title after it as the variable. The system bar is name then title in every case (frame
+//   41), so it needs no parts.
+// A title is the program's word. It shows in that window's bar, and beside its name in the system bar while it is
+// focused; never where the desk speaks for itself: an approval prompt, the switcher's system rows, the unsaved ask, a
+// notification from the desk. A log line a gate reads carries it only through logged().
+// Pure: no state, no call rows.
+import user.ci.kit.ucode;
+
+export const I64 MAX = 255;            // a title's bytes kept (RS-TTL)
+
+// parts(): what the window bar draws
+export const I64 ICON = 1;             // the app's 16 px icon
+export const I64 NAME = 2;             // the app's name, NAME_BOLD
+export const I64 VAR = 4;              // the title after the name, PATH
+export const I64 FILE = 8;             // the title in the name's place, NAME_BOLD (frame 40)
+export const I64 DOT = 16;             // the 6 px dot, 8 px before FILE (frame 40)
+
+// The character at t[at] of t[0..n] as ucode.decode gives it: code point * 8 + its length in bytes; a byte that
+// starts no whole character is U+FFFD of length 1.
+I64 next_at(in U8[_] t, I64 n, I64 at) {
+    I64 b1 = 0;
+    I64 b2 = 0;
+    I64 b3 = 0;
+    if (at + 1 < n) { b1 = t[at + 1] as I64; }
+    if (at + 2 < n) { b2 = t[at + 2] as I64; }
+    if (at + 3 < n) { b3 = t[at + 3] as I64; }
+    I64 avail = n - at;
+    if (avail > 4) { avail = 4; }
+    return ucode.decode(t[at] as I64, b1, b2, b3, avail);
+}
+
+// Whether code point cp is text on one line: not C0, DEL or C1, and not U+2028 or U+2029, which a reader such as
+// Python's str.splitlines() takes as a line's end.
+Bool one_line_cp(I64 cp) {
+    if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F)) { return false; }
+    return cp != 0x2028 && cp != 0x2029;
+}
+
+// The title kept from an OSC 0 or 2's text t[0..tn] into o: its length, at most MAX and len(o).
+export I64 take(in U8[_] t, I64 tn, inout U8[_] o) {
+    I64 n = tn;
+    if (n > len(t)) { n = len(t); }
+    I64 room = MAX;
+    if (len(o) < room) { room = len(o); }
+    I64 k = 0;
+    I64 at = 0;
+    while (at < n) {
+        I64 d = next_at(t, n, at);
+        I64 cp = d / 8;
+        I64 w = d % 8;
+        if (one_line_cp(cp)) {
+            Bool bad = cp == ucode.BAD && w == 1;   // a stray byte; a whole U+FFFD is copied as it came
+            I64 ow = w;
+            if (bad) { ow = 3; }
+            if (k + ow > room) { return k; }
+            if (bad) {
+                o[k] = 0xEF;
+                o[k + 1] = 0xBF;
+                o[k + 2] = 0xBD;
+            } else {
+                for q in 0..w { o[k + q] = t[at + q]; }
+            }
+            k = k + ow;
+        }
+        at = at + w;
+    }
+    return k;
+}
+
+// The longest start of t[0..tn] of at most m bytes that ends at a character's end: for a copy into m bytes.
+export I64 fit(in U8[_] t, I64 tn, I64 m) {
+    I64 n = tn;
+    if (n > len(t)) { n = len(t); }
+    I64 at = 0;
+    while (at < n) {
+        I64 w = next_at(t, n, at) % 8;
+        if (at + w > m) { return at; }
+        at = at + w;
+    }
+    return at;
+}
+
+// A kept title t[0..tn] for a desk log line into o: '|' and every byte outside 0x20 to 0x7E as '?'. The line is then
+// ASCII, so no reader finds a line's end in it (str.splitlines() takes U+2028 as one), its fields stay the desk's, and
+// no cut at len(o) falls inside a character. Its length, at most len(o).
+export I64 logged(in U8[_] t, I64 tn, inout U8[_] o) {
+    I64 n = tn;
+    if (n > len(t)) { n = len(t); }
+    if (n > len(o)) { n = len(o); }
+    for k in 0..n {
+        U8 c = t[k];
+        if (c < 0x20 || c > 0x7E || c == 0x7C) { c = '?'; }       // 0x7C: '|'
+        o[k] = c;
+    }
+    return n;
+}
+
+// What a terminal window's bar draws: doc when its app shows a document, tn its kept title's length, unsaved its
+// program's AM section 7 report.
+export I64 parts(Bool doc, I64 tn, Bool unsaved) {
+    if (doc && tn > 0) {
+        if (unsaved) { return FILE | DOT; }
+        return FILE;
+    }
+    if (tn > 0) { return ICON | NAME | VAR; }
+    return ICON | NAME;
+}
+// SPDX-License-Identifier: Apache-2.0

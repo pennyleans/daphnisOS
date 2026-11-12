@@ -1,0 +1,210 @@
+// tests/kfz/k7_sweep.ci: LO-1 (PR 399) through the entries: sweep (1010), the desk's end of a logged out account's
+// processes, and seat (1009), whose the tile the desk offers is. The kernel read of 399 (board 20261111T224531Z):
+// the hosted test reads only src/seat.ci's rule, not sys_sweep's two loops over the table. Here the loops run over a
+// session as a board has one: a job that ignores SIGTERM, a child that left with setsid, a fork loop, a vfork parent
+// and its child, one forked just before the sweep, and one ended before it; beside them the desk, authd, another
+// account and the same uid in another family. Then every refusal, and the tile's gate before, at and after a login.
+
+const U64 NR_EXIT = 60;
+const U64 NR_WAIT4 = 61;
+const U64 NR_KILL = 62;
+
+Bool kz_live(I64 p) {
+    return state[p] == READY || state[p] == WAITING;
+}
+
+// p ignores SIGTERM (rt_sigaction, SIG_IGN), as a program that traps it.
+void kz_ignore_term(I64 p) {
+    kz_own(p, PATHS + 512, 32);
+    U8[32] act;
+    act[0] = 1;
+    assert(uvm.poke(p, PATHS + 512, act, 32, false) == 32);
+    assert(kz_call(p, NR_SIGACTION, 15, PATHS + 512, 0, 8, 0, 0) == 0);
+    assert(job.ignored(p, 15));
+}
+
+// The desk offers its next tile (FBIO_TILE_NEXT): 200 x 100 at x, 0.
+void kz_offer(I64 d, I64 x) {
+    kz_set_u32(d, KZ_RW + 1024, 200);
+    kz_set_u32(d, KZ_RW + 1028, 100);
+    kz_set_u32(d, KZ_RW + 1032, x as U64);
+    kz_set_u32(d, KZ_RW + 1036, 0);
+    assert(kz_call(d, NR_IOCTL, kz_fb_fd as U64, tile.FBIO_TILE_NEXT, KZ_RW + 1024, 0, 0, 0) == 0);
+}
+
+// A new process of uid, of its own family, opens /dev/fb0 and ends: the open's answer.
+I64 kz_try_fb(I64 uid) {
+    I64 p = kz_proc(uid, fs.GRANT_ALL, 0);
+    kz_put(p, KZ_RW + 2048, "/dev/fb0");
+    I64 r = kz_call(p, NR_OPEN, KZ_RW + 2048, KZ_O_RDWR, 0, 0, 0, 0);
+    kz_end(p);
+    return r;
+}
+
+// The desk's child as the desk makes one: forked, then logged in as uid (call 1003 sets what this sets by hand).
+// A forked slot, so its end leaves it for the desk's wait4 (kz_child's slots are below CHILD_LO, which wait4 skips).
+I64 kz_desk_fork(I64 d, I64 uid) {
+    I64 c = kz_fork(d);
+    fs.set_login(c, uid, uid, fs.GRANT_ALL);
+    kz_fill(c);
+    return c;
+}
+
+// A child of the desk at uid with ring 0 (R0-1), for a caller that holds every right but the desk's.
+I64 kz_ring0(I64 d, I64 uid) {
+    I64 k = kz_desk_fork(d, uid);
+    fs.grant_add(k, fs.GRANT_KERN);
+    fs.kern_set(k, true);
+    return k;
+}
+
+test "sweep: each live process of the uid in the desk's family ends as SIGKILL ends it; the count; the rest stay" {
+    I64 d = kz_desk();
+    I64 sh = kz_desk_fork(d, 1000);                          // the session's shell
+    I64 ign = kz_desk_fork(d, 1000);                         // a job that ignores SIGTERM
+    kz_ignore_term(ign);
+    I64 ss = kz_fork(sh);                                    // a child that left with setsid, ignoring SIGTERM
+    assert(kz_call(ss, NR_SETSID, 0, 0, 0, 0, 0, 0) == vpid[ss]);
+    kz_ignore_term(ss);
+    I64 f1 = kz_fork(sh);                                    // a fork loop's, and the setsid child's own
+    I64 f2 = kz_fork(f1);
+    I64 f3 = kz_fork(ss);
+    I64 vp = kz_desk_fork(d, 1000);                          // a vfork parent, waiting, and its child in its space
+    assert(kz_call_raw(vp, NR_CLONE, 0x4111, KZ_TOP + 4000, 0, 0, 0, 0) == fs.WOULD_BLOCK);
+    I64 vc = vfork_child[vp] - 1;
+    assert(vc > 0 && parent[vc] == vp);
+    state[vp] = WAITING;
+    I64 z = kz_desk_fork(d, 1000);                           // ended before the sweep, not yet waited for
+    _ = kz_call_raw(z, NR_EXIT, 7, 0, 0, 0, 0, 0);
+    assert(state[z] == ZOMBIE);
+    I64 au = kz_desk_fork(d, 0);                             // authd, the desk's, uid 0
+    I64 o = kz_desk_fork(d, 1001);                           // another account's daemon
+    I64 fam = kz_proc(1000, fs.GRANT_ALL, 0);                // the same uid in another family
+    // the log out's SIGTERM: the two that ignore it stay
+    assert(kz_call(d, NR_KILL, vpid[ign] as U64, 15, 0, 0, 0, 0) == 0);
+    assert(kz_call(d, NR_KILL, vpid[ss] as U64, 15, 0, 0, 0, 0) == 0);
+    assert(kz_live(ign) && kz_live(ss));
+    I64 last = kz_fork(f2);                                  // forked just before the sweep
+    I64[9] gone = [sh, ign, ss, f1, f2, f3, vp, vc, last];
+    // (the ended processes' frames leave the pool's books, so the call goes without kz_call's check)
+    assert(kz_call_raw(d, NR_SWEEP, 1000, 0, 0, 0, 0, 0) == 9);
+    for g in 0..9 {
+        assert(!kz_live(gone[g]) && code[gone[g]] == 9 && signaled[gone[g]]);
+    }
+    assert(state[z] == ZOMBIE && code[z] == 7 && !signaled[z]);           // left for its parent's wait
+    assert(state[d] == READY && state[au] == READY && state[o] == READY && state[fam] == READY);
+    assert(tile.tiler_pid() == d && fs.uid_of(au) == 0 && fs.uid_of(o) == 1001);
+    // the desk's wait takes each of its children the sweep ended, and the one ended before; the rest are free
+    I64[4] own = [sh, ign, vp, z];
+    for k in 0..4 {
+        assert(kz_call(d, NR_WAIT4, vpid[own[k]] as U64, 0, 0, 0, 0, 0) == vpid[own[k]]);
+    }
+    for g in 0..9 {
+        assert(state[gone[g]] == FREE);
+    }
+    assert(state[z] == FREE);
+    // nothing of 1000 is left in the family: a second sweep ends none
+    assert(kz_call(d, NR_SWEEP, 1000, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(d, NR_SWEEP, 1002, 0, 0, 0, 0, 0) == 0);
+    assert(state[o] == READY && state[fam] == READY);
+    kz_end(fam);
+    kz_end(o);
+    kz_end(au);
+    kz_end(d);
+}
+
+test "sweep: uid 0, 65536, -1 or past 32 bits is -EINVAL; a caller not the desk is -EPERM; a refusal ends nothing" {
+    I64 n0 = kz_proc(0, fs.GRANT_ALL, 0);                    // uid 0 while no desk is up
+    assert(kz_call(n0, NR_SWEEP, 1000, 0, 0, 0, 0, 0) == E_PERM);
+    kz_end(n0);
+    I64 d = kz_desk();
+    I64 sh = kz_desk_fork(d, 1000);
+    I64 au = kz_desk_fork(d, 0);                             // uid 0, not the tiler
+    I64 k = kz_ring0(d, 1000);                               // ring 0, not the tiler
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);                     // uid 0 of another family
+    U64[6] bad = [0, 65536, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFF, 0x1000003E8, 0x8000000000000000];
+    for b in 0..6 {
+        assert(kz_call(d, NR_SWEEP, bad[b], 0, 0, 0, 0, 0) == E_INVAL);
+    }
+    I64[4] not_desk = [au, sh, k, r];
+    for c in 0..4 {
+        assert(kz_call(not_desk[c], NR_SWEEP, 1000, 0, 0, 0, 0, 0) == E_PERM);
+        assert(kz_call(not_desk[c], NR_SWEEP, 0, 0, 0, 0, 0, 0) == E_PERM);          // the caller first
+    }
+    fs.set_login(d, 1000, 1000, fs.GRANT_ALL);               // the tiler at another uid: no call makes it, by hand
+    assert(kz_call(d, NR_SWEEP, 1000, 0, 0, 0, 0, 0) == E_PERM);
+    fs.set_login(d, 0, 0, fs.GRANT_ALL);
+    assert(kz_live(d) && kz_live(sh) && kz_live(au) && kz_live(k) && kz_live(r));
+    // the range's ends: 65535 and 1 are swept
+    I64 top = kz_desk_fork(d, 65535);
+    I64 one = kz_desk_fork(d, 1);
+    assert(kz_call_raw(d, NR_SWEEP, 65535, 0, 0, 0, 0, 0) == 1 && !kz_live(top));
+    assert(kz_call_raw(d, NR_SWEEP, 1, 0, 0, 0, 0, 0) == 1 && !kz_live(one));
+    assert(kz_call_raw(d, NR_SWEEP, 1000, 0, 0, 0, 0, 0) == 2 && !kz_live(sh) && !kz_live(k));
+    assert(kz_live(d) && kz_live(au) && kz_live(r));
+    I64[4] own = [sh, k, top, one];
+    for c in 0..4 {
+        assert(kz_call(d, NR_WAIT4, vpid[own[c]] as U64, 0, 0, 0, 0, 0) == vpid[own[c]]);
+    }
+    kz_end(r);
+    kz_end(au);
+    kz_end(d);
+}
+
+test "seat: the tile is any process's until the desk names a seat, then the named account's alone, no one's at -1" {
+    I64 n0 = kz_proc(0, fs.GRANT_ALL, 0);                    // uid 0 while no desk is up
+    assert(kz_call(n0, NR_SEAT, 0, 0, 0, 0, 0, 0) == E_PERM);
+    kz_end(n0);
+    I64 d = kz_desk();
+    // the callers not the desk, forked before any offer (the tiler's fork child takes an offered tile, W-3)
+    I64 au = kz_desk_fork(d, 0);
+    I64 u = kz_desk_fork(d, 1000);
+    I64 k = kz_ring0(d, 1000);
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64[4] not_desk = [au, u, k, r];
+    // before a seat, as before LO-1: any process takes it, once
+    assert(seat.account() == seat.OPEN);
+    kz_offer(d, 0);
+    assert(kz_try_fb(1001) >= 3);
+    assert(kz_try_fb(1000) == E_BUSY);
+    // a login as 1000: another uid, uid 0 not the desk, refused; the offer outlives them for 1000
+    assert(kz_call(d, NR_SEAT, 1000, 0, 0, 0, 0, 0) == 0 && seat.account() == 1000);
+    kz_offer(d, 0);
+    assert(kz_try_fb(1001) == E_BUSY && kz_try_fb(0) == E_BUSY);
+    assert(kz_try_fb(1000) >= 3);
+    // the log out: no one
+    assert(kz_call(d, NR_SEAT, 0xFFFFFFFFFFFFFFFF, 0, 0, 0, 0, 0) == 0 && seat.account() == seat.NONE);
+    kz_offer(d, 0);
+    assert(kz_try_fb(1000) == E_BUSY && kz_try_fb(0) == E_BUSY && kz_try_fb(1001) == E_BUSY);
+    // never OPEN again, nor a uid out of range: -EINVAL, the seat kept
+    U64[6] bad = [0xFFFFFFFFFFFFFFFE, 0xFFFFFFFFFFFFFFFD, 65536, 0xFFFFFFFF, 0x1000003E8, 0x8000000000000000];
+    for b in 0..6 {
+        assert(kz_call(d, NR_SEAT, bad[b], 0, 0, 0, 0, 0) == E_INVAL);
+    }
+    assert(seat.account() == seat.NONE && kz_try_fb(1000) == E_BUSY);
+    // a caller not the desk: -EPERM, whatever it names
+    for c in 0..4 {
+        assert(kz_call(not_desk[c], NR_SEAT, 1000, 0, 0, 0, 0, 0) == E_PERM);
+        assert(kz_call(not_desk[c], NR_SEAT, 0xFFFFFFFFFFFFFFFE, 0, 0, 0, 0, 0) == E_PERM);
+    }
+    fs.set_login(d, 1000, 1000, fs.GRANT_ALL);               // the tiler at another uid: no call makes it, by hand
+    assert(kz_call(d, NR_SEAT, 1000, 0, 0, 0, 0, 0) == E_PERM);
+    fs.set_login(d, 0, 0, fs.GRANT_ALL);
+    assert(seat.account() == seat.NONE && kz_try_fb(1000) == E_BUSY);
+    // the next login, 1001: the offer still up is 1001's, not 1000's
+    assert(kz_call(d, NR_SEAT, 1001, 0, 0, 0, 0, 0) == 0);
+    assert(kz_try_fb(1000) == E_BUSY && kz_try_fb(1001) >= 3);
+    // accounts off: uid 0's; the top of the range
+    assert(kz_call(d, NR_SEAT, 0, 0, 0, 0, 0, 0) == 0);
+    kz_offer(d, 0);
+    assert(kz_try_fb(1000) == E_BUSY && kz_try_fb(0) >= 3);
+    assert(kz_call(d, NR_SEAT, 65535, 0, 0, 0, 0, 0) == 0);
+    kz_offer(d, 0);
+    assert(kz_try_fb(65534) == E_BUSY && kz_try_fb(65535) >= 3);
+    kz_end(r);
+    kz_end(k);
+    kz_end(u);
+    kz_end(au);
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,166 @@
+// user/ci/cvim/test_buf.ci: buf.ci against a flat model (CV-1): small blocks and chunks, so every split, merge and
+// block release runs; a fixed generator, so every run is the same run.
+import user.ci.cvim.cap;
+import user.ci.cvim.buf;
+
+const I64 BLOCKS = 64;
+const I64 CHUNK = 8;
+const I64 CAP = 4096;
+
+I64 next(I64 s) {
+    return (s * 1103515245 + 12345) % 2147483648;
+}
+
+I64 pick(I64 s, I64 n) {
+    I64 v = s / 65536;
+    return v % n;
+}
+
+Bool same(in I64[_] x, in U8[_] orig, in U8[_] add, in U8[_] flat, I64 n) {
+    if (buf.total(x) != n) {
+        return false;
+    }
+    U8[4096] got;
+    buf.copy_out(x, orig, add, 0, got[0..n]);
+    I64 lf = 0;
+    for i in 0..n {
+        if (got[i] != flat[i]) {
+            return false;
+        }
+        if (flat[i] == '\n') {
+            lf += 1;
+            if (buf.line_start(x, orig, add, lf) != i + 1) {
+                return false;
+            }
+        }
+        if (buf.line_of(x, orig, add, i) != lf - (flat[i] == '\n' ? 1 : 0)) {
+            return false;
+        }
+        if (buf.byte_at(x, orig, add, i) != flat[i]) {
+            return false;
+        }
+    }
+    return buf.longest(x) <= CHUNK && buf.blocks(x) + buf.spare(x) == BLOCKS && buf.lines(x) == lf + 1 && buf.line_start(x, orig, add, lf + 1) == -1;
+}
+
+test "CV-1: random edits equal a flat model" {
+    I64[66000] x;
+    I64[2] st;
+    U8[CAP] orig;
+    U8[65536] add;
+    I64[6000] sp;
+    U8[CAP] flat;
+    U8[CAP] tmp;
+    U8[16] s;
+    I64 n = 300;
+    I64 seed = 7;
+    for i in 0..n {
+        seed = next(seed);
+        U8 c = ('a' as I64 + pick(seed, 26)) as U8;
+        if (pick(seed, 9) == 0) {
+            c = '\n';
+        }
+        orig[i] = c;
+        flat[i] = c;
+    }
+    st[buf.ST_ORIG] = n;
+    buf.reset(x, BLOCKS, CHUNK);
+    assert(buf.load(x, orig, add, 0, n));
+    assert(same(x, orig, add, flat, n) && buf.pieces(x) == 38);
+    I64 most = 0;
+    for step in 0..2000 {
+        seed = next(seed);
+        I64 op = pick(seed, 3);
+        seed = next(seed);
+        I64 pos = pick(seed, n + 1);
+        if (op < 2 && n < 3000) {
+            seed = next(seed);
+            I64 m = 1 + pick(seed, 12);
+            for i in 0..m {
+                seed = next(seed);
+                s[i] = ('A' as I64 + pick(seed, 26)) as U8;
+                if (pick(seed, 5) == 0) {
+                    s[i] = '\n';
+                }
+            }
+            assert(buf.insert(x, st, orig, add, pos, s[0..m]));
+            tmp[0..n - pos] = flat[pos..n];
+            flat[pos..pos + m] = s[0..m];
+            flat[pos + m..n + m] = tmp[0..n - pos];
+            n += m;
+        } else {
+            seed = next(seed);
+            I64 m = min(pick(seed, 40), n - pos);
+            I64 at = buf.delete(x, orig, add, pos, m, sp, 0);
+            assert(at >= 0);
+            if (step % 3 == 0) {
+                assert(buf.restore(x, orig, add, pos, sp, 0, at));
+            } else {
+                tmp[0..n - pos - m] = flat[pos + m..n];
+                flat[pos..n - m] = tmp[0..n - pos - m];
+                n -= m;
+            }
+        }
+        most = max(most, buf.pieces(x));
+        if (step % 50 == 0) {
+            assert(same(x, orig, add, flat, n));
+        }
+    }
+    assert(same(x, orig, add, flat, n));
+    assert(most > 4 * buf.BLOCK && n > 1000);
+    I64 wide = buf.blocks(x);
+    while (n > 0) {
+        seed = next(seed);
+        I64 pos = pick(seed, n);
+        seed = next(seed);
+        I64 m = min(1 + pick(seed, 700), n - pos);
+        I64 at = buf.delete(x, orig, add, pos, m, sp, 0);
+        assert(at >= 0);
+        tmp[0..n - pos - m] = flat[pos + m..n];
+        flat[pos..n - m] = tmp[0..n - pos - m];
+        n -= m;
+        assert(same(x, orig, add, flat, n));
+    }
+    assert(wide > 4 && buf.blocks(x) == 1 && buf.pieces(x) == 0 && buf.lines(x) == 1);
+    s[0] = 'z';
+    assert(buf.insert(x, st, orig, add, 0, s[0..1]) && same(x, orig, add, s, 1));
+}
+
+test "CV-1: typing at one place extends one piece" {
+    I64[66000] x;
+    I64[2] st;
+    U8[16] orig;
+    U8[256] add;
+    U8[1] s;
+    buf.reset(x, BLOCKS, 64);
+    for i in 0..10 {
+        s[0] = 'a';
+        assert(buf.insert(x, st, orig, add, i, s));
+    }
+    assert(buf.pieces(x) == 1 && buf.total(x) == 10);
+}
+
+test "CV-1: a full table refuses and changes nothing" {
+    I64[66000] x;
+    I64[2] st;
+    U8[16] orig;
+    U8[8] add;
+    U8[9] s;
+    buf.reset(x, BLOCKS, CHUNK);
+    assert(!buf.insert(x, st, orig, add, 0, s));
+    assert(buf.total(x) == 0 && st[buf.ST_ADD] == 0);
+    I64[3] sp;
+    U8[4] t;
+    assert(buf.insert(x, st, orig, add, 0, t));
+    assert(buf.delete(x, orig, add, 1, 2, sp, 0) == 1);
+    assert(buf.delete(x, orig, add, 0, 2, sp, 1) == -1);
+    assert(buf.total(x) == 2);
+}
+
+test "CV-1: cap.TABLE is the table of cap.BLOCKS" {
+    assert(buf.need(cap.BLOCKS) == cap.TABLE && cap.CHUNK <= cap.ADD);
+}
+
+void main() {
+}
+// SPDX-License-Identifier: Apache-2.0

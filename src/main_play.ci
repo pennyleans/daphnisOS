@@ -1,0 +1,154 @@
+// src/main_play.ci: G-5, the episode played live (docs/specs/2026-11-05-g-episode.md, sections 3 and 8).
+// The live flavor's kernel with the whole of E1 in its image (user/ci/doom/data/e1.wad): `doom --live` from
+// E1M1 at the skill the boot line names, recorded to the volume, as tools/play.sh boots it under KVM with a
+// display for l. The boot line's words (QEMU's -append):
+//   daphnis.skill=N  1 to 5, default 3 (the client's default; 4 is "ultra-violence", 5 nightmare)
+//   daphnis.warp=M   the first map, 1 to 9, default 1
+//   daphnis.menu=1   G-5b (docs/specs/2026-11-06-g-menu.md): the run starts at the title with Doom's menu
+//                    (`--menu menu.wad`); the menu's New Game picks the skill, so skill and warp are not passed
+//   daphnis.seal=1   no live run: `doom --sealed e1.wad` plays the WAD's DEMO1 (the stage close, once G-5's
+//                    record is cut in), its chain one line a tic as check-episode.sh pins it
+// With a volume attached it is mounted on /home and the live run is `grant disk doom --live --record
+// home/g.lmp [--skill N] [--warp M] e1.wad`; the record is written when Esc ends the run, before the client
+// replays it in memory and prints its end chain; then pid 2 is `doom --sealed --demo home/g.lmp e1.wad`,
+// which must print that chain and pose again. A process's arguments are at most 64 bytes (src/proc.ci), so
+// the defaults are not passed and only the WAD is named (tables.bin and info.bin are the client's defaults).
+
+import src.serial;
+import src.trap;
+import src.fs;
+import src.cpu;
+import src.pit;
+import src.user;
+import src.proc;
+import src.pool;
+import src.surface;
+import src.input;
+import src.blk;
+import src.ext2;
+import src.bootarg;
+import src.dsp;
+
+U8[256] line;
+I64 line_n;
+
+// The digit after `key` where the key starts a word of the boot line, or -1.
+I64 digit_after[m](in U8[m] key) {
+    for at in 0..line_n {
+        if ((at == 0 || line[at - 1] == 32) && at + m < line_n) {
+            Bool same = true;
+            for i in 0..m {
+                if (line[at + i] != key[i]) { same = false; }
+            }
+            I64 d = line[at + m] as I64;
+            if (same && d >= 48 && d <= 57) { return d - 48; }
+        }
+    }
+    return -1;
+}
+
+void push_digit(I64 d) {
+    U8[1] s;
+    s[0] = (48 + d) as U8;
+    proc.push_arg(s);
+}
+
+void main() {
+    serial.serial_write("Daphnis G: play\n");
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    _ = pool.init();          // M-3: the pool from the memory map under daphnis.pool=max; the gates' pool otherwise
+    user.user_init();
+    fs.init();
+    if (user.fb_init() > 0) {
+        fs.set_fb(user.fb_word(0) as I64, user.fb_word(1) as I64, user.fb_word(2) as I64);
+        serial.serial_write("daphnis: framebuffer\n");
+    } else {
+        serial.serial_write("daphnis: no framebuffer\n");
+    }
+    pit.pic_remap();
+    pit.pit_start(11932);
+    _ = dsp.init();           // AU-3: /dev/dsp when an HDA controller is there; nothing said when none is
+    if (input.devices_on()) {
+        serial.serial_write("daphnis: keyboard and mouse on\n");
+    } else {
+        serial.serial_write("daphnis: keyboard on, no mouse\n");
+    }
+    fs.set_input(true);
+    line_n = bootarg.boot_cmdline(line);
+    I64 skill = digit_after("daphnis.skill=");
+    if (skill < 1 || skill > 5) { skill = 3; }
+    I64 warp = digit_after("daphnis.warp=");
+    if (warp < 1 || warp > 9) { warp = 1; }
+    Bool seal = digit_after("daphnis.seal=") == 1;
+    Bool menu = digit_after("daphnis.menu=") == 1;
+    if (seal) {
+        serial.serial_write("daphnis: play sealed, the WAD's DEMO1\n");
+        proc.push_arg("--sealed");
+        proc.push_arg("e1.wad");
+        proc.run_device(1, "doom");
+        surface.print();
+        proc.report_pool();
+        serial.serial_write("daphnis: done\n");
+        return;
+    }
+    if (menu) {
+        serial.serial_write("daphnis: play from the menu\n");
+    } else {
+        serial.serial_write("daphnis: play skill ");
+        proc.put_dec(skill);
+        serial.serial_write(" map E1M");
+        proc.put_dec(warp);
+        serial.serial_write("\n");
+    }
+    Bool disk = blk.init() > 0 && fs.mount_disk();
+    if (disk) {
+        serial.serial_write("daphnis: /home mounted, ext2, block ");
+        proc.put_dec(ext2.block_size());
+        serial.serial_write("\n");
+        proc.push_arg("disk");
+        proc.push_arg("doom");
+        proc.push_arg("--live");
+        proc.push_arg("--record");
+        proc.push_arg("home/g.lmp");
+    } else {
+        serial.serial_write("daphnis: no disk, no record\n");
+        proc.push_arg("--live");
+    }
+    if (menu) {
+        proc.push_arg("--menu");
+        proc.push_arg("menu.wad");
+    } else if (skill != 3) {
+        proc.push_arg("--skill");
+        push_digit(skill);
+    }
+    if (!menu && warp != 1) {
+        proc.push_arg("--warp");
+        push_digit(warp);
+    }
+    proc.push_arg("e1.wad");
+    if (disk) {
+        proc.run_device(1, "grant");
+    } else {
+        proc.run_device(1, "doom");
+    }
+    surface.print();
+    if (disk) {
+        proc.report_pool();
+        proc.push_arg("--sealed");
+        proc.push_arg("--demo");
+        proc.push_arg("home/g.lmp");
+        proc.push_arg("e1.wad");
+        proc.run_device(2, "doom");
+        surface.print();
+    }
+    if (input.dropped() != 0) {
+        serial.serial_write("daphnis: input dropped ");
+        proc.put_dec(input.dropped());
+        serial.serial_write("\n");
+        input.say_dropped(0);
+    }
+    proc.report_pool();
+    serial.serial_write("daphnis: done\n");
+}
+// SPDX-License-Identifier: Apache-2.0

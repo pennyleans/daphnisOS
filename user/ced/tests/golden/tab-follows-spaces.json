@@ -1,0 +1,25 @@
+{
+  "id": "tab-follows-spaces",
+  "rules": [
+    "KEY-4"
+  ],
+  "text": "a\n  b\n\tc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "09"
+  ],
+  "expect": {
+    "text": "    a\n  b\n\tc",
+    "sel": [
+      4,
+      4
+    ]
+  }
+}

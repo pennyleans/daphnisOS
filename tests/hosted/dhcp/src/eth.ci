@@ -1,0 +1,71 @@
+// tests/hosted/dhcp/src/eth.ci: src/eth.ci for the hosted DHCP test: the byte helpers as the kernel has them and an
+// address record without ARP.
+
+export const I64 FRAME = 1514;
+export const I64 NETMASK = 0xFFFFFF00;
+export const I64 BROADCAST = 0xFFFFFFFF;
+
+I64 cur_ip = 0;
+I64 cur_gw = 0;
+I64 cur_dns = 0;
+I64 cur_mask = 0;
+
+export I64 our_ip() {
+    return cur_ip;
+}
+
+export I64 gateway() {
+    return cur_gw;
+}
+
+export I64 dns_ip() {
+    return cur_dns;
+}
+
+export I64 prefix_len() {
+    I64 n = 0;
+    for b in 0..32 {
+        if (((cur_mask >> (31 - b)) & 1) == 1) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+export Bool is_qemu_user_mac() {
+    return false;
+}
+
+I64 get16(in U8[1514] f, I64 at) {
+    return ((f[at] as I64) << 8) | (f[at + 1] as I64);
+}
+
+export I64 get32(in U8[1514] f, I64 at) {
+    return (get16(f, at) << 16) | get16(f, at + 2);
+}
+
+export void put16(inout U8[1514] f, I64 at, I64 v) {
+    f[at] = ((v >> 8) & 0xFF) as U8;
+    f[at + 1] = (v & 0xFF) as U8;
+}
+
+export void put32(inout U8[1514] f, I64 at, I64 v) {
+    put16(f, at, (v >> 16) & 0xFFFF);
+    put16(f, at + 2, v & 0xFFFF);
+}
+
+export void set_unconfigured() {
+    cur_ip = 0;
+    cur_gw = 0;
+    cur_dns = 0;
+    cur_mask = 0;
+}
+
+export void configure(I64 ip, I64 mask, I64 gw, I64 dns, Bool gratuitous) {
+    _ = gratuitous;
+    cur_ip = ip;
+    cur_mask = mask;
+    cur_gw = gw;
+    cur_dns = dns;
+}
+// SPDX-License-Identifier: Apache-2.0

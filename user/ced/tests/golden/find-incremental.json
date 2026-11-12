@@ -1,0 +1,28 @@
+{
+  "id": "find-incremental",
+  "rules": [
+    "FIND-1"
+  ],
+  "text": "abc abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "62",
+    "63",
+    "1b"
+  ],
+  "expect": {
+    "text": "abc abc",
+    "sel": [
+      1,
+      3
+    ]
+  }
+}

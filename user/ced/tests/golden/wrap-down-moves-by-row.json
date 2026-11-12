@@ -1,0 +1,35 @@
+{
+  "id": "wrap-down-moves-by-row",
+  "rules": [
+    "VIEW-2"
+  ],
+  "text": "the quick brown fox jumps over\nend",
+  "size": [
+    6,
+    16
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "17",
+    "1b5b42",
+    "58"
+  ],
+  "expect": {
+    "text": "the quick brown Xfox jumps over\nend",
+    "sel": [
+      17,
+      17
+    ],
+    "screen": [
+      "the quick brown",
+      "Xfox jumps over",
+      "end",
+      "",
+      " x [+]     1:18",
+      "^S save  ^Q quit"
+    ]
+  }
+}

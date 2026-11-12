@@ -1,0 +1,25 @@
+kill
+@> echo u''k
+uk
+@> echo k''k
+kk
+@> cd kd/
+@> echo alp
+alpha           alps
+@> echo alpha
+alpha
+@> echo c''md
+cmd
+@> echo n''ever^C
+@> echo s=$?
+s=130
+@> if true
+> ^C
+@> echo p=$?
+p=130
+@> echo v wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwwwwwwwwwww
+v wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+wwwwwww
+@>
+cursor 24 4

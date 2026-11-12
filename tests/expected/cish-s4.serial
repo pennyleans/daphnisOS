@@ -1,0 +1,91 @@
+Daphnis CS: cish
+daphnis: image 2803640 bytes from the loader module
+daphnis: input 1583 bytes
+daphnis: run cish pid 1
+eval one
+x is 5
+built 10
+built 10
+second
+defined in eval arg
+loop 1
+loop 3
+eval status 1
+empty eval 0
+dot 7
+after dot 3 7
+g from dot
+dot 7 p
+dot args 3 0
+z is 1
+h via g
+[first] [second third]
+back\slash kept
+backslash gone continued
+1 2 3:4
+got l1
+got l2
+status 1 no newline
+one two
+<padded> <words>
+waited 0
+bg status 4
+a
+b
+all waited
+to three
+exec replaces
+into the file
+no newline after the delimiter
+no newline after the delimiter
+no newline after the delimiter
+end
+daphnis: state 3f72be142f6625740eb8ce4867908d536912a73f8110040335188f55eb6212af
+daphnis: exit 5
+daphnis: pid 1 forked 24
+daphnis: run cish pid 2
+eval one
+x is 5
+built 10
+built 10
+second
+defined in eval arg
+loop 1
+loop 3
+eval status 1
+empty eval 0
+dot 7
+after dot 3 7
+g from dot
+dot 7 p
+dot args 3 0
+z is 1
+h via g
+[first] [second third]
+back\slash kept
+backslash gone continued
+1 2 3:4
+got l1
+got l2
+status 1 no newline
+one two
+<padded> <words>
+waited 0
+bg status 4
+a
+b
+all waited
+to three
+exec replaces
+into the file
+no newline after the delimiter
+no newline after the delimiter
+no newline after the delimiter
+end
+daphnis: state 3f72be142f6625740eb8ce4867908d536912a73f8110040335188f55eb6212af
+daphnis: exit 5
+daphnis: pid 2 forked 24
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16366 of 16383
+cish: done

@@ -1,0 +1,117 @@
+// src/user.ci: ring 3 (U1-1, U1-2), the stubs of arch/x86_64/user.S and rt/user.c as cint externs.
+// user_enter runs one turn of a process and returns why it ended: 1 a system call, 2 an
+// exception, 3 an interrupt. user_reg reads word i of the saved frame (0 r15, 1 r14, 2 r13, 3 r12,
+// 4 r11, 5 r10, 6 r9, 7 r8, 8 rbp, 9 rdi, 10 rsi, 11 rdx, 12 rcx, 13 rbx, 14 rax, 15 vector,
+// 16 error, 17 rip, 18 cs, 19 rflags, 20 rsp, 21 ss), of the last exception (22 vector,
+// 23 error code, 24 address) or the FS base (25). user_fx reads word i (0 to 63) of the process's
+// fxsave area: x87, MXCSR and the XMM registers. The user image is the cpio archive
+// arch/x86_64/initrd.S embeds.
+
+import src.frames;
+
+export extern unrestricted void user_init();
+export extern unrestricted void user_setup(I64 pid, U64 rip, U64 rsp);
+export extern unrestricted I64 user_enter(I64 pid, U64 root);
+export extern observe U64 user_reg(I64 pid, I64 i);
+export extern unrestricted void user_set_reg(I64 pid, I64 i, U64 v);
+export extern unrestricted void user_copy(I64 src, I64 dst);
+export extern observe U64 user_fx(I64 pid, I64 i);
+export extern unrestricted void user_set_fx(I64 pid, I64 i, U64 v);
+export extern observe I64 initrd_size();
+export extern observe I64 initrd_read(I64 off, out U8[_] dst);
+// F-1/HW-1 (rt/fb.c): fb_init finds the native display and backs a canonical shadow once:
+// 1 the Bochs device, 2 the loader's tag, 0 none, a negative value on resource failure.
+// fb_word(i) is w, h, stride, kernel virtual shadow base, len (0 without a ready surface); KF-3d: word 5 is where
+// the surface came from, 1 the Bochs display the kernel programmed, 2 the framebuffer the loader handed over.
+extern unrestricted I64 fb_prepare();
+extern unrestricted I64 fb_need();
+extern unrestricted I64 fb_finish();
+extern unrestricted I64 fb_backing_add(U64 pa, I64 pages);
+extern unrestricted I64 fb_mode_need(U64 w, U64 h);
+extern unrestricted I64 fb_mode_commit(U64 w, U64 h);
+export extern unrestricted U64 fb_page(U64 off);
+export extern unrestricted void fb_present();
+
+// Outside-pool RAM is owned by the display already. A shortage is met only through the
+// ordinary allocator: no hidden frames or fabricated free counts. A successful append
+// transfers lifetime ownership; an unsuccessful append leaves C's mappings unchanged.
+I64 fb_pool_frames = 0;
+
+export I64 fb_held_frames() {
+    return fb_pool_frames;
+}
+
+I64 fb_back(I64 pages) {
+    if (pages <= 0) {
+        return pages;
+    }
+    I64 first = frames.alloc(pages);
+    if (first < 0) {
+        return 0 - 12;
+    }
+    I64 result = fb_backing_add(frames.frame_addr(first) as U64, pages);
+    if (result < 0) {
+        _ = frames.release(first, pages);
+        return result;
+    }
+    fb_pool_frames += pages;
+    return 0;
+}
+
+export I64 fb_init() {
+    I64 found = fb_prepare();
+    if (found <= 0) {
+        return found;
+    }
+    I64 ready = fb_back(fb_need());
+    if (ready < 0) {
+        return ready;
+    }
+    return fb_finish();
+}
+export extern observe U64 fb_word(I64 i);
+// HX-13 (rt/fb.c): the Bochs display switched to w x h x 32 while the system runs: 0, -22, -95 without the device.
+export I64 fb_mode(U64 w, U64 h) {
+    I64 ready = fb_back(fb_mode_need(w, h));
+    if (ready < 0) {
+        return ready;
+    }
+    return fb_mode_commit(w, h);
+}
+// W-2 (rt/fb.c): fb_put writes canonical bytes at off and presents affected native pixels.
+export extern unrestricted void fb_put(U64 off, in U8[_] src);
+// H-4 (rt/fb.c): fb_get reads framebuffer bytes at off into dst (the cursor's save-under); the count, or -1.
+export extern unrestricted I64 fb_get(U64 off, out U8[_] dst);
+// H-4b (rt/fb.c): buf's first m pixels spread over all of it, each s times, pixel i becoming old pixel (phase + i) / s;
+// buf is read and written (an extern takes no inout view), as a view into the caller's array.
+export extern unrestricted void px_spread(out U8[_] buf, I64 m, I64 s, I64 phase);
+// F-2, F-3 (rt/ps2.c): ps2_init sets the controller and the mouse once (1 when the mouse answered);
+// ps2_get(which) is the next byte of ring 0 (the keyboard) or 1 (the mouse), or -1; ps2_dropped
+// counts the bytes the rings could not take.
+export extern unrestricted I64 ps2_init();
+export extern unrestricted I64 ps2_get(I64 which);
+export extern observe I64 ps2_dropped();
+// K-12: the interrupt time (k12's us_now) of the keyboard byte ps2_get gave last.
+export extern observe I64 ps2_stamp();
+
+export const I64 TURN_SYSCALL = 1;
+export const I64 TURN_FAULT = 2;
+export const I64 TURN_TICK = 3;
+
+export const I64 R_R10 = 5;
+export const I64 R_R8 = 7;
+export const I64 R_R9 = 6;
+export const I64 R_RDI = 9;
+export const I64 R_RSI = 10;
+export const I64 R_RDX = 11;
+export const I64 R_RBX = 13;
+export const I64 R_RAX = 14;
+export const I64 R_RIP = 17;
+export const I64 R_RFLAGS = 19;
+export const I64 R_RSP = 20;
+export const I64 E_VECTOR = 22;
+export const I64 E_ERROR = 23;
+export const I64 E_ADDR = 24;
+export const I64 R_FS = 25;
+export const I64 FX_MXCSR = 3;    // the fxsave word whose low half is MXCSR
+// SPDX-License-Identifier: Apache-2.0

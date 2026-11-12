@@ -1,0 +1,210 @@
+$ -d: -f1 cols.txt
+root
+daemon
+l
+nobody
+short
+nodelim
+
+status 0
+$ -d: -f1,7 cols.txt
+root:/bin/sh
+daemon:/bin/false
+l:/bin/cish
+nobody:/bin/false
+short
+nodelim
+
+status 0
+$ -d: -f6- cols.txt
+/root:/bin/sh
+/usr/sbin:/bin/false
+/home/l:/bin/cish
+/:/bin/false
+
+nodelim
+
+status 0
+$ -d: -f-2 cols.txt
+root:x
+daemon:x
+l:x
+nobody:x
+short:line
+nodelim
+:
+status 0
+$ -d: -f2,4 -s cols.txt
+x:0
+x:1
+x:1000
+x:65534
+line
+:fields
+status 0
+$ -d: -f3 < cols.txt
+0
+1
+1000
+65534
+
+nodelim
+empty
+status 0
+$ -f1 words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+tab
+status 0
+$ -f2 words.txt
+apple 3
+Banana 10
+cherry 2
+apple 3
+apple 3
+banana 1
+Date 7
+  elder 12
+fig 0.5
+fig -4
+grape 3
+
+Hello, world.
+foo(bar) = [baz]
+x*y+z?
+end$ ^start
+aaa
+ab
+abab
+123-456-7890
+color colour
+here
+status 0
+$ -c1-3 words.txt
+app
+Ban
+che
+app
+app
+ban
+Dat
+  e
+fig
+fig
+gra
+
+Hel
+foo
+x*y
+end
+aaa
+ab
+aba
+123
+col
+tab
+status 0
+$ -c 2 words.txt
+p
+a
+h
+p
+p
+a
+a
+ 
+i
+i
+r
+
+e
+o
+*
+n
+a
+b
+b
+2
+o
+a
+status 0
+$ -c1,3,5- text.txt
+oetwo three
+fu  five
+
+sxseven eight
+nn
+status 0
+$ -b 5- utf8.txt
+lo wÃ¶rld
+
+5
+status 0
+$ -c 1-2 -n utf8.txt
+hÃ
+Ã©
+â‚
+status 0
+$ -b1,1,1 text.txt
+o
+f
+
+s
+n
+status 0
+$ -c 1 empty nonl.txt
+n
+status 0
+$ -c 1 missing text.txt
+o
+f
+
+s
+n
+-- stderr
+cut: missing: No such file or directory
+status 1
+$ -d: -f1,3- cols.txt
+root:0:0:root:/root:/bin/sh
+daemon:1:1::/usr/sbin:/bin/false
+l:1000:1000:l:/home/l:/bin/cish
+nobody:65534:65534::/:/bin/false
+short
+nodelim
+:empty:fields::
+status 0
+$ -c3-1 text.txt
+-- stderr
+cut: invalid list
+status 2
+$ text.txt
+-- stderr
+cut: expected a list of bytes, characters, or fields
+status 2
+$ -d ab -f1 cols.txt
+-- stderr
+cut: the delimiter must be one byte, with -f
+status 2
+$ -c x text.txt
+-- stderr
+cut: invalid list
+status 2

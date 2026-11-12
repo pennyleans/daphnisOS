@@ -1,0 +1,168 @@
+// tests/rs/mon_proof.ci: RS-MON's proof twins (frames 42, 45 and 51, DN-63, design note 68, DN-69): Monitor's body
+// drawn by the kit (kit/monpad.ci) after a minute of readings told as user/ci/monitor.ci tells them: Processor,
+// Memory, Disk, Network and Graphics at the open size in the dark and light themes at 1x and 2x; then at 1x a wide box
+// (1440 x 900: content centered at 960, the list longer), the narrow form (600 x 420) closed and open, the least box
+// (480 x 360: the graph gives way to a whole row), a network device with no link and no traffic (Network chosen),
+// no network device (Network at 40 percent), and a Child's list (its own three processes under the machine's
+// totals). Prints `frame NAME W H` and each row as runs `r rgb count`; tools/rsproof.py writes the PNGs.
+// Run: cint run --root . tests/rs/mon_proof.ci | python3 tools/rsproof.py OUTDIR
+import user.ci.kit.monpad;
+import user.ci.kit.tokens;
+
+U32[3840] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+const I64 NET_LIVE = 0;                // the network: a link with traffic,
+const I64 NET_IDLE = 1;                // a device with no link and no traffic,
+const I64 NET_NONE = 2;                // no device
+
+// A minute of readings, one a second, ticks at 100 a second; the load a slow swell with a burst near the end. A
+// Child is given its own three processes; the totals stay the machine's.
+void minute(I64 net, Bool child) {
+    monpad.box(monpad.W, monpad.H);
+    monpad.parts_usable(true, net != NET_NONE);
+    monpad.me(41);
+    monpad.display(1920, 1080, 32, 0x1234, 0x1111, 2, b"QEMU Graphics");
+    I64 busy = 0;
+    I64 idle = 0;
+    I64 rd = 4206592;
+    I64 wr = 8192;
+    I64 rx = 9437184;
+    I64 tx = 1048576;
+    I64[8] run;
+    for s in 0..62 {
+        I64 load = 12 + (s % 17) * 2 + (s / 9) % 3 * 5;
+        if (s > 48 && s < 54) { load = load + 38; }
+        busy = busy + load;
+        idle = idle + 100 - load;
+        rd = rd + 4096 * ((s * 7) % 23);
+        wr = wr + 4096 * ((s * 5) % 11);
+        monpad.cpu(b"AMD Ryzen 5 5600X 6-Core Processor", 3700, busy, idle);
+        monpad.memory(4294967296, 2861563904 - 1048576 * ((s * 3) % 40));
+        monpad.counts(14, 3723 + s);
+        monpad.disk(b"Daphnis Disk", 4294967296, 3012558848, rd, wr);
+        if (net == NET_LIVE) {
+            rx = rx + 1024 * (40 + (s * 13) % 37) + 262144 * ((s / 20) % 2);
+            tx = tx + 1024 * (8 + (s * 3) % 11);
+            monpad.net(true, b"10.0.2.15", b"Wired", rx, tx);
+        }
+        if (net == NET_IDLE) { monpad.net(false, b"", b"Wired", 0, 0); }
+        monpad.procs_begin();
+        run[0] = run[0] + load * 4 / 10;
+        run[1] = run[1] + load * 3 / 10;
+        run[2] = run[2] + load / 10;
+        run[3] = run[3] + 1;
+        run[4] = run[4] + load / 20;
+        run[5] = run[5] + 2;
+        run[6] = run[6] + (s % 3);
+        monpad.proc(31, b"cview", 136314880, run[1], monpad.GRANT_DISK);
+        monpad.proc(41, b"monitor", 9437184, run[3], 0);
+        monpad.proc(19, b"ced", 8388608, run[5], monpad.GRANT_DISK);
+        if (!child) {
+            monpad.proc(23, b"doom", 41943040, run[0], monpad.GRANT_AUDIO);
+            monpad.proc(17, b"cish", 6291456, run[2], 0);
+            monpad.proc(28, b"fetch", 12582912, run[4], monpad.GRANT_DISK | monpad.GRANT_NET);
+            monpad.proc(36, b"finder", 15728640, run[6], monpad.GRANT_DISK);
+            monpad.proc(44, b"tool", 2097152, 0, 0);
+        }
+        monpad.sample(1000000000 * s);
+    }
+}
+
+void draw(I64 w, I64 h, I64 z) {
+    for y in 0..h * z {
+        monpad.row_at(row, y, z);
+        emit(w * z);
+    }
+}
+
+void part(I64 p) {
+    if (p == monpad.CPU) { "cpu"; }
+    if (p == monpad.MEM) { "memory"; }
+    if (p == monpad.DISK) { "disk"; }
+    if (p == monpad.NET) { "network"; }
+    if (p == monpad.GPU) { "graphics"; }
+}
+
+void theme(I64 th) {
+    if (th == 0) { "dark"; } else { "light"; }
+}
+
+const I64 F_WIDE = 0;                  // the frames at 1x besides the parts
+const I64 F_NARROW = 1;
+const I64 F_NARROW_OPEN = 2;
+const I64 F_LEAST = 3;
+const I64 F_NET_IDLE = 4;
+const I64 F_NET_NONE = 5;
+const I64 F_CHILD = 6;
+
+// One frame at 1x: `frame mon-NAME-THEME-1x W H`, then its rows.
+void one(I64 f, I64 th, I64 w, I64 h) {
+    "frame mon-";
+    if (f == F_WIDE) { "wide"; }
+    if (f == F_NARROW) { "narrow"; }
+    if (f == F_NARROW_OPEN) { "narrow-open"; }
+    if (f == F_LEAST) { "least"; }
+    if (f == F_NET_IDLE) { "network-idle"; }
+    if (f == F_NET_NONE) { "network-none"; }
+    if (f == F_CHILD) { "child"; }
+    "-";
+    theme(th);
+    "-1x {w} {h}\n";
+    draw(w, h, 1);
+}
+
+export void main(in U8[_] a) {
+    for th in 0..2 {
+        tokens.set_theme(th);
+        minute(NET_LIVE, false);
+        _ = monpad.choose(monpad.CPU);
+        _ = monpad.step(1);
+        _ = monpad.step(1);
+        for k in 0..5 {
+            I64 p = k;
+            if (k == 4) { p = monpad.GPU; }
+            _ = monpad.choose(p);
+            for z in 1..3 {
+                "frame mon-";
+                part(p);
+                "-";
+                theme(th);
+                "-{z}x {monpad.W * z} {monpad.H * z}\n";
+                draw(monpad.W, monpad.H, z);
+            }
+        }
+        _ = monpad.choose(monpad.CPU);
+        monpad.box(1440, 900);
+        one(F_WIDE, th, 1440, 900);
+        monpad.box(600, 420);
+        one(F_NARROW, th, 600, 420);
+        _ = monpad.click(30, 30);
+        one(F_NARROW_OPEN, th, 600, 420);
+        _ = monpad.close_side();
+        monpad.box(480, 360);
+        one(F_LEAST, th, 480, 360);
+        minute(NET_IDLE, false);
+        _ = monpad.choose(monpad.NET);
+        one(F_NET_IDLE, th, monpad.W, monpad.H);
+        minute(NET_NONE, false);
+        _ = monpad.choose(monpad.CPU);
+        one(F_NET_NONE, th, monpad.W, monpad.H);
+        minute(NET_LIVE, true);
+        _ = monpad.choose(monpad.CPU);
+        one(F_CHILD, th, monpad.W, monpad.H);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

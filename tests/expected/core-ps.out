@@ -1,0 +1,12 @@
+$ 
+-- stderr
+ps: facts: Function not implemented
+status 1
+$ -x
+-- stderr
+ps: not supported: -x
+status 2
+$ extra
+-- stderr
+ps: extra operand
+status 2

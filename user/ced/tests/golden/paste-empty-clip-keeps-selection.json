@@ -1,0 +1,35 @@
+{
+  "id": "paste-empty-clip-keeps-selection",
+  "rules": [
+    "UNDO-1"
+  ],
+  "text": "hi",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b3243",
+    "16",
+    "1a"
+  ],
+  "expect": {
+    "text": "hi",
+    "sel": [
+      0,
+      1
+    ],
+    "screen": [
+      "hi",
+      "",
+      "",
+      "",
+      " x  nothing to undo                 1:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

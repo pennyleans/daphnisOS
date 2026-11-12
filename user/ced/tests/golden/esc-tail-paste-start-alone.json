@@ -1,0 +1,29 @@
+{
+  "id": "esc-tail-paste-start-alone",
+  "rules": [
+    "KEY-2",
+    "KEY-1"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b",
+    "",
+    "5b3230307e",
+    "78791b5b3230317e"
+  ],
+  "expect": {
+    "text": "xyabc",
+    "sel": [
+      2,
+      2
+    ]
+  }
+}

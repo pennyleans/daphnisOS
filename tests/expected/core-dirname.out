@@ -1,0 +1,44 @@
+$ /a/b/c
+/a/b
+status 0
+$ /a/b/c/
+/a/b
+status 0
+$ ///
+/
+status 0
+$ a
+.
+status 0
+$ /a
+/
+status 0
+$ a/
+.
+status 0
+$ //a//b//
+//a
+status 0
+$ a/b
+a
+status 0
+$ .
+.
+status 0
+$ ..
+.
+status 0
+$ /
+/
+status 0
+$ ""
+.
+status 0
+$ 
+-- stderr
+dirname: missing operand
+status 2
+$ a b
+-- stderr
+dirname: extra operand
+status 2

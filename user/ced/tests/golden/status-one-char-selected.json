@@ -1,0 +1,33 @@
+{
+  "id": "status-one-char-selected",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "ab",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b313b3243"
+  ],
+  "expect": {
+    "text": "ab",
+    "sel": [
+      0,
+      1
+    ],
+    "screen": [
+      "ab",
+      "",
+      "",
+      "",
+      " x  1 char selected                 1:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

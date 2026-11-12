@@ -1,0 +1,1061 @@
+// src/kern.ci: the K5 kernel, in cint. It runs three tasks as step functions (src/ts_work.ci),
+// serves the one request each step makes (send, receive, select, ...), and after every turn commits:
+// it rehashes the leaves that changed, prints the root of the state tree and the leaves, and
+// checks what must hold. Everything it knows is in the module variables below; between turns the
+// kernel holds no stack, so a snapshot of those variables plus the tasks' states is the machine.
+
+import src.serial;
+import src.serialrx;
+import src.report;
+import src.text;
+import src.sha256;
+import src.taskapi;
+import src.stepapi;
+import src.phys;
+import src.cpu;
+import src.kio;
+import src.kleaf;
+import src.kspace;
+
+const I64 TASKS = 3;
+const I64 CHANS = 4;
+const I64 CAP = 2;
+const I64 NONE = 0;
+
+// the kernel's tables (the logical part: what a task could tell the difference of)
+I64[3] done;        // 0 live, 1 done, 2 faulted
+I64[3] req_kind;    // 0 none, else the task's request kind + 1
+I64[3] req_a;
+I64[3] req_b;
+I64[3] req_v;
+I64[3] req_fuel;    // the task's total fuel when it made the request
+I64[3] inbox_v;     // what the next step sees: a value and a tag
+I64[3] inbox_t;
+I64[4] ch_open;
+I64[4] ch_snd;
+I64[4] ch_rcv;
+I64[4] ch_cnt;
+I64[8] ch_val;      // two slots per channel, in order
+// the journal: per task a sequence number, a chain head, and the entries so far (length prefixed)
+I64[3] jseq;
+U8[96] chain;
+U8[3072] jlog;
+I64[3] jlen;
+I64 input_consumed = 0;
+// replay: the entries a blob holds, per task (an offset into the blob and a count)
+I64[3] rq_off;
+I64[3] rq_left;
+I64 mode = 1;       // 1 record, 2 replay, 3 restore
+I64 halted = 0;
+// the scheduler's state (not in the root: it depends on the quantum)
+I64 quantum = 0;
+I64 next_t = 0;
+I64 ran = 0;
+I64 commits = 0;
+I64 walks = 0;
+I64 last_snap = 0;
+I64 rehashes = 0;   // task leaves made again at commits (not by a snapshot): the cache saves the rest
+I64 audit = 0;      // the run descriptor asks for every cached leaf to be checked at every commit
+I64 rd_pos = 0;     // where the restore reads in the blob
+I64 snap_len = 0;   // the length of the snapshot in the blob, 0 if none
+// the tree
+U8[128] lv;         // four leaves
+I64[4] dirty;
+
+I64 live() {
+    I64 n = 0;
+    for t in 0..TASKS {
+        if (done[t] == 0) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+void open_channels(I64 net) {
+    ch_open[0] = 1;
+    ch_snd[0] = 0;
+    ch_rcv[0] = 2;
+    ch_open[1] = 1;
+    ch_snd[1] = 1;
+    ch_rcv[1] = 2;
+}
+
+// Forgets the request of task t: every field, so nothing of it is left in the tables.
+void clear_req(I64 t) {
+    req_kind[t] = NONE;
+    req_a[t] = 0;
+    req_b[t] = 0;
+    req_v[t] = 0;
+    req_fuel[t] = 0;
+}
+
+// Delivers (v, tag) to the next step of task t.
+void deliver(I64 t, I64 v, I64 tag) {
+    U8[9] b;
+    inbox_v[t] = v;
+    inbox_t[t] = tag;
+    I64 o = kio.put(b, 0, v, 8);
+    o = kio.put(b, o, tag, 1);
+    stepapi.task_args_set(t, b);
+}
+
+// Sets what the next step of task t sees from the tables (a restore does it).
+void set_args(I64 t) {
+    U8[9] b;
+    I64 o = kio.put(b, 0, inbox_v[t], 8);
+    o = kio.put(b, o, inbox_t[t], 1);
+    stepapi.task_args_set(t, b);
+}
+
+I64 pop(I64 c) {
+    I64 v = ch_val[2 * c];
+    ch_val[2 * c] = ch_val[2 * c + 1];
+    ch_val[2 * c + 1] = 0;
+    ch_cnt[c] -= 1;
+    return v;
+}
+
+// ---- the journal ----
+
+const I64 BLOB = 100663296;  // 96 MiB, above the pool: where the run blob is (rt/rt.h RT_BLOB_BASE)
+
+// Appends one entry to the journal of task t: task, sequence number, kind, payload, the task's fuel
+// count; its chain is SHA-256 of the previous chain and the entry. The entry is printed before
+// anything it decides happens (write ahead). With check set, the chain must equal `expect`.
+Bool journal(I64 t, I64 kind, in U8[8] pl, I64 plen, I64 fuel, in U8[32] expect, Bool check) {
+    U8[24] e;
+    U8[64] buf;
+    U8[32] nc;
+    I64 o = kio.put(e, 0, t, 1);
+    o = kio.put(e, o, jseq[t], 4);
+    o = kio.put(e, o, kind, 1);
+    o = kio.put(e, o, plen, 1);
+    for i in 0..plen {
+        e[o + i] = pl[i];
+    }
+    o += plen;
+    o = kio.put(e, o, fuel, 8);
+    for i in 0..32 {
+        buf[i] = chain[32 * t + i];
+    }
+    for i in 0..o {
+        buf[32 + i] = e[i];
+    }
+    sha256.sha_digest(buf, 0, 32 + o, nc);
+    if (check) {
+        for i in 0..32 {
+            if (nc[i] != expect[i]) {
+                serial.serial_write("diverged: journal chain\n");
+                halted = 1;
+                return false;
+            }
+        }
+    }
+    if (jlen[t] + 1 + o > 1024) {
+        serial.serial_write("journal full\n");
+        halted = 1;
+        return false;
+    }
+    for i in 0..32 {
+        chain[32 * t + i] = nc[i];
+    }
+    jlog[1024 * t + jlen[t]] = o as U8;
+    for i in 0..o {
+        jlog[1024 * t + jlen[t] + 1 + i] = e[i];
+    }
+    jlen[t] += 1 + o;
+    jseq[t] += 1;
+    serial.serial_write("J ");
+    kio.hex_out(e, o);
+    serial.serial_write(" ");
+    kio.hex_hash(nc, 0);
+    serial.serial_write("\n");
+    return true;
+}
+
+// The next entry the blob holds for task t, if there is one: its bytes in e, its chain in ex.
+// Returns the payload length, or -1 (and halts) if the entry is not the one this task needs now:
+// the same task, the next sequence number, this kind, the same fuel count.
+I64 replay_peek(I64 t, I64 kind, inout U8[24] e, inout U8[32] ex) {
+    U8[56] raw;
+    phys.phys_read8((BLOB + rq_off[t]) as U64, raw);
+    I64 n = raw[0] as I64;
+    if (n < 15 || n > 23) {
+        serial.serial_write("diverged: journal entry\n");
+        halted = 1;
+        return -1;
+    }
+    for i in 0..n {
+        e[i] = raw[1 + i];
+    }
+    for i in 0..32 {
+        ex[i] = raw[1 + n + i];
+    }
+    I64 plen = e[6] as I64;
+    if (n != 15 + plen || (e[0] as I64) != t || kio.get(e, 1, 4) != jseq[t] || (e[5] as I64) != kind || kio.get(e, 7 + plen, 8) != req_fuel[t]) {
+        serial.serial_write("diverged: task ");
+        report.print_dec(t);
+        serial.serial_write(" entry ");
+        report.print_dec(jseq[t]);
+        serial.serial_write("\n");
+        halted = 1;
+        return -1;
+    }
+    return plen;
+}
+
+// Takes the entry replay_peek showed off the blob's list for task t.
+void replay_take(I64 t) {
+    U8[1] n;
+    phys.phys_read8((BLOB + rq_off[t]) as U64, n);
+    rq_off[t] += 1 + (n[0] as I64) + 32;
+    rq_left[t] -= 1;
+}
+
+// The value a chunk of input is delivered as: its bytes (pl[1 ..]) little endian in the low 7
+// bytes and their number in the eighth.
+I64 pack_input(in U8[8] pl, I64 plen) {
+    I64 v = 0;
+    I64 k = plen - 1;
+    while (k > 0) {
+        v = v * 256 + (pl[k] as I64);
+        k -= 1;
+    }
+    return v + (plen - 1) * 72057594037927936;
+}
+
+// Reads one chunk from the serial port: up to 7 bytes, or fewer if a line end comes first. pl[0] says
+// whether the line end was read (and is not part of the chunk), pl[1 ..] are the bytes. The chunk is
+// a function of the byte stream alone, not of when its bytes arrived. Returns the payload length.
+I64 read_chunk(inout U8[8] pl) {
+    I64 n = 0;
+    pl[0] = 0;
+    Bool stop = false;
+    while (!stop) {
+        I64 c = serialrx.serial_getc();
+        if (c == 10) {
+            pl[0] = 1;
+            stop = true;
+        } else if (c >= 0) {
+            pl[1 + n] = c as U8;
+            n += 1;
+            if (n == 7) {
+                stop = true;
+            }
+        }
+    }
+    return 1 + n;
+}
+
+// A page moves from the task that gives it to the task that takes it when both are waiting for the
+// other: the giver says (receiver, its slot), the receiver says (giver, its slot). The page is
+// unmapped from the giver before it is mapped into the receiver (src/kspace.ci).
+Bool serve_xfer(I64 t) {
+    I64 g = t;
+    I64 r = req_a[t];
+    if (req_kind[t] - 1 == 7) {
+        g = req_a[t];
+        r = t;
+    }
+    if (g < 0 || g >= TASKS || r < 0 || r >= TASKS || g == r) {
+        serial.serial_write("refused: page grant\n");
+        done[t] = 2;
+        clear_req(t);
+        return true;
+    }
+    if (req_kind[g] - 1 != 6 || req_kind[r] - 1 != 7 || req_a[g] != r || req_a[r] != g) {
+        return false;
+    }
+    if (kspace.page_give(g, req_b[g], r, req_b[r]) != 0) {
+        serial.serial_write("refused: page grant\n");
+        done[t] = 2;
+        clear_req(g);
+        clear_req(r);
+        return true;
+    }
+    clear_req(g);
+    clear_req(r);
+    deliver(g, 0, 0);
+    deliver(r, 0, 0);
+    dirty[g] = 1;
+    dirty[r] = 1;
+    return true;
+}
+
+Bool serve_select(I64 t) {
+    U8[24] e;
+    U8[32] ex;
+    U8[8] pl;
+    I64 w = -1;
+    Bool replaying = mode >= 2 && rq_left[t] > 0;
+    if (replaying) {
+        I64 plen = replay_peek(t, 4, e, ex);
+        if (plen != 1) {
+            halted = 1;
+            return false;
+        }
+        w = e[7] as I64;
+        if (w >= CHANS || ((req_a[t] >> w) & 1) == 0) {
+            serial.serial_write("diverged: select\n");
+            halted = 1;
+            return false;
+        }
+        if (ch_open[w] == 0 || ch_rcv[w] != t || ch_cnt[w] == 0) {
+            return false;
+        }
+        pl[0] = w as U8;
+        if (!journal(t, 4, pl, 1, req_fuel[t], ex, true)) {
+            return false;
+        }
+        replay_take(t);
+    } else {
+        for c in 0..CHANS {
+            if (w < 0 && ((req_a[t] >> c) & 1) != 0 && ch_open[c] != 0 && ch_rcv[c] == t && ch_cnt[c] > 0) {
+                w = c;
+            }
+        }
+        if (w < 0) {
+            return false;
+        }
+        pl[0] = w as U8;
+        if (!journal(t, 4, pl, 1, req_fuel[t], ex, false)) {
+            return false;
+        }
+    }
+    deliver(t, pop(w), w);
+    clear_req(t);
+    return true;
+}
+
+Bool serve_input(I64 t) {
+    U8[24] e;
+    U8[32] ex;
+    U8[8] pl;
+    I64 plen = 0;
+    if (mode >= 2 && rq_left[t] > 0) {
+        plen = replay_peek(t, 5, e, ex);
+        if (plen < 1 || plen > 8) {
+            halted = 1;
+            return false;
+        }
+        for i in 0..plen {
+            pl[i] = e[7 + i];
+        }
+        if (!journal(t, 5, pl, plen, req_fuel[t], ex, true)) {
+            return false;
+        }
+        replay_take(t);
+    } else {
+        plen = read_chunk(pl);
+        if (!journal(t, 5, pl, plen, req_fuel[t], ex, false)) {
+            return false;
+        }
+    }
+    input_consumed += plen - 1 + (pl[0] as I64);
+    deliver(t, pack_input(pl, plen), 0);
+    clear_req(t);
+    return true;
+}
+
+// Tries to complete the pending request of task t. True: it is served (the request is cleared and
+// the task's next step sees the answer). False: the task must wait.
+Bool serve(I64 t) {
+    I64 kind = req_kind[t] - 1;
+    if (kind == 1) {          // yield
+        deliver(t, 0, 0);
+    } else if (kind == 2) {   // send(ch, v)
+        I64 c = req_a[t];
+        if (c < 0 || c >= CHANS || ch_open[c] == 0 || ch_snd[c] != t) {
+            serial.serial_write("refused: send\n");
+            done[t] = 2;
+            clear_req(t);
+            return true;
+        }
+        if (ch_cnt[c] == CAP) {
+            return false;
+        }
+        ch_val[2 * c + ch_cnt[c]] = req_v[t];
+        ch_cnt[c] += 1;
+        deliver(t, 0, 0);
+    } else if (kind == 3) {   // receive(ch)
+        I64 c = req_a[t];
+        if (c < 0 || c >= CHANS || ch_open[c] == 0 || ch_rcv[c] != t) {
+            serial.serial_write("refused: receive\n");
+            done[t] = 2;
+            clear_req(t);
+            return true;
+        }
+        if (ch_cnt[c] == 0) {
+            return false;
+        }
+        deliver(t, pop(c), c);
+    } else if (kind == 4) {   // select(mask): the winner is decided by the schedule, so it is journaled
+        return serve_select(t);
+    } else if (kind == 5) {   // input: bytes from the serial port, journaled
+        return serve_input(t);
+    } else if (kind == 6 || kind == 7) {   // give a page / take a page: a rendezvous
+        return serve_xfer(t);
+    } else {
+        serial.serial_write("refused: request\n");
+        done[t] = 2;
+        clear_req(t);
+        return true;
+    }
+    clear_req(t);
+    return true;
+}
+
+// The preimage of the kernel leaf (docs/snapshot.md); returns its length.
+I64 encode_tables(inout U8[640] b) {
+    I64 o = kio.put(b, 0, 1, 1);
+    for t in 0..TASKS {
+        o = kio.put(b, o, req_kind[t], 1);
+        o = kio.put(b, o, req_a[t], 8);
+        o = kio.put(b, o, req_b[t], 8);
+        o = kio.put(b, o, req_v[t], 8);
+        o = kio.put(b, o, req_fuel[t], 8);
+        o = kio.put(b, o, inbox_v[t], 8);
+        o = kio.put(b, o, inbox_t[t], 1);
+        o = kio.put(b, o, jseq[t], 4);
+        o = kio.put_hash(b, o, chain, 32 * t);
+    }
+    for c in 0..CHANS {
+        o = kio.put(b, o, ch_open[c], 1);
+        o = kio.put(b, o, ch_snd[c], 1);
+        o = kio.put(b, o, ch_rcv[c], 1);
+        o = kio.put(b, o, ch_cnt[c], 1);
+        o = kio.put(b, o, ch_val[2 * c], 8);
+        o = kio.put(b, o, ch_val[2 * c + 1], 8);
+    }
+    o = kio.put(b, o, input_consumed, 8);
+    for t in 0..TASKS {
+        o = kio.put(b, o, kspace.own_mask(t), 1);
+    }
+    return o;
+}
+
+// ---- the snapshot (docs/snapshot.md) ----
+
+const I64 SNAP_EVERY = 5;   // prime to the number of tasks, so a snapshot is taken at every place of the round robin
+
+// Writes "DAPH" and four more bytes at b[off ..]: "0001" if last is 49, "END0" otherwise.
+void magic[n](inout U8[n] b, I64 off, I64 last) {
+    b[off] = 68;
+    b[off + 1] = 65;
+    b[off + 2] = 80;
+    b[off + 3] = 72;
+    if (last == 49) {
+        b[off + 4] = 48;
+        b[off + 5] = 48;
+        b[off + 6] = 48;
+        b[off + 7] = 49;
+    } else {
+        b[off + 4] = 69;
+        b[off + 5] = 78;
+        b[off + 6] = 68;
+        b[off + 7] = 48;
+    }
+}
+
+// Writes a snapshot of the machine at this commit to the serial port, as hex between the lines
+// "S begin N" and "S end N": the magic DAPH0001, the revision of the program, the scheduler's place,
+// the preimages of the three task leaves and of the kernel leaf (the bytes that were hashed), the
+// journals, and a trailer: the four leaves, the root, the SHA-256 of everything before the trailer,
+// and DAPHEND0. The leaves are made again from the state here and must equal the cached ones.
+void snapshot_write() {
+    sha256.Sha256[1] whole;
+    U8[56] hdr;
+    U8[640] kb;
+    U8[128] jc;
+    U8[128] fresh;
+    U8[32] leaf;
+    U8[32] root;
+    U8[32] dg;
+    U8[8] end;
+    sha256.sha_init(whole);
+    serial.serial_write("S begin ");
+    report.print_dec(commits);
+    serial.serial_write("\n");
+    magic(hdr, 0, 49);
+    for i in 0..32 {
+        hdr[8 + i] = stepapi.rev_byte(i);
+    }
+    I64 o = kio.put(hdr, 40, next_t, 1);
+    o = kio.put(hdr, o, ran, 1);
+    o = kio.put(hdr, o, commits, 4);
+    o = kio.put(hdr, o, walks, 4);
+    o = kio.put(hdr, o, rehashes, 4);
+    kleaf.part(whole, hdr, o);
+    for t in 0..TASKS {
+        _ = kleaf.task_leaf(t, done[t], true, whole, leaf);
+        for k in 0..32 {
+            fresh[32 * t + k] = leaf[k];
+        }
+    }
+    I64 n = encode_tables(kb);
+    kleaf.part(whole, kb, n);
+    kleaf.table_leaf(kb, n, leaf);
+    for k in 0..32 {
+        fresh[96 + k] = leaf[k];
+    }
+    for t in 0..TASKS {
+        o = kio.put(jc, 0, jlen[t], 4);
+        kleaf.part(whole, jc, o);
+        I64 off = 0;
+        while (off < jlen[t]) {
+            I64 m = jlen[t] - off;
+            if (m > 128) {
+                m = 128;
+            }
+            for k in 0..m {
+                jc[k] = jlog[1024 * t + off + k];
+            }
+            kleaf.part(whole, jc, m);
+            off += m;
+        }
+    }
+    kleaf.root(fresh, root);
+    sha256.sha_final(whole, dg);
+    for k in 0..128 {
+        if (fresh[k] != lv[k]) {
+            serial.serial_write("\nsnapshot: a cached leaf is not the leaf of the state\n");
+            halted = 1;
+            return;
+        }
+    }
+    kio.hex_out(fresh, 128);
+    kio.hex_out(root, 32);
+    kio.hex_out(dg, 32);
+    magic(end, 0, 0);
+    kio.hex_out(end, 8);
+    serial.serial_write("\nS end ");
+    report.print_dec(commits);
+    serial.serial_write("\n");
+    last_snap = commits;
+}
+
+// Rehashes the leaves that changed and prints the commit line: number, task, root, the four leaves.
+void commit(I64 t) {
+    U8[640] kb;
+    U8[32] leaf;
+    U8[32] root;
+    commits += 1;
+    if (kspace.walk() != 0) {
+        halted = 1;
+        return;
+    }
+    walks += 1;
+    sha256.Sha256[1] unused;
+    for i in 0..TASKS {
+        if (dirty[i] != 0) {
+            if (kleaf.task_leaf(i, done[i], false, unused, leaf) < 0) {
+                serial.serial_write("commit refused: a task has state outside the task modules\n");
+                halted = 1;
+                return;
+            }
+            rehashes += 1;
+            for k in 0..32 {
+                lv[32 * i + k] = leaf[k];
+            }
+            dirty[i] = 0;
+        } else if (audit != 0) {
+            _ = kleaf.task_leaf(i, done[i], false, unused, leaf);
+            for k in 0..32 {
+                if (leaf[k] != lv[32 * i + k]) {
+                    serial.serial_write("audit: the cached leaf of a task is stale\n");
+                    halted = 1;
+                    return;
+                }
+            }
+        }
+    }
+    I64 n = encode_tables(kb);
+    kleaf.table_leaf(kb, n, leaf);
+    for k in 0..32 {
+        lv[96 + k] = leaf[k];
+    }
+    kleaf.root(lv, root);
+    serial.serial_write("C ");
+    report.print_dec(commits);
+    serial.serial_write(" ");
+    report.print_dec(t);
+    serial.serial_write(" ");
+    report.print_hash(root, 0);
+    for i in 0..4 {
+        serial.serial_write(" ");
+        report.print_hash(lv, i);
+    }
+    serial.serial_write("\n");
+    if (commits % SNAP_EVERY == 0) {
+        snapshot_write();
+    }
+}
+
+// One turn of task t: serve what it waits for, then run steps until it blocks, ends, or has used
+// its quantum of fuel. Returns whether it did anything.
+Bool turn(I64 t) {
+    if (done[t] != 0) {
+        return false;
+    }
+    if (req_kind[t] != NONE && !serve(t)) {
+        return false;
+    }
+    I64 start = stepapi.task_fuel_total(t);
+    Bool go = done[t] == 0;
+    while (go) {
+        I64 st = stepapi.task_step(t);
+        dirty[t] = 1;
+        if (st != 0) {
+            done[t] = 2;
+            go = false;
+        } else {
+            I64 kind = stepapi.task_req(t, 0);
+            if (kind == 0) {
+                done[t] = 1;
+                go = false;
+            } else {
+                req_kind[t] = kind + 1;
+                req_a[t] = stepapi.task_req(t, 1);
+                req_b[t] = stepapi.task_req(t, 2);
+                req_v[t] = stepapi.task_req(t, 3);
+                req_fuel[t] = stepapi.task_fuel_total(t);
+                if (!serve(t) || kind == 1) {
+                    go = false;
+                } else if (quantum > 0 && stepapi.task_fuel_total(t) - start >= quantum) {
+                    go = false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// Runs turns round robin until every task has ended. False if no task can run (a deadlock).
+Bool sched_loop() {
+    while (live() > 0 && halted == 0) {
+        I64 t = next_t;
+        Bool progressed = turn(t);
+        if (progressed) {
+            ran = 1;
+        }
+        next_t = t + 1;
+        if (next_t == TASKS) {
+            next_t = 0;
+            if (ran == 0 && live() > 0) {
+                return false;
+            }
+            ran = 0;
+        }
+        if (progressed && halted == 0) {
+            commit(t);
+        }
+    }
+    return halted == 0;
+}
+
+// ---- the restore ----
+
+// The u (n <= 8 bytes, little endian) at the read position of the blob, which moves on.
+I64 rd(I64 n) {
+    U8[8] b;
+    phys.phys_read8((BLOB + rd_pos) as U64, b);
+    rd_pos += n;
+    return kio.get(b, 0, n);
+}
+
+// Task t from the snapshot: its flags, its fuel, its module state, its pages (the inverse of
+// kleaf.task_leaf's preimage).
+Bool restore_task(I64 t) {
+    U8[128] chunk;
+    if (rd(1) != 0 || rd(1) != t) {
+        return false;
+    }
+    done[t] = rd(1);
+    stepapi.task_fuel_set(t, rd(8));
+    I64 slen = rd(4);
+    I64 off = 0;
+    while (off < slen) {
+        phys.phys_read8((BLOB + rd_pos) as U64, chunk);
+        stepapi.task_state_stage(off, chunk);
+        I64 m = slen - off;
+        if (m > 128) {
+            m = 128;
+        }
+        rd_pos += m;
+        off += m;
+    }
+    if (stepapi.task_state_apply(t, slen) != slen) {
+        return false;
+    }
+    I64 np = rd(1);
+    for k in 0..np {
+        I64 slot = rd(1);
+        if (kspace.page_new(t, slot) != 0) {
+            return false;
+        }
+        I64 nz = rd(2);
+        for w in 0..nz {
+            U8[16] pr;
+            phys.phys_read8((BLOB + rd_pos) as U64, pr);
+            I64 idx = kio.get(pr, 0, 2);
+            if (idx >= 512) {
+                return false;
+            }
+            kspace.page_set(t, slot, idx, kio.get_u64(pr, 2));
+            rd_pos += 10;
+        }
+    }
+    return true;
+}
+
+// The kernel's tables from the snapshot (the inverse of encode_tables).
+Bool decode_tables() {
+    U8[32] h;
+    if (rd(1) != 1) {
+        return false;
+    }
+    for t in 0..TASKS {
+        req_kind[t] = rd(1);
+        req_a[t] = rd(8);
+        req_b[t] = rd(8);
+        req_v[t] = rd(8);
+        req_fuel[t] = rd(8);
+        inbox_v[t] = rd(8);
+        inbox_t[t] = rd(1);
+        jseq[t] = rd(4);
+        phys.phys_read8((BLOB + rd_pos) as U64, h);
+        for k in 0..32 {
+            chain[32 * t + k] = h[k];
+        }
+        rd_pos += 32;
+    }
+    for c in 0..CHANS {
+        ch_open[c] = rd(1);
+        ch_snd[c] = rd(1);
+        ch_rcv[c] = rd(1);
+        ch_cnt[c] = rd(1);
+        ch_val[2 * c] = rd(8);
+        ch_val[2 * c + 1] = rd(8);
+    }
+    input_consumed = rd(8);
+    for t in 0..TASKS {
+        if (rd(1) != kspace.own_mask(t)) {
+            return false;
+        }
+        if (done[t] > 2 || req_kind[t] > 8 || jseq[t] < 0) {
+            return false;
+        }
+    }
+    for c in 0..CHANS {
+        if (ch_cnt[c] > CAP || ch_open[c] > 1 || ch_snd[c] >= TASKS || ch_rcv[c] >= TASKS) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Checks that the journal of task t that was restored is what the kernel tables say: as many entries as the
+// sequence number, and a chain that ends in the chain head.
+Bool journal_agrees(I64 t) {
+    U8[64] buf;
+    U8[32] c;
+    I64 n = 0;
+    I64 at = 0;
+    for k in 0..32 {
+        c[k] = 0;
+    }
+    while (at < jlen[t]) {
+        I64 m = jlog[1024 * t + at] as I64;
+        if (m < 15 || m > 23 || at + 1 + m > jlen[t]) {
+            return false;
+        }
+        for k in 0..32 {
+            buf[k] = c[k];
+        }
+        for k in 0..m {
+            buf[32 + k] = jlog[1024 * t + at + 1 + k];
+        }
+        sha256.sha_digest(buf, 0, 32 + m, c);
+        at += 1 + m;
+        n += 1;
+    }
+    if (n != jseq[t]) {
+        return false;
+    }
+    for k in 0..32 {
+        if (c[k] != chain[32 * t + k]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Rebuilds the machine from the snapshot at BLOB + 32 (`total` bytes): checks the digest and the
+// program, restores the tasks, the tables and the journals, then makes the four leaves again from
+// what it restored and requires them to be the snapshot's. Prints why on failure.
+Bool restore(I64 total) {
+    sha256.Sha256[1] s;
+    sha256.Sha256[1] unused;
+    U8[512] buf;
+    U8[56] hdr;
+    U8[160] want;
+    U8[640] kb;
+    U8[128] fresh;
+    U8[32] leaf;
+    U8[32] dg;
+    U8[8] m8;
+    I64 body = total - 200;
+    if (body < 46) {
+        serial.serial_write("restore: no snapshot\n");
+        return false;
+    }
+    sha256.sha_init(s);
+    I64 off = 0;
+    while (off < body) {
+        I64 m = body - off;
+        if (m > 512) {
+            m = 512;
+        }
+        phys.phys_read8((BLOB + 32 + off) as U64, buf);
+        sha256.sha_update(s, buf, 0, m);
+        off += m;
+    }
+    sha256.sha_final(s, dg);
+    phys.phys_read8((BLOB + 32 + body) as U64, want);
+    phys.phys_read8((BLOB + 32) as U64, hdr);
+    magic(m8, 0, 49);
+    for i in 0..8 {
+        if (hdr[i] != m8[i]) {
+            serial.serial_write("restore: not a DAPH0001 snapshot\n");
+            return false;
+        }
+    }
+    for i in 0..32 {
+        if (hdr[8 + i] != stepapi.rev_byte(i)) {
+            serial.serial_write("restore: the snapshot is of another program\n");
+            return false;
+        }
+    }
+    phys.phys_read8((BLOB + 32 + body + 160) as U64, want);
+    for i in 0..32 {
+        if (want[i] != dg[i]) {
+            serial.serial_write("restore: the digest of the snapshot is wrong\n");
+            return false;
+        }
+    }
+    rd_pos = 32 + 40;
+    next_t = rd(1);
+    ran = rd(1);
+    commits = rd(4);
+    walks = rd(4);
+    rehashes = rd(4);
+    last_snap = commits;
+    for t in 0..TASKS {
+        if (!restore_task(t)) {
+            serial.serial_write("restore: a task does not restore\n");
+            return false;
+        }
+    }
+    if (!decode_tables()) {
+        serial.serial_write("restore: the tables do not restore\n");
+        return false;
+    }
+    for t in 0..TASKS {
+        jlen[t] = rd(4);
+        if (jlen[t] > 1024) {
+            serial.serial_write("restore: a journal is too long\n");
+            return false;
+        }
+        I64 at = 0;
+        while (at < jlen[t]) {
+            phys.phys_read8((BLOB + rd_pos) as U64, buf);
+            I64 m = jlen[t] - at;
+            if (m > 512) {
+                m = 512;
+            }
+            for k in 0..m {
+                jlog[1024 * t + at + k] = buf[k];
+            }
+            rd_pos += m;
+            at += m;
+        }
+    }
+    for t in 0..TASKS {
+        if (!journal_agrees(t)) {
+            serial.serial_write("restore: a journal is not the one the tables say\n");
+            return false;
+        }
+    }
+    phys.phys_read8((BLOB + 32 + body) as U64, want);
+    for t in 0..TASKS {
+        _ = kleaf.task_leaf(t, done[t], false, unused, leaf);
+        for k in 0..32 {
+            fresh[32 * t + k] = leaf[k];
+        }
+    }
+    I64 n = encode_tables(kb);
+    kleaf.table_leaf(kb, n, leaf);
+    for k in 0..32 {
+        fresh[96 + k] = leaf[k];
+    }
+    for k in 0..128 {
+        if (fresh[k] != want[k]) {
+            serial.serial_write("restore: the restored state does not hash to the snapshot's leaves\n");
+            return false;
+        }
+        lv[k] = fresh[k];
+    }
+    for t in 0..TASKS {
+        dirty[t] = 0;
+        set_args(t);
+    }
+    return true;
+}
+
+export void run(I64 net, I64 q) {
+    U8[640] kb;
+    U8[32] leaf;
+    U8[32] root;
+    quantum = q;
+    taskapi.task_net(net);
+    open_channels(net);
+    for t in 0..TASKS {
+        _ = taskapi.task_create(t, 0);
+        dirty[t] = 1;
+    }
+    for t in 0..TASKS {
+        if (kspace.make_space(t) != 0) {
+            serial.serial_write("no frames\n");
+            return;
+        }
+    }
+    if (mode != 3) {
+        for t in 0..TASKS {
+            set_args(t);
+        }
+    }
+    if (mode == 3) {
+        if (!restore(snap_len)) {
+            serial.serial_write("restore failed\n");
+            return;
+        }
+        kleaf.root(lv, root);
+        serial.serial_write("restored: commit ");
+        report.print_dec(commits);
+        serial.serial_write(" root ");
+        report.print_hash(root, 0);
+        serial.serial_write("\n");
+    } else if (net == 0) {
+        _ = kspace.page_new(1, 0);      // the editor's page
+    } else if (net == 8) {
+        // no page
+    } else {
+        _ = kspace.page_new(0, 0);      // task 0's page, which task 1 must not reach
+    }
+    if (net == 2) {
+        kspace.corrupt_share(0, 0, 1, 0);   // a control: one frame in two spaces; the walk must say so
+    } else if (net == 3) {
+        kspace.corrupt_rwx(0, 0);           // a control: a page both writable and executable
+    } else if (net == 5) {
+        kspace.corrupt_upper(0);            // a control: a table that holds an entry it should not
+    } else if (net == 6) {
+        kspace.corrupt_unknown(1, 2);       // a control: a page in a space that the kernel does not know of
+    }
+    if (!sched_loop()) {
+        if (halted != 0) {
+            serial.serial_write("halted\n");
+        } else {
+            serial.serial_write("deadlock\n");
+        }
+        return;
+    }
+    if (last_snap != commits) {
+        snapshot_write();
+    }
+    kleaf.root(lv, root);
+    serial.serial_write("final root ");
+    report.print_hash(root, 0);
+    serial.serial_write("\n");
+    report.line_dec("commits ", commits);
+    report.line_dec("walks ", walks);
+    report.line_dec("rehashed ", rehashes);
+    if (net == 1) {
+        report.line_dec("page: task 0 word 0 ", kspace.page_word(0, 0, 0) as I64);
+    } else if (net == 4) {
+        report.line_dec("page: task 1 slot 3 word 0 ", kspace.page_word(1, 3, 0) as I64);
+    }
+}
+
+// The journal entries after the snapshot (all of them, for a replay), at offset o of the blob: per
+// task a count (u32), then each entry as its length (u8), its bytes and the chain it ends in.
+void read_tail(I64 start) {
+    I64 o = start;
+    for t in 0..TASKS {
+        U8[4] c;
+        phys.phys_read8((BLOB + o) as U64, c);
+        rq_left[t] = kio.get(c, 0, 4);
+        o += 4;
+        rq_off[t] = o;
+        for k in 0..rq_left[t] {
+            U8[1] n;
+            phys.phys_read8((BLOB + o) as U64, n);
+            o += 1 + (n[0] as I64) + 32;
+        }
+    }
+}
+
+// What the first 2 MiB and the rest of RAM allow: no leaf entry of the boot tables is both writable and
+// executable, a store into the code and a jump into data each fault (the hardware refuses them).
+void wx_report() {
+    I64 n = kspace.boot_rwx();
+    if (n == 0) {
+        serial.serial_write("boot tables: no entry is both writable and executable\n");
+    } else {
+        report.line_dec("boot tables: entries both writable and executable: ", n);
+    }
+    I64 w = stepapi.wx_probe(0);
+    I64 x = stepapi.wx_probe(1);
+    I64 y = stepapi.wx_probe(2);
+    report.line_dec("wx: a store into the code traps, error code ", w);
+    report.line_dec("wx: a jump into data traps, error code ", x);
+    report.line_dec("wx: a jump into read-only data traps, error code ", y);
+}
+
+// The run descriptor: a blob a loader puts at 96 MiB (QEMU -device loader). 32 bytes: the magic
+// "DAPH0RUN", the version (1), the mode, the quantum and the network, little endian u32 each.
+export void boot() {
+    U8[32] d;
+    serialrx.serial_init_rx();
+    cpu.tss_install();
+    cpu.idt_install_ist();
+    serial.serial_write("Daphnis K5: the kernel keeps its books\n");
+    wx_report();
+    phys.phys_read8(BLOB as U64, d);
+    if (d[0] != 68 || d[1] != 65 || d[2] != 80 || d[3] != 72 || d[4] != 48 || d[5] != 82 || d[6] != 85 || d[7] != 78) {
+        serial.serial_write("no run descriptor\n");
+        return;
+    }
+    I64 q = kio.get(d, 16, 4);
+    I64 net = kio.get(d, 20, 4);
+    mode = kio.get(d, 12, 4);
+    audit = kio.get(d, 28, 4);
+    if (kio.get(d, 8, 4) != 1 || mode < 1 || mode > 3) {
+        serial.serial_write("bad run descriptor\n");
+        return;
+    }
+    serial.serial_write("run: mode ");
+    report.print_dec(mode);
+    serial.serial_write(" net ");
+    report.print_dec(net);
+    serial.serial_write(" q ");
+    report.print_dec(q);
+    serial.serial_write("\n");
+    snap_len = kio.get(d, 24, 4);
+    if (mode >= 2) {
+        read_tail(32 + snap_len);
+    }
+    run(net, q);
+}
+
+// SPDX-License-Identifier: Apache-2.0

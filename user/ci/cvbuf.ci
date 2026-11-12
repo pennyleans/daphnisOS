@@ -1,0 +1,135 @@
+// user/ci/cvbuf.ci: cvbuf FILE OUT, the measure of cvim's buffer at its capacities (docs/specs/2026-11-07-cv-cvim.md
+// gate 3, CV-1): FILE into orig and the table, a jump to the last line, 1,000 bytes typed one at a time at the start
+// of the middle line, the text saved to OUT. Each step's nanoseconds go to descriptor 1, one `name value` a line;
+// a refusal goes to descriptor 2 with status 1.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.cvim.cap;
+import user.ci.cvim.buf;
+
+U8[32] digits;
+
+void say(in U8[_] name, I64 v) {
+    _ = shctl.fd_write(1, name);
+    I64 n = 0;
+    I64 w = v;
+    if (w == 0) {
+        digits[0] = '0';
+        n = 1;
+    }
+    while (w > 0) {
+        digits[n] = ('0' as I64 + w % 10) as U8;
+        w = w / 10;
+        n += 1;
+    }
+    U8[34] t;
+    t[0] = ' ';
+    for i in 0..n {
+        t[1 + i] = digits[n - 1 - i];
+    }
+    t[n + 1] = '\n';
+    _ = shctl.fd_write(1, t[0..n + 2]);
+}
+
+void refuse(in U8[_] why) {
+    _ = shctl.fd_write(2, b"cvbuf: ");
+    _ = shctl.fd_write(2, why);
+    _ = shctl.fd_write(2, b"\n");
+    dev.exit_now(1);
+}
+
+I64 now() {
+    return corectl.co_clock(1);
+}
+
+void main(in U8[_] a) {
+    I64 e1 = 0;
+    while (e1 < len(a) && a[e1] != 0) {
+        e1 += 1;
+    }
+    I64 e2 = e1 + 1;
+    while (e2 < len(a) && a[e2] != 0) {
+        e2 += 1;
+    }
+    if (e2 >= len(a)) {
+        refuse(b"usage: cvbuf FILE OUT");
+    }
+    U8[cap.ORIG] orig;
+    U8[cap.ADD] add;
+    I64[cap.TABLE] x;
+    I64[2] st;
+    U8[cap.CHUNK] blk;
+    U8[1] key;
+    I64 fd = shctl.sh_open(a[0..e1], 0, 0);
+    if (fd < 0) {
+        refuse(b"cannot open FILE");
+    }
+    I64 t0 = now();
+    I64 n = 0;
+    Bool more = true;
+    while (more) {
+        if (n == cap.ORIG) {
+            I64 r = shctl.fd_read(fd, key);
+            if (r != 0) {
+                refuse(b"FILE is over 64 MiB");
+            }
+            more = false;
+        } else {
+            I64 r = shctl.fd_read(fd, orig[n..min(n + cap.CHUNK, cap.ORIG)]);
+            if (r < 0) {
+                refuse(b"cannot read FILE");
+            }
+            n += r;
+            more = r > 0;
+        }
+    }
+    _ = shctl.fd_close(fd);
+    st[buf.ST_ORIG] = n;
+    I64 t1 = now();
+    buf.reset(x, cap.BLOCKS, cap.CHUNK);
+    if (!buf.load(x, orig, add, 0, n)) {
+        refuse(b"the table is full");
+    }
+    I64 t2 = now();
+    I64 last = buf.line_start(x, orig, add, buf.lines(x) - 1);
+    I64 t3 = now();
+    I64 mid = buf.line_start(x, orig, add, buf.lines(x) / 2);
+    I64 worst = 0;
+    for i in 0..1000 {
+        I64 k0 = now();
+        key[0] = ('a' as I64 + i % 26) as U8;
+        if (!buf.insert(x, st, orig, add, mid + i, key)) {
+            refuse(b"the table is full");
+        }
+        _ = buf.line_of(x, orig, add, mid + i + 1);
+        worst = max(worst, now() - k0);
+    }
+    I64 t4 = now();
+    I64 fo = shctl.sh_open(a[e1 + 1..e2], 577, 420);
+    if (fo < 0) {
+        refuse(b"cannot open OUT");
+    }
+    I64 pos = 0;
+    while (pos < buf.total(x)) {
+        I64 c = min(cap.CHUNK, buf.total(x) - pos);
+        buf.copy_out(x, orig, add, pos, blk[0..c]);
+        if (shctl.fd_write(fo, blk[0..c]) < 0) {
+            refuse(b"cannot write OUT");
+        }
+        pos += c;
+    }
+    _ = shctl.fd_close(fo);
+    I64 t5 = now();
+    say(b"bytes", n);
+    say(b"lines", buf.lines(x));
+    say(b"last_line_at", last);
+    say(b"pieces", buf.pieces(x));
+    say(b"read_ns", t1 - t0);
+    say(b"load_ns", t2 - t1);
+    say(b"jump_ns", t3 - t2);
+    say(b"type_ns", t4 - t3);
+    say(b"key_worst_ns", worst);
+    say(b"save_ns", t5 - t4);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,149 @@
+// tests/ff/index_proof.ci: Index (DN-55, design note 51) drawn by kit/indexui.ci and kit/indexbody.ci on the host at
+// 1x, in the 958 x 667 content box of frame 4's window, dark and light: frame 4 (Grid at Home, its nine entries,
+// notes.txt chosen); frame 3's List at the wide size (Home > kit, its eight entries, roundel.ci chosen); the path
+// pill with the keyboard (Ctrl+L, the path selected) under the Trash, two of its three entries chosen. For each
+// frame it prints `name NAME`, `frame W H` and each row as runs `rgb count`, as tests/ff/plane_proof.ci does;
+// `python3 tools/index_proof.py OUTPUT DIR` writes them as PNGs.
+// cint run --root . tests/ff/index_proof.ci > OUTPUT
+import user.ci.kit.indexui;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.indexbody;
+import user.ci.kit.finder;
+import user.ci.kit.opener;
+
+U32[2048] row;
+const I64 W = 958;
+const I64 H = 667;
+
+void emit() {
+    "r";
+    I64 x = 0;
+    while (x < W) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < W && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+void frame() {
+    "frame {W} {H}\n";
+    for y in 0..H {
+        draw.paint(row, 0, W, tokens.word(tokens.PAPER));
+        if (y < indexui.BAR_H) {
+            indexui.toolbar_row(row, y);
+        } else if (y >= H - indexui.STATUS_H) {
+            indexui.status_row(row, y);
+        } else {
+            indexui.side_row(row, y);
+            indexbody.body_row(row, y);
+        }
+        emit();
+    }
+}
+
+void places() {
+    indexui.places_clear();
+    indexui.place(indexui.HOME, b"Home");
+    indexui.place(indexui.DOCUMENTS, b"Documents");
+    indexui.place(indexui.DOWNLOADS, b"Downloads");
+    indexui.place(indexui.PICTURES, b"Pictures");
+    indexui.place(indexui.DISK, b"Daphnis");
+    indexui.place(indexui.TRASH, b"Trash");
+}
+
+void suffix(Bool dark) {
+    if (dark) { "-dark\n"; } else { "-light\n"; }
+}
+
+void add(in U8[_] name, Bool dir, I64 bytes, I64 items) {
+    assert(finder.add(name, dir, bytes, items, opener.kind_of(name, dir, b""), false));
+}
+
+void frame4_entries() {
+    assert(finder.go(b"/home/ci"));
+    finder.begin();
+    add(b"Documents", true, 0, 3);
+    add(b"Downloads", true, 0, 1);
+    add(b"Pictures", true, 0, 2);
+    add(b"kit", true, 0, 8);
+    add(b"notes.txt", false, 812, -1);
+    add(b"hello.ci", false, 410, -1);
+    add(b"roundel.ci", false, 6144, -1);
+    add(b"desk.png", false, 421888, -1);
+    add(b"freedoom1.wad", false, 28592816, -1);
+    finder.sort_by(finder.BY_NAME);
+    finder.select(7);                                  // notes.txt, as frame 4 chooses it
+}
+
+void frame3_entries() {
+    assert(finder.go(b"/home/ci/kit"));
+    finder.begin();
+    add(b"symbols", true, 0, 131);
+    add(b"icons.ci", false, 18432, -1);
+    add(b"roundel.ci", false, 6144, -1);
+    add(b"text.ci", false, 24576, -1);
+    add(b"tokens.ci", false, 4096, -1);
+    add(b"wheel.ci", false, 3072, -1);
+    add(b"README.txt", false, 2048, -1);
+    add(b"sheet.png", false, 421888, -1);
+    finder.sort_by(finder.BY_NAME);
+    finder.select(3);
+}
+
+void scenes(Bool dark) {
+    I64 r = opener.load_default();
+    indexbody.set_box(indexui.SIDE_W, indexui.BAR_H, W, H - indexui.STATUS_H);
+    indexbody.set_list(false);
+    frame4_entries();
+    indexui.set_size(W, H);
+    places();
+    indexui.set_nav(true, false, true);
+    indexui.crumbs(indexui.HOME, b"Home");
+    indexui.set_edit(false, false, b"");
+    indexui.set_view(false, b"Name");
+    indexui.set_query(b"");
+    indexui.set_place(0);
+    indexui.set_status(9, 1);
+    "name index-frame4-grid-home";
+    suffix(dark);
+    frame();
+    indexui.crumbs(indexui.HOME, b"Home");
+    indexui.crumb(b"kit");
+    indexui.set_view(true, b"Name");
+    indexui.set_status(8, 1);
+    indexbody.set_list(true);
+    frame3_entries();
+    "name index-frame3-list-kit";
+    suffix(dark);
+    frame();
+    indexui.crumbs(indexui.TRASH, b"Trash");
+    indexui.set_edit(true, true, b"/home/ci/.trash/items");
+    indexui.set_view(false, b"Size");
+    indexui.set_query(b"");
+    indexui.set_place(5);
+    indexui.set_status(3, 2);
+    indexbody.set_list(false);
+    assert(finder.go(b"/home/ci/.trash/items"));
+    finder.begin();
+    add(b"old-notes.txt", false, 1200, -1);
+    add(b"draft.ci", false, 900, -1);
+    add(b"shots", true, 0, 4);
+    finder.sort_by(finder.BY_SIZE);
+    finder.select(0);
+    finder.toggle(2);
+    "name index-trash-edit";
+    suffix(dark);
+    frame();
+}
+
+void main() {
+    tokens.set_theme(tokens.DARK);
+    scenes(true);
+    tokens.set_theme(tokens.LIGHT);
+    scenes(false);
+}
+// SPDX-License-Identifier: Apache-2.0

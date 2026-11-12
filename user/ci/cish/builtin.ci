@@ -1,0 +1,470 @@
+// user/ci/cish/builtin.ci: the commands that run in the shell process (docs/specs/2026-11-06-cish-shell.md section
+// 6). CS-1: `:`, `true`, `false`, `cd`, `pwd`, `exit`, `export`, `unset`; CS-2: `echo`, `printf`, `test`, `[`,
+// `shift`, `set`, `return`, `break`, `continue`. Each takes the fields of its command (field 0 its name) from the
+// caller's block and returns its status. return, break and continue set ctl's mode; the lists unwind on it.
+// CS-4: `wait`, `read` (input.ci); `eval`, `.` and `exec` are named here and run by run.ci, which holds the parser
+// and the program runner they need.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.cish.vars;
+import user.ci.cish.expand;
+import user.ci.cish.msg;
+import user.ci.cish.ctl;
+import user.ci.cish.cond;
+import user.ci.cish.fmt;
+import user.ci.cish.input;
+
+export const I64 NONE = -1;
+const I64 B_COLON = 0;
+const I64 B_TRUE = 1;
+const I64 B_FALSE = 2;
+const I64 B_CD = 3;
+const I64 B_PWD = 4;
+const I64 B_EXIT = 5;
+const I64 B_EXPORT = 6;
+const I64 B_UNSET = 7;
+const I64 B_ECHO = 8;
+const I64 B_PRINTF = 9;
+const I64 B_TEST = 10;
+const I64 B_BRACKET = 11;
+const I64 B_SHIFT = 12;
+const I64 B_SET = 13;
+const I64 B_RETURN = 14;
+const I64 B_BREAK = 15;
+const I64 B_CONTINUE = 16;
+export const I64 EVAL = 17;
+export const I64 DOT = 18;
+export const I64 EXEC = 19;
+const I64 B_WAIT = 20;
+const I64 B_READ = 21;
+
+Bool named(in U8[_] f, in U8[_] s) {
+    if (len(f) != len(s)) { return false; }
+    for i in 0..len(s) {
+        if (f[i] != s[i]) { return false; }
+    }
+    return true;
+}
+
+// A special builtin (POSIX XCU 2.14) keeps the assignments before it; the others take them for their run only.
+export Bool special(I64 b) {
+    return b == B_COLON || b == B_EXIT || b == B_EXPORT || b == B_UNSET || b == B_SHIFT || b == B_SET || b == B_RETURN
+        || b == B_BREAK || b == B_CONTINUE || b == EVAL || b == DOT || b == EXEC;
+}
+
+// The builtin named f, or NONE.
+export I64 which(in U8[_] f) {
+    if (named(f, b":")) { return B_COLON; }
+    if (named(f, b"true")) { return B_TRUE; }
+    if (named(f, b"false")) { return B_FALSE; }
+    if (named(f, b"cd")) { return B_CD; }
+    if (named(f, b"pwd")) { return B_PWD; }
+    if (named(f, b"exit")) { return B_EXIT; }
+    if (named(f, b"export")) { return B_EXPORT; }
+    if (named(f, b"unset")) { return B_UNSET; }
+    if (named(f, b"echo")) { return B_ECHO; }
+    if (named(f, b"printf")) { return B_PRINTF; }
+    if (named(f, b"test")) { return B_TEST; }
+    if (named(f, b"[")) { return B_BRACKET; }
+    if (named(f, b"shift")) { return B_SHIFT; }
+    if (named(f, b"set")) { return B_SET; }
+    if (named(f, b"return")) { return B_RETURN; }
+    if (named(f, b"break")) { return B_BREAK; }
+    if (named(f, b"continue")) { return B_CONTINUE; }
+    if (named(f, b"eval")) { return EVAL; }
+    if (named(f, b".")) { return DOT; }
+    if (named(f, b"exec")) { return EXEC; }
+    if (named(f, b"wait")) { return B_WAIT; }
+    if (named(f, b"read")) { return B_READ; }
+    return NONE;
+}
+
+I64 name_into(inout U8[_] dst, I64 at, in U8[_] s) {
+    for k in 0..len(s) { dst[at + k] = s[k]; }
+    dst[at + len(s)] = 0;
+    return at + len(s) + 1;
+}
+
+// K-9: every name which() knows, each NUL-ended, for the line editor's completion; the bytes used.
+export I64 names(inout U8[_] dst) {
+    I64 n = 0;
+    n = name_into(dst, n, b":");
+    n = name_into(dst, n, b"true");
+    n = name_into(dst, n, b"false");
+    n = name_into(dst, n, b"cd");
+    n = name_into(dst, n, b"pwd");
+    n = name_into(dst, n, b"exit");
+    n = name_into(dst, n, b"export");
+    n = name_into(dst, n, b"unset");
+    n = name_into(dst, n, b"echo");
+    n = name_into(dst, n, b"printf");
+    n = name_into(dst, n, b"test");
+    n = name_into(dst, n, b"[");
+    n = name_into(dst, n, b"shift");
+    n = name_into(dst, n, b"set");
+    n = name_into(dst, n, b"return");
+    n = name_into(dst, n, b"break");
+    n = name_into(dst, n, b"continue");
+    n = name_into(dst, n, b"eval");
+    n = name_into(dst, n, b".");
+    n = name_into(dst, n, b"exec");
+    n = name_into(dst, n, b"wait");
+    n = name_into(dst, n, b"read");
+    return n;
+}
+
+// f as a decimal number taken modulo 256 (the status a process can return), or -1.
+I64 small(in U8[_] f) {
+    if (len(f) == 0 || len(f) > 18) { return -1; }
+    I64 v = 0;
+    for i in 0..len(f) {
+        if (f[i] < '0' || f[i] > '9') { return -1; }
+        v = v * 10 + (f[i] - '0') as I64;
+    }
+    return v % 256;
+}
+
+// The index of the first `=` in f, or -1.
+I64 equals(in U8[_] f) {
+    for i in 0..len(f) {
+        if (f[i] == '=') { return i; }
+    }
+    return -1;
+}
+
+Bool valid_name(in U8[_] f) {
+    if (len(f) == 0) { return false; }
+    for i in 0..len(f) {
+        U8 c = f[i];
+        Bool ok = c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9');
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
+// An error in a special builtin ends a shell that is not interactive, status 2 (XCU 2.8.1).
+void bad_name(in U8[_] who, in U8[_] f) {
+    msg.begin();
+    msg.text(who);
+    msg.text(b": bad variable name: ");
+    msg.text(f);
+    msg.send();
+    dev.exit_now(2);
+}
+
+// The value of variable `name` into dst: its length, or -1 when unset.
+I64 value_of(in U8[_] name, inout U8[_] dst) {
+    I64 v = vars.lookup(name);
+    if (!vars.has_value(v)) { return -1; }
+    I64 n = vars.value_len(v);
+    if (n > len(dst)) { n = len(dst); }
+    for k in 0..n { dst[k] = vars.value_at(v, k); }
+    return n;
+}
+
+I64 cd(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    U8[4096] dir;
+    I64 n = 0;
+    if (nf > 2) {
+        msg.begin();
+        msg.text(b"cd: too many arguments");
+        msg.send();
+        return 1;
+    }
+    if (nf == 2) {
+        n = fe[1] - fo[1];
+        if (n > 4096) { n = 4096; }
+        for k in 0..n { dir[k] = ab[fo[1] + k]; }
+    } else {
+        n = value_of(b"HOME", dir);
+        if (n < 0) {
+            msg.begin();
+            msg.text(b"cd: HOME not set");
+            msg.send();
+            return 1;
+        }
+    }
+    U8[4096] old;
+    I64 on = value_of(b"PWD", old);
+    I64 r = shctl.sh_chdir(dir[0..n]);
+    if (r < 0) {
+        msg.begin();
+        msg.text(b"cd: cannot change to ");
+        msg.text(dir[0..n]);
+        msg.text(b": ");
+        msg.reason(0 - r);
+        msg.send();
+        return 2;
+    }
+    if (on >= 0) { _ = vars.set(b"OLDPWD", old[0..on]); }
+    U8[4096] now;
+    I64 k = shctl.sh_getcwd(now);
+    if (k >= 0) { _ = vars.set(b"PWD", now[0..k]); }
+    return 0;
+}
+
+I64 pwd() {
+    U8[4097] now;
+    I64 k = shctl.sh_getcwd(now[0..4096]);
+    if (k < 0) {
+        msg.begin();
+        msg.text(b"pwd: ");
+        msg.reason(0 - k);
+        msg.send();
+        return 1;
+    }
+    now[k] = '\n';
+    if (!msg.write_all(1, now[0..k + 1])) { return 1; }
+    return 0;
+}
+
+I64 text_into(inout U8[_] dst, in U8[_] s) {
+    for k in 0..len(s) { dst[k] = s[k]; }
+    return len(s);
+}
+
+// `export NAME='VALUE'` for each exported variable with a value, a quote in the value as '\''.
+I64 list_exports() {
+    U8[4096] line;
+    for v in 0..vars.slots() {
+        if (vars.is_exported(v) && vars.has_value(v)) {
+            I64 k = text_into(line, b"export ");
+            for i in 0..vars.name_len(v) {
+                if (k < 4080) {
+                    line[k] = vars.name_at(v, i);
+                    k = k + 1;
+                }
+            }
+            line[k] = '=';
+            line[k + 1] = '\'';
+            k = k + 2;
+            for i in 0..vars.value_len(v) {
+                U8 c = vars.value_at(v, i);
+                if (k < 4080) {
+                    if (c == '\'') {
+                        line[k] = '\'';
+                        line[k + 1] = '\\';
+                        line[k + 2] = '\'';
+                        line[k + 3] = '\'';
+                        k = k + 4;
+                    } else {
+                        line[k] = c;
+                        k = k + 1;
+                    }
+                }
+            }
+            line[k] = '\'';
+            line[k + 1] = '\n';
+            if (!msg.write_all(1, line[0..k + 2])) { return 1; }
+        }
+    }
+    return 0;
+}
+
+I64 export_(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    if (nf == 1) { return list_exports(); }
+    I64 st = 0;
+    for i in 1..nf {
+        I64 a = fo[i];
+        I64 e = equals(ab[a..fe[i]]);
+        I64 b = fe[i];
+        if (e >= 0) { b = a + e; }
+        if (!valid_name(ab[a..b])) {
+            bad_name(b"export", ab[a..fe[i]]);
+            st = 1;
+        } else {
+            Bool ok = vars.mark_export(ab[a..b]);
+            if (ok && e >= 0) { ok = vars.set(ab[a..b], ab[b + 1..fe[i]]); }
+            if (!ok) {
+                msg.begin();
+                msg.text(b"limit: VARS or VARBYTES");
+                msg.send();
+                st = 2;
+            }
+        }
+    }
+    return st;
+}
+
+I64 unset_(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    I64 st = 0;
+    for i in 1..nf {
+        if (!valid_name(ab[fo[i]..fe[i]])) {
+            bad_name(b"unset", ab[fo[i]..fe[i]]);
+            st = 1;
+        } else {
+            vars.unset(ab[fo[i]..fe[i]]);
+        }
+    }
+    return st;
+}
+
+// A count for shift, break or continue: f as a decimal number, else the shell ends, status 2 (a special builtin's
+// error, XCU 2.8.1).
+I64 count_of(in U8[_] who, in U8[_] f) {
+    I64 v = 0;
+    Bool ok = len(f) > 0 && len(f) <= 18;
+    for i in 0..len(f) {
+        if (f[i] < '0' || f[i] > '9') {
+            ok = false;
+        } else if (ok) {
+            v = v * 10 + (f[i] - '0') as I64;
+        }
+    }
+    if (!ok) {
+        msg.begin();
+        msg.text(who);
+        msg.text(b": bad number: ");
+        msg.text(f);
+        msg.send();
+        dev.exit_now(2);
+    }
+    return v;
+}
+
+I64 shift_(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    I64 k = 1;
+    if (nf > 1) { k = count_of(b"shift", ab[fo[1]..fe[1]]); }
+    if (!vars.shift(k)) { return 1; }
+    return 0;
+}
+
+// set -- ARG... or set ARG...: the positional parameters. Options are CS-4 and refused by name.
+I64 set_(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    I64 first = 1;
+    if (nf > 1 && fe[1] - fo[1] == 2 && ab[fo[1]] == '-' && ab[fo[1] + 1] == '-') {
+        first = 2;
+    } else if (nf == 1 || (fe[1] > fo[1] && (ab[fo[1]] == '-' || ab[fo[1]] == '+'))) {
+        msg.begin();
+        msg.text(b"not supported: set");
+        if (nf > 1) {
+            msg.byte(' ');
+            msg.text(ab[fo[1]..fe[1]]);
+        }
+        msg.send();
+        dev.exit_now(2);
+    }
+    vars.clear_positional();
+    for i in first..nf {
+        if (!vars.add_positional(ab[fo[i]..fe[i]])) {
+            msg.begin();
+            msg.text(b"limit: POSITIONAL or its bytes");
+            msg.send();
+            dev.exit_now(2);
+        }
+    }
+    return 0;
+}
+
+// break [N] and continue [N]: N loops, at most those open; outside a loop nothing (ash's way).
+I64 loop_ctl(in U8[_] who, I64 mode, in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    I64 k = 1;
+    if (nf > 1) { k = count_of(who, ab[fo[1]..fe[1]]); }
+    if (k == 0) {
+        msg.begin();
+        msg.text(who);
+        msg.text(b": bad number: 0");
+        msg.send();
+        dev.exit_now(2);
+    }
+    if (ctl.in_loops() == 0) { return 0; }
+    if (k > ctl.in_loops()) { k = ctl.in_loops(); }
+    ctl.set(mode, k, 0);
+    return 0;
+}
+
+// return [N]: N modulo 256, else the last status; outside a function it ends the shell (as ash does).
+I64 return_(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    I64 v = expand.status();
+    if (nf > 1) {
+        v = small(ab[fo[1]..fe[1]]);
+        if (v < 0) {
+            msg.begin();
+            msg.text(b"return: bad number: ");
+            msg.text(ab[fo[1]..fe[1]]);
+            msg.send();
+            dev.exit_now(2);
+        }
+    }
+    if (ctl.in_funcs() == 0) { dev.exit_now(v); }
+    ctl.set(ctl.RETURN, 0, v);
+    return v;
+}
+
+// A wait status as $? reads it.
+I64 exit_code(I64 st) {
+    if ((st & 0x7F) == 0) { return (st >> 8) & 0xFF; }
+    return 128 + (st & 0x7F);
+}
+
+// wait [PID...]: each child named, its status (127 when it is no child of this shell); none named: every child,
+// status 0.
+I64 wait_(in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    if (nf == 1) {
+        while (shctl.sh_wait(-1, 0) >= 0) { }
+        return 0;
+    }
+    I64 st = 0;
+    for k in 1..nf {
+        I64 pid = 0;
+        Bool ok = fe[k] > fo[k] && fe[k] - fo[k] <= 9;
+        for j in fo[k]..fe[k] {
+            U8 c = ab[j];
+            if (c < '0' || c > '9') {
+                ok = false;
+            } else if (ok) {
+                pid = pid * 10 + (c - '0') as I64;
+            }
+        }
+        if (!ok) {
+            msg.begin();
+            msg.text(b"wait: bad pid: ");
+            msg.text(ab[fo[k]..fe[k]]);
+            msg.send();
+            return 2;
+        }
+        I64 w = shctl.sh_wait(pid, 0);
+        if (w < 0) {
+            st = 127;
+        } else {
+            st = exit_code(w);
+        }
+    }
+    return st;
+}
+
+// Runs builtin b on the fields; its status. `exit` ends the process here.
+export I64 run(I64 b, in U8[_] ab, in I64[_] fo, in I64[_] fe, I64 nf) {
+    if (b == B_COLON || b == B_TRUE) { return 0; }
+    if (b == B_FALSE) { return 1; }
+    if (b == B_ECHO) { return fmt.echo(ab, fo, fe, nf); }
+    if (b == B_PRINTF) { return fmt.printf(ab, fo, fe, nf); }
+    if (b == B_TEST) { return cond.run(ab, fo, fe, nf, false); }
+    if (b == B_BRACKET) { return cond.run(ab, fo, fe, nf, true); }
+    if (b == B_SHIFT) { return shift_(ab, fo, fe, nf); }
+    if (b == B_SET) { return set_(ab, fo, fe, nf); }
+    if (b == B_RETURN) { return return_(ab, fo, fe, nf); }
+    if (b == B_BREAK) { return loop_ctl(b"break", ctl.BREAK, ab, fo, fe, nf); }
+    if (b == B_CONTINUE) { return loop_ctl(b"continue", ctl.CONTINUE, ab, fo, fe, nf); }
+    if (b == B_CD) { return cd(ab, fo, fe, nf); }
+    if (b == B_PWD) { return pwd(); }
+    if (b == B_EXPORT) { return export_(ab, fo, fe, nf); }
+    if (b == B_UNSET) { return unset_(ab, fo, fe, nf); }
+    if (b == B_WAIT) { return wait_(ab, fo, fe, nf); }
+    if (b == B_READ) { return input.run(ab, fo, fe, nf); }
+    // exit [N]
+    I64 code = expand.status();
+    if (nf > 1) {
+        code = small(ab[fo[1]..fe[1]]);
+        if (code < 0) {
+            msg.begin();
+            msg.text(b"exit: bad number: ");
+            msg.text(ab[fo[1]..fe[1]]);
+            msg.send();
+            code = 2;
+        }
+    }
+    dev.exit_now(code);
+    return code;
+}
+// SPDX-License-Identifier: Apache-2.0

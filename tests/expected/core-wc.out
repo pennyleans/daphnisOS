@@ -1,0 +1,98 @@
+$ text.txt
+        5         9        47 text.txt
+status 0
+$  < text.txt
+        5         9        47
+status 0
+$ - < text.txt
+        5         9        47 -
+status 0
+$ -l < text.txt
+5
+status 0
+$ -w < long.txt
+1492
+status 0
+$ -c < bin.dat
+512
+status 0
+$ text.txt nonl.txt
+        5         9        47 text.txt
+        0         5        21 nonl.txt
+        5        14        68 total
+status 0
+$ -l text.txt nonl.txt
+        5 text.txt
+        0 nonl.txt
+        5 total
+status 0
+$ -l text.txt
+5 text.txt
+status 0
+$ -c text.txt
+47 text.txt
+status 0
+$ -m text.txt
+47 text.txt
+status 0
+$ -cm utf8.txt
+       23        23 utf8.txt
+status 0
+$ -lw text.txt
+        5         9 text.txt
+status 0
+$ -l -w -c text.txt
+        5         9        47 text.txt
+status 0
+$ -lwc empty
+        0         0         0 empty
+status 0
+$ long.txt
+      301      1492     20825 long.txt
+status 0
+$ ws.txt nonl.txt text.txt
+        2         6        15 ws.txt
+        0         5        21 nonl.txt
+        5         9        47 text.txt
+        7        20        83 total
+status 0
+$ bin.dat ws.txt
+        2         5       512 bin.dat
+        2         6        15 ws.txt
+        4        11       527 total
+status 0
+$ ws.txt
+        2         6        15 ws.txt
+status 0
+$ missing text.txt
+        5         9        47 text.txt
+        5         9        47 total
+-- stderr
+wc: missing: No such file or directory
+status 1
+$ text.txt missing nonl.txt
+        5         9        47 text.txt
+        0         5        21 nonl.txt
+        5        14        68 total
+-- stderr
+wc: missing: No such file or directory
+status 1
+$ .
+        0         0         0 .
+-- stderr
+wc: .: Is a directory
+status 1
+$ -- text.txt
+        5         9        47 text.txt
+status 0
+$ -w utf8.txt
+5 utf8.txt
+status 0
+$ -L text.txt
+-- stderr
+wc: not supported: -L
+status 2
+$ -x text.txt
+-- stderr
+wc: not supported: -x
+status 2

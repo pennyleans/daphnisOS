@@ -1,0 +1,11 @@
+// the capacities; a port may swap this file
+export const I64 TEXT = 16777216;
+export const I64 FILE = 16777216;
+export const I64 CLIP = 8388608;
+export const I64 UNDO = 589824;
+export const I64 UNDO_BYTES = 4194304;
+export const I64 LIMIT_MIB = 8;
+
+test "STATE-2: the limit is half the text" {
+    assert(LIMIT_MIB * 1048576 == TEXT / 2);
+}

@@ -1,0 +1,157 @@
+// tests/kfz/k4_tile_var.ci: RS-TTL section 6 (docs/specs/2026-11-11-rs-ttl-bartitle.md edition 6), the kernel's half
+// of View's name in its bar. A process's variable (FBIO_TILE_VAR) is tile.VAR_LEN bytes, 64, NUL padded: the desk
+// reads its first 32 bytes in FBIO_TILE_INFO kind 0's answer at 32, as before, and the rest in kind 19's at 32. A name
+// set at all, the first one too, wakes the tiler (sync 6), since View sets its name after its bind. A bad pointer, or
+// 64 bytes that run into the gap, are -EFAULT and leave the variable; execve and the end clear all 64 bytes.
+
+U8[64] tv_got;      // the desk's last read
+
+// p sets its variable to t, NUL padded to 64 bytes at KZ_RW + 512, through its descriptor fd of /dev/fb0: the answer.
+I64 tv_set[m](I64 p, I64 fd, in U8[m] t) {
+    assert(m <= 64);
+    U8[64] e;
+    for k in 0..64 { e[k] = 0; }
+    for k in 0..m { e[k] = t[k]; }
+    kz_own(p, KZ_RW + 512, 64);
+    assert(uvm.poke(p, KZ_RW + 512, e, 64, false) == 64);
+    return kz_call(p, NR_IOCTL, fd as U64, tile.FBIO_TILE_VAR, KZ_RW + 512, 0, 0, 0);
+}
+
+// The desk reads kind k of the pixel window vp into tv_got: the answer.
+I64 tv_read(I64 d, I64 vp, I64 k) {
+    U64 at = KZ_RW + 2048;
+    kz_set_u32(d, at, k as U64);
+    kz_set_u32(d, at + 4, vp as U64);
+    I64 st = kz_call(d, NR_IOCTL, kz_fb_fd as U64, tile.FBIO_TILE_INFO, at, 0, 0, 0);
+    if (st == 0) {
+        assert(uvm.peek(d, at, tv_got, 64) == 64);
+    }
+    return st;
+}
+
+// Whether tv_got[at..at + span) is t[from..], NUL padded past t.
+Bool tv_is[m](I64 at, in U8[m] t, I64 from, I64 span) {
+    for k in 0..span {
+        U8 w = 0;
+        if (from + k < m) { w = t[from + k]; }
+        if (tv_got[at + k] != w) { return false; }
+    }
+    return true;
+}
+
+// The tiler's syncs until none is waiting (tile.ioctl answers WOULD_BLOCK_DEV where the call would sleep): whether
+// one of them was 6, a variable.
+Bool tv_woke(I64 d) {
+    Bool six = false;
+    for n in 0..16 {
+        I64 r = tile.ioctl(d, tile.FBIO_TILE_SYNC, uvm.USER_HI);
+        if (r == 6) { six = true; }
+        if (r == input.WOULD_BLOCK_DEV) { return six; }
+    }
+    assert(false);
+    return six;
+}
+
+// Whether p's variable is none: 64 zero bytes.
+Bool tv_none(I64 p) {
+    for k in 0..64 {
+        if (tile.var_byte(p, k) != 0) { return false; }
+    }
+    return true;
+}
+
+// Whether p's variable is t, NUL padded to its 64 bytes.
+Bool tv_has[m](I64 p, in U8[m] t) {
+    for k in 0..64 {
+        U8 w = 0;
+        if (k < m) { w = t[k]; }
+        if (tile.var_byte(p, k) != w) { return false; }
+    }
+    return true;
+}
+
+test "RS-TTL section 6: a 34-byte name reaches the desk whole, 32 bytes in kind 0 and the rest in kind 19" {
+    I64 d = kz_desk();
+    I64 c = ar_window(d);
+    I64 cfd = kz_fb_fd;
+    I64 vp = vpid[c];
+    Bool before = tv_woke(d);           // the bind's 4, drained
+    assert(tv_set(c, cfd, "Screenshot 2026-11-09 01.59.12.png") == 0);
+    assert(tv_woke(d));                 // the first name wakes the tiler: View sets it after its bind
+    assert(tv_read(d, vp, 0) == 0 && tv_got[0] as I64 == (vp & 0xFF));
+    assert(tv_is(32, "Screenshot 2026-11-09 01.59.12.png", 0, 32));
+    assert(tv_read(d, vp, 19) == 0 && tv_got[0] as I64 == (vp & 0xFF));
+    for k in 4..32 { assert(tv_got[k] == 0); }
+    assert(tv_is(32, "Screenshot 2026-11-09 01.59.12.png", 32, 32));     // `ng`, then NUL to the 64th byte
+    assert(tv_set(c, cfd, "Screenshot 2026-11-09 01.59.12.png") == 0 && !tv_woke(d));   // the same name again: no wake
+    U8[64] full;
+    for k in 0..64 { full[k] = (65 + k % 26) as U8; }
+    assert(tv_set(c, cfd, full) == 0 && tv_woke(d));
+    assert(tv_read(d, vp, 0) == 0 && tv_is(32, full, 0, 32));
+    assert(tv_read(d, vp, 19) == 0 && tv_is(32, full, 32, 32));
+    assert(tv_has(c, full));
+    assert(tv_set(c, cfd, "Index") == 0 && tv_woke(d));     // a shorter name clears the rest
+    assert(tv_read(d, vp, 19) == 0);
+    for k in 4..64 { assert(tv_got[k] == 0); }
+    kz_end(c);
+    kz_end(d);
+}
+
+test "RS-TTL section 6: a bad pointer or 64 bytes into the gap leave the name; execve and the end clear it" {
+    I64 d = kz_desk();
+    I64 c = ar_window(d);
+    I64 cfd = kz_fb_fd;
+    assert(tv_set(c, cfd, "Screenshot 2026-11-09 01.59.12.png") == 0);
+    for b in 0..KZ_BAD_PTRS {
+        U64 arg = kz_bad_ptr(b, 64);
+        if (b != 2 && b != 3 && b != 5) {                // the read-only page reads
+            assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_VAR, arg, 0, 0, 0) == E_FAULT);
+        }
+    }
+    assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_VAR, KZ_GAP - 63, 0, 0, 0) == E_FAULT);
+    assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_VAR, KZ_GAP - 32, 0, 0, 0) == E_FAULT);   // 32 no longer do
+    assert(tv_has(c, "Screenshot 2026-11-09 01.59.12.png"));
+    // the read-only page's last 64 bytes are a name too
+    assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_VAR, KZ_GAP - 64, 0, 0, 0) == 0);
+    // execve: the name goes with the program
+    assert(tv_set(c, cfd, "Screenshot 2026-11-09 01.59.12.png") == 0);
+    kz_put(c, PATHS, "/kzx");
+    _ = kz_call_raw(c, 59, PATHS, 0, 0, 0, 0, 0);
+    assert(state[c] == READY);
+    assert(tv_none(c));
+    // the end
+    I64 e = ar_window(d);
+    assert(tv_set(e, kz_fb_fd, "Screenshot 2026-11-09 01.59.12.png") == 0);
+    assert(tv_has(e, "Screenshot 2026-11-09 01.59.12.png"));
+    kz_end(e);
+    assert(tv_none(e));
+    kz_end(c);
+    kz_end(d);
+}
+
+// NAMES-28: a name that changes wakes the tiler (sync 6) as a variable does, so a program that writes nothing after its
+// exec (Read with no file, waiting on its input) is named on the bar at once. An unchanged name wakes nothing.
+test "NAMES-28: an exec with no write wakes the tiler, which reads the new name; prctl's PR_SET_NAME does too" {
+    I64 d = kz_desk();
+    I64 c = ar_window(d);
+    I64 vp = vpid[c];
+    Bool before = tv_woke(d);           // the bind's 4, drained
+    assert(tv_read(d, vp, 0) == 0 && !tv_is(16, "kzx", 0, 16));
+    kz_put(c, PATHS, "/kzx");
+    _ = kz_call_raw(c, 59, PATHS, 0, 0, 0, 0, 0);
+    assert(state[c] == READY);
+    assert(tv_woke(d));                 // the exec alone: no byte written, no variable set
+    assert(tv_read(d, vp, 0) == 0 && tv_is(16, "kzx", 0, 16));
+    I64 e = ar_window(d);
+    I64 ve = vpid[e];
+    before = tv_woke(d);
+    kz_put(e, KZ_RW + 512, "Read");
+    assert(kz_call(e, NR_PRCTL, 15, KZ_RW + 512, 0, 0, 0, 0) == 0);
+    assert(tv_woke(d));
+    assert(tv_read(d, ve, 0) == 0 && tv_is(16, "Read", 0, 16));
+    assert(kz_call(e, NR_PRCTL, 15, KZ_RW + 512, 0, 0, 0, 0) == 0 && !tv_woke(d));   // the same name: no wake
+    kz_end(e);
+    kz_end(c);
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

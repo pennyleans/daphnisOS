@@ -1,0 +1,145 @@
+// user/ci/ix.ci: `ix ROOT CMD [ARG...]`, the probe of FF-1 (docs/specs/2026-11-07-ff-super-plane.md section 4; gate
+// check-disk.sh). Takes /dev/fsidx (close on exec, so CMD does not hold it), builds the index of ROOT by the walk
+// (user/ci/kit/index.ci), runs CMD and waits for it, then reads the ring and applies each entry, printing it as
+// `ix: ring SEQ OP INODE DIR NAME`. Prints the index the ring kept (`ix: kept N entries sha256 H`), each of its
+// paths in canonical order (`ix: PATH SIZE`, directories with a trailing '/'), and the index of a fresh walk
+// (`ix: walk N entries sha256 H`); then `ix: equal`, status 0, or `ix: differ`, status 1. Status 2 for a usage
+// error or a ring that could not be taken.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.runctl;
+import user.ci.corectl;
+import src.sha256;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.path;
+import user.ci.core.run;
+import user.ci.kit.index;
+
+const I64 O_CLOEXEC = 0x80000;
+
+U8 digit(I64 v) {
+    if (v < 10) { return (v + 48) as U8; }
+    return (v + 87) as U8;
+}
+
+void hex(in U8[32] d) {
+    for k in 0..32 {
+        put.byte(digit((d[k] >> 4) as I64));
+        put.byte(digit((d[k] & 15) as I64));
+    }
+}
+
+void line(in U8[_] what, I64 n, in U8[32] d) {
+    put.bytes(b"ix: ");
+    put.bytes(what);
+    put.byte(' ');
+    put.num(n, 0);
+    put.bytes(b" entries sha256 ");
+    hex(d);
+    put.byte('\n');
+}
+
+void op_word(I64 op) {
+    if (op == 0) { put.bytes(b"lost"); }
+    else if (op == 1) { put.bytes(b"create"); }
+    else if (op == 2) { put.bytes(b"unlink"); }
+    else if (op == 3) { put.bytes(b"from"); }
+    else if (op == 4) { put.bytes(b"to"); }
+    else if (op == 5) { put.bytes(b"change"); }
+    else { put.num(op, 0); }
+}
+
+U64 u64_at(in U8[64] e, I64 at) {
+    U64 v = 0;
+    for k in 0..8 { v = v | ((e[at + k] as U64) << ((8 * k) as U64)); }
+    return v;
+}
+
+void main(in U8[_] args) {
+    I64 z = 0;
+    while (z < len(args) && args[z] != 0) { z = z + 1; }
+    if (z == 0 || z + 1 >= len(args)) {
+        "ix: usage: ix ROOT CMD [ARG...]\n";
+        dev.exit_now(2);
+    }
+    I64 fd = shctl.sh_open(b"/dev/fsidx", O_CLOEXEC, 0);
+    if (fd < 0) {
+        "ix: /dev/fsidx: error {0 - fd}\n";
+        dev.exit_now(2);
+    }
+    if (!index.build(args[0..z])) {
+        "ix: the walk did not fit\n";
+        dev.exit_now(2);
+    }
+    run.env_load();
+    I64 st = run.spawn(args[z + 1..len(args)]);
+    if (st < 0) {
+        run.say(args[z + 1..len(args)], 0 - st);
+    }
+    U8[4096] b;
+    I64 got = shctl.fd_read(fd, b);
+    while (got > 0) {
+        I64 at = 0;
+        while (at + 64 <= got) {
+            U8[64] e;
+            for k in 0..64 { e[k] = b[at + k]; }
+            put.bytes(b"ix: ring ");
+            put.num(u64_at(e, 0) as I64, 0);
+            put.byte(' ');
+            op_word(e[8] as I64);
+            put.byte(' ');
+            put.num(u64_at(e, 16) as I64, 0);
+            put.byte(' ');
+            put.num(u64_at(e, 24) as I64, 0);
+            put.byte(' ');
+            put.bytes(e[32..32 + (e[9] as I64)]);
+            put.byte('\n');
+            index.apply(e);
+            at = at + 64;
+        }
+        got = shctl.fd_read(fd, b);
+    }
+    U8[32] kept;
+    index.digest(kept);
+    line(b"kept", index.entries(), kept);
+    I64 n = index.sorted();
+    U8[4096] p;
+    for k in 0..n {
+        I64 j = index.sorted_at(k);
+        I64 l = index.path_of(j, p);
+        put.bytes(b"ix: ");
+        if (l < 0) {
+            put.bytes(b"(no path)");
+        } else {
+            put.bytes(p[0..l]);
+        }
+        if ((index.mode_of(j) & corectl.S_IFMT) == corectl.S_IFDIR) { put.byte('/'); }
+        put.byte(' ');
+        put.num(index.size_of(j), 0);
+        put.byte('\n');
+    }
+    I64 walks = index.walks();
+    if (walks > 1) {
+        put.bytes(b"ix: the ring rebuilt the index by the walk ");
+        put.num(walks - 1, 0);
+        put.bytes(b" time(s)\n");
+    }
+    _ = index.build(args[0..z]);
+    U8[32] fresh;
+    index.digest(fresh);
+    line(b"walk", index.entries(), fresh);
+    Bool same = true;
+    for k in 0..32 {
+        if (kept[k] != fresh[k]) { same = false; }
+    }
+    if (same) {
+        put.bytes(b"ix: equal\n");
+        put.flush();
+        dev.exit_now(0);
+    }
+    put.bytes(b"ix: differ\n");
+    put.flush();
+    dev.exit_now(1);
+}
+// SPDX-License-Identifier: Apache-2.0

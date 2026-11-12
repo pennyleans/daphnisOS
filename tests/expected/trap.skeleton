@@ -1,0 +1,11 @@
+Daphnis K2: traps and timer
+trap de
+fault: cint-core-1/fault/v2 148 bytes
+HEX
+trap ud
+fault: cint-core-1/fault/v2 148 bytes
+HEX
+trap pf
+fault: cint-core-1/fault/v2 148 bytes
+HEX
+ticks: 100

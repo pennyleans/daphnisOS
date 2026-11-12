@@ -1,0 +1,6 @@
+// user/ci/wall.ci: the wall clock of a cint program in ring 3 (user/ci/host.c, CI_ROWS_WALL), NW-0.
+//   wall_ns(): CLOCK_BOOTTIME in nanoseconds; under Daphnis the PIT's ticks since boot (G-2), real time under
+//     KVM, dilated under TCG; not a function of the process's history, so no transcript that a replay must
+//     match may print it
+export extern observe I64 wall_ns();
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,9 @@
+// tests/hosted/pty/src/job.ci: the hosted stand-in for src/job.ci under tests/pty_test.ci: no sessions.
+export I64 family(I64 p) { return 0; }
+export I64 group(I64 p) { return 1; }
+export Bool group_in(I64 f, I64 s, I64 g) { return true; }
+export Bool group_used(I64 f, I64 g) { return true; }
+export I64 session(I64 p) { return p; }
+export void set_terminal(I64 p, I64 i) { }
+export I64 terminal(I64 p) { return -1; }
+// SPDX-License-Identifier: Apache-2.0

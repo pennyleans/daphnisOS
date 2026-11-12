@@ -1,0 +1,218 @@
+// tests/kfz/k2_desk.ci: the desk's own calls at their edges: revoke (1008, GV-1a, docs/specs/2026-11-11-gv-revoke.md
+// section 2), login (1003, AC-1a, docs/specs/2026-11-08-ac-accounts.md section 5) and home (1006, FS-3). Each is
+// asked by every wrong caller first, with every other argument wrong too, so the caller test is seen to come
+// before anything else; then the desk's own bad arguments; then what a refused call leaves: nothing changed.
+
+// Every live process's word, ceiling and uid, in one sum, to see that a refused call changed none of them.
+U64 kz_creds() {
+    U64 h = 0;
+    for p in 0..uvm.PROCS {
+        if (state[p] == READY || state[p] == WAITING) {
+            h = (h * 31 + 1 + fs.grant_of(p) + 16 * fs.ceil_of(p) + 256 * (fs.uid_of(p) as U64)) % 0xFFFFFFFFFFFF;
+        } else {
+            h = (h * 31) % 0xFFFFFFFFFFFF;
+        }
+    }
+    return h;
+}
+
+test "revoke: every caller but the desk reads -EPERM, whatever it passes" {
+    I64 d = kz_desk();
+    I64 c = kz_child(d, 0);                 // uid 0, in a window of the desk
+    I64 u = kz_proc(1000, fs.GRANT_ALL, fs.GRANT_ALL);
+    I64 r0 = kz_proc(0, fs.GRANT_ALL, 0);   // uid 0, not the desk
+    I64 k = kz_proc(1001, fs.GRANT_ALL, fs.GRANT_KERN);   // ring 0, not the desk
+    fs.grant_add(c, fs.GRANT_ALL);
+    U64 before = kz_creds();
+    I64[4] who = [c, u, r0, k];
+    U64[6] words = [1, 7, 8, 16, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF];
+    U64[5] vps = [vpid[c] as U64, vpid[d] as U64, 0, 0xFFFFFFFFFFFFFFFF, 0x7FFFFFFF];
+    for w in 0..4 {
+        for i in 0..6 {
+            for v in 0..5 {
+                assert(kz_call(who[w], NR_REVOKE, vps[v], words[i], 0, 0, 0, 0) == E_PERM);
+            }
+        }
+        assert(kz_kept_outside(who[w], 0, 0));
+    }
+    assert(kz_creds() == before);
+    kz_end(u);
+    kz_end(r0);
+    kz_end(k);
+    kz_end(c);
+    kz_end(d);
+}
+
+test "revoke: ring 0 or an unknown bit in the word is -EINVAL before the vpid is looked at" {
+    I64 d = kz_desk();
+    I64 c = kz_child(d, 1000);
+    fs.grant_add(c, fs.GRANT_ALL);
+    U64 before = kz_creds();
+    U64[8] words = [8, 9, 15, 16, 0x100000000, 0x8000000000000001, 0xFFFFFFFFFFFFFFF8, 0xFFFFFFFFFFFFFFFF];
+    U64[3] vps = [vpid[c] as U64, 0, 0xFFFFFFFFFFFFFFFF];
+    for i in 0..8 {
+        for v in 0..3 {
+            assert(kz_call(d, NR_REVOKE, vps[v], words[i], 0, 0, 0, 0) == E_INVAL);
+        }
+    }
+    assert(kz_creds() == before && kz_kept_outside(d, 0, 0));
+    kz_end(c);
+    kz_end(d);
+}
+
+test "revoke: a vpid of no live window process is -ESRCH, the desk's own and another family's among them" {
+    I64 d = kz_desk();
+    I64 c = kz_child(d, 1000);
+    I64 other = kz_proc(1000, fs.GRANT_ALL, fs.GRANT_ALL);    // another family: its vpid is not the desk's to name
+    fs.grant_add(c, fs.GRANT_ALL);
+    U64 before = kz_creds();
+    U64[7] vps = [vpid[d] as U64, vpid[other] as U64, 0, 1, 0xFFFFFFFFFFFFFFFF, 0x8000000000000000, 0x100000000];
+    for v in 0..7 {
+        assert(kz_call(d, NR_REVOKE, vps[v], 1, 0, 0, 0, 0) == E_SRCH);
+    }
+    assert(fs.grant_of(other) == fs.GRANT_ALL);
+    // a window process that ended and was not waited for
+    I64 z = kz_child(d, 1000);
+    fs.grant_add(z, fs.GRANT_ALL);
+    finish(z, 0, false);
+    assert(state[z] == ZOMBIE);
+    assert(kz_call(d, NR_REVOKE, vpid[z] as U64, 7, 0, 0, 0, 0) == E_SRCH);
+    state[z] = FREE;
+    assert(kz_creds() == before);
+    kz_end(other);
+    kz_end(c);
+    kz_end(d);
+}
+
+test "revoke: the bits leave every live process of the window and no other; the count is of those that held one" {
+    I64 d = kz_desk();
+    I64 w1 = kz_child(d, 1000);
+    I64 w1b = kz_child(w1, 1000);           // started by the window's program: the same window
+    I64 w2 = kz_child(d, 1000);             // another window
+    fs.grant_add(w1, fs.GRANT_ALL);
+    fs.grant_add(w1b, fs.GRANT_NET);
+    fs.grant_add(w2, fs.GRANT_ALL);
+    assert(window[w1b] == window[w1] && window[w2] != window[w1]);
+    U64 desk_word = fs.grant_of(d);
+    assert(kz_call(d, NR_REVOKE, vpid[w1b] as U64, fs.GRANT_NET, 0, 0, 0, 0) == 2);
+    assert(fs.grant_of(w1) == (fs.GRANT_DISK | fs.GRANT_AUDIO) && fs.grant_of(w1b) == fs.GRANT_DISK);
+    assert((fs.ceil_of(w1) & fs.GRANT_NET) == 0 && (fs.ceil_of(w1b) & fs.GRANT_NET) == 0);
+    assert(fs.grant_of(w2) == fs.GRANT_ALL && fs.ceil_of(w2) == fs.GRANT_ALL);
+    assert(fs.grant_of(d) == desk_word);    // the desk is in no window
+    // nothing held: 0, and the word 0 is a revoke of nothing
+    assert(kz_call(d, NR_REVOKE, vpid[w1] as U64, fs.GRANT_NET, 0, 0, 0, 0) == 0);
+    assert(kz_call(d, NR_REVOKE, vpid[w1] as U64, 0, 0, 0, 0, 0) == 0);
+    // the way back is the prompt: grant (1000) refuses the revoked bit
+    assert(kz_call(w1, NR_GRANT, fs.GRANT_NET, 0, 0, 0, 0, 0) == E_ACCES);
+    assert(kz_kept_outside(d, 0, 0));
+    kz_end(w1b);
+    kz_end(w1);
+    kz_end(w2);
+    kz_end(d);
+}
+
+test "login: only the desk's child before its execve, as uid 0, may call it, and only once" {
+    I64 none = kz_proc(0, fs.GRANT_ALL, 0);
+    assert(kz_call(none, NR_LOGIN, 1000, 1000, 7, 0, 0, 0) == E_PERM);   // no desk at all
+    kz_end(none);
+    I64 d = kz_desk();
+    I64 alone = kz_proc(0, fs.GRANT_ALL, 0);             // uid 0, not the desk's child
+    I64 grand = kz_child(kz_child(d, 0), 0);             // the desk's grandchild
+    I64 ran = kz_child(d, 0);
+    exec_at[ran] = exec_at[d] + 1;                       // it ran execve
+    I64 user1 = kz_child(d, 1000);                       // already a user
+    U64 before = kz_creds();
+    I64[5] who = [d, alone, grand, ran, user1];
+    for w in 0..5 {
+        assert(kz_call(who[w], NR_LOGIN, 1000, 1000, 7, 0, 0, 0) == E_PERM);
+        assert(kz_call(who[w], NR_LOGIN, 0, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0, 0, 0) == E_PERM);
+    }
+    assert(kz_creds() == before);
+    I64 c = kz_child(d, 0);
+    fs.kern_set(c, true);
+    assert(kz_call(c, NR_LOGIN, 1000, 100, fs.GRANT_DISK | fs.GRANT_NET, 0, 0, 0) == 0);
+    assert(fs.uid_of(c) == 1000 && fs.gid_of(c) == 100 && fs.grant_of(c) == fs.GRANT_DISK);
+    assert(fs.ceil_of(c) == (fs.GRANT_DISK | fs.GRANT_NET));
+    assert(kz_call(c, NR_LOGIN, 1001, 100, 7, 0, 0, 0) == E_PERM);   // once
+    kz_end(c);
+    kz_end(user1);
+    kz_end(ran);
+    kz_end(grand);
+    kz_end(alone);
+    kz_end(d);
+}
+
+test "login: uid, gid and ceiling at and past their bounds; a refusal leaves the caller as it was" {
+    I64 d = kz_desk();
+    I64 c = kz_child(d, 0);
+    U64 before = kz_creds();
+    U64[6] bad_uid = [0, 65536, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF, 0x100000001];
+    for i in 0..6 {
+        assert(kz_call(c, NR_LOGIN, bad_uid[i], 0, 7, 0, 0, 0) == E_INVAL);
+    }
+    U64[4] bad_gid = [65536, 0xFFFFFFFFFFFFFFFF, 0x8000000000000000, 0x10000];
+    for i in 0..4 {
+        assert(kz_call(c, NR_LOGIN, 1000, bad_gid[i], 7, 0, 0, 0) == E_INVAL);
+    }
+    U64[5] bad_ceil = [8, 15, 16, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF];
+    for i in 0..5 {
+        assert(kz_call(c, NR_LOGIN, 1000, 1000, bad_ceil[i], 0, 0, 0) == E_INVAL);
+    }
+    assert(kz_creds() == before && fs.uid_of(c) == 0);
+    assert(kz_call(c, NR_LOGIN, 65535, 65535, 0, 0, 0, 0) == 0);     // the last uid and gid, no grant at all
+    assert(fs.uid_of(c) == 65535 && fs.gid_of(c) == 65535 && fs.grant_of(c) == 0 && fs.ceil_of(c) == 0);
+    I64 c1 = kz_child(d, 0);
+    assert(kz_call(c1, NR_LOGIN, 1, 0, 7, 0, 0, 0) == 0);              // the first uid, gid 0
+    assert(fs.uid_of(c1) == 1 && fs.gid_of(c1) == 0);
+    kz_end(c1);
+    kz_end(c);
+    kz_end(d);
+}
+
+test "home: every caller but the desk reads -EPERM, before the path or the ids are looked at" {
+    I64 d = kz_desk();
+    I64 c = kz_child(d, 0);
+    I64 u = kz_proc(1000, fs.GRANT_ALL, fs.GRANT_ALL);
+    I64 r0 = kz_proc(0, fs.GRANT_ALL, fs.GRANT_KERN);
+    I64[3] who = [c, u, r0];
+    for w in 0..3 {
+        kz_put(who[w], KZ_RW, "/home/kfz");
+        for b in 0..KZ_BAD_PTRS {
+            assert(kz_call(who[w], NR_HOME, kz_bad_ptr(b, 1), 0, 0xFFFFFFFFFFFFFFFF, 0, 0, 0) == E_PERM);
+        }
+        assert(kz_call(who[w], NR_HOME, KZ_RW, 1000, 1000, 0, 0, 0) == E_PERM);
+    }
+    assert(fs.created_count() == 0);
+    kz_end(r0);
+    kz_end(u);
+    kz_end(c);
+    kz_end(d);
+}
+
+test "home: ids past their bounds are -EINVAL before the path is read; a bad path is -EFAULT or too long" {
+    I64 d = kz_desk();
+    U64[5] bad = [0, 65536, 0xFFFFFFFFFFFFFFFF, 0x8000000000000000, 0x100000001];
+    for i in 0..5 {
+        assert(kz_call(d, NR_HOME, 0, bad[i], 1000, 0, 0, 0) == E_INVAL);
+        assert(kz_call(d, NR_HOME, 0, 1000, bad[i] + 65536 * (i == 0) as U64, 0, 0, 0) == E_INVAL);
+    }
+    kz_strings(d);
+    kz_own(d, KZ_RW, 4096);                                      // 4,096 bytes with no NUL: KZ_RW's first page
+    for b in 0..KZ_BAD_PTRS {
+        U64 path = kz_bad_ptr(b, 1);
+        if (path != KZ_RO && path != KZ_GAP - 1) {               // the read-only page reads: its bytes are KZ_FILL
+            assert(kz_call(d, NR_HOME, path, 1000, 1000, 0, 0, 0) == E_FAULT);
+        }
+    }
+    // a path with no NUL before the gap: -EFAULT; 4,096 bytes with no NUL: too long
+    assert(kz_call(d, NR_HOME, KZ_RO + 16, 1000, 1000, 0, 0, 0) == E_FAULT);
+    assert(kz_call(d, NR_HOME, KZ_RO, 1000, 1000, 0, 0, 0) == -36);
+    assert(kz_call(d, NR_HOME, KZ_RW, 1000, 1000, 0, 0, 0) == -36);
+    // no volume is mounted here: a home has nowhere to be
+    kz_put(d, KZ_RW, "/home/kfz");
+    I64 r = kz_call(d, NR_HOME, KZ_RW, 1000, 1000, 0, 0, 0);
+    assert(r == E_INVAL || r == E_NOENT);
+    assert(fs.created_count() == 0 && kz_kept_outside(d, KZ_RW, KZ_RW + 10));
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

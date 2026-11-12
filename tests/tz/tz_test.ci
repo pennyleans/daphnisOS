@@ -1,0 +1,128 @@
+// tests/tz/tz_test.ci: RS-TZa (user/ci/core/tz.ci, cal.ci; docs/specs/2026-11-11-rs-tza.md section 4) beyond what
+// tests/tz/tz_twin.ci compares with zdump: names and find, UTC for no city, times before 1970 and after 2037, the
+// ends of local(), rules with half hours, negative daylight and odd edge times, and the calendar alone. Expected values
+// from the C library's localtime over the same compiled database.
+import user.ci.core.tz;
+import user.ci.core.tzdata;
+import user.ci.core.cal;
+
+U8[64] got;
+
+Bool is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+I64 city(in U8[_] zone) {
+    I64 i = tz.find(zone);
+    assert(i >= 0);
+    return i;
+}
+
+test "the cities are zone.tab's rows by shown name; find takes a zone name, nothing else" {
+    assert(tz.cities() == 418);
+    assert(is(tz.city(0, got), b"Abidjan") && is(tz.name(0, got), b"Africa/Abidjan"));
+    assert(is(tz.city(417, got), b"Zurich"));
+    I64 ny = city(b"America/New_York");
+    assert(is(tz.city(ny, got), b"New York") && is(tz.name(ny, got), b"America/New_York"));
+    assert(is(tz.city(city(b"America/Argentina/Buenos_Aires"), got), b"Buenos Aires"));
+    assert(tz.find(b"US/Eastern") == -1 && tz.find(b"") == -1 && tz.find(b"America/New_Yor") == -1);
+    assert(tz.city(-1, got) == -1 && tz.name(418, got) == -1);
+    assert(tz.city(ny, got[0..3]) == 8 && got[2] == 'w');           // what fits, the full length
+}
+
+test "no city is UTC" {
+    assert(tz.offset(-1, 1782864000) == 0 && tz.dst(-1, 1782864000) == 0 && tz.next(-1, 0) == -1);
+    assert(is(tz.abbr(-1, 0, got), b"UTC") && is(tz.abbr(418, 0, got), b"UTC"));
+    assert(tz.local(-1, 1793512800) == 0 && cal.hour() == 6 && cal.day() == 1);
+}
+
+test "New York: the change of 2026-11-01 and the local fields" {
+    I64 ny = city(b"America/New_York");
+    assert(tz.offset(ny, 1793512799) == -14400 && tz.dst(ny, 1793512799) == 1);
+    assert(tz.offset(ny, 1793512800) == -18000 && tz.dst(ny, 1793512800) == 0);
+    assert(is(tz.abbr(ny, 1793512800, got), b"EST"));
+    assert(tz.local(ny, 1793512800) == -18000);
+    assert(cal.year() == 2026 && cal.month() == 11 && cal.day() == 1 && cal.hour() == 1 && cal.minute() == 0);
+    assert(cal.weekday() == 0 && cal.yearday() == 304);
+    assert(tz.next(ny, 1767225599) == 1772953200 && tz.next(ny, 1772953200) == 1793512800);
+}
+
+test "before 1970 a zone reads as on 1970-01-01; after 2037 its rule runs on" {
+    I64 ny = city(b"America/New_York");
+    assert(tz.offset(ny, 0) == -18000 && tz.offset(ny, -1000000000) == -18000);
+    assert(tz.offset(city(b"Asia/Kolkata"), -1000000000000) == 19800);
+    assert(tz.offset(ny, 2224713600) == -14400 && is(tz.abbr(ny, 2224713600, got), b"EDT"));   // 2040-07-01
+    assert(tz.offset(ny, 4103654400) == -18000);                                              // 2100-01-15
+    assert(tz.next(ny, 2145916800) == 2152162800);                                            // 2038-03-14
+    I64 gaza = city(b"Asia/Gaza");
+    assert(tz.offset(gaza, 2224713600) == 10800 && is(tz.abbr(gaza, 2224713600, got), b"EEST"));
+    assert(tz.next(city(b"Asia/Kolkata"), 0) == -1 && tz.next(city(b"America/Sao_Paulo"), 1767225600) == -1);
+}
+
+test "the ends: past 9999 the zone and local() hold at the last second" {
+    I64 ny = city(b"America/New_York");
+    assert(tz.offset(ny, 9000000000000000000) == -18000 && tz.next(ny, tz.LAST) == -1);
+    assert(tz.local(ny, 9000000000000000000) == -18000);
+    assert(cal.year() == 9999 && cal.month() == 12 && cal.day() == 31 && cal.hour() == 18 && cal.second() == 59);
+    _ = tz.local(-1, -9000000000000000000);
+    assert(cal.year() == 1 && cal.month() == 1 && cal.day() == 1 && cal.hour() == 0 && cal.weekday() == 1);
+    assert(tz.local(ny, tz.FIRST) == -18000);                         // local would be year 0: held at the first
+    assert(cal.year() == 1 && cal.month() == 1 && cal.day() == 1 && cal.hour() == 0 && cal.second() == 0);
+    assert(tz.local(city(b"Asia/Kolkata"), tz.LAST) == 19800);       // local would be year 10000: held at the last
+    assert(cal.year() == 9999 && cal.month() == 12 && cal.day() == 31 && cal.hour() == 23 && cal.second() == 59);
+}
+
+test "half hours, negative daylight, a quarter-hour zone" {
+    I64 lh = city(b"Australia/Lord_Howe");
+    assert(tz.offset(lh, 1782864000) == 37800 && tz.dst(lh, 1782864000) == 0);
+    assert(tz.offset(lh, 1767225600) == 39600 && tz.dst(lh, 1767225600) == 1 && is(tz.abbr(lh, 1767225600, got),
+                                                                                  b"+11"));
+    I64 dub = city(b"Europe/Dublin");
+    assert(tz.offset(dub, 1767225600) == 0 && tz.dst(dub, 1767225600) == 1 && is(tz.abbr(dub, 1767225600, got),
+                                                                               b"GMT"));
+    assert(tz.offset(dub, 1782864000) == 3600 && tz.dst(dub, 1782864000) == 0);
+    assert(tz.offset(city(b"Pacific/Chatham"), 1767225600) == 49500);
+}
+
+test "the calendar alone" {
+    assert(cal.days(1970, 1, 1) == 0 && cal.days(2000, 3, 1) == 11017 && cal.days(1969, 12, 31) == -1);
+    assert(cal.month_days(2024, 2) == 29 && cal.month_days(2100, 2) == 28 && cal.month_days(2000, 2) == 29);
+    assert(cal.month_days(2026, 12) == 31 && cal.month_days(2026, 4) == 30);
+    assert(cal.year_of(-1) == 1969 && cal.year_of(0) == 1970 && cal.year_of(tz.LAST) == 9999);
+    cal.at(-1);
+    assert(cal.year() == 1969 && cal.month() == 12 && cal.day() == 31 && cal.hour() == 23 && cal.second() == 59);
+    assert(cal.weekday() == 3 && cal.yearday() == 364);
+    cal.at(tz.FIRST);
+    assert(cal.year() == 1 && cal.weekday() == 1 && cal.yearday() == 0);
+}
+I64 at(I64 yy, I64 mm, I64 dd, I64 h, I64 m, I64 s) { return cal.days(yy, mm, dd) * 86400 + h * 3600 + m * 60 + s; }
+
+test "RS-TZc: utc_of takes a local time back, the earlier for a repeated one, none for a skipped one" {
+    I64 ny = city(b"America/New_York");
+    assert(tz.utc_of(ny, at(2026, 11, 9, 1, 59, 12)) == at(2026, 11, 9, 6, 59, 12));
+    assert(tz.utc_of(ny, at(2026, 3, 8, 1, 59, 59)) == at(2026, 3, 8, 6, 59, 59));   // the second before the skip
+    assert(tz.utc_of(ny, at(2026, 3, 8, 2, 0, 0)) == tz.GAP);                       // 02:00 to 02:59:59 never is
+    assert(tz.utc_of(ny, at(2026, 3, 8, 2, 59, 59)) == tz.GAP);
+    assert(tz.utc_of(ny, at(2026, 3, 8, 3, 0, 0)) == at(2026, 3, 8, 7, 0, 0));
+    assert(tz.utc_of(ny, at(2026, 11, 1, 1, 0, 0)) == at(2026, 11, 1, 5, 0, 0));     // 01:00 EDT, not EST
+    assert(tz.utc_of(ny, at(2026, 11, 1, 1, 59, 59)) == at(2026, 11, 1, 5, 59, 59));
+    assert(tz.utc_of(ny, at(2026, 11, 1, 2, 0, 0)) == at(2026, 11, 1, 7, 0, 0));
+    I64 lh = city(b"Australia/Lord_Howe");                                          // half-hour changes
+    assert(tz.utc_of(lh, at(2026, 4, 5, 1, 30, 0)) == 1775314800 - 1800);            // repeated: +11 first
+    assert(tz.utc_of(lh, at(2026, 4, 5, 2, 0, 0)) == 1775314800 + 1800);
+    assert(tz.utc_of(lh, at(2026, 10, 4, 2, 0, 0)) == tz.GAP);
+    assert(tz.utc_of(lh, at(2026, 10, 4, 2, 30, 0)) == 1791041400);
+    assert(tz.utc_of(-1, 12345) == 12345);                                            // UTC
+    for ty in 0..tzdata.TYPES { assert(tzdata.off(ty) > -57600 && tzdata.off(ty) < 57600); }   // utc_of's reach
+    for k in 0..tz.cities() {
+        I64 t = at(2026, 6, 15, 12, 0, 0);
+        assert(tz.utc_of(k, t + tz.offset(k, t)) == t);                                // no change near mid June
+    }
+    assert(tz.utc_of(ny, -9223372036854775807) == tz.FIRST + 18000);                 // held within FIRST to LAST
+    assert(tz.utc_of(ny, 9223372036854775807) == tz.LAST + 18000);
+}
+// SPDX-License-Identifier: Apache-2.0

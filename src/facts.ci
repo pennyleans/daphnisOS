@@ -1,0 +1,353 @@
+// src/facts.ci: KF-3 (docs/specs/2026-11-11-kf-facts.md section 2), the records of the Daphnis call
+// `facts(kind, id, buf, n)`. Each record function is pure: it writes one fixed little-endian record; src/proc.ci
+// gathers the values, checks who asks and copies the bytes out; the hosted tests read them back
+// (tests/kf/facts_test.ci). A record only ever grows at its end, so an older caller's shorter read stays right.
+// The one state here is the tick ledger at the end of the file (KF-R1).
+//
+// Kind 1, the processor (KF-3a), id 0, CPU_BYTES bytes:
+//   0   brand, 48 bytes, NUL padded: CPUID leaves 0x80000002 to 0x80000004 as the CPU gives them
+//   48  logical processors the kernel runs on, u64
+//   56  base speed in MHz, u64: what the processor reports (CPUID 0x16), 0 when it reports none
+//   64  busy time since boot, u64, in whole timer ticks (KF-R1): ticks that came while a process ran
+//   72  idle time since boot, u64, in whole timer ticks: ticks that came while the scheduler halted
+// A tick is src/pit.ci's USER_DIVISOR / INPUT_HZ of a second, 10.0002 ms. The counts are whole ticks and no finer.
+//
+// Kind 2, a process (KF-3b), id a slot of the process table, PROCESS_BYTES bytes, every word u64:
+//   0   pid, the number the process sees        8   its parent's pid, 0 for none
+//   16  uid                                     24  state: S_EMPTY, S_READY, S_WAITING or S_ENDED
+//   32  comm, 16 bytes, NUL padded
+//   48  frames held                             56  frame quota
+//   64  the process's own clock in ns          72  grant word
+//   80  start time, seconds since 1970
+//   88  CPU time, u64, in whole timer ticks (KF-R1): ticks that came while this process ran in ring 3
+// A slot with no process, and a slot the caller may not see, are the same bytes: all 0 (S_EMPTY).
+//
+// Kind 3, the network (KF-3c), id 0, NET_BYTES bytes:
+//   0   link up, u64: 1 when a network device is there (live or replayed) and holds an address, else 0
+//   8   MAC, 6 bytes, then 2 bytes 0
+//   16  address, 20 mask, 24 gateway, 28 DNS: 4 bytes each in network order (the first octet first); 0 for none
+//   32  where they came from, u64: NET_FIXED, NET_DHCP or NET_BOOT
+//   40  the DHCP lease's seconds left, u64, as the client counts them; 0 with no lease
+//   48  bytes received since boot, u64      56  bytes sent since boot, u64 (whole Ethernet frames, no FCS)
+//
+// Kind 4, the display (KF-3d), id 0, DISPLAY_BYTES bytes:
+//   0   PCI vendor ID of the first display function (class 0x03), u64; 0 with none
+//   8   its device ID, u64                      16  its class word (class, subclass, interface), u64
+//   24  name, 48 bytes, NUL padded (display_name)
+//   72  the mode's width in pixels, u64         80  its height     88  bits a pixel (0 with no surface)
+//   96  where the surface came from, u64: SRC_NONE, SRC_FIRMWARE (the loader's framebuffer) or SRC_BOCHS
+//
+// Kind 5, the disk (KF-3e), id 0, DISK_BYTES bytes:
+//   0   name, 40 bytes, NUL padded: "Daphnis Disk" until a storage driver reads a model string from the device
+//   40  capacity in bytes, u64                  48  bytes read since boot, u64     56  bytes written since boot, u64
+
+export const U64 CPU = 1;
+export const I64 CPU_BYTES = 80;
+export const U64 PROCESS = 2;
+export const I64 PROCESS_BYTES = 96;
+export const U64 S_EMPTY = 0;
+export const U64 S_READY = 1;
+export const U64 S_WAITING = 2;
+export const U64 S_ENDED = 3;                  // ended, its parent has not waited yet
+export const U64 NETWORK = 3;
+export const I64 NET_BYTES = 64;
+export const U64 NET_FIXED = 0;                // the kernel's own address: no `daphnis.net=` on QEMU's user network
+export const U64 NET_DHCP = 1;                 // a DHCP server's lease (NW-5)
+export const U64 NET_BOOT = 2;                 // `daphnis.net=ADDR/PREFIX,GATEWAY,DNS`, or one that did not parse
+export const U64 DISPLAY = 4;
+export const I64 DISPLAY_BYTES = 104;
+export const U64 SRC_NONE = 0;
+export const U64 SRC_FIRMWARE = 1;             // the framebuffer the firmware or the loader set up
+export const U64 SRC_BOCHS = 2;                // the Bochs display, programmed by the kernel
+export const U64 DISK = 5;
+export const I64 DISK_BYTES = 64;
+
+void word(inout U8[_] b, I64 at, U64 v) {
+    for i in 0..8 {
+        b[at + i] = ((v >> (8 * i) as U64) & 0xFF) as U8;
+    }
+}
+
+// The processor's record: brand as given, with every byte after its first NUL made NUL, processors, mhz, and the
+// busy and idle time in timer ticks.
+export void cpu(inout U8[80] b, in U8[48] brand, U64 processors, U64 mhz, U64 busy, U64 idle) {
+    Bool ended = false;
+    for i in 0..48 {
+        if (brand[i] == 0) {
+            ended = true;
+        }
+        b[i] = brand[i];
+        if (ended) {
+            b[i] = 0;
+        }
+    }
+    word(b, 48, processors);
+    word(b, 56, mhz);
+    word(b, 64, busy);
+    word(b, 72, idle);
+}
+
+// Who sees a process record (the spec's rule, section 3, ruling DN-69 item 5): the caller sees a slot when the slot's
+// uid is the caller's, or the caller is uid 0, or holds ring 0 (`kern`), or its account is a Parent (`caller_parent`,
+// the kernel's own record of the login, below). A Child sees its own processes alone. Nothing else decides it.
+export Bool sees(I64 caller_uid, Bool caller_kern, Bool caller_parent, I64 slot_uid) {
+    return caller_uid == slot_uid || caller_uid == 0 || caller_kern || caller_parent;
+}
+
+// What kill (62) answers about a live process (edition 14, the plan's call on DN-69 item 5): -3 (-ESRCH, as for no
+// process) when the caller may not see it, so a Child cannot find or count another account's processes by its pids;
+// -1 (-EPERM, Linux's answer) when it sees the process but may not signal it: a Parent and another account's
+// process, without uid 0 or ring 0; 0 when it may. getpgid and getsid take the same -ESRCH from sees.
+export I64 kill_answer(I64 caller_uid, Bool caller_kern, Bool caller_parent, I64 slot_uid) {
+    if (!sees(caller_uid, caller_kern, caller_parent, slot_uid)) {
+        return -3;
+    }
+    if (caller_uid != 0 && caller_uid != slot_uid && !caller_kern) {
+        return -1;
+    }
+    return 0;
+}
+
+// The record of no process: every byte 0. A slot the caller may not see reads as this, byte for byte.
+export void empty(inout U8[96] b) {
+    for i in 0..96 {
+        b[i] = 0;
+    }
+}
+
+// A process's record. name is its comm, 16 bytes; every byte after its first NUL is made NUL. clock_ns is the
+// process's own virtual clock (the field at 64, named CPU time before KF-R1); ran is its CPU time in timer ticks.
+export void process(inout U8[96] b, U64 pid, U64 ppid, U64 uid, U64 state, in U8[16] name, U64 held, U64 quota,
+                    U64 clock_ns, U64 grants, U64 started, U64 ran) {
+    empty(b);
+    word(b, 0, pid);
+    word(b, 8, ppid);
+    word(b, 16, uid);
+    word(b, 24, state);
+    Bool ended = false;
+    for i in 0..16 {
+        if (name[i] == 0) {
+            ended = true;
+        }
+        if (!ended) {
+            b[32 + i] = name[i];
+        }
+    }
+    word(b, 48, held);
+    word(b, 56, quota);
+    word(b, 64, clock_ns);
+    word(b, 72, grants);
+    word(b, 80, started);
+    word(b, 88, ran);
+}
+
+// The bytes of text into nm from at; the next free index. Text past the name's 47 bytes is cut, so a NUL always ends it.
+I64 put_text(inout U8[48] nm, I64 at, in U8[_] text) {
+    I64 k = at;
+    for i in 0..len(text) {
+        if (k < 47) {
+            nm[k] = text[i];
+            k += 1;
+        }
+    }
+    return k;
+}
+
+// KF-3d: the display's name for the PCI ID word id (device << 16 | vendor), NUL padded: the adapters of the machines
+// Daphnis is tried on and QEMU's by name; any other adapter of a known vendor as that vendor's "Graphics"; an
+// unknown vendor as "Display"; id 0, no display function, as nothing. No pci.ids file is bundled.
+export void display_name(inout U8[48] nm, U64 id) {
+    for i in 0..48 {
+        nm[i] = 0;
+    }
+    if (id == 0) {
+        return;
+    }
+    U64 vendor = id & 0xFFFF;
+    if (id == 0x11111234) {
+        _ = put_text(nm, 0, "QEMU Standard VGA");
+    } else if (id == 0x01001B36) {
+        _ = put_text(nm, 0, "QEMU QXL");
+    } else if (id == 0x10501AF4) {
+        _ = put_text(nm, 0, "QEMU virtio GPU");
+    } else if (id == 0x1B8110DE) {
+        _ = put_text(nm, 0, "NVIDIA GeForce GTX 1070");
+    } else if (vendor == 0x8086) {
+        _ = put_text(nm, 0, "Intel Graphics");
+    } else if (vendor == 0x10DE) {
+        _ = put_text(nm, 0, "NVIDIA Graphics");
+    } else if (vendor == 0x1002) {
+        _ = put_text(nm, 0, "AMD Graphics");
+    } else if (vendor == 0x1234) {
+        _ = put_text(nm, 0, "QEMU Graphics");
+    } else {
+        _ = put_text(nm, 0, "Display");
+    }
+}
+
+// The display's record: the ID word and class word of the first display function (0 and 0 with none), the mode and
+// its source.
+export void display(inout U8[104] b, U64 id, U64 class_word, U64 w, U64 h, U64 bits, U64 source) {
+    for i in 0..104 {
+        b[i] = 0;
+    }
+    word(b, 0, id & 0xFFFF);
+    word(b, 8, (id >> 16) & 0xFFFF);
+    word(b, 16, class_word & 0xFFFFFF);
+    U8[48] nm;
+    display_name(nm, id);
+    for i in 0..48 {
+        b[24 + i] = nm[i];
+    }
+    word(b, 72, w);
+    word(b, 80, h);
+    word(b, 88, bits);
+    word(b, 96, source);
+}
+
+// The disk's record: its name, its capacity and the bytes its requests have read and written since boot.
+export void disk(inout U8[64] b, U64 capacity, U64 bytes_read, U64 bytes_written) {
+    for i in 0..64 {
+        b[i] = 0;
+    }
+    U8[12] nm = [68, 97, 112, 104, 110, 105, 115, 32, 68, 105, 115, 107];   // "Daphnis Disk"
+    for i in 0..12 {
+        b[i] = nm[i];
+    }
+    word(b, 40, capacity);
+    word(b, 48, bytes_read);
+    word(b, 56, bytes_written);
+}
+
+// An IPv4 address v (the first octet in bits 31 to 24) as 4 bytes in network order at b[at..at+4); bits above 31
+// never reach the record.
+void quad(inout U8[64] b, I64 at, U64 v) {
+    for i in 0..4 {
+        b[at + i] = ((v >> (24 - 8 * i) as U64) & 0xFF) as U8;
+    }
+}
+
+// The network's record: whether the link is up, the MAC, the address, mask, gateway and DNS, where they came from,
+// the lease's seconds left, and the bytes received and sent since boot.
+export void network(inout U8[64] b, Bool link, in U8[6] mac, U64 addr, U64 mask, U64 gw, U64 dns, U64 source,
+                    U64 lease, U64 rx, U64 tx) {
+    for i in 0..64 {
+        b[i] = 0;
+    }
+    if (link) {
+        b[0] = 1;
+    }
+    for i in 0..6 {
+        b[8 + i] = mac[i];
+    }
+    quad(b, 16, addr);
+    quad(b, 20, mask);
+    quad(b, 24, gw);
+    quad(b, 28, dns);
+    word(b, 32, source);
+    word(b, 40, lease);
+    word(b, 48, rx);
+    word(b, 56, tx);
+}
+
+// How many bytes of a record of `full` bytes a caller that gave room for n gets: n when it is shorter, else the
+// whole record. n is the caller's register as it came, so any value above the record is the record.
+export I64 share(I64 full, U64 n) {
+    if (n < full as U64) {
+        return n as I64;
+    }
+    return full;
+}
+
+// KF-R1 (docs/specs/2026-11-11-kf-facts.md section 2): the tick ledger. The kernel runs with interrupts off except
+// in ring 3 and in the scheduler's halt, so a timer tick comes in one of those two windows. The scheduler tells the
+// ledger the tick count (trap.timer_ticks) when a window opens (tick_mark) and when it closes (tick_ran after a
+// process's turn in ring 3, tick_idle after the halt), and the ticks between go to that process and to busy, or to
+// idle. Whole ticks only: a turn shorter than a tick counts when a tick lands in it and not otherwise, so the counts
+// time nothing more finely than the tick does. They are wall time: not a function of any caller's history, never in
+// a snapshot, a digest or the volume. A tick that came due while the kernel worked with interrupts off is taken in
+// the next window that opens and counts there.
+const I64 SLOTS = 64;                  // the process table's size (uvm.PROCS)
+I64 marked = 0;                        // the tick count when the open window began
+I64 busy_sum = 0;                      // ticks that came in a process's turn, since boot
+I64 idle_sum = 0;                      // ticks that came in the scheduler's halt, since boot
+I64[64] ran_sum;                       // of the busy ticks, each slot's own since its process began
+
+// Ticks from the mark to now, never below 0, and the mark moved to now: no tick is counted twice.
+I64 since(I64 now) {
+    I64 n = now - marked;
+    marked = now;
+    if (n < 0) {
+        return 0;
+    }
+    return n;
+}
+
+// A window opens at tick count now: ticks before it belong to no one.
+export void tick_mark(I64 now) {
+    marked = now;
+}
+
+// The process in slot ran in ring 3 from the mark to now. A slot outside the table still counts as busy time.
+export void tick_ran(I64 slot, I64 now) {
+    I64 n = since(now);
+    busy_sum += n;
+    if (slot >= 0 && slot < SLOTS) {
+        ran_sum[slot] += n;
+    }
+}
+
+// The scheduler was halted from the mark to now.
+export void tick_idle(I64 now) {
+    idle_sum += since(now);
+}
+
+// A new process takes slot (a fork, or one the kernel starts): its CPU time begins at 0. An execve keeps it.
+export void tick_fresh(I64 slot) {
+    if (slot >= 0 && slot < SLOTS) {
+        ran_sum[slot] = 0;
+    }
+}
+
+export I64 busy_ticks() {
+    return busy_sum;
+}
+
+export I64 idle_ticks() {
+    return idle_sum;
+}
+
+// The CPU time of the process in slot, in ticks; 0 for a slot outside the table.
+export I64 ran_ticks(I64 slot) {
+    if (slot >= 0 && slot < SLOTS) {
+        return ran_sum[slot];
+    }
+    return 0;
+}
+
+// DN-69 item 5: the kernel's record of which processes run for a Parent's account. The desk alone says so, once, at
+// the login it makes for a session (src/proc.ci sys_login: LOGIN_PARENT in login's third word, beside the ceiling);
+// a fork's child takes its parent's, an execve keeps it, a process the kernel starts has none. No call a program
+// makes sets it, and the facts call takes nothing from the caller but its slot.
+export const U64 LOGIN_PARENT = 0x100000000;   // login(uid, gid, ceiling | LOGIN_PARENT): the account is a Parent
+Bool[64] parent_role;
+
+export void set_parent(I64 slot, Bool p) {
+    if (slot >= 0 && slot < SLOTS) {
+        parent_role[slot] = p;
+    }
+}
+
+export void role_fork(I64 child, I64 from) {
+    if (child >= 0 && child < SLOTS && from >= 0 && from < SLOTS) {
+        parent_role[child] = parent_role[from];
+    }
+}
+
+export Bool is_parent(I64 slot) {
+    if (slot >= 0 && slot < SLOTS) {
+        return parent_role[slot];
+    }
+    return false;
+}
+// SPDX-License-Identifier: Apache-2.0

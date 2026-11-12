@@ -1,0 +1,27 @@
+# tests/core/chmod.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-07-bu2-meta.md section 6, BU-2b). STDIN is a file of
+# tests/core/tree or - for none; DIFF is a row of tests/core/DIFFS.md, - when busybox must agree, H for host bytes, T for
+# times and links in the tree. The tree is compared after each case.
+600 text.txt | - | -
+0644 text.txt | - | -
+4755 text.txt nonl.txt | - | -
+u+x,go-r text.txt | - | -
+a=rX text.txt look/run.sh | - | D-63
+-w text.txt | - | -
++t text.txt | - | -
+o+t text.txt | - | -
+=t text.txt | - | -
+= text.txt | - | -
+u=g,g=o text.txt | - | -
+o=u text.txt | - | -
+u=s,g+s text.txt | - | -
+go-rx look | - | -
+-R go-rx look | - | -
+-R u=rwX,go= box | - | -
+-R a+rwX box | - | -
+-- 600 text.txt | - | -
++x missing text.txt | - | -
+9 text.txt | - | D-3
+u+q text.txt | - | D-3
+u text.txt | - | D-3
+600 | - | D-3
+-v 600 text.txt | - | D-1

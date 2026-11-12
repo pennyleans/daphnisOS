@@ -1,0 +1,402 @@
+// tests/kfz/k4_tile.ci: prctl's PR_SET_NAME (15) and the tiler's requests 0x468C to 0x4693 on /dev/fb0 at their
+// edges. The requests: POINT 0x468C and MENU 0x4691 (any holder of the device, its own: u32 in; u32 n, n records of
+// 32 bytes), KERN 0x468D (u32 vpid, u32 verb), FOCUS 0x468E (u32 kind, u32 id), MARK 0x468F (u32), AUDIO 0x4690
+// (u32 level), SAVE 0x4692 (nothing read) and BUSY 0x4693 (u32 on, w, h, i32 dx, dy, then w * h words), the tiler's
+// alone. For each: a descriptor that is not the device, a caller that is not the tiler, every bad pointer, a request
+// with bits past 32, and what a refused request leaves: no ring 0, no focus, no tiler, no byte of the caller's memory.
+
+const U64 NR_IOCTL = 16;
+const U64 NR_PRCTL = 157;
+
+I64 kz_fb(I64 p) {
+    _ = kz_path(p, 0, "/dev/fb0");
+    I64 fd = kz_call(p, NR_OPEN, kz_at(0), KZ_O_RDWR, 0, 0, 0, 0);
+    assert(fd >= 3);
+    return fd;
+}
+
+// The bytes a request reads at arg.
+I64 kz_arg_bytes(U64 req) {
+    if (req == tile.FBIO_TILE_KERN || req == tile.FBIO_TILE_FOCUS) {
+        return 8;
+    }
+    return 4;
+}
+
+test "prctl PR_SET_NAME: bad pointers are -EFAULT and the name stays; 15 bytes at most; a short readable tail" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    kz_strings(p);
+    U8[16] was;
+    for k in 0..16 {
+        was[k] = comm[p * 16 + k];
+    }
+    for b in 0..KZ_BAD_PTRS {
+        U64 arg = kz_bad_ptr(b, 16);
+        // the read-only page reads (2, 3); 15 bytes below USER_HI are all a name takes (6); 5, one readable byte,
+        // is tests/kfz/defects/
+        if (b != 2 && b != 3 && b != 5 && b != 6) {
+            assert(kz_call(p, NR_PRCTL, 15, arg, 0, 0, 0, 0) == E_FAULT);
+            for k in 0..16 {
+                assert(comm[p * 16 + k] == was[k]);
+            }
+        }
+    }
+    assert(kz_call(p, NR_PRCTL, 15, KZ_HI - 15, 0, 0, 0, 0) == 0);    // 15 readable bytes: a whole name
+    for k in 0..15 {
+        assert(comm[p * 16 + k] == KZ_FILL);
+    }
+    kz_put(p, KZ_RW, "abcdefghijklmnopqrstuvwxyz");
+    assert(kz_call(p, NR_PRCTL, 15, KZ_RW, 0, 0, 0, 0) == 0);
+    for k in 0..15 {
+        assert(comm[p * 16 + k] == ('a' + k as U8));
+    }
+    assert(comm[p * 16 + 15] == 0);
+    assert(kz_call(p, NR_PRCTL, 16, KZ_RW + 64, 0, 0, 0, 0) == 0);
+    assert(kz_changed(p, KZ_RW + 64, KZ_RW + 80) == 16 && kz_kept_outside(p, KZ_RW, KZ_RW + 80));
+    // PR_GET_NAME into memory ring 3 may not write: -EFAULT
+    assert(kz_call(p, NR_PRCTL, 16, KZ_RO, 0, 0, 0, 0) == E_FAULT);
+    assert(kz_call(p, NR_PRCTL, 16, KZ_GAP - 8, 0, 0, 0, 0) == E_FAULT);
+    assert(kz_call(p, NR_PRCTL, 16, KZ_HI, 0, 0, 0, 0) == E_FAULT);
+    assert(kz_kept_outside(p, KZ_RW, KZ_RW + 80));
+    kz_end(p);
+}
+
+test "tile requests: on a descriptor that is not /dev/fb0, or none, nothing is asked" {
+    I64 d = kz_desk();
+    I64 c = kz_child(d, 1000);
+    for r in 0x468C..0x4694 {
+        U64 req = r as U64;
+        I64[2] who = [d, c];
+        for w in 0..2 {
+            assert(kz_call(who[w], NR_IOCTL, 1, req, KZ_RW, 0, 0, 0) == E_NOTTY);          // the console
+            assert(kz_call(who[w], NR_IOCTL, 200, req, KZ_RW, 0, 0, 0) == E_BADF);
+            assert(kz_call(who[w], NR_IOCTL, 0xFFFFFFFFFFFFFFFF, req, KZ_RW, 0, 0, 0) == E_BADF);
+            assert(kz_call(who[w], NR_IOCTL, 0x100000000 + kz_fb_fd as U64, req, KZ_RW, 0, 0, 0) == E_BADF);
+        }
+    }
+    assert(tile.tiler_pid() == d && (fs.grant_of(c) & fs.GRANT_KERN) == 0);
+    kz_end(c);
+    kz_end(d);
+}
+
+test "tile requests: a holder of /dev/fb0 that is not the tiler asks none but its own POINT" {
+    I64 c = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 r0 = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 cfd = kz_fb(c);                     // opened before there is a tiler: the screen
+    I64 rfd = kz_fb(r0);
+    I64 d = kz_desk();
+    I64 t = kz_child(d, 1000);
+    kz_set_u32(c, KZ_RW, vpid[t] as U64);
+    kz_set_u32(c, KZ_RW + 4, 2);           // KERN verb 2: ring 0
+    kz_set_u32(r0, KZ_RW, vpid[t] as U64);
+    kz_set_u32(r0, KZ_RW + 4, 2);
+    I64 fp = focus_p;
+    I64[2] who = [c, r0];
+    I64[2] fds = [cfd, rfd];
+    for w in 0..2 {
+        U64 fd = fds[w] as U64;
+        assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_KERN, KZ_RW, 0, 0, 0) == E_PERM);
+        assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_FOCUS, KZ_RW, 0, 0, 0) == E_PERM);
+        assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_MARK, KZ_RW, 0, 0, 0) == E_PERM);
+        assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_AUDIO, KZ_RW, 0, 0, 0) == E_PERM);
+        for b in 0..KZ_BAD_PTRS {
+            U64 arg = kz_bad_ptr(b, 8);
+            assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_KERN, arg, 0, 0, 0) == E_PERM);
+            assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_FOCUS, arg, 0, 0, 0) == E_PERM);
+            assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_MARK, arg, 0, 0, 0) == E_PERM);
+            assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_AUDIO, arg, 0, 0, 0) == E_PERM);
+        }
+        // MENU is its own (0xA5A5A5A5 records: -EINVAL); SAVE the tiler's; BUSY is no request but the tiler's
+        assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_MENU, KZ_RW, 0, 0, 0) == E_INVAL);
+        assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_SAVE, KZ_RW, 0, 0, 0) == E_PERM);
+        assert(kz_call(who[w], NR_IOCTL, fd, tile.FBIO_TILE_BUSY, KZ_RW, 0, 0, 0) == E_INVAL);
+        // the tiler's own request with a bit past 32 is no request at all
+        assert(kz_call(who[w], NR_IOCTL, fd, 0x100000000 | tile.FBIO_TILER, 0, 0, 0, 0) == E_INVAL);
+        assert(kz_call(who[w], NR_IOCTL, fd, 0x100000000 | tile.FBIO_TILE_KERN, KZ_RW, 0, 0, 0) == E_INVAL);
+    }
+    assert((fs.grant_of(t) & fs.GRANT_KERN) == 0 && focus_p == fp && tile.tiler_pid() == d);
+    // POINT is the holder's own
+    assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_POINT, KZ_RW, 0, 0, 0) == 0);
+    for b in 0..KZ_BAD_PTRS {
+        U64 arg = kz_bad_ptr(b, 4);
+        if (b != 2 && b != 3 && b != 5) {
+            assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_POINT, arg, 0, 0, 0) == E_FAULT);
+        }
+    }
+    assert(kz_kept_outside(c, KZ_RW, KZ_RW + 8) && kz_kept_outside(r0, KZ_RW, KZ_RW + 8));
+    kz_end(t);
+    kz_end(d);
+    kz_end(r0);
+    kz_end(c);
+}
+
+test "tile requests: the tiler's bad pointers are -EFAULT, reads that run into the gap too, and nothing moves" {
+    I64 d = kz_desk();
+    I64 t = kz_child(d, 1000);
+    U64 fd = kz_fb_fd as U64;
+    I64 fp = focus_p;
+    U64[5] reqs = [tile.FBIO_TILE_POINT, tile.FBIO_TILE_KERN, tile.FBIO_TILE_FOCUS, tile.FBIO_TILE_MARK,
+                   tile.FBIO_TILE_AUDIO];
+    for q in 0..5 {
+        I64 n = kz_arg_bytes(reqs[q]);
+        for b in 0..KZ_BAD_PTRS {
+            U64 arg = kz_bad_ptr(b, n);
+            if (b != 2 && b != 3 && b != 5) {                // the read-only page reads
+                assert(kz_call(d, NR_IOCTL, fd, reqs[q], arg, 0, 0, 0) == E_FAULT);
+            }
+        }
+        assert(kz_call(d, NR_IOCTL, fd, reqs[q], KZ_GAP - (n - 1) as U64, 0, 0, 0) == E_FAULT);
+    }
+    assert((fs.grant_of(t) & fs.GRANT_KERN) == 0 && focus_p == fp);
+    assert(kz_kept_outside(d, 0, 0));
+    kz_end(t);
+    kz_end(d);
+}
+
+test "tile requests: the tiler's KERN, FOCUS and AUDIO with every word at its edge" {
+    I64 d = kz_desk();
+    I64 t = kz_child(d, 1000);
+    I64 other = kz_proc(1000, fs.GRANT_ALL, 0);           // another family
+    U64 fd = kz_fb_fd as U64;
+    // KERN: a vpid not of the desk's family is -ESRCH; a verb past 3 is -EINVAL; 0 and 1 with no request -ESRCH
+    U64[5] vps = [vpid[other] as U64, 0, 0xFFFFFFFF, 0x7FFFFFFF, 0x80000000];
+    for v in 0..5 {
+        kz_set_u32(d, KZ_RW, vps[v]);
+        kz_set_u32(d, KZ_RW + 4, 2);
+        assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_KERN, KZ_RW, 0, 0, 0) == E_SRCH);
+    }
+    assert((fs.grant_of(other) & fs.GRANT_KERN) == 0);
+    kz_set_u32(d, KZ_RW, vpid[t] as U64);
+    U64[4] verbs = [4, 5, 0x7FFFFFFF, 0xFFFFFFFF];
+    for v in 0..4 {
+        kz_set_u32(d, KZ_RW + 4, verbs[v]);
+        assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_KERN, KZ_RW, 0, 0, 0) == E_INVAL);
+    }
+    kz_set_u32(d, KZ_RW + 4, 1);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_KERN, KZ_RW, 0, 0, 0) == E_SRCH);   // nothing asked
+    assert((fs.grant_of(t) & fs.GRANT_KERN) == 0);
+    // FOCUS: a kind 0 id of no process, or a kind 1 descriptor of no pty: -ESRCH and the focus is none
+    kz_set_u32(d, KZ_RW, 0);
+    kz_set_u32(d, KZ_RW + 4, vpid[other] as U64);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_FOCUS, KZ_RW, 0, 0, 0) == E_SRCH);
+    assert(focus_p == -1 && focus_pty == -1);
+    kz_set_u32(d, KZ_RW, 1);
+    kz_set_u32(d, KZ_RW + 4, 0xFFFFFFFF);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_FOCUS, KZ_RW, 0, 0, 0) == E_SRCH);
+    assert(focus_p == -1 && focus_pty == -1);
+    kz_set_u32(d, KZ_RW, 0);
+    kz_set_u32(d, KZ_RW + 4, vpid[t] as U64);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_FOCUS, KZ_RW, 0, 0, 0) == 0 && focus_p == t);
+    kz_set_u32(d, KZ_RW, 0xFFFFFFFF);                       // a kind of no window: no focus, 0
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_FOCUS, KZ_RW, 0, 0, 0) == 0 && focus_p == -1);
+    // AUDIO: no sound device here, -ENODEV, at any level
+    U64[4] levels = [0, 100, 101, 0xFFFFFFFF];
+    for l in 0..4 {
+        kz_set_u32(d, KZ_RW, levels[l]);
+        assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_AUDIO, KZ_RW, 0, 0, 0) == -19);
+    }
+    // MENU of 0xA5A5A5A5 records and BUSY of a 0xA5A5A5A5-pixel sprite: -EINVAL; SAVE with no volume: -EROFS
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_MENU, KZ_RW, 0, 0, 0) == E_INVAL);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_BUSY, KZ_RW, 0, 0, 0) == E_INVAL);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_SAVE, KZ_RW, 0, 0, 0) == E_ROFS);
+    kz_end(other);
+    kz_end(t);
+    kz_end(d);
+}
+test "tile requests: MENU's count and records, and BUSY's sprite, at their edges; a refusal reads no further" {
+    I64 c = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 cfd = kz_fb(c);                     // opened before there is a tiler: the screen
+    I64 d = kz_desk();
+    U64 fd = kz_fb_fd as U64;
+    // MENU, the holder's own: 0 records is an empty menu; 39 (AM-4: 38 at most), or 2^32 - 1, too many; a row and keys
+    // with id 0, and any kind past 6, refused (AM-4's records at their edges: tests/kfz/k4_tile_rows.ci)
+    U64[3] counts = [39, 0x80000000, 0xFFFFFFFF];
+    for i in 0..3 {
+        kz_set_u32(c, KZ_RW, counts[i]);
+        assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_MENU, KZ_RW, 0, 0, 0) == E_INVAL);
+    }
+    U64[3] kinds = [2, 6, 0xFFFFFFFF];      // id 0
+    kz_set_u32(c, KZ_RW, 1);
+    for i in 0..3 {
+        kz_set_u32(c, KZ_RW + 8, kinds[i]);
+        assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_MENU, KZ_RW, 0, 0, 0) == E_INVAL);
+    }
+    kz_set_u32(c, KZ_RW, 0);
+    assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_MENU, KZ_RW, 0, 0, 0) == 0);
+    for b in 0..KZ_BAD_PTRS {
+        U64 arg = kz_bad_ptr(b, 4);
+        if (b != 2 && b != 3 && b != 5 && b != 6) {
+            assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_MENU, arg, 0, 0, 0) == E_FAULT);
+        }
+    }
+    assert(kz_kept_outside(c, KZ_RW, KZ_RW + 16));
+    // 38 records that end at USER_HI are read; one byte higher, the last runs past it: -EFAULT
+    for o in 0..2 {
+        U64 h = KZ_HI - 4 - 32 * 38 + o as U64;
+        kz_set_u32(c, h, 38);
+        for r in 0..38 {
+            kz_set_u32(c, h + 8 + (32 * r) as U64, tile.MENU_TEXT as U64);
+        }
+        I64[2] want = [0, E_FAULT];
+        assert(kz_call(c, NR_IOCTL, cfd as U64, tile.FBIO_TILE_MENU, h, 0, 0, 0) == want[o]);
+    }
+    // BUSY, the tiler's: off is 0; a sprite of 0 or past 48 pixels a side, or an offset past 0 to 40, -EINVAL
+    kz_set_u32(d, KZ_RW, 0);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_BUSY, KZ_RW, 0, 0, 0) == 0);
+    U64[8] bad_w = [0, 49, 1, 1, 1, 1, 0xFFFFFFFF, 1];
+    U64[8] bad_h = [1, 1, 0, 49, 1, 1, 1, 1];
+    U64[8] bad_dx = [0, 0, 0, 0, 0xFFFFFFFF, 41, 0, 0];
+    U64[8] bad_dy = [0, 0, 0, 0, 0, 0, 0, 41];
+    for i in 0..8 {
+        kz_set_u32(d, KZ_RW, 1);
+        kz_set_u32(d, KZ_RW + 4, bad_w[i]);
+        kz_set_u32(d, KZ_RW + 8, bad_h[i]);
+        kz_set_u32(d, KZ_RW + 12, bad_dx[i]);
+        kz_set_u32(d, KZ_RW + 16, bad_dy[i]);
+        assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_BUSY, KZ_RW, 0, 0, 0) == E_INVAL);
+    }
+    for b in 0..KZ_BAD_PTRS {
+        U64 arg = kz_bad_ptr(b, 20);
+        if (b != 2 && b != 3 && b != 5) {
+            assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_BUSY, arg, 0, 0, 0) == E_FAULT);
+        }
+    }
+    assert(kz_kept_outside(d, KZ_RW, KZ_RW + 20));
+    // 48 x 48 at offset 40, 40: its 20 + 9,216 bytes end at the gap and are read; one byte higher, -EFAULT
+    U64[5] good = [1, 48, 48, 40, 40];
+    for o in 0..2 {
+        U64 s = KZ_GAP - (20 + 4 * 48 * 48) as U64 + o as U64;
+        for i in 0..5 {
+            kz_set_u32(d, s + (4 * i) as U64, good[i]);
+        }
+        I64[2] want = [0, E_FAULT];
+        assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_BUSY, s, 0, 0, 0) == want[o]);
+    }
+    // SAVE from the tiler: nothing read; no volume here, so -EROFS
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_SAVE, 0, 0, 0, 0) == E_ROFS);
+    kz_end(c);
+    kz_end(d);
+}
+
+// G5 (the kernel read of PR 344): rt/fb.c's rows can refuse. FBIO_TILE_MODE (HX-13) through user.fb_mode: the size's
+// pages are taken from the pool for the display, handed to rt, then the mode is committed. The tiler's answer is rt's
+// refusal at each step. A refused hand-over gives the frames back; a refused commit leaves them the display's, as
+// user.ci says (a successful append transfers lifetime ownership), and the size as it was.
+test "tile mode: rt's refusal at each step is the tiler's answer, no frame lost; a commit that takes sets the size" {
+    I64 d = kz_desk();
+    U64 fd = kz_fb_fd as U64;
+    kz_own(d, KZ_RW, 8);
+    kz_set_u32(d, KZ_RW, 800);
+    kz_set_u32(d, KZ_RW + 4, 600);
+    I64 free = frames.free_count();
+    I64 shown = user.fb_held_frames();
+    // no device: fb_mode_need's -95, nothing taken
+    machine.kfz_fb_rows(0, 0, 0, 0, -95, 0);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_MODE, KZ_RW, 0, 0, 0) == -95);
+    assert(frames.free_count() == free && user.fb_held_frames() == shown && machine.kfz_fb_backed() == 0);
+    // 3 pages needed, the hand-over refused: its answer, the 3 frames back in the pool
+    machine.kfz_fb_rows(0, 0, 0, -22, 3, 0);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_MODE, KZ_RW, 0, 0, 0) == E_INVAL);
+    assert(frames.free_count() == free && user.fb_held_frames() == shown && machine.kfz_fb_backed() == 0);
+    // more pages than the pool has free and unheld: -ENOMEM before rt is asked
+    machine.kfz_fb_rows(0, 0, 0, 0, frames.free_count() - frames.held_count() + 1, 0);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_MODE, KZ_RW, 0, 0, 0) == -12);
+    assert(frames.free_count() == free && machine.kfz_fb_backed() == 0);
+    // 3 pages handed over, the commit refused: its answer, the frames the display's, the size as it was
+    machine.kfz_fb_rows(0, 0, 0, 0, 3, -22);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_MODE, KZ_RW, 0, 0, 0) == E_INVAL);
+    assert(frames.free_count() == free - 3 && user.fb_held_frames() == shown + 3 && machine.kfz_fb_backed() == 3);
+    assert(user.fb_word(0) == 1024 && user.fb_word(1) == 768);
+    // nothing more needed, the commit taken: 0, the new size
+    machine.kfz_fb_rows(0, 0, 0, 0, 0, 0);
+    assert(kz_call(d, NR_IOCTL, fd, tile.FBIO_TILE_MODE, KZ_RW, 0, 0, 0) == 0);
+    assert(user.fb_word(0) == 800 && user.fb_word(1) == 600 && frames.free_count() == free - 3);
+    kz_end(d);
+}
+
+// G5: the boot's display (user.fb_init, every main_*.ci) over the same rows: none found, a resource failure, a refused
+// hand-over (frames back), a refused finish (frames kept by the display), and a display that comes up.
+test "fb_init: none, a failure to prepare, a refused hand-over and a refused finish each answer; no frame is lost" {
+    kz_boot();
+    I64 free = frames.free_count();
+    I64 shown = user.fb_held_frames();
+    machine.kfz_fb_rows(0, 5, 0, 0, 0, 0);
+    assert(user.fb_init() == 0 && frames.free_count() == free);
+    machine.kfz_fb_rows(-12, 5, 0, 0, 0, 0);
+    assert(user.fb_init() == -12 && frames.free_count() == free);
+    machine.kfz_fb_rows(1, 5, 0, -22, 0, 0);
+    assert(user.fb_init() == -22 && frames.free_count() == free && user.fb_held_frames() == shown);
+    machine.kfz_fb_rows(2, frames.free_count() - frames.held_count() + 1, 0, 0, 0, 0);
+    assert(user.fb_init() == -12 && frames.free_count() == free);
+    machine.kfz_fb_rows(1, 5, -5, 0, 0, 0);
+    assert(user.fb_init() == -5 && frames.free_count() == free - 5 && user.fb_held_frames() == shown + 5);
+    machine.kfz_fb_rows(2, 0, 2, 0, 0, 0);
+    assert(user.fb_init() == 2 && frames.free_count() == free - 5 && machine.kfz_fb_backed() == 5);
+}
+
+// The desk offers its next tile as hdesk's offer() does: 320 x 200 at the plane's corner, 0, 32, every time.
+void kz_offer_corner(I64 d) {
+    kz_set_u32(d, KZ_RW + 1024, 320);
+    kz_set_u32(d, KZ_RW + 1028, 200);
+    kz_set_u32(d, KZ_RW + 1032, 0);
+    kz_set_u32(d, KZ_RW + 1036, 32);
+    assert(kz_call(d, NR_IOCTL, kz_fb_fd as U64, tile.FBIO_TILE_NEXT, KZ_RW + 1024, 0, 0, 0) == 0);
+}
+
+// The desk places client c (FBIO_TILE_PLACE by its pid) at 100, 100, scale 1, with no rectangle: 0, or -errno.
+I64 kz_place_c(I64 d, I64 c) {
+    kz_set_u32(d, KZ_RW + 1088, vpid[c] as U64);
+    kz_set_u32(d, KZ_RW + 1092, 100);
+    kz_set_u32(d, KZ_RW + 1096, 100);
+    kz_set_u32(d, KZ_RW + 1100, 1);                // u16 scale 1, u16 0 rectangles
+    kz_set_u32(d, KZ_RW + 1104, 0);
+    kz_set_u32(d, KZ_RW + 1108, 0);
+    return kz_call(d, NR_IOCTL, kz_fb_fd as U64, tile.FBIO_TILE_PLACE, KZ_RW + 1088, 0, 0, 0);
+}
+
+// A W-4 client (a program the desk's shell starts, in the desk's family; no tile at a fork) opens /dev/fb0: the
+// open's answer.
+I64 kz_open_fb(I64 c) {
+    kz_put(c, KZ_RW + 2048, "/dev/fb0");
+    return kz_call(c, NR_OPEN, KZ_RW + 2048, KZ_O_RDWR, 0, 0, 0, 0);
+}
+
+// The release image's P1: with Calc open, View from the screenshot plate was "no surface: Resource
+// busy". hdesk offers every client the same corner, and W-4's -EBUSY counted Calc, placed elsewhere long since.
+test "two pixel clients: a placed window leaves the offered corner to the next; one not placed, or unplaced, holds it" {
+    I64 d = kz_desk();
+    assert(seat.binds(1000));
+    kz_offer_corner(d);
+    I64 calc = kz_child(d, 1000);
+    assert(kz_open_fb(calc) >= 3);                 // Calc takes the corner
+    I64 early = kz_child(d, 1000);
+    assert(kz_open_fb(early) == E_BUSY);           // the offer was taken, and not set again
+    kz_offer_corner(d);
+    assert(kz_open_fb(early) == E_BUSY);           // set again, but Calc is still on it: the desk has not laid it out
+    assert(kz_place_c(d, calc) == 0);              // the desk lays Calc out (sync 4, then its place)
+    kz_offer_corner(d);
+    I64 view = kz_child(d, 1000);
+    assert(kz_open_fb(view) >= 3);                 // View from the plate takes the corner Calc left
+    kz_offer_corner(d);
+    assert(kz_open_fb(early) == E_BUSY);           // View is on it until the desk places it
+    assert(kz_place_c(d, view) == 0);
+    assert(kz_open_fb(early) >= 3);                // a third
+    assert(kz_place_c(d, early) == 0);
+    kz_offer_corner(d);
+    // Calc asks a new size (RS-SURF WANT): unplaced, it is copied at its tile again, so it holds the corner until
+    // the desk places it again, and no second client draws over it there (a review's finding)
+    I64 cfd = kz_open_fb(calc);
+    kz_set_u32(calc, KZ_RW + 1152, 400);
+    kz_set_u32(calc, KZ_RW + 1156, 300);
+    assert(kz_call(calc, NR_IOCTL, cfd as U64, tile.FBIO_TILE_WANT, KZ_RW + 1152, 0, 0, 0) == 0);
+    I64 again = kz_child(d, 1000);
+    assert(kz_open_fb(again) == E_BUSY);
+    assert(kz_place_c(d, calc) == 0);              // placed again at the new size: off the corner
+    assert(kz_open_fb(again) >= 3);
+    kz_end(again);
+    kz_end(early);
+    kz_end(view);
+    kz_end(calc);
+    kz_end(d);
+}
+// SPDX-License-Identifier: Apache-2.0

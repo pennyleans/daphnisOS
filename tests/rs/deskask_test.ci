@@ -1,0 +1,88 @@
+// tests/rs/deskask_test.ci: the desk's own asks on frame 17 (user/ci/kit/deskask.ci), hosted. An approval counts only
+// for the ask, session and prompt it was raised in, is taken once and only by that session, and never outlives a
+// close or the next ask; the prompt's words are the page's.
+import user.ci.kit.deskask;
+import user.ci.core.tz;
+
+I64[1] g;
+
+Bool says(I64 n, in U8[_] t, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (t[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+test "only the acts the desk does: a time from 1970 the kernel takes, a city of the table or UTC" {
+    assert(deskask.valid(deskask.CLOCK, 0) && deskask.valid(deskask.CLOCK, 1794441600));
+    assert(deskask.valid(deskask.CLOCK, deskask.SETTOD_MAX - 1) && !deskask.valid(deskask.CLOCK, deskask.SETTOD_MAX));
+    assert(!deskask.valid(deskask.CLOCK, tz.LAST));
+    assert(!deskask.valid(deskask.CLOCK, -1));
+    assert(deskask.valid(deskask.ZONE, -1) && deskask.valid(deskask.ZONE, 0));
+    assert(deskask.valid(deskask.ZONE, tz.cities() - 1) && !deskask.valid(deskask.ZONE, tz.cities()));
+    assert(!deskask.valid(deskask.ZONE, -2));
+    assert(!deskask.valid(0, 0) && !deskask.valid(3, 0) && !deskask.valid(-1, 0));
+    assert(!deskask.open(deskask.ZONE, tz.cities(), 1, 1) && !deskask.up());
+}
+
+test "authd's ok counts for the session and the prompt that asked, once" {
+    assert(deskask.open(deskask.CLOCK, 1794441600, 4, 9) && deskask.up() && deskask.act() == deskask.CLOCK);
+    assert(!deskask.approve(5, 9));                       // another session
+    assert(!deskask.approve(4, 8));                       // another prompt
+    assert(deskask.up() && deskask.take(4, g) == 0);      // nothing approved yet
+    assert(!deskask.waiting());
+    assert(deskask.approve(4, 9) && !deskask.up() && deskask.waiting());
+    assert(!deskask.approve(4, 9));                       // the ask is over: a second ok is nothing
+    g[0] = 0;
+    assert(deskask.take(4, g) == deskask.CLOCK && g[0] == 1794441600 && !deskask.waiting());
+    assert(deskask.take(4, g) == 0);                      // taken once
+}
+
+test "an approval is not taken by another session, and never outlives a close or the next ask" {
+    assert(deskask.open(deskask.ZONE, 7, 4, 10) && deskask.approve(4, 10));
+    assert(deskask.take(5, g) == 0 && !deskask.waiting());   // the session that asked has ended
+    assert(deskask.take(4, g) == 0);                      // and the approval went with it
+    assert(deskask.open(deskask.ZONE, 7, 4, 11) && deskask.approve(4, 11));
+    assert(deskask.open(deskask.CLOCK, 0, 4, 12));        // a next ask drops the one not taken
+    assert(deskask.take(4, g) == 0);
+    assert(deskask.approve(4, 12));
+    assert(deskask.take(4, g) == deskask.CLOCK && g[0] == 0);
+    assert(deskask.open(deskask.ZONE, -1, 4, 13));
+    deskask.close();                                      // refused, timed out, locked, logged out, Settings closed
+    assert(!deskask.up() && !deskask.approve(4, 13) && deskask.take(4, g) == 0);
+    I64[0] none;
+    assert(deskask.open(deskask.ZONE, 2, 4, 14) && deskask.approve(4, 14));
+    assert(deskask.take(4, none) == 0 && deskask.take(4, g) == 0);   // no room for the arg: dropped, not kept
+    assert(deskask.open(deskask.CLOCK, 5, 4, 15) && deskask.approve(4, 15));
+    deskask.drop();                                       // the session ended before the tick
+    assert(!deskask.waiting() && deskask.take(4, g) == 0);
+}
+
+test "accounts off: the act is left at once, for that session alone" {
+    assert(deskask.grant(deskask.ZONE, 3, 0) && !deskask.up() && deskask.waiting());
+    assert(deskask.take(0, g) == deskask.ZONE && g[0] == 3);
+    assert(!deskask.grant(deskask.CLOCK, -5, 0) && deskask.take(0, g) == 0);
+    assert(deskask.grant(deskask.CLOCK, 60, 0) && deskask.take(1, g) == 0);
+}
+
+test "the prompt's words: the control pressed, then what it sets" {
+    U8[32] t;
+    assert(deskask.subject(t) == 0 && deskask.target(t) == 0);   // no ask up
+    assert(deskask.open(deskask.CLOCK, 0, 1, 1));
+    assert(says(deskask.subject(t), t, "Set") && says(deskask.target(t), t, "Date and Time"));
+    assert(deskask.open(deskask.ZONE, -1, 1, 2));
+    assert(says(deskask.subject(t), t, "Time Zone") && says(deskask.target(t), t, "UTC"));
+    U8[64] c;
+    for i in 0..tz.cities() {
+        assert(deskask.open(deskask.ZONE, i, 1, 3));
+        I64 n = deskask.target(t);
+        I64 m = tz.city(i, c);
+        assert(n == min(m, 32) && n > 0);
+        for k in 0..n { assert(t[k] == c[k]); }
+    }
+    U8[4] s;
+    assert(deskask.subject(s) == 4 && s[0] == 'T' && s[3] == 'e');   // cut to the buffer
+    deskask.close();
+}
+// SPDX-License-Identifier: Apache-2.0

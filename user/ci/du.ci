@@ -1,0 +1,112 @@
+// user/ci/du.ci: du [-a|-s] [-k] [-x] [-H|-L] [FILE...] (docs/specs/2026-11-06-c-core.md, CT-1; POSIX XCU du): the
+// blocks each FILE (none: `.`) and each directory under it hold, as `N<tab>path`, a directory after what it holds.
+// Units are 512 bytes, 1,024 with -k, rounded up. -a lists files too; -s only each FILE's total; a FILE that is not
+// a directory is always listed. A file or directory with several links counts once; met again it is neither
+// counted nor listed (as busybox; a directory's links are its own and its subdirectories', so a directory named
+// twice counts once). -x stays on each FILE's device. -H follows a symbolic link named as a FILE, -L every one.
+// Directories are walked in the order of their names' bytes (tests/core/DIFFS.md D-4).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.path;
+
+const I64 LINKS_MAX = 4096;
+I64[257] sums;
+Bool[257] gone;   // the directory at this depth was counted before: skipped, not listed
+I64[8192] seen;   // device and inode of each file with several links counted so far
+I64 nseen = 0;
+I64[16] rec;
+U8[4096] p;
+Bool all = false;
+Bool only = false;
+Bool kib = false;
+Bool xdev = false;
+
+// The file of rec counts (false: a link already counted).
+Bool first_link() {
+    if (rec[corectl.ST_NLINK] < 2) { return true; }
+    for k in 0..nseen {
+        if (seen[2 * k] == rec[corectl.ST_DEV] && seen[2 * k + 1] == rec[corectl.ST_INO]) { return false; }
+    }
+    if (nseen == LINKS_MAX) { msg.limit(b"LINKS_MAX"); }
+    seen[2 * nseen] = rec[corectl.ST_DEV];
+    seen[2 * nseen + 1] = rec[corectl.ST_INO];
+    nseen = nseen + 1;
+    return true;
+}
+
+void row(I64 blocks, I64 pl) {
+    I64 v = blocks;
+    if (kib) { v = (blocks + 1) / 2; }
+    put.num(v, 0);
+    put.byte('\t');
+    put.bytes(p[0..pl]);
+    put.byte('\n');
+}
+
+void one(in U8[_] name, Bool follow_root, Bool follow) {
+    path.walk_start(name, follow_root, follow, false);
+    I64 dev0 = 0;
+    Bool going = true;
+    while (going) {
+        I64 w = path.walk_next();
+        I64 d = path.walk_depth();
+        if (w == path.W_END) {
+            going = false;
+        } else if (w == path.W_ERR) {
+            I64 pl = path.walk_path(p);
+            msg.file(p[0..pl], path.walk_errno());
+        } else {
+            path.walk_rec(rec);
+            I64 pl = path.walk_path(p);
+            if (w == path.W_PRE && d == 1) { dev0 = rec[corectl.ST_DEV]; }
+            if (w == path.W_FILE && d == 0) { dev0 = rec[corectl.ST_DEV]; }
+            Bool here = !xdev || rec[corectl.ST_DEV] == dev0;
+            if (w == path.W_PRE) {
+                sums[d] = 0;
+                gone[d] = !here || !first_link();
+                if (gone[d]) {
+                    path.walk_skip();
+                } else {
+                    sums[d] = rec[corectl.ST_BLOCKS];
+                }
+            } else if (w == path.W_POST) {
+                if (!gone[d + 1]) {
+                    if (d > 0) { sums[d] = sums[d] + sums[d + 1]; }
+                    if (!only || d == 0) { row(sums[d + 1], pl); }
+                }
+            } else {
+                I64 b = 0;
+                if (here && first_link()) { b = rec[corectl.ST_BLOCKS]; }
+                if (d == 0) {
+                    row(b, pl);
+                } else {
+                    sums[d] = sums[d] + b;
+                    if (all && !only) { row(b, pl); }
+                }
+            }
+        }
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"du");
+    args.parse(a, b"aksxHL", b"");
+    all = args.has('a');
+    only = args.has('s');
+    kib = args.has('k');
+    xdev = args.has('x');
+    if (all && only) { msg.usage(b"-a and -s together"); }
+    Bool follow = args.has('L');
+    Bool follow_root = follow || args.has('H');
+    I64 n = args.operands();
+    if (n == 0) { one(b".", follow_root, follow); }
+    for i in 0..n {
+        one(a[args.op_start(i)..args.op_stop(a, i)], follow_root, follow);
+    }
+    msg.finish();
+}
+// SPDX-License-Identifier: Apache-2.0

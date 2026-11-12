@@ -1,0 +1,439 @@
+// user/ci/cish/lex.ci: the text of one complete command and its tokens (docs/specs/2026-11-06-cish-shell.md
+// sections 4 and 6). A word token is the raw bytes start..end of the text, its quoting kept for expand; an
+// operator token is its kind; a redirection operator right after a run of digits takes them as its descriptor.
+// A backslash and a newline are a line continuation: between words they are nothing, inside a word expand drops
+// them. `#` at the start of a word comments out the rest of the line.
+// CS-2: the text and the tokens are stacks. A complete command is lexed from the region's base; when it defines a
+// function, keep() makes the region permanent (the function's tree points into it), else begin() drops it.
+// CS-3: here-documents. After `<<` or `<<-` and its delimiter word, the lines after the next newline up to the
+// delimiter's line are the body: its range is kept on the delimiter's token (hstart, hstop; hquoted when the
+// delimiter had a quote, so the body is not expanded). `<<<` is its own token, refused by parse.
+import user.ci.cish.limits;
+
+export const I64 T_WORD = 1;
+export const I64 T_NL = 2;
+export const I64 T_SEMI = 3;
+export const I64 T_AMP = 4;
+export const I64 T_AND = 5;        // &&
+export const I64 T_OR = 6;         // ||
+export const I64 T_PIPE = 7;
+export const I64 T_LPAR = 8;
+export const I64 T_RPAR = 9;
+export const I64 T_DSEMI = 10;     // ;;
+export const I64 T_LESS = 11;      // <
+export const I64 T_GREAT = 12;     // >
+export const I64 T_DGREAT = 13;    // >>
+export const I64 T_LESSAND = 14;   // <&
+export const I64 T_GREATAND = 15;  // >&
+export const I64 T_LESSGREAT = 16; // <>
+export const I64 T_CLOBBER = 17;   // >|
+export const I64 T_DLESS = 18;     // <<
+export const I64 T_DLESSDASH = 19; // <<-
+export const I64 T_END = 20;       // the end of the text
+export const I64 T_TLESS = 21;     // <<< (not POSIX: refused by name)
+
+export const I64 OK = 0;
+export const I64 MORE = 1;         // the text ends inside a quote, a substitution or after a backslash
+export const I64 FULL = 2;         // past TOKENS or SRC
+
+U8[65536] src;
+I64 slen = 0;
+I64[2048] tkind;
+I64[2048] ta;
+I64[2048] tb;
+I64[2048] tfd;
+I64[2048] hs;     // a here-document's body on its delimiter token: start, stop, quoted
+I64[2048] he;
+Bool[2048] hq;
+I64[16] pend;     // delimiter tokens whose bodies start after the next newline
+I64 npend = 0;
+Bool want_delim = false;
+I64 ntok = 0;
+I64 sbase = 0;   // the first byte and the first token of the region being lexed
+I64 tbase = 0;
+
+export void begin() {
+    slen = sbase;
+    ntok = tbase;
+}
+
+export void keep() {
+    sbase = slen;
+    tbase = ntok;
+}
+
+export I64 first_token() { return tbase; }
+
+// CS-4: the region's bounds, so eval and `.` can lex a text after the one running and then drop it again.
+export I64 text_base() { return sbase; }
+export I64 text_end() { return slen; }
+export I64 token_base() { return tbase; }
+export void set_region(I64 text0, I64 text1, I64 tok0, I64 tok1) {
+    sbase = text0;
+    slen = text1;
+    tbase = tok0;
+    ntok = tok1;
+}
+
+// Appends bytes to the text; false past SRC.
+export Bool append(in U8[_] bytes) {
+    if (slen + len(bytes) > limits.SRC) { return false; }
+    for i in 0..len(bytes) { src[slen + i] = bytes[i]; }
+    slen = slen + len(bytes);
+    return true;
+}
+
+export I64 text_len() { return slen - sbase; }
+export U8 at(I64 i) { return src[i]; }
+export I64 tokens() { return ntok; }
+export I64 kind(I64 t) { return tkind[t]; }
+export I64 start(I64 t) { return ta[t]; }
+export I64 stop(I64 t) { return tb[t]; }
+export I64 fd(I64 t) { return tfd[t]; }
+export I64 hstart(I64 t) { return hs[t]; }
+export I64 hstop(I64 t) { return he[t]; }
+export Bool hquoted(I64 t) { return hq[t]; }
+
+// Appends the text's own bytes a..b (a substitution's inside, run in a child); false past SRC.
+export Bool append_from(I64 a, I64 b) {
+    if (slen + (b - a) + 1 > limits.SRC) { return false; }
+    for i in a..b { src[slen + i - a] = src[i]; }
+    slen = slen + (b - a);
+    src[slen] = '\n';
+    slen = slen + 1;
+    return true;
+}
+
+// The token's bytes equal s.
+export Bool is(I64 t, in U8[_] s) {
+    if (tkind[t] != T_WORD || tb[t] - ta[t] != len(s)) { return false; }
+    for i in 0..len(s) {
+        if (src[ta[t] + i] != s[i]) { return false; }
+    }
+    return true;
+}
+
+// The token is the one byte b.
+export Bool is_byte(I64 t, U8 b) { return tkind[t] == T_WORD && tb[t] - ta[t] == 1 && src[ta[t]] == b; }
+
+Bool blank(U8 c) { return c == ' ' || c == '\t'; }
+
+Bool opchar(U8 c) { return c == '|' || c == '&' || c == ';' || c == '<' || c == '>' || c == '(' || c == ')' || c == '\n'; }
+
+Bool push(I64 k, I64 a, I64 b, I64 d) {
+    if (ntok == limits.TOKENS) { return false; }
+    tkind[ntok] = k;
+    ta[ntok] = a;
+    tb[ntok] = b;
+    tfd[ntok] = d;
+    ntok = ntok + 1;
+    return true;
+}
+
+// The end of a single-quoted run whose opening quote is at i - 1: the index after the closing quote, or -1.
+export I64 squote(I64 i) {
+    I64 j = i;
+    while (j < slen) {
+        if (src[j] == '\'') { return j + 1; }
+        j = j + 1;
+    }
+    return -1;
+}
+
+// Past a `$(` or `${` or backquote construct whose opener ends at i: the index after its closer, or -1. Quotes and
+// nesting inside are honored so the word is not cut; expand reads the inside.
+export I64 nested(I64 i, U8 close) {
+    I64 j = i;
+    I64 depth = 1;
+    while (j < slen) {
+        U8 c = src[j];
+        if (c == '\\') {
+            j = j + 2;
+        } else if (c == close && close == '`') {
+            return j + 1;
+        } else if (c == '\'' && close != '`') {
+            I64 e = squote(j + 1);
+            if (e < 0) { return -1; }
+            j = e;
+        } else if (c == '"' && close != '`') {
+            I64 e = dquote(j + 1);
+            if (e < 0) { return -1; }
+            j = e;
+        } else if (c == '$' && j + 1 < slen && (src[j + 1] == '(' || src[j + 1] == '{')) {
+            U8 k = ')';
+            if (src[j + 1] == '{') { k = '}'; }
+            I64 e = nested(j + 2, k);
+            if (e < 0) { return -1; }
+            j = e;
+        } else if (c == '`' && close != '`') {
+            I64 e = nested(j + 1, '`');
+            if (e < 0) { return -1; }
+            j = e;
+        } else if (close == ')' && c == '(') {
+            depth = depth + 1;
+            j = j + 1;
+        } else if (c == close) {
+            depth = depth - 1;
+            j = j + 1;
+            if (depth == 0) { return j; }
+        } else {
+            j = j + 1;
+        }
+    }
+    return -1;
+}
+
+// The end of a double-quoted run whose opening quote is at i - 1: the index after the closing quote, or -1.
+export I64 dquote(I64 i) {
+    I64 j = i;
+    while (j < slen) {
+        U8 c = src[j];
+        if (c == '"') { return j + 1; }
+        if (c == '\\') {
+            j = j + 2;
+        } else if (c == '$' && j + 1 < slen && (src[j + 1] == '(' || src[j + 1] == '{')) {
+            U8 k = ')';
+            if (src[j + 1] == '{') { k = '}'; }
+            I64 e = nested(j + 2, k);
+            if (e < 0) { return -1; }
+            j = e;
+        } else if (c == '`') {
+            I64 e = nested(j + 1, '`');
+            if (e < 0) { return -1; }
+            j = e;
+        } else {
+            j = j + 1;
+        }
+    }
+    return -1;
+}
+
+// A backquoted command's inside a..b appended as its text: a backslash before $, ` or \\ is dropped (XCU 2.6.3).
+export Bool append_bq(I64 a, I64 b) {
+    if (slen + (b - a) + 1 > limits.SRC) { return false; }
+    I64 k = slen;
+    I64 i = a;
+    while (i < b) {
+        if (src[i] == '\\' && i + 1 < b && (src[i + 1] == '$' || src[i + 1] == '`' || src[i + 1] == '\\')) {
+            i = i + 1;
+        }
+        src[k] = src[i];
+        k = k + 1;
+        i = i + 1;
+    }
+    src[k] = '\n';
+    slen = k + 1;
+    return true;
+}
+
+// The delimiter of word token t after quote removal into d: its length (at most 256), and whether it had a quote.
+U8[256] dbuf;
+Bool dq = false;
+
+I64 delimiter(I64 t) {
+    I64 n = 0;
+    dq = false;
+    I64 i = ta[t];
+    while (i < tb[t]) {
+        U8 c = src[i];
+        if (c == '\'' || c == '"') {
+            dq = true;
+            i = i + 1;
+        } else if (c == '\\' && i + 1 < tb[t]) {
+            dq = true;
+            if (n < 256) { dbuf[n] = src[i + 1]; }
+            n = n + 1;
+            i = i + 2;
+        } else {
+            if (n < 256) { dbuf[n] = c; }
+            n = n + 1;
+            i = i + 1;
+        }
+    }
+    if (n > 256) { n = 256; }
+    return n;
+}
+
+// The bodies of the pending here-documents, from i (just after a newline): the index after the last delimiter
+// line, or -1 when the text ends first (MORE).
+I64 bodies(I64 i) {
+    I64 q = i;
+    for k in 0..npend {
+        I64 t = pend[k];
+        I64 n = delimiter(t);
+        Bool dash = tkind[t - 1] == T_DLESSDASH;
+        hs[t] = q;
+        hq[t] = dq;
+        Bool found = false;
+        while (!found) {
+            if (q >= slen) { return -1; }
+            I64 e = q;
+            while (e < slen && src[e] != '\n') { e = e + 1; }
+            if (e == slen) { return -1; }   // a line not yet ended
+            I64 a = q;
+            if (dash) {
+                while (a < e && src[a] == '\t') { a = a + 1; }
+            }
+            Bool same = e - a == n;
+            if (same) {
+                for j in 0..n {
+                    if (src[a + j] != dbuf[j]) { same = false; }
+                }
+            }
+            if (same) {
+                he[t] = q;
+                found = true;
+            }
+            q = e + 1;
+        }
+    }
+    npend = 0;
+    return q;
+}
+
+// The tokens of the whole text: OK, MORE or FULL.
+export I64 lex() {
+    ntok = tbase;
+    npend = 0;
+    want_delim = false;
+    I64 i = sbase;
+    while (i < slen) {
+        U8 c = src[i];
+        if (blank(c)) {
+            i = i + 1;
+        } else if (c == '\\' && i + 1 < slen && src[i + 1] == '\n') {
+            if (i + 2 == slen) { return MORE; }   // the line goes on in the next
+            i = i + 2;
+        } else if (c == '\\' && i + 1 == slen) {
+            return MORE;
+        } else if (c == '#') {
+            while (i < slen && src[i] != '\n') { i = i + 1; }
+        } else if (opchar(c)) {
+            I64 r = op(i, -1);
+            if (r < 0) { return FULL; }
+            i = r;
+            if (c == '\n' && npend > 0) {
+                i = bodies(i);
+                if (i < 0) { return MORE; }
+            }
+        } else {
+            // a word, or a descriptor number before a redirection
+            I64 j = i;
+            Bool digits = true;
+            Bool going = true;
+            while (going && j < slen) {
+                U8 d = src[j];
+                if (blank(d) || opchar(d)) {
+                    going = false;
+                } else if (d == '\\') {
+                    if (j + 1 == slen || (j + 2 == slen && src[j + 1] == '\n')) { return MORE; }
+                    digits = false;
+                    j = j + 2;
+                } else if (d == '\'') {
+                    digits = false;
+                    j = squote(j + 1);
+                    if (j < 0) { return MORE; }
+                } else if (d == '"') {
+                    digits = false;
+                    j = dquote(j + 1);
+                    if (j < 0) { return MORE; }
+                } else if (d == '$' && j + 1 < slen && (src[j + 1] == '(' || src[j + 1] == '{')) {
+                    digits = false;
+                    U8 k = ')';
+                    if (src[j + 1] == '{') { k = '}'; }
+                    j = nested(j + 2, k);
+                    if (j < 0) { return MORE; }
+                } else if (d == '`') {
+                    digits = false;
+                    j = nested(j + 1, '`');
+                    if (j < 0) { return MORE; }
+                } else {
+                    if (d < '0' || d > '9') { digits = false; }
+                    j = j + 1;
+                }
+            }
+            if (digits && j < slen && j - i <= 2 && (src[j] == '<' || src[j] == '>')) {
+                I64 n = 0;
+                for k in i..j { n = n * 10 + (src[k] - '0') as I64; }
+                I64 r = op(j, n);
+                if (r < 0) { return FULL; }
+                i = r;
+            } else {
+                if (!push(T_WORD, i, j, -1)) { return FULL; }
+                if (want_delim) {
+                    want_delim = false;
+                    if (npend == 16) { return FULL; }
+                    pend[npend] = ntok - 1;
+                    npend = npend + 1;
+                }
+                i = j;
+            }
+        }
+    }
+    if (npend > 0 || want_delim) { return MORE; }
+    if (!push(T_END, slen, slen, -1)) { return FULL; }
+    return OK;
+}
+
+// The operator at i, with descriptor d (-1 for the default): the index after it, or -1 when full.
+I64 op(I64 i, I64 d) {
+    U8 c = src[i];
+    U8 n = 0;
+    if (i + 1 < slen) { n = src[i + 1]; }
+    I64 k = 0;
+    I64 w = 1;
+    if (c == '\n') {
+        k = T_NL;
+    } else if (c == '(') {
+        k = T_LPAR;
+    } else if (c == ')') {
+        k = T_RPAR;
+    } else if (c == ';' && n == ';') {
+        k = T_DSEMI;
+        w = 2;
+    } else if (c == ';') {
+        k = T_SEMI;
+    } else if (c == '&' && n == '&') {
+        k = T_AND;
+        w = 2;
+    } else if (c == '&') {
+        k = T_AMP;
+    } else if (c == '|' && n == '|') {
+        k = T_OR;
+        w = 2;
+    } else if (c == '|') {
+        k = T_PIPE;
+    } else if (c == '<' && n == '<' && i + 2 < slen && src[i + 2] == '<') {
+        k = T_TLESS;
+        w = 3;
+    } else if (c == '<' && n == '<' && i + 2 < slen && src[i + 2] == '-') {
+        k = T_DLESSDASH;
+        w = 3;
+    } else if (c == '<' && n == '<') {
+        k = T_DLESS;
+        w = 2;
+    } else if (c == '<' && n == '&') {
+        k = T_LESSAND;
+        w = 2;
+    } else if (c == '<' && n == '>') {
+        k = T_LESSGREAT;
+        w = 2;
+    } else if (c == '<') {
+        k = T_LESS;
+    } else if (c == '>' && n == '>') {
+        k = T_DGREAT;
+        w = 2;
+    } else if (c == '>' && n == '&') {
+        k = T_GREATAND;
+        w = 2;
+    } else if (c == '>' && n == '|') {
+        k = T_CLOBBER;
+        w = 2;
+    } else {
+        k = T_GREAT;
+    }
+    if (!push(k, i, i + w, d)) { return -1; }
+    if (k == T_DLESS || k == T_DLESSDASH) { want_delim = true; }
+    return i + w;
+}
+// SPDX-License-Identifier: Apache-2.0

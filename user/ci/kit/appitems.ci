@@ -1,0 +1,305 @@
+// user/ci/kit/appitems.ci: AM-4 (docs/specs/2026-11-11-am4-appitems.md; AM section 4, RS AM-4, frame 41): an app's
+// own rows in its app menu, drawn between Settings and Window. Both sides of a terminal program's declaration:
+//   The program writes osc_item() and osc_drop() to its terminal (OSC 7770, after osc_about), only in a desk terminal
+//   (AM section 7.2's probe). A chosen row comes back as `ESC ] 7770 ; chose ; ID BEL` (appmenu.chosen_osc).
+//     `ESC ] 7770 ; item ; ID ; PARENT ; LABEL ; KEYS ; MARKS BEL`: ID 1 to 65535; PARENT 0 for a menu row, else the
+//     ID of an earlier menu row, which then opens a submenu of its children (one level); LABEL 1 to 24 bytes and KEYS
+//     (the shortcut text drawn at the right) 0 to 16, UTF-8 with no byte under 0x20, no 0x7F, no ';'; MARKS any of
+//     `g` (a divider above: a group starts), `o` (the 8 px dot), `d` (drawn dimmed, 35 percent by DN-63, never chosen;
+//     DN-58 item 12). The same ID again replaces its LABEL, KEYS and MARKS in place; its PARENT stays.
+//     `ESC ] 7770 ; drop ; ID BEL`: the row and its children go.
+//   The desk keeps each terminal slot's rows: take() with each OSC 7770's text, clear() when the declaration goes
+//   (a new title, as terms.menu_clear), and reads them back with rows() and the row_ getters, in declared order.
+// At most ROWS rows a slot, children included. A row the rules refuse changes nothing. Pure: no call rows.
+
+export const I64 ROWS = 16;
+export const I64 SLOTS = 8;            // terms.ci's slots
+export const I64 LABEL_MAX = 24;
+export const I64 KEYS_MAX = 16;
+export const I64 ID_MAX = 65535;
+export const I64 OSC_MAX = 80;         // holds any osc_item: the longest, 12 + 5 + 1 + 5 + 1 + 24 + 1 + 16 + 1 + 3 + 1,
+                                       // is 70 bytes
+
+// marks
+export const I64 GROUP = 1;            // `g`
+export const I64 ON = 2;               // `o`
+export const I64 DIM = 4;              // `d`
+
+// take()'s answers besides 0 (taken)
+export const I64 NOT_MINE = 1;         // not an item or a drop: about, settings, dirty are terms.ci's
+export const I64 E_FORM = -1;          // a field breaks a rule
+export const I64 E_FULL = -2;          // a new row past ROWS
+export const I64 E_PARENT = -3;        // no such menu row, a child's child, or a PARENT changed
+
+I64[8] n_rows;
+I64[128] r_id;                         // ROWS a slot
+I64[128] r_parent;
+I64[128] r_marks;
+I64[128] r_ln;
+I64[128] r_kn;
+U8[3072] r_label;                      // LABEL_MAX a row
+U8[2048] r_keys;                       // KEYS_MAX a row
+
+// --- the rules ---
+
+// Whether s[a..b) is well-formed UTF-8 (RFC 3629) with no byte under 0x20, no 0x7F and no ';'.
+Bool text_ok(in U8[_] s, I64 a, I64 b) {
+    I64 k = a;
+    while (k < b) {
+        I64 c = s[k] as I64;
+        I64 more = 0;
+        I64 lo = 0x80;
+        I64 hi = 0xBF;
+        if (c < 0x20 || c == 0x7F || c == 59) { return false; }         // 59: ';'
+        if (c >= 0x80) {
+            if (c >= 0xC2 && c <= 0xDF) {
+                more = 1;
+            } else if (c >= 0xE0 && c <= 0xEF) {
+                more = 2;
+                if (c == 0xE0) { lo = 0xA0; }
+                if (c == 0xED) { hi = 0x9F; }
+            } else if (c >= 0xF0 && c <= 0xF4) {
+                more = 3;
+                if (c == 0xF0) { lo = 0x90; }
+                if (c == 0xF4) { hi = 0x8F; }
+            } else {
+                return false;
+            }
+        }
+        k = k + 1;
+        for q in 0..more {
+            if (k >= b) { return false; }
+            I64 d = s[k] as I64;
+            if (d < lo || d > hi) { return false; }
+            lo = 0x80;
+            hi = 0xBF;
+            k = k + 1;
+        }
+    }
+    return true;
+}
+
+Bool row_ok(I64 id, I64 parent, in U8[_] label, in U8[_] keys, I64 marks) {
+    return id >= 1 && id <= ID_MAX && parent >= 0 && parent <= ID_MAX && parent != id &&
+           len(label) >= 1 && len(label) <= LABEL_MAX && text_ok(label, 0, len(label)) &&
+           len(keys) <= KEYS_MAX && text_ok(keys, 0, len(keys)) && marks >= 0 && marks <= GROUP + ON + DIM;
+}
+
+// --- the program's side ---
+
+I64 put(inout U8[_] buf, I64 at, in U8[_] s) {
+    for k in 0..len(s) { buf[at + k] = s[k]; }
+    return at + len(s);
+}
+
+I64 put_num(inout U8[_] buf, I64 at, I64 v) {
+    U8[8] d;
+    I64 n = 0;
+    I64 q = v;
+    while (n == 0 || q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { buf[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// The OSC 7770 declaring a row into buf (OSC_MAX bytes hold any): its length, or -1 with nothing written when a
+// field breaks a rule or buf is short.
+export I64 osc_item(inout U8[_] buf, I64 id, I64 parent, in U8[_] label, in U8[_] keys, I64 marks) {
+    if (!row_ok(id, parent, label, keys, marks) || len(buf) < OSC_MAX) { return -1; }
+    I64 n = put(buf, 0, b"\x1b]7770;item;");
+    n = put_num(buf, n, id);
+    buf[n] = ';';
+    n = put_num(buf, n + 1, parent);
+    buf[n] = ';';
+    n = put(buf, n + 1, label);
+    buf[n] = ';';
+    n = put(buf, n + 1, keys);
+    buf[n] = ';';
+    n = n + 1;
+    if ((marks & GROUP) != 0) {
+        buf[n] = 'g';
+        n = n + 1;
+    }
+    if ((marks & ON) != 0) {
+        buf[n] = 'o';
+        n = n + 1;
+    }
+    if ((marks & DIM) != 0) {
+        buf[n] = 'd';
+        n = n + 1;
+    }
+    buf[n] = 7;
+    return n + 1;
+}
+
+// The OSC 7770 removing row id and its children: `ESC ] 7770 ; drop ; ID BEL`; its length, or -1.
+export I64 osc_drop(inout U8[_] buf, I64 id) {
+    if (id < 1 || id > ID_MAX || len(buf) < 20) { return -1; }
+    I64 n = put(buf, 0, b"\x1b]7770;drop;");
+    n = put_num(buf, n, id);
+    buf[n] = 7;
+    return n + 1;
+}
+
+// --- the desk's side ---
+
+// Slot s declares no rows.
+export void clear(I64 s) {
+    if (s >= 0 && s < SLOTS) { n_rows[s] = 0; }
+}
+
+// The index of the row of id in slot s, or -1.
+export I64 find(I64 s, I64 id) {
+    for k in 0..n_rows[s] {
+        if (r_id[ROWS * s + k] == id) { return k; }
+    }
+    return -1;
+}
+
+// The decimal number t[a..b): 1 to 5 digits; -1 for anything else.
+I64 num(in U8[_] t, I64 a, I64 b) {
+    if (b <= a || b - a > 5) { return -1; }
+    I64 v = 0;
+    for k in a..b {
+        if (t[k] < '0' || t[k] > '9') { return -1; }
+        v = v * 10 + (t[k] - '0') as I64;
+    }
+    return v;
+}
+
+// Row k of slot s gone, the rows after it moved up.
+void remove(I64 s, I64 k) {
+    I64 n = n_rows[s];
+    for j in k..n - 1 {
+        I64 a = ROWS * s + j;
+        r_id[a] = r_id[a + 1];
+        r_parent[a] = r_parent[a + 1];
+        r_marks[a] = r_marks[a + 1];
+        r_ln[a] = r_ln[a + 1];
+        r_kn[a] = r_kn[a + 1];
+        for q in 0..LABEL_MAX { r_label[LABEL_MAX * a + q] = r_label[LABEL_MAX * (a + 1) + q]; }
+        for q in 0..KEYS_MAX { r_keys[KEYS_MAX * a + q] = r_keys[KEYS_MAX * (a + 1) + q]; }
+    }
+    n_rows[s] = n - 1;
+}
+
+I64 drop(I64 s, I64 id) {
+    I64 k = 0;
+    while (k < n_rows[s]) {
+        I64 a = ROWS * s + k;
+        if (r_id[a] == id || r_parent[a] == id) { remove(s, k); } else { k = k + 1; }
+    }
+    return 0;
+}
+
+// The text t[0..n] of one OSC 7770 of slot s (what follows `7770;`, before BEL): an item or a drop taken (0), refused
+// (E_FORM, E_FULL, E_PARENT, nothing changed), or NOT_MINE for the other kinds.
+export I64 take(I64 s, in U8[_] t, I64 n) {
+    if (s < 0 || s >= SLOTS || n > len(t)) { return E_FORM; }
+    I64[8] at;                         // the fields' starts; field f is t[at[f]..at[f + 1] - 1)
+    I64 f = 1;                         // the fields counted; past 7 only counted (About's text keeps its ';')
+    at[0] = 0;
+    for k in 0..n {
+        if (t[k] == ';') {
+            if (f < 7) { at[f] = k + 1; }
+            f = f + 1;
+        }
+    }
+    if (f < 8) { at[f] = n + 1; }
+    I64 w = at[1] - 1;
+    Bool item = w == 4 && t[0] == 'i' && t[1] == 't' && t[2] == 'e' && t[3] == 'm';
+    Bool gone = w == 4 && t[0] == 'd' && t[1] == 'r' && t[2] == 'o' && t[3] == 'p';
+    if (!item && !gone) { return NOT_MINE; }
+    if (gone) {
+        I64 d = num(t, at[1], at[2] - 1);
+        if (f != 2 || d < 1 || d > ID_MAX) { return E_FORM; }
+        return drop(s, d);
+    }
+    if (f != 6) { return E_FORM; }
+    I64 id = num(t, at[1], at[2] - 1);
+    I64 parent = num(t, at[2], at[3] - 1);
+    I64 la = at[3];
+    I64 ln = at[4] - 1 - la;
+    I64 ka = at[4];
+    I64 kn = at[5] - 1 - ka;
+    I64 marks = 0;
+    for k in at[5]..n {
+        I64 m = 0;
+        if (t[k] == 'g') { m = GROUP; } else if (t[k] == 'o') { m = ON; } else if (t[k] == 'd') { m = DIM; }
+        if (m == 0 || (marks & m) != 0) { return E_FORM; }
+        marks = marks | m;
+    }
+    if (!row_ok(id, parent, t[la..la + ln], t[ka..ka + kn], marks)) { return E_FORM; }
+    I64 k = find(s, id);
+    if (parent != 0) {
+        I64 p = find(s, parent);
+        if (p < 0 || r_parent[ROWS * s + p] != 0) { return E_PARENT; }
+    }
+    if (k >= 0 && r_parent[ROWS * s + k] != parent) { return E_PARENT; }
+    if (k < 0) {
+        if (n_rows[s] >= ROWS) { return E_FULL; }
+        k = n_rows[s];
+        n_rows[s] = k + 1;
+    }
+    I64 a = ROWS * s + k;
+    r_id[a] = id;
+    r_parent[a] = parent;
+    r_marks[a] = marks;
+    r_ln[a] = ln;
+    r_kn[a] = kn;
+    for q in 0..ln { r_label[LABEL_MAX * a + q] = t[la + q]; }
+    for q in 0..kn { r_keys[KEYS_MAX * a + q] = t[ka + q]; }
+    return 0;
+}
+
+// Slot s's rows, in declared order (a child always after its parent).
+export I64 rows(I64 s) {
+    if (s < 0 || s >= SLOTS) { return 0; }
+    return n_rows[s];
+}
+
+export I64 row_id(I64 s, I64 k) { return r_id[ROWS * s + k]; }
+export I64 row_parent(I64 s, I64 k) { return r_parent[ROWS * s + k]; }     // 0 for a menu row
+export I64 row_marks(I64 s, I64 k) { return r_marks[ROWS * s + k]; }
+
+// Whether row k opens a submenu: a menu row, not dimmed, with a child.
+export Bool row_opens(I64 s, I64 k) {
+    I64 a = ROWS * s + k;
+    if (r_parent[a] != 0 || (r_marks[a] & DIM) != 0) { return false; }
+    for j in 0..n_rows[s] {
+        if (r_parent[ROWS * s + j] == r_id[a]) { return true; }
+    }
+    return false;
+}
+
+// Whether a click or Enter on row k is sent to the program: not dimmed, opens no submenu, under no dimmed parent.
+export Bool row_chosen(I64 s, I64 k) {
+    I64 a = ROWS * s + k;
+    if ((r_marks[a] & DIM) != 0 || row_opens(s, k)) { return false; }
+    if (r_parent[a] != 0) {
+        I64 p = find(s, r_parent[a]);
+        return p >= 0 && (r_marks[ROWS * s + p] & DIM) == 0;
+    }
+    return true;
+}
+
+// Row k's label and shortcut text into o (what fits); their full lengths.
+export I64 row_label(I64 s, I64 k, inout U8[_] o) {
+    I64 a = ROWS * s + k;
+    for q in 0..r_ln[a] {
+        if (q < len(o)) { o[q] = r_label[LABEL_MAX * a + q]; }
+    }
+    return r_ln[a];
+}
+
+export I64 row_keys(I64 s, I64 k, inout U8[_] o) {
+    I64 a = ROWS * s + k;
+    for q in 0..r_kn[a] {
+        if (q < len(o)) { o[q] = r_keys[KEYS_MAX * a + q]; }
+    }
+    return r_kn[a];
+}
+// SPDX-License-Identifier: Apache-2.0

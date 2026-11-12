@@ -1,0 +1,43 @@
+// user/ci/kit/stext.ci: Daphnis Sans on a row (stage K, K-4, E2-4 A), the kit's proportional text for the desk's
+// chrome, beside draw.ci's monospace text: the same row contract (draw.ci's header), the pixels put by draw.put.
+// Kept apart from draw.ci so a program that sets no Sans carries none of its tables.
+import user.ci.kit.face;
+import user.ci.kit.face2;
+import user.ci.kit.mark;
+import user.ci.kit.sans;
+import user.ci.kit.sans2;
+import user.ci.kit.draw;   // after face, face2 and mark, which it imports
+
+// K-4: glyph g's advance in Daphnis Sans, in the 16 px drawing (z 1) or the 32 px one (z 2).
+export I64 advance_sans(I64 g, I64 z) {
+    if (z == 2) { return sans2.advance(g); }
+    return sans.advance(g);
+}
+
+// K-4: the width of s[0..n] in Daphnis Sans, the sum of its advances.
+export I64 width_sans(in U8[_] s, I64 n, I64 z) {
+    I64 w = 0;
+    for k in 0..n { w = w + advance_sans(s[k] as I64, z); }
+    return w;
+}
+
+// K-4: s in Daphnis Sans (E2-4 A), the pen from x0, each glyph its own advance, its 16 px drawing when z is 1 and its
+// 32 px one when z is 2, 16 * z rows from y0; the pen past the last glyph drawn. A glyph that would end past x1 is
+// not drawn, and nor is any after it.
+export I64 text_sans(inout U32[_] row, I64 y, I64 x0, I64 y0, I64 x1, in U8[_] s, I64 n, U32 c, I64 z) {
+    I64 x = x0;
+    I64 w = 16 * z;
+    for k in 0..n {
+        I64 g = s[k] as I64;
+        I64 a = advance_sans(g, z);
+        if (x + a > x1) { return x; }
+        if (y >= y0 && y < y0 + w) {
+            I64 bits = 0;
+            if (z == 2) { bits = sans2.row(g, y - y0); } else { bits = sans.row(g, y - y0); }
+            for b in 0..a { if (((bits >> (w - 1 - b)) & 1) == 1) { draw.put(row, x + b, c); } }
+        }
+        x = x + a;
+    }
+    return x;
+}
+// SPDX-License-Identifier: Apache-2.0

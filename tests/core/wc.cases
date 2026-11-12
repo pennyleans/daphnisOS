@@ -1,0 +1,27 @@
+# tests/core/wc.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6).
+text.txt | - | -
+ | text.txt | -
+- | text.txt | -
+-l | text.txt | -
+-w | long.txt | -
+-c | bin.dat | -
+text.txt nonl.txt | - | -
+-l text.txt nonl.txt | - | -
+-l text.txt | - | -
+-c text.txt | - | -
+-m text.txt | - | -
+-cm utf8.txt | - | -
+-lw text.txt | - | -
+-l -w -c text.txt | - | -
+-lwc empty | - | -
+long.txt | - | -
+ws.txt nonl.txt text.txt | - | -
+bin.dat ws.txt | - | D-2
+ws.txt | - | -
+missing text.txt | - | -
+text.txt missing nonl.txt | - | -
+. | - | -
+-- text.txt | - | -
+-w utf8.txt | - | D-2
+-L text.txt | - | D-1
+-x text.txt | - | D-1

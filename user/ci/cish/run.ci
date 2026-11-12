@@ -1,0 +1,1361 @@
+// user/ci/cish/run.ci: the tree of parse into processes (docs/specs/2026-11-06-cish-shell.md sections 4 and 6): a list
+// runs its and_or nodes in order, `&` in a child it does not wait for; && and || by status; a pipeline forks every
+// command beside a pipe and waits for all, its status the last's (`!` inverts it); a simple command expands its
+// words, then is a builtin in this process (its redirections saved and put back), or a program found on PATH in a
+// child. Assignments alone set variables here; before a program they are exported to its child only.
+// CS-2: the compound commands (brace group, subshell, if, while, until, for, case), function definitions and
+// calls (a frame of positional parameters each), and break, continue and return by ctl. A special builtin comes
+// first, then a function, then a regular builtin, then PATH (XCU 2.9.1).
+// CS-3: command substitutions run here for expand (a child per substitution, its output read through a pipe),
+// pathname expansion of the fields expand marks, and here-documents (the body through a pipe, at most HEREDOC).
+// CS-4: eval and `.` lex, parse and run a text after the command running (its tokens and nodes set aside, then put
+// back); exec runs a program in place of cish, or with no program makes its redirections last; an interactive cish
+// says a syntax error, a refusal or a limit of such a text and goes on (status 2), where a script ends.
+// K-10: every child comes from child(): an `&` child ignores SIGINT and SIGQUIT (XCU 2.11, no job control); any other
+// child of an interactive cish, which ignores both itself, takes them back to their default, so Ctrl-C ends the job
+// and not cish. A foreground child ended by SIGINT unwinds the rest (ctl.INTR).
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.sigctl;
+import user.ci.cish.limits;
+import user.ci.cish.lex;
+import user.ci.cish.parse;
+import user.ci.cish.vars;
+import user.ci.cish.expand;
+import user.ci.cish.msg;
+import user.ci.cish.ctl;
+import user.ci.cish.pattern;
+import user.ci.cish.glob;
+import user.ci.cish.builtin;
+
+const I64 O_RDONLY = 0;
+const I64 O_WRONLY = 1;
+const I64 O_RDWR = 2;
+const I64 O_CREAT = 0x40;
+const I64 O_TRUNC = 0x200;
+const I64 O_APPEND = 0x400;
+const I64 ENOENT = 2;
+const I64 EBADF = 9;
+const I64 EACCES = 13;
+const I64 ENOTDIR = 20;
+const I64 SAVE_FROM = 10;   // saved descriptors go at or above this one
+
+U8[32768] ab;       // the fields of the command being run, each NUL-ended (an argv block)
+I64[256] fo;
+I64[256] fe;
+I64 nf = 0;
+U8[32768] envb;     // the environment block of an execve
+U8[4096] path;      // a PATH candidate
+I64[32] saved_fd;   // descriptors a builtin's redirection replaced, and where each was saved (-1: was closed)
+I64[32] saved_to;
+I64 nsaved = 0;
+I64 expand_bytes = 0;   // the block's bytes in use
+
+void say_errno(in U8[_] what, I64 e) {
+    msg.begin();
+    msg.text(what);
+    msg.text(b": ");
+    msg.reason(e);
+    msg.send();
+}
+
+// A wait status as $? reads it.
+I64 exit_code(I64 st) {
+    if ((st & 0x7F) == 0) { return (st >> 8) & 0xFF; }
+    return 128 + (st & 0x7F);
+}
+
+I64 wait_for(I64 pid) {
+    I64 st = shctl.sh_wait(pid, 0);
+    if (st < 0) { return 127; }
+    if (interactive && (st & 0x7F) == 2) { ctl.set(ctl.INTR, 0, 0); }
+    return exit_code(st);
+}
+
+// fork for cish: in the child, SIGINT and SIGQUIT ignored for bg, back to their default in an interactive cish's.
+I64 child(Bool bg) {
+    I64 pid = shctl.sh_fork();
+    if (pid == 0) { forked_child = true; }   // its signals are set here, for good: exec_ leaves them (review on PR 300)
+    if (pid == 0 && (bg || interactive)) {
+        I64 ig = 0;
+        if (bg) { ig = 1; }
+        _ = sigctl.sig_set(2, ig);
+        _ = sigctl.sig_set(3, ig);
+    }
+    return pid;
+}
+
+// Runs the command substitution expand asked for and gives it its output; false on an error (said).
+U8[65536] sb;
+I64 subst_status = 0;
+Bool subst_ran = false;
+
+Bool subst() {
+    I64 a = expand.need_start();
+    I64 b = expand.need_stop();
+    I64 at = expand.need_place();
+    Bool bq = expand.need_backquote() == 2;
+    I64 pp = shctl.sh_pipe();
+    if (pp < 0) {
+        say_errno(b"pipe", 0 - pp);
+        return false;
+    }
+    I64 r = pp >> 32;
+    I64 w = pp & 0xFFFFFFFF;
+    I64 pid = child(false);
+    if (pid < 0) {
+        _ = shctl.fd_close(r);
+        _ = shctl.fd_close(w);
+        say_errno(b"fork", 0 - pid);
+        return false;
+    }
+    if (pid == 0) {
+        _ = shctl.fd_close(r);
+        if (w != 1) {
+            _ = shctl.sh_dup2(w, 1);
+            _ = shctl.fd_close(w);
+        }
+        dev.exit_now(text(a, b, bq));
+    }
+    _ = shctl.fd_close(w);
+    I64 n = 0;
+    Bool spilled = false;
+    Bool going = true;
+    while (going) {
+        I64 k = 0;
+        if (n < 65536) {
+            k = shctl.fd_read(r, sb[n..65536]);
+        } else {
+            U8[4096] spill;
+            k = shctl.fd_read(r, spill);
+            if (k > 0) { spilled = true; }
+        }
+        if (k <= 0) {
+            going = false;
+        } else if (n < 65536) {
+            n = n + k;
+        }
+    }
+    _ = shctl.fd_close(r);
+    subst_status = wait_for(pid);
+    subst_ran = true;
+    if (spilled) {
+        msg.begin();
+        msg.text(b"limit: SUBST ");
+        msg.num(limits.SUBST);
+        msg.send();
+        return false;
+    }
+    while (n > 0 && sb[n - 1] == '\n') { n = n - 1; }
+    return expand.provide(at, sb[0..n]);
+}
+
+Bool interactive = false;
+Bool forked_child = false;          // this process is a child cish forked (child()), not the interactive shell itself
+export void set_interactive(Bool b) { interactive = b; }
+
+// A text that cannot run: said; it ends cish unless cish is interactive. Status 2.
+I64 refused(I64 why, I64 t) {
+    if (why == parse.P_UNSUP) {
+        msg.say_unsupported(t);
+    } else if (why == parse.P_FULL) {
+        msg.say_limit(b"NODES", limits.NODES);
+    } else {
+        msg.say_syntax(t);
+    }
+    if (!interactive) { dev.exit_now(2); }
+    return 2;
+}
+
+// The region of lex and parse running, set aside while a nested text (eval, `.`, a substitution's child) is lexed
+// and parsed after it, then put back: the nested text and tree are dropped, unless one of them defined a function
+// (pinned), whose text and tree must stay, so they stay kept until the outermost nested text is done.
+I64 nest = 0;
+Bool pinned = false;
+
+void set_aside(inout I64[_] r) {
+    r[0] = lex.text_base();
+    r[1] = lex.text_end();
+    r[2] = lex.token_base();
+    r[3] = lex.tokens();
+    r[4] = parse.node_base();
+    r[5] = parse.item_base();
+    lex.keep();
+    parse.keep();
+    nest = nest + 1;
+}
+
+void put_back(in I64[_] r) {
+    nest = nest - 1;
+    if (pinned) {
+        lex.keep();
+        parse.keep();
+    } else {
+        lex.set_region(r[0], r[1], r[2], r[3]);
+        parse.set_base(r[4], r[5]);
+    }
+    if (nest == 0) { pinned = false; }
+}
+
+// The text appended since set_aside, lexed, then parsed and run a complete command at a time; the last status.
+I64 run_text() {
+    I64 lr = lex.lex();
+    if (lr == lex.MORE) { return refused(parse.P_SYNTAX, lex.tokens() - 1); }
+    if (lr == lex.FULL) {
+        msg.say_limit(b"TOKENS", limits.TOKENS);
+        if (!interactive) { dev.exit_now(2); }
+        return 2;
+    }
+    I64 pos = lex.first_token();
+    I64 st = 0;
+    while (lex.kind(pos) != lex.T_END) {
+        I64 pr = parse.parse(pos);
+        if (pr == parse.P_MORE) { return refused(parse.P_SYNTAX, parse.bad_token()); }
+        if (pr == parse.P_SYNTAX || pr == parse.P_UNSUP || pr == parse.P_FULL) {
+            return refused(pr, parse.bad_token());
+        }
+        if (pr == parse.P_OK) {
+            if (parse.defined_function()) {
+                parse.keep();
+                pinned = true;
+            }
+            I64 next_pos = parse.position();
+            st = list(parse.root());
+            expand.set_status(st);
+            if (ctl.pending() != ctl.NONE) { return st; }
+            pos = next_pos;
+        } else {
+            pos = parse.position();
+        }
+    }
+    return st;
+}
+
+// In a substitution's child: the text a..b (a backquoted one with its backslashes undone) as commands of their
+// own; their status.
+I64 text(I64 a, I64 b, Bool bq) {
+    I64[6] r;
+    set_aside(r);
+    Bool ok = false;
+    if (bq) {
+        ok = lex.append_bq(a, b);
+    } else {
+        ok = lex.append_from(a, b);
+    }
+    I64 st = 2;
+    if (ok) {
+        st = run_text();
+    } else {
+        msg.say_limit(b"SRC", limits.SRC);
+    }
+    put_back(r);
+    return st;
+}
+
+// Text a..b into the block given, each command substitution it needs run first. As expand.range.
+I64 xrange(I64 a, I64 b, Bool split, inout U8[_] bk, inout I64[_] o, inout I64[_] e) {
+    expand.fresh();
+    Bool going = true;
+    I64 r = 0;
+    while (going) {
+        r = expand.range(a, b, split, bk, o, e);
+        if (r == expand.NEED) {
+            if (!subst()) { return -1; }
+        } else {
+            going = false;
+        }
+    }
+    return r;
+}
+
+// The text of word token t into one field of a private block; its length, or -1 (said).
+I64 one_word(I64 t, inout U8[_] dst) {
+    U8[4096] wb;
+    I64[2] wo;
+    I64[2] we;
+    expand.begin();
+    if (xrange(lex.start(t), lex.stop(t), false, wb, wo, we) < 0) { return -1; }
+    I64 n = we[0] - wo[0];
+    if (n > len(dst)) { return -1; }
+    for k in 0..n { dst[k] = wb[wo[0] + k]; }
+    return n;
+}
+
+// Text a..b into the command's own block, split, each command substitution it needs run first.
+I64 range_ab(I64 a, I64 b) {
+    expand.fresh();
+    Bool going = true;
+    I64 r = 0;
+    while (going) {
+        r = expand.range(a, b, true, ab, fo, fe);
+        if (r == expand.NEED) {
+            if (!subst()) { return -1; }
+        } else {
+            going = false;
+        }
+    }
+    return r;
+}
+
+// The block's fields after pathname expansion (each field expand marked, when it matches) and the removal of
+// pattern mode's escapes from the others; false when they pass FIELDS or ARGBYTES (said).
+U8[32768] gb;
+I64[256] go;
+I64[256] ge;
+
+Bool globs() {
+    I64 k = 0;
+    I64 m = 0;
+    Bool full = false;
+    for f in 0..nf {
+        I64 c = 0;
+        if (expand.globbed(f)) {
+            c = glob.expand(ab[fo[f]..fe[f]]);
+            if (glob.overflowed()) { full = true; }
+        }
+        if (c > 0) {
+            for i in 0..c {
+                I64 l = glob.item_len(i);
+                if (m == limits.FIELDS || k + l + 1 > 32768) {
+                    full = true;
+                } else {
+                    go[m] = k;
+                    for j in 0..l { gb[k + j] = glob.item_at(i, j); }
+                    k = k + l;
+                    ge[m] = k;
+                    gb[k] = 0;
+                    k = k + 1;
+                    m = m + 1;
+                }
+            }
+        } else if (m == limits.FIELDS || k + (fe[f] - fo[f]) + 1 > 32768) {
+            full = true;
+        } else {
+            go[m] = k;
+            I64 j = fo[f];
+            while (j < fe[f]) {
+                if (ab[j] == '\\' && j + 1 < fe[f]) { j = j + 1; }
+                gb[k] = ab[j];
+                k = k + 1;
+                j = j + 1;
+            }
+            ge[m] = k;
+            gb[k] = 0;
+            k = k + 1;
+            m = m + 1;
+        }
+    }
+    if (full) {
+        msg.begin();
+        msg.text(b"limit: FIELDS ");
+        msg.num(limits.FIELDS);
+        msg.text(b" or ARGBYTES 32768 after pathname expansion");
+        msg.send();
+        return false;
+    }
+    for i in 0..k { ab[i] = gb[i]; }
+    for i in 0..m {
+        fo[i] = go[i];
+        fe[i] = ge[i];
+    }
+    nf = m;
+    expand_bytes = k;
+    return true;
+}
+
+// The words of item list `first` into the block, split and in pattern mode, then globbed: false on an error.
+Bool words(I64 first) {
+    expand.begin();
+    expand.set_pattern(true);
+    I64 it = first;
+    while (it >= 0) {
+        if (parse.item_kind(it) == parse.I_WORD) {
+            I64 t = parse.item_token(it);
+            if (range_ab(lex.start(t), lex.stop(t)) < 0) {
+                expand.set_pattern(false);
+                return false;
+            }
+        }
+        it = parse.item_next(it);
+    }
+    expand.set_pattern(false);
+    nf = expand.fields();
+    expand_bytes = expand.bytes();
+    return globs();
+}
+
+// The assignments of simple command item list `first`, made here (and exported when export is true); false on
+// an error (said).
+Bool assign(I64 first, Bool exported) {
+    I64 it = first;
+    while (it >= 0) {
+        if (parse.item_kind(it) == parse.I_ASSIGN) {
+            I64 t = parse.item_token(it);
+            I64 a = lex.start(t);
+            I64 eq = a;
+            while (lex.at(eq) != '=') { eq = eq + 1; }
+            U8[256] name;
+            I64 m = eq - a;
+            if (m > 256) { m = 256; }
+            for k in 0..m { name[k] = lex.at(a + k); }
+            U8[16384] vb;
+            I64[2] vo;
+            I64[2] ve;
+            expand.begin();
+            if (xrange(eq + 1, lex.stop(t), false, vb, vo, ve) < 0) { return false; }
+            if (!vars.set(name[0..m], vb[vo[0]..ve[0]])) {
+                msg.begin();
+                msg.text(b"limit: VARS ");
+                msg.num(limits.VARS);
+                msg.text(b" or VARBYTES ");
+                msg.num(limits.VARBYTES);
+                msg.send();
+                return false;
+            }
+            if (exported) { _ = vars.mark_export(name[0..m]); }
+        }
+        it = parse.item_next(it);
+    }
+    return true;
+}
+
+// The variables a regular builtin's or a function's assignments replace, held so they come back after its run;
+// a stack, as a function's body runs commands with assignments of their own.
+U8[16384] held;
+I64[256] hname;    // offsets into held: the name, then the old value
+I64[256] hnlen;
+I64[256] hvlen;    // -1: the variable had no value
+I64 nheld = 0;
+I64 hat = 0;
+
+// The held entries' mark before this hold.
+I64 hold(I64 first) {
+    I64 mark = nheld;
+    I64 it = first;
+    while (it >= 0) {
+        if (parse.item_kind(it) == parse.I_ASSIGN && nheld < 256) {
+            I64 t = parse.item_token(it);
+            I64 a = lex.start(t);
+            I64 eq = a;
+            while (lex.at(eq) != '=') { eq = eq + 1; }
+            U8[256] name;
+            I64 m = eq - a;
+            if (m > 256) { m = 256; }
+            for k in 0..m { name[k] = lex.at(a + k); }
+            I64 v = vars.lookup(name[0..m]);
+            I64 vl = -1;
+            if (vars.has_value(v)) { vl = vars.value_len(v); }
+            I64 need = m;
+            if (vl > 0) { need = need + vl; }
+            if (hat + need <= 16384) {
+                hname[nheld] = hat;
+                hnlen[nheld] = m;
+                hvlen[nheld] = vl;
+                for k in 0..m { held[hat + k] = name[k]; }
+                hat = hat + m;
+                for k in 0..vl { held[hat + k] = vars.value_at(v, k); }
+                if (vl > 0) { hat = hat + vl; }
+                nheld = nheld + 1;
+            }
+        }
+        it = parse.item_next(it);
+    }
+    return mark;
+}
+
+void give_back(I64 mark) {
+    while (nheld > mark) {
+        nheld = nheld - 1;
+        I64 a = hname[nheld];
+        I64 m = hnlen[nheld];
+        U8[256] name;
+        for k in 0..m { name[k] = held[a + k]; }
+        if (hvlen[nheld] < 0) {
+            vars.unset(name[0..m]);
+        } else {
+            _ = vars.set(name[0..m], held[a + m..a + m + hvlen[nheld]]);
+        }
+        hat = a;
+    }
+}
+
+// d's present descriptor saved above SAVE_FROM before a builtin's redirection replaces it.
+Bool save(I64 d) {
+    if (nsaved == 32) { return false; }
+    I64 c = shctl.sh_dupfd(d, SAVE_FROM);
+    if (c < 0 && c != 0 - EBADF) { return false; }
+    saved_fd[nsaved] = d;
+    saved_to[nsaved] = c;
+    nsaved = nsaved + 1;
+    return true;
+}
+
+// Puts back every descriptor saved since mark, last first.
+void restore(I64 mark) {
+    while (nsaved > mark) {
+        nsaved = nsaved - 1;
+        I64 d = saved_fd[nsaved];
+        I64 c = saved_to[nsaved];
+        if (c >= 0) {
+            _ = shctl.sh_dup2(c, d);
+            _ = shctl.fd_close(c);
+        } else {
+            _ = shctl.fd_close(d);
+        }
+    }
+}
+
+// A here-document on descriptor d: its body (expanded unless its delimiter was quoted; leading tabs gone with <<-)
+// written whole into a pipe whose read end becomes d. False on an error (said).
+U8[32768] hb;
+
+Bool here(I64 t, Bool dash, I64 d, Bool keep) {
+    I64 a = lex.hstart(t);
+    I64 b = lex.hstop(t);
+    I64 n = 0;
+    I64 off = 0;
+    if (lex.hquoted(t)) {
+        n = b - a;
+        if (n > 32768) { n = 32768; }
+        for k in 0..n { hb[k] = lex.at(a + k); }
+    } else {
+        I64[2] ho;
+        I64[2] he;
+        expand.begin();
+        expand.fresh();
+        Bool going = true;
+        while (going) {
+            I64 r = expand.body(a, b, hb, ho, he);
+            if (r == expand.NEED) {
+                if (!subst()) { return false; }
+            } else if (r < 0) {
+                return false;
+            } else {
+                going = false;
+            }
+        }
+        off = ho[0];
+        n = he[0] - ho[0];
+    }
+    if (dash) {
+        I64 k = 0;
+        Bool line_start = true;
+        for i in off..off + n {
+            if (!(line_start && hb[i] == '\t')) {
+                hb[k] = hb[i];
+                k = k + 1;
+                line_start = hb[i] == '\n';
+            }
+        }
+        off = 0;
+        n = k;
+    }
+    if (n > limits.HEREDOC) {
+        msg.begin();
+        msg.text(b"limit: HEREDOC ");
+        msg.num(limits.HEREDOC);
+        msg.send();
+        return false;
+    }
+    I64 pp = shctl.sh_pipe();
+    if (pp < 0) {
+        say_errno(b"pipe", 0 - pp);
+        return false;
+    }
+    I64 r = pp >> 32;
+    I64 w = pp & 0xFFFFFFFF;
+    Bool ok = msg.write_all(w, hb[off..off + n]);
+    _ = shctl.fd_close(w);
+    if (!ok) {
+        _ = shctl.fd_close(r);
+        say_errno(b"here-document", EBADF);
+        return false;
+    }
+    if (keep && !save(d)) {
+        _ = shctl.fd_close(r);
+        say_errno(b"redirection", EBADF);
+        return false;
+    }
+    if (r != d) {
+        _ = shctl.sh_dup2(r, d);
+        _ = shctl.fd_close(r);
+    }
+    return true;
+}
+
+// The redirections of item list `first`, in order; with keep, each replaced descriptor is saved first. False
+// on an error (said).
+Bool redirect(I64 first, Bool keep) {
+    I64 it = first;
+    while (it >= 0) {
+        if (parse.item_kind(it) == parse.I_REDIR) {
+            I64 op = parse.item_op(it);
+            I64 d = parse.item_fd(it);
+            if (d < 0) {
+                d = 1;
+                if (op == lex.T_LESS || op == lex.T_LESSAND || op == lex.T_LESSGREAT || op == lex.T_DLESS
+                        || op == lex.T_DLESSDASH) {
+                    d = 0;
+                }
+            }
+            if (op == lex.T_DLESS || op == lex.T_DLESSDASH) {
+                if (!here(parse.item_token(it), op == lex.T_DLESSDASH, d, keep)) { return false; }
+                it = parse.item_next(it);
+                continue;
+            }
+            U8[4096] target;
+            I64 n = one_word(parse.item_token(it), target);
+            if (n < 0) { return false; }
+            if (keep && !save(d)) {
+                say_errno(b"redirection", EBADF);
+                return false;
+            }
+            if (op == lex.T_LESSAND || op == lex.T_GREATAND) {
+                if (n == 1 && target[0] == '-') {
+                    _ = shctl.fd_close(d);
+                } else {
+                    I64 src = 0;
+                    Bool digits = n > 0 && n <= 4;
+                    for k in 0..n {
+                        if (target[k] < '0' || target[k] > '9') {
+                            digits = false;
+                        } else if (digits) {
+                            src = src * 10 + (target[k] - '0') as I64;
+                        }
+                    }
+                    if (!digits) {
+                        msg.begin();
+                        msg.text(b"redirection: not a descriptor: ");
+                        msg.text(target[0..n]);
+                        msg.send();
+                        return false;
+                    }
+                    if (src != d && shctl.sh_dup2(src, d) < 0) {
+                        msg.begin();
+                        msg.text(b"redirection: bad descriptor ");
+                        msg.num(src);
+                        msg.send();
+                        return false;
+                    }
+                }
+            } else {
+                I64 flags = O_RDONLY;
+                if (op == lex.T_GREAT || op == lex.T_CLOBBER) { flags = O_WRONLY | O_CREAT | O_TRUNC; }
+                if (op == lex.T_DGREAT) { flags = O_WRONLY | O_CREAT | O_APPEND; }
+                if (op == lex.T_LESSGREAT) { flags = O_RDWR | O_CREAT; }
+                I64 f = shctl.sh_open(target[0..n], flags, 0x1B6);
+                if (f < 0) {
+                    msg.begin();
+                    msg.text(b"cannot open ");
+                    msg.text(target[0..n]);
+                    msg.text(b": ");
+                    msg.reason(0 - f);
+                    msg.send();
+                    return false;
+                }
+                if (f != d) {
+                    _ = shctl.sh_dup2(f, d);
+                    _ = shctl.fd_close(f);
+                }
+            }
+        }
+        it = parse.item_next(it);
+    }
+    return true;
+}
+
+I64 text_into(inout U8[_] dst, in U8[_] s) {
+    for k in 0..len(s) { dst[k] = s[k]; }
+    return len(s);
+}
+
+// PATH, or the default when it is unset, into dst; its length.
+I64 search_path(inout U8[_] dst) {
+    I64 v = vars.lookup(b"PATH");
+    if (!vars.has_value(v)) { return text_into(dst, b"/sbin:/usr/sbin:/bin:/usr/bin"); }
+    I64 n = vars.value_len(v);
+    if (n > len(dst)) { n = len(dst); }
+    for k in 0..n { dst[k] = vars.value_at(v, k); }
+    return n;
+}
+
+// In a child (or for exec, in cish): runs field k from PATH (or as a path when it holds a slash), the fields from k
+// its arguments, with the exported variables; never returns.
+void exec_fields(I64 k0) {
+    I64 envn = vars.env_block(envb);
+    if (envn < 0) {
+        msg.begin();
+        msg.text(b"limit: ENVBYTES ");
+        msg.num(limits.ENVBYTES);
+        msg.send();
+        dev.exit_now(2);
+    }
+    I64 n0 = fe[k0] - fo[k0];
+    Bool slash = false;
+    for k in 0..n0 {
+        if (ab[fo[k0] + k] == '/') { slash = true; }
+    }
+    I64 err = ENOENT;
+    if (slash) {
+        err = 0 - shctl.sh_exec(ab[fo[k0]..fe[k0]], ab[fo[k0]..expand_bytes], envb[0..envn]);
+    } else {
+        U8[4096] p;
+        I64 pn = search_path(p);
+        I64 a = 0;
+        Bool denied = false;
+        Bool going = true;
+        while (going && a <= pn) {
+            I64 b = a;
+            while (b < pn && p[b] != ':') { b = b + 1; }
+            I64 k = 0;
+            if (b == a) {
+                path[0] = '.';
+                k = 1;
+            } else {
+                for i in a..b { path[i - a] = p[i]; }
+                k = b - a;
+            }
+            if (k + 1 + n0 <= 4096) {
+                path[k] = '/';
+                for i in 0..n0 { path[k + 1 + i] = ab[fo[k0] + i]; }
+                I64 e = 0 - shctl.sh_exec(path[0..k + 1 + n0], ab[fo[k0]..expand_bytes], envb[0..envn]);
+                if (e == EACCES) {
+                    denied = true;
+                } else if (e != ENOENT && e != ENOTDIR) {
+                    err = e;
+                    going = false;
+                }
+            }
+            a = b + 1;
+        }
+        if (going && denied) { err = EACCES; }
+    }
+    msg.begin();
+    msg.text(ab[fo[k0]..fe[k0]]);
+    if (err == ENOENT) {
+        msg.text(b": not found");
+        msg.send();
+        dev.exit_now(127);
+    }
+    if (err == EACCES) {
+        msg.text(b": permission denied");
+    } else {
+        msg.text(b": cannot run: ");
+        msg.reason(err);
+    }
+    msg.send();
+    dev.exit_now(126);
+}
+
+
+// The functions: each its name token and its body command, both in lex's and parse's kept regions.
+I64[64] fn_tok;
+I64[64] fn_body;
+I64 nfn = 0;
+
+Bool token_is(I64 t, in U8[_] f) {
+    I64 a = lex.start(t);
+    if (lex.stop(t) - a != len(f)) { return false; }
+    for k in 0..len(f) {
+        if (lex.at(a + k) != f[k]) { return false; }
+    }
+    return true;
+}
+
+I64 function_named(in U8[_] f) {
+    for i in 0..nfn {
+        if (token_is(fn_tok[i], f)) { return i; }
+    }
+    return -1;
+}
+
+I64 define(I64 n) {
+    I64 t = parse.token(n);
+    U8[256] name;
+    I64 m = lex.stop(t) - lex.start(t);
+    if (m > 256) { m = 256; }
+    for k in 0..m { name[k] = lex.at(lex.start(t) + k); }
+    I64 f = function_named(name[0..m]);
+    if (f < 0) {
+        if (nfn == limits.FUNCS) {
+            msg.begin();
+            msg.text(b"limit: FUNCS ");
+            msg.num(limits.FUNCS);
+            msg.send();
+            return 2;
+        }
+        f = nfn;
+        nfn = nfn + 1;
+    }
+    fn_tok[f] = t;
+    fn_body[f] = parse.left(n);
+    return 0;
+}
+
+I64 depth = 0;   // compound commands and function calls open
+
+Bool deeper() {
+    if (depth == limits.DEPTH) {
+        msg.begin();
+        msg.text(b"limit: DEPTH ");
+        msg.num(limits.DEPTH);
+        msg.send();
+        return false;
+    }
+    depth = depth + 1;
+    return true;
+}
+
+// Function f with the fields 1.. of the block as its positional parameters.
+I64 call(I64 f) {
+    if (!deeper()) { return 2; }
+    if (!vars.push_frame()) {
+        depth = depth - 1;
+        return 2;
+    }
+    for i in 1..nf {
+        if (!vars.add_positional(ab[fo[i]..fe[i]])) {
+            msg.begin();
+            msg.text(b"limit: POSITIONAL or its bytes");
+            msg.send();
+            vars.pop_frame();
+            depth = depth - 1;
+            return 2;
+        }
+    }
+    ctl.enter_func();
+    I64 body = fn_body[f];
+    I64 st = command(body, false);
+    if (ctl.pending() == ctl.RETURN) {
+        st = ctl.returned();
+        ctl.clear();
+    }
+    ctl.leave_func();
+    vars.pop_frame();
+    depth = depth - 1;
+    return st;
+}
+
+// eval ARG...: the fields joined by blanks, run as a text of their own; status 0 for none.
+I64 eval_(I64 n) {
+    if (n < 2) { return 0; }
+    I64[6] r;
+    set_aside(r);
+    Bool ok = true;
+    for i in 1..n {
+        if (i > 1) { ok = ok && lex.append(b" "); }
+        ok = ok && lex.append(ab[fo[i]..fe[i]]);
+    }
+    ok = ok && lex.append(b"\n");
+    I64 st = 2;
+    if (ok) {
+        st = run_text();
+    } else {
+        msg.say_limit(b"SRC", limits.SRC);
+        if (!interactive) { dev.exit_now(2); }
+    }
+    put_back(r);
+    return st;
+}
+
+// The file of `. NAME`: NAME when it holds a slash, else the first NAME on PATH that opens; its descriptor, or
+// -errno.
+I64 dot_open(in U8[_] name) {
+    for k in 0..len(name) {
+        if (name[k] == '/') { return shctl.sh_open(name, O_RDONLY, 0); }
+    }
+    U8[4096] p;
+    I64 pn = search_path(p);
+    I64 err = 0 - ENOENT;
+    I64 a = 0;
+    while (a <= pn) {
+        I64 b = a;
+        while (b < pn && p[b] != ':') { b = b + 1; }
+        I64 k = 0;
+        if (b == a) {
+            path[0] = '.';
+            k = 1;
+        } else {
+            for i in a..b { path[i - a] = p[i]; }
+            k = b - a;
+        }
+        if (k + 1 + len(name) <= 4096) {
+            path[k] = '/';
+            for i in 0..len(name) { path[k + 1 + i] = name[i]; }
+            I64 fd = shctl.sh_open(path[0..k + 1 + len(name)], O_RDONLY, 0);
+            if (fd >= 0) { return fd; }
+            err = fd;
+        }
+        a = b + 1;
+    }
+    return err;
+}
+
+// . NAME [ARG...]: the file's text run here, `return` ending it; the arguments, if any, its positional parameters.
+I64 source(I64 n) {
+    if (n < 2) {
+        msg.begin();
+        msg.text(b".: needs a file name");
+        msg.send();
+        if (!interactive) { dev.exit_now(2); }
+        return 2;
+    }
+    I64 fd = dot_open(ab[fo[1]..fe[1]]);
+    if (fd < 0) {
+        msg.begin();
+        msg.text(b".: cannot open ");
+        msg.text(ab[fo[1]..fe[1]]);
+        msg.text(b": ");
+        msg.reason(0 - fd);
+        msg.send();
+        if (!interactive) { dev.exit_now(2); }
+        return 2;
+    }
+    if (!deeper()) {
+        _ = shctl.fd_close(fd);
+        return 2;
+    }
+    Bool framed = n > 2;
+    if (framed) {
+        if (!vars.push_frame()) {
+            _ = shctl.fd_close(fd);
+            depth = depth - 1;
+            return 2;
+        }
+        for i in 2..n {
+            if (!vars.add_positional(ab[fo[i]..fe[i]])) {
+                msg.say_limit(b"POSITIONAL", limits.POSITIONAL);
+                vars.pop_frame();
+                _ = shctl.fd_close(fd);
+                depth = depth - 1;
+                return 2;
+            }
+        }
+    }
+    I64[6] r;
+    set_aside(r);
+    Bool ok = true;
+    Bool going = true;
+    while (going) {
+        U8[4096] chunk;
+        I64 k = shctl.fd_read(fd, chunk);
+        if (k <= 0) {
+            going = false;
+        } else if (!lex.append(chunk[0..k])) {
+            ok = false;
+            going = false;
+        }
+    }
+    _ = shctl.fd_close(fd);
+    ok = ok && lex.append(b"\n");
+    I64 st = 2;
+    if (ok) {
+        ctl.enter_func();
+        st = run_text();
+        if (ctl.pending() == ctl.RETURN) {
+            st = ctl.returned();
+            ctl.clear();
+        }
+        ctl.leave_func();
+    } else {
+        msg.say_limit(b"SRC", limits.SRC);
+        if (!interactive) { dev.exit_now(2); }
+    }
+    put_back(r);
+    if (framed) { vars.pop_frame(); }
+    depth = depth - 1;
+    return st;
+}
+
+// exec [PROGRAM ARG...]: PROGRAM in place of cish, the assignments exported to it; with none, the assignments and
+// redirections stay with cish. K-10: in the interactive shell itself PROGRAM takes back the SIGINT and SIGQUIT it
+// ignores, as a foreground child does (child()), so Ctrl-C ends a program the desk starts as `exec CMD` (board
+// 20261111T170652Z); in a child cish forked, child() already set them (an `&` child keeps them ignored).
+I64 exec_(I64 first) {
+    if (!assign(first, nf > 1)) { return 1; }
+    if (!redirect(first, false)) { return 1; }
+    if (nf == 1) { return 0; }
+    if (interactive && !forked_child) {
+        _ = sigctl.sig_set(2, 0);
+        _ = sigctl.sig_set(3, 0);
+    }
+    exec_fields(1);
+    return 127;
+}
+
+// A simple command; forked: this process is already the command's child, so a program replaces it.
+I64 simple(I64 n, Bool forked) {
+    I64 first = parse.left(n);
+    subst_ran = false;
+    if (!words(first)) { return 2; }
+    I64 mark = nsaved;
+    if (nf == 0) {
+        if (!assign(first, false)) { return 1; }
+        Bool ok = redirect(first, true);
+        restore(mark);
+        if (!ok) { return 1; }
+        if (subst_ran) { return subst_status; }
+        return 0;
+    }
+    I64 b = builtin.which(ab[fo[0]..fe[0]]);
+    if (b == builtin.EXEC) { return exec_(first); }
+    I64 f = -1;
+    if (b == builtin.NONE || !builtin.special(b)) { f = function_named(ab[fo[0]..fe[0]]); }
+    if (f >= 0 || b != builtin.NONE) {
+        Bool lasting = f < 0 && builtin.special(b);
+        I64 hm = 0;
+        if (!lasting) { hm = hold(first); }
+        if (!assign(first, false)) {
+            give_back(hm);
+            return 1;
+        }
+        I64 keep_nf = nf;
+        if (!redirect(first, true)) {
+            restore(mark);
+            if (!lasting) { give_back(hm); }
+            return 1;
+        }
+        I64 st = 0;
+        if (f >= 0) {
+            st = call(f);
+        } else if (b == builtin.EVAL) {
+            st = eval_(keep_nf);
+        } else if (b == builtin.DOT) {
+            st = source(keep_nf);
+        } else {
+            st = builtin.run(b, ab, fo, fe, keep_nf);
+        }
+        restore(mark);
+        if (!lasting) { give_back(hm); }
+        return st;
+    }
+    if (forked) {
+        if (!assign(first, true)) { dev.exit_now(1); }
+        if (!redirect(first, false)) { dev.exit_now(1); }
+        exec_fields(0);
+        return 127;
+    }
+    I64 pid = child(false);
+    if (pid < 0) {
+        say_errno(b"fork", 0 - pid);
+        return 2;
+    }
+    if (pid == 0) {
+        if (!assign(first, true)) { dev.exit_now(1); }
+        if (!redirect(first, false)) { dev.exit_now(1); }
+        exec_fields(0);
+    }
+    return wait_for(pid);
+}
+
+// The words of a for, each loop's at the top of one stack while it runs.
+U8[32768] wbytes;
+I64[1024] woff;
+I64[1024] wlen;
+I64 wtop = 0;
+I64 wused = 0;
+
+void say_words() {
+    msg.begin();
+    msg.text(b"limit: for words 1024 or their bytes 32768");
+    msg.send();
+}
+
+Bool push_word(in U8[_] w) {
+    if (wtop == 1024 || wused + len(w) > 32768) {
+        say_words();
+        return false;
+    }
+    for k in 0..len(w) { wbytes[wused + k] = w[k]; }
+    woff[wtop] = wused;
+    wlen[wtop] = len(w);
+    wused = wused + len(w);
+    wtop = wtop + 1;
+    return true;
+}
+
+// After one pass of a loop's body: true when the loop ends here (break, or a pending unwind past it).
+Bool loop_ends() {
+    I64 m = ctl.pending();
+    if (m == ctl.BREAK) {
+        if (ctl.unwind_one()) { ctl.clear(); }
+        return true;
+    }
+    if (m == ctl.CONTINUE) {
+        if (ctl.unwind_one()) {
+            ctl.clear();
+            return false;
+        }
+        return true;
+    }
+    return m == ctl.RETURN || m == ctl.INTR;
+}
+
+I64 while_(I64 n) {
+    Bool until = parse.third(n) == 1;
+    I64 st = 0;
+    ctl.enter_loop();
+    Bool going = true;
+    while (going) {
+        I64 c = list(parse.left(n));
+        if (ctl.pending() != ctl.NONE) {
+            going = !loop_ends();
+        } else if ((c == 0) == until) {
+            going = false;
+        } else {
+            st = list(parse.right(n));
+            going = !loop_ends();
+        }
+    }
+    ctl.leave_loop();
+    return st;
+}
+
+I64 for_(I64 n) {
+    I64 t = parse.token(n);
+    U8[256] name;
+    I64 m = lex.stop(t) - lex.start(t);
+    if (m > 256) { m = 256; }
+    for k in 0..m { name[k] = lex.at(lex.start(t) + k); }
+    I64 base = wtop;
+    I64 bbase = wused;
+    if (parse.third(n) == 1) {
+        if (!words(parse.left(n))) { return 2; }
+        for i in 0..nf {
+            if (!push_word(ab[fo[i]..fe[i]])) {
+                wtop = base;
+                wused = bbase;
+                return 2;
+            }
+        }
+    } else {
+        for i in 0..vars.positional() {
+            I64 k = vars.pos_len(i);
+            if (wtop == 1024 || wused + k > 32768) {
+                say_words();
+                wtop = base;
+                wused = bbase;
+                return 2;
+            }
+            for j in 0..k { wbytes[wused + j] = vars.pos_at(i, j); }
+            woff[wtop] = wused;
+            wlen[wtop] = k;
+            wused = wused + k;
+            wtop = wtop + 1;
+        }
+    }
+    I64 st = 0;
+    ctl.enter_loop();
+    I64 i = base;
+    I64 top = wtop;
+    while (i < top) {
+        if (!vars.set(name[0..m], wbytes[woff[i]..woff[i] + wlen[i]])) {
+            msg.begin();
+            msg.text(b"limit: VARS or VARBYTES");
+            msg.send();
+            st = 2;
+            i = top;
+        } else {
+            st = list(parse.right(n));
+            if (loop_ends()) {
+                i = top;
+            } else {
+                i = i + 1;
+            }
+        }
+    }
+    ctl.leave_loop();
+    wtop = base;
+    wused = bbase;
+    return st;
+}
+
+// The subjects of the cases running, a stack as for's words.
+U8[16384] cbytes;
+I64 cused = 0;
+U8[4096] pb;   // a pattern after its expansion
+
+I64 case_(I64 n) {
+    I64 base = cused;
+    I64 k = one_word(parse.token(n), pb);
+    if (k < 0) { return 2; }
+    if (cused + k > 16384) {
+        msg.begin();
+        msg.text(b"limit: case words 16384 bytes");
+        msg.send();
+        return 2;
+    }
+    for j in 0..k { cbytes[cused + j] = pb[j]; }
+    cused = cused + k;
+    I64 st = 0;
+    I64 ci = parse.left(n);
+    Bool found = false;
+    while (ci >= 0 && !found) {
+        I64 it = parse.left(ci);
+        while (it >= 0 && !found) {
+            expand.set_pattern(true);
+            I64 pn = one_word(parse.item_token(it), pb);
+            expand.set_pattern(false);
+            if (pn < 0) {
+                cused = base;
+                return 2;
+            }
+            if (pattern.match(pb[0..pn], cbytes[base..base + k])) { found = true; }
+            it = parse.item_next(it);
+        }
+        if (found && parse.right(ci) >= 0) { st = list(parse.right(ci)); }
+        ci = parse.next(ci);
+    }
+    cused = base;
+    return st;
+}
+
+I64 if_(I64 n) {
+    I64 c = list(parse.left(n));
+    if (ctl.pending() != ctl.NONE) { return c; }
+    if (c == 0) { return list(parse.right(n)); }
+    I64 e = parse.third(n);
+    if (e < 0) { return 0; }
+    if (parse.kind(e) == parse.N_IF) { return if_(e); }
+    return list(e);
+}
+
+// Any command; forked: this process is already its child (a pipeline's member), so a subshell needs no fork.
+export I64 command(I64 n, Bool forked) {
+    I64 k = parse.kind(n);
+    if (k == parse.N_SIMPLE) { return simple(n, forked); }
+    if (k == parse.N_FUNC) { return define(n); }
+    if (k == parse.N_SUBSHELL && !forked) {
+        I64 pid = child(false);
+        if (pid < 0) {
+            say_errno(b"fork", 0 - pid);
+            return 2;
+        }
+        if (pid == 0) { dev.exit_now(command(n, true)); }
+        return wait_for(pid);
+    }
+    if (!deeper()) { return 2; }
+    I64 mark = nsaved;
+    if (!redirect(parse.redirs(n), !forked)) {
+        restore(mark);
+        depth = depth - 1;
+        return 1;
+    }
+    I64 st = 0;
+    if (k == parse.N_BRACE || k == parse.N_SUBSHELL) {
+        st = list(parse.left(n));
+    } else if (k == parse.N_IF) {
+        st = if_(n);
+    } else if (k == parse.N_WHILE) {
+        st = while_(n);
+    } else if (k == parse.N_FOR) {
+        st = for_(n);
+    } else if (k == parse.N_CASE) {
+        st = case_(n);
+    }
+    restore(mark);
+    depth = depth - 1;
+    return st;
+}
+
+I64 pipeline(I64 n) {
+    I64 first = parse.left(n);
+    I64 st = 0;
+    if (parse.next(first) < 0) {
+        st = command(first, false);
+    } else {
+        I64[256] pids;
+        I64 np = 0;
+        I64 prev = -1;
+        I64 c = first;
+        while (c >= 0) {
+            I64 r = -1;
+            I64 w = -1;
+            Bool more = parse.next(c) >= 0;
+            if (more) {
+                I64 pp = shctl.sh_pipe();
+                if (pp < 0) {
+                    say_errno(b"pipe", 0 - pp);
+                    return 2;
+                }
+                r = pp >> 32;
+                w = pp & 0xFFFFFFFF;
+            }
+            I64 pid = child(false);
+            if (pid < 0) {
+                say_errno(b"fork", 0 - pid);
+                return 2;
+            }
+            if (pid == 0) {
+                if (prev >= 0) {
+                    _ = shctl.sh_dup2(prev, 0);
+                    _ = shctl.fd_close(prev);
+                }
+                if (more) {
+                    _ = shctl.fd_close(r);
+                    if (w != 1) {
+                        _ = shctl.sh_dup2(w, 1);
+                        _ = shctl.fd_close(w);
+                    }
+                }
+                dev.exit_now(command(c, true));
+            }
+            if (prev >= 0) { _ = shctl.fd_close(prev); }
+            if (more) {
+                _ = shctl.fd_close(w);
+                prev = r;
+            }
+            if (np < 256) {
+                pids[np] = pid;
+                np = np + 1;
+            }
+            c = parse.next(c);
+        }
+        for i in 0..np { st = wait_for(pids[i]); }
+    }
+    if (parse.right(n) == 1) {
+        if (st == 0) { return 1; }
+        return 0;
+    }
+    return st;
+}
+
+I64 and_or(I64 n) {
+    I64 k = parse.kind(n);
+    if (k == parse.N_AND || k == parse.N_OR) {
+        I64 l = and_or(parse.left(n));
+        expand.set_status(l);
+        if (ctl.pending() != ctl.NONE) { return l; }
+        if ((k == parse.N_AND) != (l == 0)) { return l; }
+        return and_or(parse.right(n));
+    }
+    return pipeline(n);
+}
+
+// A list: its and_or nodes in order, `&` ones in a child not waited for; the status of the last. It stops early
+// while break, continue or return unwinds.
+export I64 list(I64 n) {
+    I64 st = 0;
+    I64 a = parse.left(n);
+    while (a >= 0) {
+        if (parse.background(a)) {
+            I64 pid = child(true);
+            if (pid < 0) {
+                say_errno(b"fork", 0 - pid);
+                st = 2;
+            } else if (pid == 0) {
+                dev.exit_now(and_or(a));
+            } else {
+                expand.set_bg(pid);
+                st = 0;
+            }
+        } else {
+            st = and_or(a);
+        }
+        expand.set_status(st);
+        a = parse.next(a);
+        if (ctl.pending() != ctl.NONE) { a = -1; }
+    }
+    return st;
+}
+// SPDX-License-Identifier: Apache-2.0

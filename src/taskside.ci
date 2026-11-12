@@ -1,0 +1,9 @@
+// src/taskside.ci: what a K5 task may call (rt/host.c task_allowed). A step ends with exactly one
+// request; its kinds are the constants of src/ts_work.ci. page_load and page_store reach a private
+// page by slot (0 to 7) and word index (0 to 511): the access goes through the task's own page
+// tables, so a page that is not in them is a fault of the task. No address is ever a value.
+
+export extern unrestricted void request(I64 kind, I64 a, I64 b, I64 v);
+export extern unrestricted I64 page_load(I64 slot, I64 idx);
+export extern unrestricted void page_store(I64 slot, I64 idx, I64 v);
+// SPDX-License-Identifier: Apache-2.0

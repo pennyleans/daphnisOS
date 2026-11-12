@@ -1,0 +1,146 @@
+// tests/rs/stpage_test.ci: hosted tests of RS-SET0, the Settings pages' kit (user/ci/kit/stpage.ci) and the sidebar in
+// DN-58's order (user/ci/kit/stside.ci). Run by check.sh with every tests/rs/*_test.ci.
+import user.ci.kit.tokens;
+import user.ci.kit.pen;
+import user.ci.kit.faces;
+import user.ci.kit.symbols;
+import user.ci.kit.stside;
+import user.ci.kit.stpage;
+
+U32[1600] row;
+
+void ground(I64 n, U32 c) { for x in 0..n { row[x] = c; } }
+
+test "DN-58 item 2: the sidebar's order and groups" {
+    U8[16] t;
+    I64 n = stside.name(0, t);
+    assert(n == 7 && t[0] == 'D' && t[6] == 'y');                                    // Display
+    U8[96] all;
+    I64 at = 0;
+    for p in 0..stside.N {
+        n = stside.name(p, t);
+        at = stpage.put(all, at, t[0..n]);
+        if (p + 1 < stside.N) { at = stpage.put(all, at, b"|"); }
+    }
+    U8[79] want = b"Display|Desk|Sound|Keyboard|Network|Date and Time|Storage|Accounts|Grants|About";
+    assert(at == len(want));
+    for k in 0..at { assert(all[k] == want[k]); }
+    assert(stside.group(stside.KEYBOARD) == 0 && stside.group(stside.NETWORK) == 1 && stside.group(stside.STORAGE) == 1);
+    assert(stside.group(stside.ACCOUNTS) == 2 && stside.group(stside.GRANTS) == 2 && stside.group(stside.ABOUT) == 3);
+}
+
+test "DN-40: pills 36 apart, 12 more between groups; a hit finds the pill, a gap finds none" {
+    assert(stside.row_y(0, 0) == 12 && stside.row_y(0, 3) == 12 + 108);
+    assert(stside.row_y(0, 4) - stside.row_y(0, 3) == 44);                           // 32, then 12 to the group
+    assert(stside.row_y(0, 9) + stside.PILL <= 444);                                 // About fits the 444 px content box
+    for p in 0..stside.N {
+        assert(stside.hit(0, 0, 100, stside.row_y(0, p) + 16) == p);
+        assert(stside.hit(0, 0, 4, stside.row_y(0, p) + 16) == -1);                  // left of the pill
+    }
+    assert(stside.hit(0, 0, 100, stside.row_y(0, 3) + 36) == -1);                    // between the groups
+    assert(stside.step(0, -1) == stside.ABOUT && stside.step(stside.ABOUT, 1) == 0);
+}
+
+test "RS-SET0: the new pages take the bank's symbols, mono on FILL" {
+    assert(stside.sym(stside.KEYBOARD, false) == symbols.KEYBOARD);
+    assert(stside.sym(stside.NETWORK, true) == symbols.NETWORK_MONO);
+    assert(stside.sym(stside.DATETIME, false) == symbols.CLOCK && stside.sym(stside.STORAGE, false) == symbols.DISK);
+    assert(stside.sym(stside.ACCOUNTS, true) == symbols.USERS_MONO && stside.sym(stside.GRANTS, false) == symbols.KEY);
+    I64[10] mono = [symbols.DISPLAY_MONO, symbols.WINDOW_MONO, symbols.SPEAKER_MONO, symbols.KEYBOARD_MONO,
+                    symbols.NETWORK_MONO, symbols.CLOCK_MONO, symbols.DISK_MONO, symbols.USERS_MONO, symbols.KEY_MONO,
+                    symbols.INFO_MONO];
+    for p in 0..stside.N { assert(stside.sym(p, true) == mono[p]); }   // the bank's mono half, however long it grows
+    assert(symbols.SIDEBAR_MONO == symbols.SIDEBAR + symbols.N / 2 && symbols.SIDEBAR_MONO < symbols.N);   // frame 48
+}
+
+test "RS-SET0: the shown page's pill is FILL; the rest of the column SURF2" {
+    tokens.set_theme(0);
+    ground(400, 0 as U32);
+    pen.at(0, 0, 1, stside.row_y(0, stside.DESK) + 2);
+    stside.row_at(row, 0, 0, 444, stside.DESK, false, stside.row_y(0, stside.DESK) + 2);
+    assert(row[100] == tokens.word(tokens.FILL) && row[2] == tokens.word(tokens.SURF2) && row[300] == 0 as U32);
+    ground(400, 0 as U32);
+    pen.at(0, 0, 1, stside.row_y(0, stside.SOUND) + 2);
+    stside.row_at(row, 0, 0, 444, stside.DESK, false, stside.row_y(0, stside.SOUND) + 2);
+    assert(row[100] == tokens.word(tokens.SURF2));
+}
+
+test "DN-58 item 12: a faded row is 40 percent of itself over PAPER" {
+    tokens.set_theme(0);
+    ground(100, tokens.word(tokens.INK));
+    pen.at(0, 0, 1, 0);
+    stpage.fade(row, 10, 20);
+    U32 p = tokens.word(tokens.PAPER);
+    U32 k = tokens.word(tokens.INK);
+    I64 want = ((p >> 16) & 255) as I64 + (((((k >> 16) & 255) as I64 - ((p >> 16) & 255) as I64) * 102) >> 8);
+    assert(((row[15] >> 16) & 255) as I64 >= want - 1 && ((row[15] >> 16) & 255) as I64 <= want + 1);
+    assert(row[9] == k && row[20] == k);
+    pen.at(0, 0, 2, 0);                                                              // at 2x the span doubles
+    ground(100, k);
+    stpage.fade(row, 10, 20);
+    assert(row[19] == k && row[20] != k && row[39] != k && row[40] == k);
+}
+
+test "RS-SET0: the slider's value from a point is the inverse of its fill" {
+    for v in 0..11 {
+        I64 fw = stpage.fill_w(240, v, 10);
+        assert(stpage.slider_at(100, 240, 10, 100 + fw - 10) == v);                 // the knob's middle
+    }
+    assert(stpage.slider_at(100, 240, 10, 50) == 0 && stpage.slider_at(100, 240, 10, 500) == 10);
+    assert(stpage.fill_w(240, -3, 10) == 20 && stpage.fill_w(240, 99, 10) == 240);
+}
+
+test "RS-SET0: a segmented pill's parts" {
+    assert(stpage.seg_hit(310, 176, 2, 311) == -1);
+    assert(stpage.seg_hit(310, 176, 2, 312) == 0 && stpage.seg_hit(310, 176, 2, 397) == 0);
+    assert(stpage.seg_hit(310, 176, 2, 398) == 1 && stpage.seg_hit(310, 176, 2, 483) == 1);
+    assert(stpage.seg_hit(310, 176, 2, 484) == -1);
+}
+
+test "RS-SET0: a menu keeps its chosen row in view" {
+    assert(stpage.menu_top(0, 0, 10, 400) == 0);
+    assert(stpage.menu_top(0, 15, 10, 400) == 6);
+    assert(stpage.menu_top(6, 3, 10, 400) == 3);
+    assert(stpage.menu_top(0, 399, 10, 400) == 390);
+    assert(stpage.menu_top(5, 2, 10, 4) == 0);                                       // fewer rows than shown
+    assert(stpage.menu_h(1) == 40 && stpage.menu_h(10) == 12 + 280 + 18);
+    assert(stpage.menu_hit(0, 0, 176, 400, 30, 10, 10, 6) == 30);
+    assert(stpage.menu_hit(0, 0, 176, 400, 30, 10, 10, 36) == 31);
+    assert(stpage.menu_hit(0, 0, 176, 400, 30, 10, 10, 34) == -1 && stpage.menu_hit(0, 0, 176, 400, 30, 10, 10, 35) == -1);
+    assert(stpage.menu_hit(0, 0, 176, 400, 30, 10, 2, 6) == -1);
+}
+
+test "RS-SET0: capitals, digits and the switch's two states" {
+    U8[8] u;
+    I64 n = stpage.upper(b"sam-2", 5, u);
+    assert(n == 5 && u[0] == 'S' && u[2] == 'M' && u[3] == '-' && u[4] == '2');
+    U8[24] d;
+    n = stpage.digits(d, 0, 0);
+    assert(n == 1 && d[0] == '0');
+    n = stpage.digits(d, stpage.put(d, 0, b"pid "), 1907);
+    assert(n == 8 && d[4] == '1' && d[7] == '7');
+    tokens.set_theme(0);
+    ground(200, tokens.word(tokens.PAPER));
+    pen.at(0, 0, 1, 12);
+    stpage.switch_at(row, 144, 0, true);
+    assert(row[102] == tokens.word(tokens.FILL) && row[130] == tokens.word(tokens.ON_FILL));
+    ground(200, tokens.word(tokens.PAPER));
+    stpage.switch_at(row, 144, 0, false);
+    assert(row[141] == tokens.word(tokens.RULE) && row[110] == tokens.word(tokens.ON_FILL));
+}
+test "Codex on PR 304: a slider's end word is whole at 2x, measured at the zoom" {
+    tokens.set_theme(0);
+    I64 x0 = 300;
+    I64 ink = 0;
+    for dy in 0..80 {
+        pen.at(0, 0, 2, dy);
+        ground(1600, tokens.word(tokens.PAPER));
+        stpage.slider_words(row, x0, 10, b"0%", 2, b"100%", 4);
+        I64 xs = pen.x(x0 + stpage.SL_W + 10) + pen.width(b"100", 3, faces.CAPTION);
+        for x in xs..xs + 30 {
+            if (row[x] != tokens.word(tokens.PAPER)) { ink = ink + 1; }
+        }
+    }
+    assert(ink > 0);                                                                     // the % is drawn
+}
+// SPDX-License-Identifier: Apache-2.0

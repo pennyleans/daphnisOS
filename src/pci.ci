@@ -1,0 +1,244 @@
+// src/pci.ci: PCI configuration space, for the devices the kernel drives from cint (N-1; stage P shares it). A device
+// is its slot 0..31 plus 32 times its function 0..7 (AU-1: a function other than 0 is found by class), plus 256 times
+// its bus (HW-2), so a device on bus 0 keeps the number it always had. Configuration goes through mechanism 1 (ports
+// 0xCF8 and 0xCFC), or through ECAM once src/acpi.ci found an MCFG (use_ecam). find and find_class walk bus 0 and
+// every bus behind a PCI-to-PCI bridge (header type 1: its secondary bus), breadth first, so a device behind a root
+// port on bus 1 or 3 is found.
+
+import src.portwide;
+
+// rt/mmio.c's rows (src/mmio.ci's externs, declared here: this module is emitted before that one)
+extern unrestricted I64 mmio_map(U64 base, U64 len);
+extern observe U32 mmio_in32(U64 addr);
+extern unrestricted void mmio_out32(U64 addr, U32 val);
+
+const U16 ADDR = 0xCF8;
+const U16 DATA = 0xCFC;
+export const I64 NONE = -1;
+
+U64 ecam = 0;                  // HW-2: the ECAM base of segment 0, 0 for mechanism 1
+I64 ecam_first = 0;
+I64 ecam_last = -1;
+
+// HW-2: configuration through ECAM at base for buses first..last, mapped uncached once (rt/mmio.c); left at mechanism 1
+// when the window cannot be opened.
+export void use_ecam(U64 base, I64 first, I64 last) {
+    if (base == 0 || first < 0 || last < first || last > 255) {
+        return;
+    }
+    if (mmio_map(base + ((first as U64) << 20), ((last - first + 1) as U64) << 20) == 0) {
+        ecam = base;
+        ecam_first = first;
+        ecam_last = last;
+    }
+}
+
+U32 address(I64 dev, I64 reg) {
+    U64 slot = (dev % 32) as U64;
+    U64 fun = ((dev / 32) % 8) as U64;
+    U64 bus = ((dev / 256) % 256) as U64;
+    return (0x80000000 | (bus << 16) | (slot << 11) | (fun << 8) | ((reg as U64) & 0xFC)) as U32;
+}
+
+U64 ecam_at(I64 dev, I64 reg) {
+    U64 slot = (dev % 32) as U64;
+    U64 fun = ((dev / 32) % 8) as U64;
+    U64 bus = ((dev / 256) % 256) as U64;
+    return ecam + (bus << 20) + (slot << 15) + (fun << 12) + ((reg as U64) & 0xFFC);
+}
+
+Bool by_ecam(I64 dev) {
+    I64 bus = (dev / 256) % 256;
+    return ecam != 0 && bus >= ecam_first && bus <= ecam_last;
+}
+
+// The 32-bit register at reg of device dev.
+export U32 read32(I64 dev, I64 reg) {
+    if (by_ecam(dev)) {
+        return mmio_in32(ecam_at(dev, reg));
+    }
+    portwide.port_out32(ADDR, address(dev, reg));
+    return portwide.port_in32(DATA);
+}
+
+export void write32(I64 dev, I64 reg, U32 v) {
+    if (by_ecam(dev)) {
+        mmio_out32(ecam_at(dev, reg), v);
+        return;
+    }
+    portwide.port_out32(ADDR, address(dev, reg));
+    portwide.port_out32(DATA, v);
+}
+
+// HW-2: the buses to look on: bus 0, then each bridge's secondary bus as it is met, at most once each.
+I64[256] buses;
+I64 nbuses = 0;
+
+void walk_buses() {
+    for i in 0..256 { buses[i] = 0; }
+    Bool[256] seen;
+    for i in 0..256 { seen[i] = false; }
+    buses[0] = 0;
+    seen[0] = true;
+    nbuses = 1;
+    I64 q = 0;
+    while (q < nbuses) {
+        I64 bus = buses[q];
+        for slot in 0..32 {
+            I64 base = 256 * bus + slot;
+            if (read32(base, 0) != 0xFFFFFFFF) {
+                I64 funs = 1;
+                if (((read32(base, 0x0C) >> 16) & 0x80) != 0) {
+                    funs = 8;
+                }
+                for fun in 0..funs {
+                    I64 dev = base + 32 * fun;
+                    if (read32(dev, 0) != 0xFFFFFFFF && ((read32(dev, 0x0C) >> 16) & 0x7F) == 1) {
+                        I64 sec = ((read32(dev, 0x18) >> 8) & 0xFF) as I64;
+                        if (sec > 0 && !seen[sec] && nbuses < 256) {
+                            seen[sec] = true;
+                            buses[nbuses] = sec;
+                            nbuses += 1;
+                        }
+                    }
+                }
+            }
+        }
+        q += 1;
+    }
+}
+
+// The first device on any bus whose vendor and device ID word (device << 16 | vendor) is id, function 0 only, or
+// NONE.
+export I64 find(U32 id) {
+    walk_buses();
+    for b in 0..nbuses {
+        for slot in 0..32 {
+            I64 dev = 256 * buses[b] + slot;
+            if (read32(dev, 0) == id) {
+                return dev;
+            }
+        }
+    }
+    return NONE;
+}
+
+// The I/O port base of BAR 0, or NONE when BAR 0 is not an I/O BAR.
+export I64 io_bar(I64 dev) {
+    U32 bar = read32(dev, 0x10);
+    if ((bar & 1) == 0) {
+        return NONE;
+    }
+    return (bar & 0xFFFC) as I64;
+}
+
+// Turns on I/O space decoding (bit 0) and bus mastering (bit 2) in the command register.
+export void enable_io_dma(I64 dev) {
+    U32 cmd = read32(dev, 4) & 0xFFFF;
+    write32(dev, 4, cmd | 5);
+}
+
+// NW-1: the legacy PIC IRQ routed to dev (1..15, excluding cascade 2 and PS/2 1, 12), with PCI
+// Interrupt Disable (command bit 10) cleared; or NONE when no pin or PIC line is wired.
+export I64 irq_line(I64 dev) {
+    U32 intr = read32(dev, 0x3C);
+    I64 pin = ((intr >> 8) & 0xFF) as I64;
+    I64 line = (intr & 0xFF) as I64;
+    if (pin == 0 || line < 3 || line > 15 || line == 12) {
+        return NONE;
+    }
+    U32 cmd = read32(dev, 4) & 0xFFFF;
+    write32(dev, 4, cmd & 0xFBFF);
+    return line;
+}
+
+// AU-1: the first function whose class, subclass and programming interface (the top 24 bits of
+// register 8) are cls, functions above 0 only on a multifunction device; or NONE.
+export I64 find_class(U32 cls) {
+    walk_buses();
+    for b in 0..nbuses {
+        for slot in 0..32 {
+            I64 base = 256 * buses[b] + slot;
+            U32 id = read32(base, 0);
+            if (id != 0xFFFFFFFF) {
+                I64 funs = 1;
+                if (((read32(base, 0x0C) >> 16) & 0x80) != 0) {
+                    funs = 8;
+                }
+                for fun in 0..funs {
+                    I64 dev = base + 32 * fun;
+                    if (read32(dev, 0) != 0xFFFFFFFF && (read32(dev, 8) >> 8) == cls) {
+                        return dev;
+                    }
+                }
+            }
+        }
+    }
+    return NONE;
+}
+
+// HW-2: the devices on every bus the walk reaches, for the machine block: dev, its ID word, its class word (the top
+// 24 bits of register 8) into the three arrays; the count, at most len(devs).
+export I64 list(inout I64[_] devs, inout U32[_] ids, inout U32[_] classes) {
+    walk_buses();
+    I64 n = 0;
+    for b in 0..nbuses {
+        for slot in 0..32 {
+            I64 base = 256 * buses[b] + slot;
+            if (read32(base, 0) != 0xFFFFFFFF) {
+                I64 funs = 1;
+                if (((read32(base, 0x0C) >> 16) & 0x80) != 0) {
+                    funs = 8;
+                }
+                for fun in 0..funs {
+                    I64 dev = base + 32 * fun;
+                    U32 id = read32(dev, 0);
+                    if (id != 0xFFFFFFFF && n < len(devs)) {
+                        devs[n] = dev;
+                        ids[n] = id;
+                        classes[n] = read32(dev, 8) >> 8;
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    return n;
+}
+
+// The base of memory BAR 0 (32 or 64-bit), or 0 when BAR 0 is an I/O BAR.
+export U64 mem_bar(I64 dev) {
+    U32 lo = read32(dev, 0x10);
+    if ((lo & 1) != 0) {
+        return 0;
+    }
+    U64 base = (lo & 0xFFFFFFF0) as U64;
+    if (((lo >> 1) & 3) == 2) {
+        base = base | ((read32(dev, 0x14) as U64) << 32);
+    }
+    return base;
+}
+
+// The size of memory BAR 0, by writing ones and reading the mask back with decoding off; the
+// command register and the BAR are restored.
+export U64 mem_bar_size(I64 dev) {
+    U32 cmd = read32(dev, 4) & 0xFFFF;
+    write32(dev, 4, cmd & 0xFFFC);
+    U32 lo = read32(dev, 0x10);
+    write32(dev, 0x10, 0xFFFFFFFF);
+    U32 mask = read32(dev, 0x10) & 0xFFFFFFF0;
+    write32(dev, 0x10, lo);
+    write32(dev, 4, cmd);
+    if (mask == 0) {
+        return 0;
+    }
+    return ((~mask) as U64 & 0xFFFFFFFF) + 1;
+}
+
+// Turns on memory space decoding (bit 1) and bus mastering (bit 2) and masks the legacy interrupt
+// (bit 10): the drivers poll.
+export void enable_mem_dma(I64 dev) {
+    U32 cmd = read32(dev, 4) & 0xFFFF;
+    write32(dev, 4, cmd | 0x406);
+}
+// SPDX-License-Identifier: Apache-2.0

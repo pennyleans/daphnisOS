@@ -1,0 +1,328 @@
+// tests/kfz/k1_facts.ci: facts (1007, KF-3) and sysinfo (99, KF-2) at their edges (docs/specs/2026-11-11-kf-facts.md
+// section 2). For each: bad kinds and ids before any pointer is looked at, n at and past each record's size, every
+// kind of bad pointer, and who sees which process. A call that fails writes nothing outside the bytes it was given,
+// and neither call takes a frame.
+
+const U64 NR_SYSINFO = 99;
+const U64 KZ_HI = 0x800000000000;      // uvm.USER_HI
+
+// The ways a pointer can be wrong for a record of n bytes, the read-only page among them.
+U64 kz_bad_ptr(I64 i, I64 n) {
+    U64 m = n as U64;
+    if (i == 0) { return 0; }
+    if (i == 1) { return 0x200000 - 1; }               // the byte below USER_LO
+    if (i == 2) { return KZ_RO; }                      // read-only
+    if (i == 3) { return KZ_RO - m + 1; }              // writable, then one byte read-only
+    if (i == 4) { return KZ_GAP; }                     // never mapped
+    if (i == 5) { return KZ_GAP - 1; }                 // the read-only page's last byte
+    if (i == 6) { return KZ_HI - m + 1; }              // the top page, then one byte at USER_HI
+    if (i == 7) { return KZ_HI; }
+    if (i == 8) { return KZ_HI + 1; }
+    if (i == 9) { return 0xFFFF800000000000; }         // the kernel's half
+    if (i == 10) { return 0xFFFFFFFFFFFFFFFF; }
+    if (i == 11 && m >= 2) { return 0xFFFFFFFFFFFFFFFF - (m - 2); }   // would wrap past 2^64
+    if (i == 11) { return 0xFFFFFFFFFFFFFFFF; }
+    return 0x7FFFFFFFFFFF0000;                         // below USER_HI, never mapped
+}
+const I64 KZ_BAD_PTRS = 13;
+
+I64 kz_full(U64 kind) {
+    if (kind == facts.CPU) { return facts.CPU_BYTES; }
+    if (kind == facts.PROCESS) { return facts.PROCESS_BYTES; }
+    if (kind == facts.DISPLAY) { return facts.DISPLAY_BYTES; }
+    return facts.DISK_BYTES;
+}
+
+test "facts: a kind that is not one is -EINVAL before id, buf and n are looked at" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    U64[9] kinds = [0, 6, 7, 8, 255, 0x100000003, 0x8000000000000001, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF];
+    U64[3] ids = [0, 64, 0xFFFFFFFFFFFFFFFF];
+    U64[4] ns = [0, 64, 4096, 0xFFFFFFFFFFFFFFFF];
+    for k in 0..9 {
+        for i in 0..3 {
+            for b in 0..KZ_BAD_PTRS {
+                for n in 0..4 {
+                    assert(kz_call(p, NR_FACTS, kinds[k], ids[i], kz_bad_ptr(b, 64), ns[n], 0, 0) == E_INVAL);
+                }
+            }
+            assert(kz_call(p, NR_FACTS, kinds[k], ids[i], KZ_RW, 4096, 0, 0) == E_INVAL);
+        }
+    }
+    assert(kz_kept_outside(p, 0, 0) && kz_pool() == pool);
+    kz_end(p);
+}
+
+test "facts: an id past a kind's last record is -ENOENT whatever buf is, and nothing is written" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    for b in 0..KZ_BAD_PTRS + 1 {
+        U64 buf = KZ_RW;
+        if (b < KZ_BAD_PTRS) { buf = kz_bad_ptr(b, 104); }
+        assert(kz_call(p, NR_FACTS, facts.CPU, 1, buf, 64, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.CPU, 0xFFFFFFFFFFFFFFFF, buf, 64, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.PROCESS, 64, buf, 88, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.PROCESS, 65, buf, 88, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.PROCESS, 0x8000000000000000, buf, 88, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.PROCESS, 0xFFFFFFFFFFFFFFFF, buf, 88, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.DISPLAY, 1, buf, 104, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.DISPLAY, 0xFFFFFFFFFFFFFFFF, buf, 104, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.DISK, 0, buf, 64, 0, 0) == E_NOENT);   // no block device here
+        assert(kz_call(p, NR_FACTS, facts.DISK, 1, buf, 64, 0, 0) == E_NOENT);
+        assert(kz_call(p, NR_FACTS, facts.NETWORK, 0, buf, 64, 0, 0) == E_NOENT);   // no network here (KF-3c)
+        assert(kz_call(p, NR_FACTS, facts.NETWORK, 1, buf, 64, 0, 0) == E_NOENT);
+    }
+    assert(kz_kept_outside(p, 0, 0));
+    kz_end(p);
+}
+
+test "facts: n 0 asks the size alone, and no pointer is touched, however bad" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    U64[3] kinds = [facts.CPU, facts.PROCESS, facts.DISPLAY];
+    for k in 0..3 {
+        for b in 0..KZ_BAD_PTRS {
+            assert(kz_call(p, NR_FACTS, kinds[k], 0, kz_bad_ptr(b, 1), 0, 0, 0) == kz_full(kinds[k]));
+        }
+    }
+    assert(kz_kept_outside(p, 0, 0));
+    kz_end(p);
+}
+
+test "facts: n at and past each record's size writes min(n, size) bytes at buf and nothing else" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    U64[3] kinds = [facts.CPU, facts.PROCESS, facts.DISPLAY];
+    for k in 0..3 {
+        I64 full = kz_full(kinds[k]);
+        U64 id = 0;
+        if (kinds[k] == facts.PROCESS) { id = p as U64; }
+        // the whole record once, at the end of the writable run, for what each share must equal
+        U8[104] whole;
+        assert(kz_call(p, NR_FACTS, kinds[k], id, KZ_RW + 8192, full as U64, 0, 0) == full);
+        assert(uvm.peek(p, KZ_RW + 8192, whole, full) == full);
+        U64[8] ns = [1, (full - 1) as U64, full as U64, (full + 1) as U64, 4096, 0x7FFFFFFFFFFFFFFF,
+                     0x8000000000000000, 0xFFFFFFFFFFFFFFFF];
+        for n in 0..8 {
+            kz_fill(p);
+            I64 want = full;
+            if (ns[n] < full as U64) { want = ns[n] as I64; }
+            assert(kz_call(p, NR_FACTS, kinds[k], id, KZ_RW, ns[n], 0, 0) == full);
+            assert(kz_kept_outside(p, KZ_RW, KZ_RW + want as U64));
+            U8[104] got;
+            assert(uvm.peek(p, KZ_RW, got, want) == want);
+            for j in 0..want {
+                assert(got[j] == whole[j]);
+            }
+        }
+        kz_fill(p);
+    }
+    assert(kz_pool() == pool);
+    kz_end(p);
+}
+
+test "facts: every bad buf is -EFAULT, and no byte outside the record's bytes moves" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    U64[3] kinds = [facts.CPU, facts.PROCESS, facts.DISPLAY];
+    for k in 0..3 {
+        I64 full = kz_full(kinds[k]);
+        U64 id = 0;
+        if (kinds[k] == facts.PROCESS) { id = p as U64; }
+        for b in 0..KZ_BAD_PTRS {
+            U64 buf = kz_bad_ptr(b, full);
+            assert(kz_call(p, NR_FACTS, kinds[k], id, buf, full as U64, 0, 0) == E_FAULT);
+            assert(kz_kept_outside(p, buf, kz_upto(buf, full as U64)));
+            kz_fill(p);
+        }
+    }
+    assert(kz_pool() == pool && machine.kfz_refused() == 0);
+    kz_end(p);
+}
+
+// DN-69 item 5 (PR 365): who sees a process record. a, a2 and c run for Children (uids 1000, 1000, 1001), pa for a
+// Parent (uid 1002); all four are the desk's children, so one family, as a session's processes are. b is another
+// account's process of another family; r is uid 0, k holds ring 0.
+test "facts: kind 2 shows a Child its own uid's processes only, the rest 96 zero bytes; a Parent, uid 0, ring 0 all" {
+    I64 d = kz_desk();
+    I64[4] uids = [1000, 1000, 1001, 1002];
+    I64[4] kids;
+    for i in 0..4 {
+        kids[i] = kz_child(d, 0);
+        U64 c = 7;
+        if (i == 3) { c = c | facts.LOGIN_PARENT; }
+        assert(kz_call(kids[i], NR_LOGIN, uids[i] as U64, uids[i] as U64, c, 0, 0, 0) == 0);
+    }
+    I64 a = kids[0];
+    I64 pa = kids[3];
+    assert(!facts.is_parent(a) && facts.is_parent(pa));
+    I64 b = kz_proc(1001, fs.GRANT_ALL, 0);
+    I64 r = kz_proc(0, fs.GRANT_ALL, 0);
+    I64 k = kz_proc(1003, fs.GRANT_ALL, fs.GRANT_KERN);
+    // over every slot of the table, from a Child: its own uid's live processes in full, every other slot zero
+    U8[96] rec;
+    I64 own = 0;
+    for s in 0..uvm.PROCS {
+        kz_fill(a);
+        assert(kz_call(a, NR_FACTS, facts.PROCESS, s as U64, KZ_RW, 96, 0, 0) == 96);
+        assert(uvm.peek(a, KZ_RW, rec, 96) == 96 && kz_kept_outside(a, KZ_RW, KZ_RW + 96));
+        Bool zero = true;
+        for j in 0..96 {
+            if (rec[j] != 0) { zero = false; }
+        }
+        Bool mine = (state[s] == READY || state[s] == WAITING || state[s] == ZOMBIE) && fs.uid_of(s) == 1000;
+        assert(zero == !mine);
+        if (mine) {
+            assert(kz_u64(a, KZ_RW) == vpid[s] as U64 && kz_u64(a, KZ_RW + 16) == 1000);
+            own += 1;
+        }
+    }
+    assert(own == 2);
+    // a Parent, uid 0 and ring 0 read every live process in full: its pid, uid and CPU time (KF-R1's word 88)
+    facts.tick_mark(1000);
+    facts.tick_ran(kids[2], 1037);
+    I64[3] who = [pa, r, k];
+    I64[5] whom = [a, kids[2], b, r, d];
+    for w in 0..3 {
+        for t in 0..5 {
+            kz_fill(who[w]);
+            assert(kz_call(who[w], NR_FACTS, facts.PROCESS, whom[t] as U64, KZ_RW, 96, 0, 0) == 96);
+            assert(kz_u64(who[w], KZ_RW) == vpid[whom[t]] as U64);
+            assert(kz_u64(who[w], KZ_RW + 16) == fs.uid_of(whom[t]) as U64);
+            assert(kz_u64(who[w], KZ_RW + 88) == facts.ran_ticks(whom[t]) as U64);
+        }
+    }
+    // the Child: the other account's process, with CPU time of its own now, is still 96 zero bytes
+    kz_fill(a);
+    assert(kz_call(a, NR_FACTS, facts.PROCESS, kids[2] as U64, KZ_RW, 0xFFFFFFFFFFFFFFFF, 0, 0) == 96);
+    assert(uvm.peek(a, KZ_RW, rec, 96) == 96);
+    for j in 0..96 {
+        assert(rec[j] == 0);
+    }
+    kz_end(k);
+    kz_end(r);
+    kz_end(b);
+    for i in 0..4 {
+        kz_end(kids[3 - i]);
+    }
+    kz_end(d);
+}
+
+// KF edition 14 (PR 365's second commit): kill (62), getpgid (121) and getsid (124) answer -ESRCH, as for no process,
+// for a process the caller may not see, so a Child cannot find or count another account's pids; a Parent sees it and
+// gets Linux's -EPERM from kill.
+test "kill, getpgid, getsid: a Child gets -ESRCH for another account's pid, whatever the signal; a Parent -EPERM" {
+    I64 d = kz_desk();
+    I64[4] uids = [1000, 1000, 1001, 1002];
+    I64[4] kids;
+    for i in 0..4 {
+        kids[i] = kz_child(d, 0);
+        U64 c = 7;
+        if (i == 3) { c = c | facts.LOGIN_PARENT; }
+        assert(kz_call(kids[i], NR_LOGIN, uids[i] as U64, uids[i] as U64, c, 0, 0, 0) == 0);
+    }
+    I64 a = kids[0];
+    I64 pa = kids[3];
+    U64[5] sigs = [0, 9, 15, 65, 0xFFFFFFFFFFFFFFFF];
+    I64[3] hidden = [kids[2], pa, d];                    // another Child's, the Parent's, the desk's (uid 0)
+    for h in 0..3 {
+        U64 v = vpid[hidden[h]] as U64;
+        for g in 0..5 {
+            assert(kz_call(a, 62, v, sigs[g], 0, 0, 0, 0) == E_SRCH);
+        }
+        assert(kz_call(a, 121, v, 0, 0, 0, 0, 0) == E_SRCH);
+        assert(kz_call(a, 124, v, 0, 0, 0, 0, 0) == E_SRCH);
+        assert(state[hidden[h]] == READY);
+    }
+    // its own uid's process: seen, signal 0 answers 0
+    assert(kz_call(a, 62, vpid[kids[1]] as U64, 0, 0, 0, 0, 0) == 0);
+    assert(kz_call(a, 121, vpid[kids[1]] as U64, 0, 0, 0, 0, 0) == job.group(kids[1]));
+    // the Parent sees the Child's process: kill is Linux's -EPERM, getpgid and getsid answer
+    for g in 0..3 {
+        assert(kz_call(pa, 62, vpid[kids[2]] as U64, sigs[g], 0, 0, 0, 0) == E_PERM);
+    }
+    assert(kz_call(pa, 121, vpid[kids[2]] as U64, 0, 0, 0, 0, 0) == job.group(kids[2]));
+    assert(kz_call(pa, 124, vpid[kids[2]] as U64, 0, 0, 0, 0, 0) == job.session(kids[2]));
+    assert(state[kids[2]] == READY);
+    for i in 0..4 {
+        kz_end(kids[3 - i]);
+    }
+    kz_end(d);
+}
+
+// DN-69 item 5: the Parent bit rides login's third word, bit 32; any other bit past the grants is -EINVAL before
+// anything changes. The record is the kernel's: a fork's child takes it, a process the kernel starts has none.
+test "login: bit 32 makes a Parent, bits past it are -EINVAL and change nothing; a fork's child keeps the role" {
+    I64 d = kz_desk();
+    I64 c = kz_child(d, 0);
+    U64 before = kz_creds();
+    U64[5] bad = [0x200000000, 0x8000000000000000, 0x100000008, 0xFFFFFFFF00000000, 0x300000007];
+    for i in 0..5 {
+        assert(kz_call(c, NR_LOGIN, 1000, 1000, bad[i], 0, 0, 0) == E_INVAL);
+        assert(!facts.is_parent(c));
+    }
+    assert(kz_creds() == before && fs.uid_of(c) == 0);
+    assert(kz_call(c, NR_LOGIN, 1000, 1000, 7 | facts.LOGIN_PARENT, 0, 0, 0) == 0);
+    assert(facts.is_parent(c) && fs.uid_of(c) == 1000 && fs.ceil_of(c) == 7);
+    I64 g = kz_fork(c);
+    assert(facts.is_parent(g));
+    I64 c2 = kz_child(d, 0);
+    assert(kz_call(c2, NR_LOGIN, 1001, 1001, facts.LOGIN_PARENT, 0, 0, 0) == 0);
+    assert(facts.is_parent(c2) && fs.ceil_of(c2) == 0 && fs.grant_of(c2) == 0);
+    kz_end(g);
+    kz_end(c2);
+    kz_end(c);
+    kz_end(d);
+}
+
+// KF-R1 (PR 342): the CPU's busy and idle time (kind 1, words 64 and 72) and a process's own (kind 2, word 88), whole
+// timer ticks, from the ledger src/proc.ci's scheduler keeps through facts.tick_*.
+test "facts: KF-R1's ledger: busy, idle and a process's ticks; a mark ahead of now counts nothing; a fork starts at 0" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 busy = facts.busy_ticks();
+    I64 idle = facts.idle_ticks();
+    facts.tick_mark(500);
+    facts.tick_ran(p, 530);                              // 30 ticks in ring 3
+    facts.tick_mark(530);
+    facts.tick_idle(550);                                // 20 halted
+    facts.tick_mark(600);
+    facts.tick_ran(p, 590);                              // now before the mark: nothing
+    facts.tick_idle(590);
+    facts.tick_mark(600);
+    facts.tick_ran(64, 610);                             // a slot off the table: busy, no one's
+    facts.tick_ran(-1, 620);
+    assert(facts.busy_ticks() == busy + 30 + 10 + 10 && facts.idle_ticks() == idle + 20);
+    assert(facts.ran_ticks(p) == 30 && facts.ran_ticks(64) == 0 && facts.ran_ticks(-1) == 0);
+    assert(kz_call(p, NR_FACTS, facts.CPU, 0, KZ_RW, 80, 0, 0) == 80);
+    assert(kz_u64(p, KZ_RW + 64) == facts.busy_ticks() as U64 && kz_u64(p, KZ_RW + 72) == facts.idle_ticks() as U64);
+    assert(kz_call(p, NR_FACTS, facts.PROCESS, p as U64, KZ_RW + 128, 96, 0, 0) == 96);
+    assert(kz_u64(p, KZ_RW + 128 + 88) == 30);
+    I64 c = kz_fork(p);
+    assert(facts.ran_ticks(c) == 0 && facts.ran_ticks(p) == 30);
+    facts.tick_mark(700);
+    facts.tick_ran(c, 705);
+    kz_end(c);
+    I64 c2 = kz_fork(p);                                 // the slot c left, taken again: its ticks begin at 0
+    assert(c2 == c && facts.ran_ticks(c2) == 0);
+    kz_end(c2);
+    kz_end(p);
+}
+
+test "sysinfo: every bad pointer is -EFAULT, 112 bytes at a good one, nothing else moves, no frame is taken" {
+    I64 p = kz_proc(1000, fs.GRANT_ALL, 0);
+    I64 pool = kz_pool();
+    for b in 0..KZ_BAD_PTRS {
+        U64 info = kz_bad_ptr(b, 112);
+        assert(kz_call(p, NR_SYSINFO, info, 0, 0, 0, 0, 0) == E_FAULT);
+        assert(kz_kept_outside(p, info, kz_upto(info, 112)));
+        kz_fill(p);
+    }
+    U64[3] good = [KZ_RW, KZ_RO - 112, KZ_HI - 112];
+    for g in 0..3 {
+        assert(kz_call(p, NR_SYSINFO, good[g], 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0, 0, 0) == 0);
+        assert(kz_kept_outside(p, good[g], good[g] + 112));
+        assert(kz_u64(p, good[g] + 32) == frames.ram() as U64);                // totalram
+        kz_fill(p);
+    }
+    assert(kz_pool() == pool && machine.kfz_refused() == 0);
+    kz_end(p);
+}
+// SPDX-License-Identifier: Apache-2.0

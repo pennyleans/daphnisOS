@@ -1,0 +1,49 @@
+// user/ci/cish/ctl.ci: break, continue and return in flight (CS-2). A builtin sets the mode; every list, loop and
+// function call looks at it after each command and unwinds: break and continue by `levels` loops, return to the
+// function's call with `value` as its status. As in ash, a loop open in the caller counts inside a function.
+// K-10: INTR, a foreground child of an interactive cish ended by SIGINT (Ctrl-C), unwinds everything: the loop in
+// cish.ci drops the rest of the text and prompts again.
+export const I64 NONE = 0;
+export const I64 BREAK = 1;
+export const I64 CONTINUE = 2;
+export const I64 RETURN = 3;
+export const I64 INTR = 4;
+
+I64 mode = 0;
+I64 levels = 0;
+I64 value = 0;
+I64 loops = 0;   // loops open around the command running now
+I64 funcs = 0;   // function calls open
+
+export I64 pending() { return mode; }
+export I64 how_many() { return levels; }
+export I64 returned() { return value; }
+export I64 in_loops() { return loops; }
+export I64 in_funcs() { return funcs; }
+
+export void set(I64 m, I64 n, I64 v) {
+    mode = m;
+    levels = n;
+    value = v;
+}
+
+export void clear() {
+    mode = NONE;
+    levels = 0;
+}
+
+// One loop level unwound: true when the unwinding stops at this loop.
+export Bool unwind_one() {
+    levels = levels - 1;
+    if (levels <= 0) {
+        levels = 0;
+        return true;
+    }
+    return false;
+}
+
+export void enter_loop() { loops = loops + 1; }
+export void leave_loop() { loops = loops - 1; }
+export void enter_func() { funcs = funcs + 1; }
+export void leave_func() { funcs = funcs - 1; }
+// SPDX-License-Identifier: Apache-2.0

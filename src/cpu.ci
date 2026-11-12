@@ -1,0 +1,35 @@
+// src/cpu.ci: the TSS and the IDT with interrupt stacks. The words come from src/tss.ci and
+// src/gate.ci (pure, tested hosted); the storage is written through the externs of src/trap.ci.
+
+import src.trap;
+import src.gate;
+import src.tss;
+
+const U64 CODE_SELECTOR = 0x08;
+const I64 VECTORS = 48;
+const U64 PRESENT_INTERRUPT_GATE = 0x8E;
+
+// Describes the TSS in the GDT, points IST1 to IST3 at their stacks, and loads it (ltr).
+export void tss_install() {
+    U64 base = trap.tss_base();
+    trap.gdt_set(3, tss.tss_desc_lo(base, 103), tss.tss_desc_hi(base));
+    for n in 1..4 {
+        trap.tss_set_ist(n, trap.ist_top(n));
+    }
+    trap.tss_load();
+}
+
+// One IDT entry; the IDT is not reloaded (the CPU reads the table on each delivery).
+export void idt_gate(I64 vector, I64 ist, U64 attr) {
+    U64 offset = trap.trap_stub(vector);
+    trap.idt_set(vector, gate.gate_lo_attr(offset, CODE_SELECTOR, ist as U64, attr), gate.gate_hi(offset));
+}
+
+// Gates for vectors 0 to 47, #DF, #NMI and #PF on their IST stacks (needs tss_install first).
+export void idt_install_ist() {
+    for v in 0..VECTORS {
+        idt_gate(v, tss.ist_of(v), PRESENT_INTERRUPT_GATE);
+    }
+    trap.idt_load();
+}
+// SPDX-License-Identifier: Apache-2.0

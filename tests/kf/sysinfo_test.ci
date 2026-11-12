@@ -1,0 +1,49 @@
+// tests/kf/sysinfo_test.ci: KF-2 (docs/specs/2026-11-11-kf-facts.md section 2), hosted: the words of
+// src/sysinfo.ci's record, each of Linux's struct sysinfo fields at its offset.
+
+import src.sysinfo;
+
+// The byte at offset at of the record w, little-endian.
+I64 byte_at(in U64[14] w, I64 at) {
+    return ((w[at / 8] >> (8 * (at % 8)) as U64) & 0xFF) as I64;
+}
+
+test "the record is Linux's struct sysinfo: 112 bytes, each field in its place" {
+    U64[14] w;
+    for i in 0..14 {
+        w[i] = 0xAAAAAAAAAAAAAAAA;
+    }
+    sysinfo.words(w, 3600, 16384, 9000, 7);
+    assert(sysinfo.BYTES == 112 && sysinfo.WORDS * 8 == sysinfo.BYTES);
+    assert(w[0] == 3600);                              // uptime at 0
+    assert(w[1] == 0 && w[2] == 0 && w[3] == 0);       // loads at 8
+    assert(w[4] == 16384);                             // totalram at 32
+    assert(w[5] == 9000);                              // freeram at 40
+    assert(w[6] == 0 && w[7] == 0 && w[8] == 0 && w[9] == 0);
+    assert(byte_at(w, 80) == 7 && byte_at(w, 81) == 0);    // procs, 16 bits at 80
+    for at in 82..88 {
+        assert(byte_at(w, at) == 0);                   // pad
+    }
+    assert(w[11] == 0 && w[12] == 0);                  // totalhigh, freehigh
+    assert(byte_at(w, 104) == 0 && byte_at(w, 105) == 16 && byte_at(w, 106) == 0 && byte_at(w, 107) == 0);   // mem_unit 4096
+    for at in 108..112 {
+        assert(byte_at(w, at) == 0);
+    }
+}
+
+test "a count of processes past 16 bits reads as 65,535" {
+    U64[14] w;
+    sysinfo.words(w, 0, 0, 0, 70000);
+    assert(w[10] == 0xFFFF);
+    sysinfo.words(w, 0, 0, 0, 65535);
+    assert(w[10] == 0xFFFF);
+    sysinfo.words(w, 0, 0, 0, 65534);
+    assert(w[10] == 65534);
+}
+
+test "uptime and the frame counts are whole words" {
+    U64[14] w;
+    sysinfo.words(w, 0x1FFFFFFFF, 2088960, 2088959, 1);
+    assert(w[0] == 0x1FFFFFFFF && w[4] == 2088960 && w[5] == 2088959);
+}
+// SPDX-License-Identifier: Apache-2.0

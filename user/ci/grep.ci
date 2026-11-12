@@ -1,0 +1,194 @@
+// user/ci/grep.ci: grep [-E|-F] [-c|-l|-q] [-insvxwr] [-e PATTERN]... [-f FILE]... [PATTERN] [FILE...]
+// (docs/specs/2026-11-06-c-core.md, CT-3; POSIX XCU grep; ruling CORE-3). The patterns are the -e values and the
+// lines of the -f files, in order, else the first operand; each may hold newlines, which separate patterns. A line is
+// selected when any pattern matches it (-v: none does), anywhere, as the whole line (-x) or as a whole word (-w);
+// -i folds ASCII case. Each FILE (`-` or none: descriptor 0) is read in lines; -r walks a directory FILE (none: `.`)
+// in byte order. A name prefixes each line when more than one FILE is named or with -r. Status 0 if a line was
+// selected, 1 if none, 2 after an error (with -q, 0 whenever a line was selected); -s keeps file errors unsaid.
+import user.ci.dev;
+import user.ci.shctl;
+import user.ci.corectl;
+import user.ci.core.put;
+import user.ci.core.msg;
+import user.ci.core.args;
+import user.ci.core.get;
+import user.ci.core.path;
+import user.ci.core.line;
+import user.ci.core.re;   // user/ci/build.sh emits the modules in this order, each after what it imports
+
+U8[65536] buf;
+U8[65536] pbuf;      // a -f file's line
+U8[4096] wpath;
+Bool o_c = false;
+Bool o_l = false;
+Bool o_q = false;
+Bool o_n = false;
+Bool o_s = false;
+Bool o_v = false;
+Bool o_x = false;
+Bool o_w = false;
+Bool named = false;
+Bool any = false;    // a line was selected
+Bool erred = false;
+
+void quiet_exit() {
+    put.flush();
+    dev.exit_now(0);
+}
+
+void file_error(in U8[_] name, I64 e) {
+    erred = true;
+    if (!o_s) { msg.file(name, e); }
+}
+
+// Each newline-separated piece of p is a pattern.
+void add_text(in U8[_] p, Bool fixed) {
+    I64 s = 0;
+    for i in 0..len(p) {
+        if (p[i] == '\n') {
+            re.add(p[s..i], fixed);
+            s = i + 1;
+        }
+    }
+    re.add(p[s..len(p)], fixed);
+}
+
+void add_file(in U8[_] name, Bool fixed) {
+    I64 fd = get.open(name);
+    if (fd < 0) { msg.finish_with(2); }
+    line.begin(fd);
+    I64 n = line.next(pbuf);
+    while (n >= 0) {
+        re.add(pbuf[0..n], fixed);
+        n = line.next(pbuf);
+    }
+    get.close(fd);
+}
+
+void prefix(in U8[_] name) {
+    if (named) {
+        put.bytes(name);
+        put.byte(':');
+    }
+}
+
+void scan(I64 fd, in U8[_] name) {
+    line.begin(fd);
+    I64 hits = 0;
+    I64 no = 0;
+    I64 n = line.next(buf);
+    Bool going = true;
+    while (going && n >= 0) {
+        no = no + 1;
+        re.line(buf[0..n]);
+        Bool sel = re.matches(o_x, o_w) != o_v;
+        if (sel) {
+            any = true;
+            if (o_q) { quiet_exit(); }
+            hits = hits + 1;
+            if (o_l) {
+                going = false;
+            } else if (!o_c) {
+                prefix(name);
+                if (o_n) {
+                    put.num(no, 0);
+                    put.byte(':');
+                }
+                put.bytes(buf[0..n]);
+                put.byte('\n');
+            }
+        }
+        if (going) { n = line.next(buf); }
+    }
+    if (line.failed() != 0) { file_error(name, line.failed()); }
+    if (o_c) {
+        prefix(name);
+        put.num(hits, 0);
+        put.byte('\n');
+    }
+    if (o_l && hits > 0) {
+        put.bytes(name);
+        put.byte('\n');
+    }
+}
+
+void one(in U8[_] name) {
+    I64 fd = 0;
+    if (!(len(name) == 1 && name[0] == '-')) {
+        fd = shctl.sh_open(name, 0, 0);
+        if (fd < 0) {
+            file_error(name, 0 - fd);
+            return;
+        }
+    }
+    scan(fd, name);
+    get.close(fd);
+}
+
+void tree(in U8[_] root) {
+    path.walk_start(root, true, false, false);
+    I64 w = path.walk_next();
+    while (w != path.W_END) {
+        I64 pl = path.walk_path(wpath);
+        if (w == path.W_ERR) {
+            file_error(wpath[0..pl], path.walk_errno());
+        } else if (w == path.W_FILE) {
+            one(wpath[0..pl]);
+        }
+        w = path.walk_next();
+    }
+}
+
+void main(in U8[_] a) {
+    msg.name(b"grep");
+    args.parse(a, b"EFciHhlnqsvxwr", b"ef");
+    Bool fixed = args.has('F');
+    re.start(args.has('E'), args.has('i'));
+    o_c = args.has('c');
+    o_l = args.has('l');
+    o_q = args.has('q');
+    o_n = args.has('n');
+    o_s = args.has('s');
+    o_v = args.has('v');
+    o_x = args.has('x');
+    o_w = args.has('w');
+    Bool rec = args.has('r');
+    I64 first = 0;
+    if (args.values() == 0) {
+        if (args.operands() == 0) { msg.usage(b"no pattern"); }
+        add_text(a[args.op_start(0)..args.op_stop(a, 0)], fixed);
+        first = 1;
+    }
+    for i in 0..args.values() {
+        if (args.value_letter(i) == 'e') {
+            add_text(a[args.value_start(i)..args.value_stop(i)], fixed);
+        } else {
+            add_file(a[args.value_start(i)..args.value_stop(i)], fixed);
+        }
+    }
+    re.compile();
+    I64 n = args.operands() - first;
+    named = n > 1 || rec;
+    if (args.has('H')) { named = true; }
+    if (args.has('h')) { named = false; }
+    if (n == 0) {
+        if (rec) {
+            tree(b".");
+        } else {
+            scan(0, b"(standard input)");
+        }
+    }
+    for i in 0..n {
+        if (rec) {
+            tree(a[args.op_start(first + i)..args.op_stop(a, first + i)]);
+        } else {
+            one(a[args.op_start(first + i)..args.op_stop(a, first + i)]);
+        }
+    }
+    if (erred) {
+        msg.finish_with(2);
+    }
+    if (any) { msg.finish_with(0); }
+    msg.finish_with(1);
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,34 @@
+{
+  "id": "undo-selects-backspace",
+  "rules": [
+    "UNDO-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    3,
+    3
+  ],
+  "chunks": [
+    "7f",
+    "1a"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      2,
+      3
+    ],
+    "screen": [
+      "abc",
+      "",
+      "",
+      "",
+      " x  1 char selected                 1:4",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

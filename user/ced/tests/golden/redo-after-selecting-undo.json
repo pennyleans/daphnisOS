@@ -1,0 +1,27 @@
+{
+  "id": "redo-after-selecting-undo",
+  "rules": [
+    "UNDO-3"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    3,
+    3
+  ],
+  "chunks": [
+    "7f",
+    "1a",
+    "19"
+  ],
+  "expect": {
+    "text": "ab",
+    "sel": [
+      2,
+      2
+    ]
+  }
+}

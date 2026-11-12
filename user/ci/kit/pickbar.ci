@@ -1,0 +1,165 @@
+// user/ci/kit/pickbar.ci: the picker's bar (design note 70; Choose Picture, `finder --pick png`, kit/indexpick.ci):
+// frame 23's Save As bar without its name field, across the foot of Index's surface in place of the status bar. H
+// high, SURF2, no rule; PAD in at each side; at its right Choose and Cancel, GAP apart, placed as Save As places Save
+// and Cancel. Each is frame 23's button as kit/indextrash.ci draws it: BTN_H high, radius 6, centered in the bar; its
+// key on a KEY_H keycap of radius 4 (SHORTCUT, KEY_SIDE in at each side) BTN_SIDE in, then KEY_GAP, then its word in
+// NAME_BOLD, BTN_SIDE in at the right. Choose: `Enter`, FILL, keycap and word ON_FILL; at 40 percent over the bar until
+// a file it takes is chosen (set_live), and then it takes no press, Enter or focus. Cancel: `Esc`, SURF1, keycap RULE,
+// its key INK_DIM, its word INK. No caption (DN-46).
+// The keyboard, the dialog rule (DN-69, note 68): Enter takes Choose while it is live, wherever the focus is; until
+// then Enter is Index's (a folder goes in). Esc is Index's: it clears the filter, else ends the picker, which is
+// Cancel. The focus starts in the list; Tab steps the list, Choose (while live), Cancel and the list again, Shift+Tab
+// back; Left and Right move between the buttons while one has the focus, and Space takes it. DN-40's ring shows on the
+// focused button, which only Tab or an arrow puts there; any other key, or a press in the list, gives the list back.
+// Coordinates are the surface's, at 1x. One bar; its state is this module's. tests/ix/pickbar_test.ci runs it hosted.
+import user.ci.kit.tokens;
+import user.ci.kit.blend;
+import user.ci.kit.shape;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+
+export const I64 H = 56;             // frame 23's Save As bar
+export const I64 PAD = 10;
+export const I64 GAP = 8;
+export const I64 BTN_H = 36;
+export const I64 BTN_SIDE = 12;
+export const I64 KEY_H = 20;
+const I64 KEY_R = 4;
+const I64 KEY_SIDE = 6;
+const I64 KEY_GAP = 10;
+const I64 OFF = 102;                 // 40 percent: a control that cannot act
+
+export const I64 PASS = 2;           // not the bar's: Index's own key
+export const I64 STAY = 0;           // the bar took it (the focus moved)
+export const I64 GO = 1;             // Choose
+export const I64 CANCEL = -1;        // Cancel: end, nothing written
+
+export const I64 LIST = 0;           // where the focus is
+export const I64 CHOOSE = 1;
+export const I64 CANCEL_BTN = 2;
+
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_SPACE = 57;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+
+I64 sw = 0;
+I64 sh = 0;
+Bool live = false;
+I64 at = LIST;
+
+U32 tok(I64 k) { return tokens.word(k); }
+
+// The surface's size: the bar is its last H rows.
+export void place(I64 w, I64 h) {
+    sw = w;
+    sh = h;
+}
+
+// Whether Choose can act. A Choose that cannot gives the focus to the list.
+export void set_live(Bool l) {
+    live = l;
+    if (!live && at == CHOOSE) { at = LIST; }
+}
+
+export void to_list() { at = LIST; }
+export I64 focus() { return at; }
+export Bool on_bar(I64 y) { return y >= sh - H && y < sh; }
+
+// A keycap's width for key k; a button's for key k and word s.
+export I64 key_w(in U8[_] k) { return KEY_SIDE + ctext.width(k, len(k), faces.SHORTCUT, 1) + KEY_SIDE; }
+export I64 bw(in U8[_] k, in U8[_] s) {
+    return BTN_SIDE + key_w(k) + KEY_GAP + ctext.width(s, len(s), faces.NAME_BOLD, 1) + BTN_SIDE;
+}
+
+// The buttons' places on the surface.
+export I64 cancel_x1() { return sw - PAD; }
+export I64 cancel_x0() { return cancel_x1() - bw(b"Esc", b"Cancel"); }
+export I64 choose_x1() { return cancel_x0() - GAP; }
+export I64 choose_x0() { return choose_x1() - bw(b"Enter", b"Choose"); }
+export I64 btn_y() { return sh - H + (H - BTN_H) / 2; }
+
+// A key c (shift: Shift held): GO, CANCEL, STAY or PASS, as the header says.
+export I64 key(I64 c, Bool shift) {
+    if (c == K_ENTER) {
+        if (live) { return GO; }
+        return PASS;
+    }
+    if (c == K_TAB) {
+        I64 n = at;
+        Bool again = true;
+        while (again) {
+            if (shift) { n = (n + 2) % 3; } else { n = (n + 1) % 3; }
+            again = n == CHOOSE && !live;
+        }
+        at = n;
+        return STAY;
+    }
+    if (at != LIST && (c == K_LEFT || c == K_RIGHT)) {
+        if (c == K_RIGHT || !live) { at = CANCEL_BTN; } else { at = CHOOSE; }
+        return STAY;
+    }
+    if (at != LIST && c == K_SPACE) {
+        if (at == CHOOSE) { return GO; }
+        return CANCEL;
+    }
+    at = LIST;
+    return PASS;
+}
+
+// A press at (x, y) on the bar: GO on a live Choose, CANCEL on Cancel, else STAY (the bar's ground takes it).
+export I64 click(I64 x, I64 y) {
+    I64 t = btn_y();
+    if (y < t || y >= t + BTN_H) { return STAY; }
+    if (live && x >= choose_x0() && x < choose_x1()) { return GO; }
+    if (x >= cancel_x0() && x < cancel_x1()) { return CANCEL; }
+    return STAY;
+}
+
+// A baseline for face f centered in [t, t + h).
+I64 base_in(I64 t, I64 h, I64 f) {
+    I64 a = ctext.ascent(f, 1);
+    I64 d = ctext.descent(f, 1);
+    return t + (h - a - d) / 2 + a;
+}
+
+// Color k, or at 40 percent over the bar's SURF2 when off.
+U32 ink(I64 k, Bool off) {
+    if (off) { return blend.mix_px(tok(tokens.SURF2), tok(k), OFF); }
+    return tok(k);
+}
+
+// Button [x0, x1): ground, its keycap for key k (edge ke, key ki), its word s in wi; off: at 40 percent; ring: DN-40's.
+void button(inout U32[_] row, I64 y, I64 x0, I64 x1, in U8[_] k, I64 ke, I64 ki, in U8[_] s, I64 ground, I64 wi,
+            Bool off, Bool ring) {
+    I64 y0 = btn_y();
+    I64 y1 = y0 + BTN_H;
+    if (ring && y >= y0 - 4 && y < y1 + 4) {
+        shape.focus_ring(row, y, x0, y0, x1, y1, 6, 1, tok(tokens.SURF2), tok(tokens.ULTRAMARINE));
+    }
+    if (y < y0 || y >= y1) { return; }
+    shape.rounded(row, y, x0, y0, x1, y1, 6, ink(ground, off));
+    I64 kx0 = x0 + BTN_SIDE;
+    I64 kx1 = kx0 + key_w(k);
+    I64 ky0 = y0 + (BTN_H - KEY_H) / 2;
+    shape.ring(row, y, kx0, ky0, kx1, ky0 + KEY_H, KEY_R, 1, ink(ke, off));
+    I64 e = 0;
+    if (y >= ky0 && y < ky0 + KEY_H) {
+        e = ctext.text(row, y, kx0 + KEY_SIDE, base_in(ky0, KEY_H, faces.SHORTCUT), kx1, k, len(k), ink(ki, off),
+                       faces.SHORTCUT, 1);
+    }
+    e = ctext.text(row, y, kx1 + KEY_GAP, base_in(y0, BTN_H, faces.NAME_BOLD), x1, s, len(s), ink(wi, off),
+                   faces.NAME_BOLD, 1);
+}
+
+// The surface's row y when it is the bar's: SURF2 across, then Choose and Cancel.
+export void row_at(inout U32[_] row, I64 y) {
+    if (!on_bar(y)) { return; }
+    for x in 0..sw { row[x] = tok(tokens.SURF2); }
+    button(row, y, choose_x0(), choose_x1(), b"Enter", tokens.ON_FILL, tokens.ON_FILL, b"Choose", tokens.FILL,
+           tokens.ON_FILL, !live, at == CHOOSE);
+    button(row, y, cancel_x0(), cancel_x1(), b"Esc", tokens.RULE, tokens.INK_DIM, b"Cancel", tokens.SURF1, tokens.INK,
+           false, at == CANCEL_BTN);
+}
+// SPDX-License-Identifier: Apache-2.0

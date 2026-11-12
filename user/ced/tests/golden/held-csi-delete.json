@@ -1,0 +1,29 @@
+{
+  "id": "held-csi-delete",
+  "rules": [
+    "KEY-2",
+    "KEY-4"
+  ],
+  "text": "abc",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "1b5b33",
+    "",
+    "",
+    "7e"
+  ],
+  "expect": {
+    "text": "bc",
+    "sel": [
+      0,
+      0
+    ]
+  }
+}

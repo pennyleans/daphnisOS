@@ -1,0 +1,105 @@
+Daphnis CS: cish
+daphnis: image 2803640 bytes from the loader module
+daphnis: input 1123 bytes
+daphnis: run cish pid 1
+hello from cish
+bin
+cish
+etc
+hello.txt
+lines.txt
+2
+12
+written by cish
+BIN
+CISH
+ETC
+line 9 of lines.txt
+line 8 of lines.txt
+1 2 3 4 5
+six seven eight seven  eight
+single $x double six $x back slash a"b c"d e'f
+six$yseven  eightend sixs
+a
+b
+c
+yes
+bang
+pipe status 1
+not pipe 1
+not found 127
+1 err.txt
+to stderr
+both
+/etc
+Daphnis: a small Unix on a checked kernel.
+/
+appended
+again
+33 h2.txt
+assignment before a builtin []
+export Z='1'
+x is []
+colon 0
+false 1
+0
+line continued
+two
+lines
+end
+daphnis: state 27fd85361757005edbe1ee76eb6f56b9c76ca12fba201000c469200eb4b90c77
+daphnis: exit 3
+daphnis: pid 1 forked 32
+daphnis: run cish pid 2
+hello from cish
+bin
+cish
+etc
+hello.txt
+lines.txt
+2
+12
+written by cish
+BIN
+CISH
+ETC
+line 9 of lines.txt
+line 8 of lines.txt
+1 2 3 4 5
+six seven eight seven  eight
+single $x double six $x back slash a"b c"d e'f
+six$yseven  eightend sixs
+a
+b
+c
+yes
+bang
+pipe status 1
+not pipe 1
+not found 127
+1 err.txt
+to stderr
+both
+/etc
+Daphnis: a small Unix on a checked kernel.
+/
+appended
+again
+33 h2.txt
+assignment before a builtin []
+export Z='1'
+x is []
+colon 0
+false 1
+0
+line continued
+two
+lines
+end
+daphnis: state 27fd85361757005edbe1ee76eb6f56b9c76ca12fba201000c469200eb4b90c77
+daphnis: exit 3
+daphnis: pid 2 forked 32
+daphnis: desync cish pid 2 (other frames) against pid 1: none
+daphnis: fs tables 17 frames held
+daphnis: pool frames free 16366 of 16383
+cish: done

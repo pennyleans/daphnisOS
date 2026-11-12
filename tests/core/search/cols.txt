@@ -1,0 +1,7 @@
+root:x:0:0:root:/root:/bin/sh
+daemon:x:1:1::/usr/sbin:/bin/false
+l:x:1000:1000:l:/home/l:/bin/cish
+nobody:x:65534:65534::/:/bin/false
+short:line
+nodelim
+::empty:fields::

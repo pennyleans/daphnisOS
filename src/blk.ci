@@ -1,0 +1,282 @@
+// src/blk.ci: the block device (P-1, docs/specs/2026-11-05-p-disk.md section 2): virtio-blk over the legacy
+// transport of src/virtio.ci (shared with N-1), one queue, synchronous and polled. A request moves 8 sectors
+// of 512 bytes, one pool frame: a chain of three descriptors, the header (type U32, reserved U32, sector U64), the frame and
+// the status byte the device writes (0 done). The header and status share one frame the module holds; the
+// volume digest reads through a second.
+//
+// HW-4m: without a virtio disk the device is the USB disk of src/usbms.ci, when src/xhci.ci found one: the same 8
+// sectors a request, the same frame. It is read only unless the boot line names it (src/usbms.ci).
+//
+// The device's bytes are evidence: print_digest reads the whole volume through the device and prints
+// `daphnis: disk SECTORS sha256 HEX`, so a gate pins what the kernel saw and what it left.
+
+import src.serial;
+import src.text;
+import src.phys;
+import src.frames;
+import src.sha256;
+import src.trap;
+import src.virtio;
+import src.usbms;
+
+export const I64 SECTOR_BYTES = 512;
+export const I64 SECTORS_PER_REQUEST = 8;
+
+const U32 PCI_ID = 0x10011AF4;   // device 0x1001 (transitional block), vendor 0x1AF4
+const I64 TYPE_IN = 0;
+const I64 TYPE_OUT = 1;
+const I64 WAIT_TICKS = 500;   // about 5 s of the 100 Hz timer: a device that has not answered by then has failed
+
+I64 q = -1;            // the request queue's slot in src/virtio.ci
+I64 sectors = 0;       // the volume's size
+I64 hdr_frame = -1;    // the header at byte 0, the status at byte 16
+I64 data_frame = -1;   // the volume digest's frame
+I64 requests = 0;
+I64 bytes_in = 0;         // KF-3e: bytes of the read requests that finished
+I64 bytes_out = 0;        // and of the write requests
+I64 held = 0;          // pool frames the device holds: its queue, the header frame and the digest frame
+Bool usb = false;      // HW-4m: the device is src/usbms.ci's; q stays -1
+
+// Finds the device and sets it up: the volume's size in sectors, 0 without a device, or -1 when one was
+// found but could not be set up.
+export I64 init() {
+    I64 io = virtio.open(PCI_ID);
+    if (io < 0) {
+        I64 before = frames.free_count();
+        I64 n = usbms.init();                 // HW-4m: the USB disk, after virtio
+        if (n > 0) {
+            data_frame = frames.alloc(1);
+            if (data_frame < 0) {
+                return -1;
+            }
+            usb = true;
+            sectors = n;
+            held = before - frames.free_count();
+        }
+        return n;
+    }
+    I64 free0 = frames.free_count();
+    virtio.accept(io, 0 as U32);
+    q = virtio.queue(io, 0);
+    if (q < 0 || virtio.queue_size(q) < 3) {
+        virtio.set_status(io, virtio.S_FAILED);
+        return -1;
+    }
+    hdr_frame = frames.alloc(1);
+    data_frame = frames.alloc(1);
+    if (hdr_frame < 0 || data_frame < 0) {
+        virtio.set_status(io, virtio.S_FAILED);
+        return -1;
+    }
+    held = free0 - frames.free_count();
+    virtio.set_status(io, virtio.S_ACK | virtio.S_DRIVER | virtio.S_DRIVER_OK);
+    U64 capacity = 0;   // the configuration's first field: the capacity in sectors, U64 little-endian
+    for k in 0..8 {
+        capacity |= (virtio.config8(io, k) as U64) << (8 * k);
+    }
+    sectors = capacity as I64;
+    return sectors;
+}
+
+// The volume's size in sectors (0 without a device).
+export I64 sector_count() {
+    return sectors;
+}
+
+// Frames the device holds: its queue, the header frame and the digest frame.
+export I64 frames_held() {
+    return held;
+}
+
+// HW-4m: true when the device is the USB disk.
+// Before the machine ends: the USB disk's own write cache onto its medium (src/usbms.ci flush). A virtio disk is
+// QEMU's, whose requests are done when the host has them: nothing to send. True when nothing is left in a cache.
+export Bool flush() {
+    if (usb) {
+        return usbms.flush();
+    }
+    return true;
+}
+
+export Bool is_usb() {
+    return usb;
+}
+
+// HW-4m: a request on the USB disk; a write to a disk the boot line does not name is refused there.
+Bool usb_request(I64 kind, I64 sector, I64 frame) {
+    I64 d = frames.frame_addr(frame);
+    if (d < 0 || sector < 0 || sector > sectors - SECTORS_PER_REQUEST) {
+        return false;
+    }
+    requests += 1;
+    if (kind == TYPE_IN) {
+        Bool got = usbms.read(sector, d as U64);
+        if (got) { bytes_in += SECTOR_BYTES * SECTORS_PER_REQUEST; }      // KF-3e, as the virtio path counts
+        return got;
+    }
+    Bool put = usbms.write(sector, d as U64);
+    if (put) { bytes_out += SECTOR_BYTES * SECTORS_PER_REQUEST; }
+    return put;
+}
+
+// Moves 8 sectors from sector between the volume and pool frame `frame`. True when the device says done.
+Bool request(I64 kind, I64 sector, I64 frame) {
+    if (usb) {
+        return usb_request(kind, sector, frame);
+    }
+    if (q < 0 || sector < 0 || sector > sectors - SECTORS_PER_REQUEST) {
+        return false;
+    }
+    I64 h = frames.frame_addr(hdr_frame);
+    I64 d = frames.frame_addr(frame);
+    if (d < 0) {
+        return false;
+    }
+    U64[2] head;
+    head[0] = kind as U64;
+    head[1] = sector as U64;
+    phys.phys_write64(h as U64, head);
+    U8[1] st;
+    st[0] = 0xFF;
+    phys.phys_write8((h + 16) as U64, st);
+    I64 data_flags = virtio.F_NEXT;
+    if (kind == TYPE_IN) {
+        data_flags = virtio.F_NEXT | virtio.F_WRITE;
+    }
+    virtio.post(q, 0, h as U64, 16, virtio.F_NEXT, 1);
+    virtio.post(q, 1, d as U64, SECTOR_BYTES * SECTORS_PER_REQUEST, data_flags, 2);
+    virtio.post(q, 2, (h + 16) as U64, 1, virtio.F_WRITE, 0);
+    virtio.offer(q, 0);
+    virtio.notify(q);
+    I64 t0 = trap.timer_ticks();
+    I64 got = virtio.take(q);
+    while (got < 0) {
+        if (trap.timer_ticks() - t0 > WAIT_TICKS) {
+            return false;
+        }
+        got = virtio.take(q);
+    }
+    requests += 1;
+    phys.phys_read8((h + 16) as U64, st);
+    Bool done = got == 0 && st[0] == 0;
+    if (done && kind == TYPE_IN) {
+        bytes_in += SECTOR_BYTES * SECTORS_PER_REQUEST;      // KF-3e: counted per finished request
+    } else if (done) {
+        bytes_out += SECTOR_BYTES * SECTORS_PER_REQUEST;
+    }
+    return done;
+}
+
+// Reads sectors sector..sector+8 into pool frame `frame`.
+export Bool read(I64 sector, I64 frame) {
+    return request(TYPE_IN, sector, frame);
+}
+
+// Writes pool frame `frame` to sectors sector..sector+8.
+export Bool write(I64 sector, I64 frame) {
+    return request(TYPE_OUT, sector, frame);
+}
+
+// SHA-256 of the whole volume as the device gives it. False if a request failed.
+export Bool digest(inout U8[32] result) {
+    sha256.Sha256[1] s;
+    sha256.sha_init(s);
+    U8[512] b;
+    I64 a = frames.frame_addr(data_frame);
+    I64 sector = 0;
+    while (sector < sectors) {
+        if (!read(sector, data_frame)) {
+            return false;
+        }
+        for k in 0..SECTORS_PER_REQUEST {
+            phys.phys_read8((a + SECTOR_BYTES * k) as U64, b);
+            sha256.sha_update(s, b, 0, SECTOR_BYTES);
+        }
+        sector += SECTORS_PER_REQUEST;
+    }
+    sha256.sha_final(s, result);
+    return true;
+}
+
+void put_num(I64 v) {
+    U8[20] d;
+    I64 k = text.dec_digits(v, d);
+    for i in 0..k {
+        serial.serial_putc(d[i]);
+    }
+}
+
+// Prints `daphnis: disk SECTORS sha256 HEX`, or `daphnis: disk SECTORS read failed`.
+export void print_digest() {
+    U8[32] d;
+    serial.serial_write("daphnis: disk ");
+    put_num(sectors);
+    if (!digest(d)) {
+        serial.serial_write(" read failed\n");
+        return;
+    }
+    serial.serial_write(" sha256 ");
+    for i in 0..32 {
+        serial.serial_putc(text.hex_digit((d[i] >> 4) as U8));
+        serial.serial_putc(text.hex_digit((d[i] & 15) as U8));
+    }
+    serial.serial_write("\n");
+}
+
+// The evidence that writes land: the last 8 sectors are read, a pattern is written over them and read back
+// through the device, then the first bytes are written back, so the volume ends as it began. 1 when the
+// pattern read back equal and the restore was taken, 0 when it read back different, -1 when a request
+// failed or no frame was free.
+export I64 write_probe() {
+    I64 sector = sectors - SECTORS_PER_REQUEST;
+    I64 keep = frames.alloc(2);
+    if (keep < 0) {
+        return -1;
+    }
+    I64 pat = keep + 1;
+    U8[512] b;
+    for i in 0..512 {
+        b[i] = ((7 * i + 3) & 0xFF) as U8;
+    }
+    I64 pa = frames.frame_addr(pat);
+    for k in 0..SECTORS_PER_REQUEST {
+        phys.phys_write8((pa + SECTOR_BYTES * k) as U64, b);
+    }
+    I64 r = 1;
+    if (!read(sector, keep) || !write(sector, pat) || !read(sector, data_frame)) {
+        r = -1;
+    } else {
+        U8[512] c;
+        I64 da = frames.frame_addr(data_frame);
+        for k in 0..SECTORS_PER_REQUEST {
+            phys.phys_read8((da + SECTOR_BYTES * k) as U64, c);
+            for i in 0..512 {
+                if (c[i] != b[i]) {
+                    r = 0;
+                }
+            }
+        }
+        if (!write(sector, keep)) {
+            r = -1;
+        }
+    }
+    _ = frames.release(keep, 2);
+    return r;
+}
+
+// The number of requests the device has completed.
+export I64 requests_done() {
+    return requests;
+}
+
+// KF-3e (docs/specs/2026-11-11-kf-facts.md section 2): the bytes the device has read and written since boot, 4 KiB a
+// finished request, the kernel's own reads among them (the boot's digest of the volume reads all of it). They are
+// functions of the requests alone, so a replay of the same requests reads the same counts.
+export I64 bytes_read() {
+    return bytes_in;
+}
+
+export I64 bytes_written() {
+    return bytes_out;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,46 @@
+# tests/core/ls.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). H: the stdout depends on the
+# host (owners, a directory's size and blocks); the committed output holds its line count (tools/check-core.py).
+ | - | -
+look | - | -
+-a look | - | -
+-A look | - | -
+-R look | - | -
+-aR look | - | -
+-AR look | - | -
+-R | - | -
+-C look | - | -
+-CF look | - | -
+-C many | - | -
+-1F look | - | -
+-F look/run.sh look/a.txt look | - | -
+-r look | - | -
+-t look | - | -
+-tr look | - | -
+-t look/b.txt look/a.txt look/sub | - | -
+-S look/a.txt look/b.txt look/run.sh | - | -
+-Sr look/a.txt look/b.txt look/run.sh | - | -
+-d look . | - | -
+-dF look look/run.sh | - | -
+-d | - | -
+-1C look | - | -
+-C1 look | - | -
+-lC look | - | -
+missing look | - | -
+look missing | - | -
+text.txt look look/sub | - | -
+-- look | - | -
+-ln look/a.txt look/run.sh look/b.txt | - | H
+-nF look/run.sh look/sub/c.txt | - | H
+-nt look/sub/c.txt look/a.txt | - | H
+-l look/a.txt | - | D-10 H
+-ld look | - | D-10 H
+-l look | - | D-10 H
+-lR look | - | D-10 H
+-Cl look | - | D-10 H
+-n look | - | D-11 H
+-R deep | - | D-12
+-h look | - | D-1
+-c look | - | D-1
+-p look | - | D-1
+-k look | - | D-1
+-x look | - | D-1

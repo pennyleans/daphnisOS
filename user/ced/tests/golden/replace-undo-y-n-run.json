@@ -1,0 +1,40 @@
+{
+  "id": "replace-undo-y-n-run",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a a a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "620d",
+    "79",
+    "6e",
+    "79",
+    "1a",
+    "1a"
+  ],
+  "expect": {
+    "text": "a a a",
+    "sel": [
+      0,
+      1
+    ],
+    "screen": [
+      "a a a",
+      "",
+      "",
+      "",
+      " x  nothing to undo                 1:2",
+      "^S save  ^Q quit  ^F find  ^X cut"
+    ]
+  }
+}

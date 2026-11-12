@@ -1,0 +1,28 @@
+{
+  "id": "replace-unbound-key-rings",
+  "rules": [
+    "FIND-4"
+  ],
+  "text": "a",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "12",
+    "610d",
+    "620d",
+    "71"
+  ],
+  "expect": {
+    "text": "a",
+    "sel": [
+      0,
+      1
+    ]
+  }
+}

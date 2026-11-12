@@ -1,0 +1,8 @@
+// Native key slots expose operations and public identity, never key bytes.
+export extern unrestricted I64 capture_match(I64 slot, in U8[_] stream, I64 writer);
+export extern unrestricted void capture_release(I64 slot);
+export extern unrestricted I64 capture_seal(I64 slot, U64 sequence, in U8[_] aad,
+    in U8[_] plain, out U8[_] cipher, out U8[_] tag);
+export extern unrestricted I64 capture_open(I64 slot, U64 sequence, in U8[_] aad,
+    in U8[_] cipher, in U8[_] tag, out U8[_] plain);
+// SPDX-License-Identifier: Apache-2.0

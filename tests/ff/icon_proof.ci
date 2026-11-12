@@ -1,0 +1,42 @@
+// tests/ff/icon_proof.ci: DN-30 and DN-31's proof, CVim and Web Browser drawn by the desk's own kit (icons3.icon_at)
+// at 80, 64, 32 and 16 px at 1x on the proof's two grounds, #141413 and #ECEEF2, one 96 px cell a size, a row an icon
+// and ground: 384 x 384. Prints `frame W H` and each row as runs `rgb count`, as tests/ff/plane_proof.ci does;
+// tools/icon_proof.py turns it into a PNG beside the librsvg proof's rows. Run: cint run --root . tests/ff/icon_proof.ci
+import user.ci.kit.icons3;
+
+U32[384] row;
+
+void emit(I64 w) {
+    "r";
+    I64 x = 0;
+    while (x < w) {
+        U32 c = row[x];
+        I64 k = 1;
+        while (x + k < w && row[x + k] == c) { k = k + 1; }
+        " {c as I64:x} {k}";
+        x = x + k;
+    }
+    "\n";
+}
+
+export void main() {
+    I64[4] px = [80, 64, 32, 16];
+    I64[2] ic = [icons3.CVIM, icons3.BROWSER];
+    U32[2] gr = [0x141413, 0xECEEF2];
+    "frame 384 384\n";
+    for band in 0..4 {
+        I64 k = ic[band / 2];
+        U32 g = gr[band % 2];
+        for yy in 0..96 {
+            for x in 0..384 { row[x] = g; }
+            for c in 0..4 {
+                I64 s = px[c];
+                I64 x0 = 96 * c + (96 - s) / 2;
+                I64 y0 = 96 * band + (96 - s) / 2;
+                icons3.icon_at(row, 96 * band + yy, x0, y0, k, s, 1, g);
+            }
+            emit(384);
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

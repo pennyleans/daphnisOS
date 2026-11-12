@@ -1,0 +1,60 @@
+// src/guards.ci: reads boot.S's page table (the view shim allows its four pages to be read) to
+// check that the guard pages of the task stacks and the IST stacks are not present, and that the
+// pages next to them, the first page of each stack, are. Nothing here writes a page table.
+
+import src.phys;
+import src.trap;
+import src.pte;
+import src.taskapi;
+
+const U64 IST_BYTES = 16384;
+const U64 GUARD_BYTES = 8192;
+
+// True if the 4 KiB page that holds va (in the first 2 MiB) is present: its entry in `pt`, the
+// fourth page of the boot tables, which are contiguous from the PML4 that CR3 names.
+Bool page_present(U64 va) {
+    U64[1] e;
+    phys.phys_read64(trap.vm_root() + 3 * 4096 + (va >> 12) * 8, e);
+    return pte.present(e[0]);
+}
+
+// How many of the 2 pages under each of 3 task stacks and 3 IST stacks are absent: 12 if all.
+export I64 absent_guard_pages() {
+    I64 n = 0;
+    for id in 0..3 {
+        U64 g = taskapi.task_guard(id);
+        if (!page_present(g)) {
+            n += 1;
+        }
+        if (!page_present(g + 4096)) {
+            n += 1;
+        }
+    }
+    for k in 1..4 {
+        U64 g = trap.ist_top(k) - IST_BYTES - GUARD_BYTES;
+        if (!page_present(g)) {
+            n += 1;
+        }
+        if (!page_present(g + 4096)) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+// How many of the 6 stacks have their first page present (the page just above the guard): 6.
+export I64 present_stack_pages() {
+    I64 n = 0;
+    for id in 0..3 {
+        if (page_present(taskapi.task_guard(id) + GUARD_BYTES)) {
+            n += 1;
+        }
+    }
+    for k in 1..4 {
+        if (page_present(trap.ist_top(k) - IST_BYTES)) {
+            n += 1;
+        }
+    }
+    return n;
+}
+// SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,495 @@
+// user/ci/acct.ci: the account store of Stage AC (docs/specs/2026-11-08-ac-accounts.md section 4), AC-1c. Pure: the
+// desk (user/ci/hdesk.ci) reads /home/.daphnis/accounts into it, adds to it and writes it back whole. The text is a
+// header line `daphnis-accounts 1`, then one line an account, `acct` and key=value words:
+//   id=HEX32 uid=N gid=N name=NAME role=parent|child m=KIB t=PASSES salt=HEX32 ver=HEX64 ceil=WORD [idle=MINUTES]
+//   [long=1]
+// idle (AC-D5) is written only when it is not IDLE_MIN, so a store that never set it keeps its bytes.
+// RS-ROLE (docs/specs/2026-11-11-rs-role.md): long=1 marks a child whose passphrase was accepted under a parent's
+// rule (AC-D3), the one a promotion needs; a parent's is by its role and takes no word. The header takes ` next=UID`
+// when a removed account's uid was the highest, so no later account is given a removed one's uid, whose home stays.
+// write_text's 4,096 bytes hold the longest store: 19 + 11 for the header, 16 lines of 254 (a child's 247 and 7).
+// We skip unknown keys, blank lines and comments. A malformed account rejects the whole store so the caller
+// can recover the previous copy. Delay and passphrase limits are shared with the account administration tool.
+
+export const I64 MAX = 16;
+export const I64 PARENT = 1;
+export const I64 CHILD = 2;
+export const I64 NAME_MAX = 32;
+export const I64 PARENT_MIN = 8;       // AC-D3 (DN-52): a parent's passphrase, characters at least
+export const I64 CHILD_MIN = 4;
+export const I64 PASS_MAX = 256;
+export const I64 UID_FIRST = 1000;
+export const I64 IDLE_MIN = 10;        // AC-D5: a session locks after 10 minutes without input unless a parent sets it
+export const I64 IDLE_MAX = 1440;      // a day, the most a parent can set
+
+U8[512] nm;           // the names, 32 bytes each
+I64[16] nl;
+I64[16] uidv;
+I64[16] gidv;
+I64[16] rolev;
+I64[16] mv;
+I64[16] tv;
+U64[16] ceilv;
+I64[16] idlev;        // AC-D5: minutes without input before the session locks
+I64[16] longv;        // RS-ROLE: 1, the passphrase was accepted under a parent's rule; a parent's is by its role
+I64 floorv = UID_FIRST;   // RS-ROLE: the least uid next_uid gives, past every uid a removed account held
+U8[512] idv;          // 32 hex digits each
+U8[512] saltv;        // 32 hex digits each
+U8[1024] verv;        // 64 hex digits each
+I64 nacct = 0;
+
+export I64 accounts() { return nacct; }
+export I64 uid_of(I64 i) { return uidv[i]; }
+export I64 gid_of(I64 i) { return gidv[i]; }
+export I64 role_of(I64 i) { return rolev[i]; }
+export I64 m_of(I64 i) { return mv[i]; }
+export I64 t_of(I64 i) { return tv[i]; }
+export U64 ceil_of(I64 i) { return ceilv[i]; }
+export I64 idle_of(I64 i) { return idlev[i]; }
+
+// AC-D5: account i's idle minutes, 1 to IDLE_MAX; false (nothing changed) outside it.
+export Bool set_idle(I64 i, I64 m) {
+    if (i < 0 || i >= nacct || m < 1 || m > IDLE_MAX) { return false; }
+    idlev[i] = m;
+    return true;
+}
+
+// AC-D5: whether a session whose last input was at last_ns locks at now_ns, after m minutes without input.
+export Bool idle_due(I64 now_ns, I64 last_ns, I64 m) { return m >= 1 && now_ns - last_ns >= m * 60000000000; }
+export I64 name_len(I64 i) { return nl[i]; }
+export U8 name_byte(I64 i, I64 k) { return nm[NAME_MAX * i + k]; }
+export U8 salt_byte(I64 i, I64 k) { return saltv[32 * i + k]; }
+export U8 ver_byte(I64 i, I64 k) { return verv[64 * i + k]; }
+
+export void clear() {
+    nacct = 0;
+    floorv = UID_FIRST;
+}
+
+// set_role's and set_ceil's refusals (RS-ROLE); 0 is done.
+export const I64 NO_ACCOUNT = -1;      // no such account, or a role or ceiling that is none
+export const I64 LAST_PARENT = -2;     // the one parent left: no one could administer after
+export const I64 SHORT_PASS = -3;      // a promotion whose passphrase was not accepted under a parent's rule
+export const I64 IS_PARENT = -4;       // a parent's ceiling is every grant
+
+// AC-D2: the seconds the passphrase field waits after the fails-th wrong passphrase in a row: none for the first three,
+// then 2 s doubling to a 60 s cap. No account is ever locked out.
+export I64 delay_s(I64 fails) {
+    if (fails <= 3) { return 0; }
+    I64 d = 2;
+    for k in 4..fails {
+        d = d * 2;
+        if (d >= 60) { return 60; }
+    }
+    return d;
+}
+
+// A name: 1 to 32 ASCII lowercase letters, digits and `-`, not starting with `-`.
+export Bool name_ok(in U8[_] s, I64 n) {
+    if (n < 1 || n > NAME_MAX || s[0] == 45) { return false; }
+    for k in 0..n {
+        U8 c = s[k];
+        Bool ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45;
+        if (!ok) { return false; }
+    }
+    return true;
+}
+
+// r4519898110: a passphrase the desk can type, printable ASCII (space to ~) only. The desk's fields take no other
+// byte, so a passphrase with a Tab or a UTF-8 letter could never be entered at login, unlock or approval.
+export Bool pass_typeable(in U8[_] p, I64 n) {
+    if (n > len(p)) { return false; }
+    for k in 0..n {
+        if (p[k] < 32 || p[k] > 126) { return false; }
+    }
+    return true;
+}
+
+// r4520257052: the first row a list of ROWS rows shows so that row sel is in it, moved from top no further than
+// it must be. sel is 0..total-1.
+export I64 list_top(I64 sel, I64 top, I64 total, I64 rows) {
+    I64 t = top;
+    if (sel < t) { t = sel; }
+    if (sel >= t + rows) { t = sel - rows + 1; }
+    if (t > total - rows) { t = total - rows; }
+    if (t < 0) { t = 0; }
+    return t;
+}
+
+// AC-D3: the passphrase's length for role: a parent's at least 8 (DN-52), a child's at least 4, either at most 256.
+export Bool pass_ok(I64 role, I64 n) {
+    if (n > PASS_MAX) { return false; }
+    if (role == PARENT) { return n >= PARENT_MIN; }
+    return n >= CHILD_MIN;
+}
+
+export I64 find(in U8[_] s, I64 n) {
+    for i in 0..nacct {
+        if (nl[i] == n) {
+            Bool same = true;
+            for k in 0..n {
+                if (same && nm[NAME_MAX * i + k] != s[k]) { same = false; }
+            }
+            if (same) { return i; }
+        }
+    }
+    return -1;
+}
+
+// One past the highest uid in the store, UID_FIRST in an empty one.
+I64 past_uids() {
+    I64 u = UID_FIRST;
+    for i in 0..nacct {
+        if (uidv[i] >= u) { u = uidv[i] + 1; }
+    }
+    return u;
+}
+
+// A new account's uid: past every uid in the store and every uid a removed account held (RS-ROLE: a removed
+// account's home stays on the volume, owned by its uid).
+export I64 next_uid() {
+    I64 u = past_uids();
+    if (floorv > u) { u = floorv; }
+    return u;
+}
+
+Bool hex_ok(in U8[_] s, I64 a, I64 n) {
+    for k in a..a + n {
+        U8 c = s[k];
+        if (!((c >= 48 && c <= 57) || (c >= 97 && c <= 102))) { return false; }
+    }
+    return true;
+}
+
+// Adds an account; its index, or -1 for a full store, a bad field or a name taken. salt and ver are lowercase hex.
+export I64 add(in U8[_] name, I64 n, I64 role, I64 uid, I64 gid, I64 m, I64 t, in U8[_] salt, in U8[_] ver, U64 c,
+               in U8[_] id) {
+    if (nacct >= MAX || !name_ok(name, n) || find(name, n) >= 0) { return -1; }
+    if (role != PARENT && role != CHILD) { return -1; }
+    if (uid < 1 || uid > 65535 || gid < 0 || gid > 65535 || m < 8 || m > 65536 || t < 1 || t > 16) { return -1; }
+    if (len(salt) < 32 || len(ver) < 64 || len(id) < 32 || !hex_ok(salt, 0, 32) || !hex_ok(ver, 0, 64) ||
+        !hex_ok(id, 0, 32) || (c & ~7) != 0) {
+        return -1;
+    }
+    I64 i = nacct;
+    for k in 0..n { nm[NAME_MAX * i + k] = name[k]; }
+    nl[i] = n;
+    rolev[i] = role;
+    uidv[i] = uid;
+    gidv[i] = gid;
+    mv[i] = m;
+    tv[i] = t;
+    ceilv[i] = c;
+    idlev[i] = IDLE_MIN;
+    longv[i] = 0;
+    for k in 0..32 {
+        saltv[32 * i + k] = salt[k];
+        idv[32 * i + k] = id[k];
+    }
+    for k in 0..64 { verv[64 * i + k] = ver[k]; }
+    nacct = nacct + 1;
+    return i;
+}
+
+// A word's value as a number, or -1.
+I64 num(in U8[_] s, I64 a, I64 b) {
+    if (b <= a || b - a > 6) { return -1; }
+    I64 v = 0;
+    for k in a..b {
+        if (s[k] < 48 || s[k] > 57) { return -1; }
+        v = v * 10 + (s[k] - 48) as I64;
+    }
+    return v;
+}
+
+Bool key_is(in U8[_] s, I64 a, I64 e, in U8[_] key) {
+    if (e - a != len(key)) { return false; }
+    for k in 0..len(key) {
+        if (s[a + k] != key[k]) { return false; }
+    }
+    return true;
+}
+
+// We accept a record only when every required field is valid.
+Bool line(in U8[_] s, I64 a, I64 b) {
+    if (a == b || s[a] == 35) { return true; }
+    if (b - a < 5 || !key_is(s, a, a + 4, "acct") || s[a + 4] != 32) { return false; }
+    U8[32] name;
+    U8[32] salt;
+    U8[64] ver;
+    U8[32] id;
+    I64 n = -1;
+    I64 role = 0;
+    I64 uid = -1;
+    I64 gid = -1;
+    I64 m = -1;
+    I64 t = -1;
+    I64 c = -1;
+    I64 idle = IDLE_MIN;
+    I64 mark = 0;
+    Bool hs = false;
+    Bool hv = false;
+    Bool hi = false;
+    I64 at = a + 5;
+    while (at < b) {
+        I64 ws = at;
+        while (at < b && s[at] != 32) { at = at + 1; }
+        I64 we = at;
+        at = at + 1;
+        I64 eq = ws;
+        while (eq < we && s[eq] != 61) { eq = eq + 1; }
+        if (eq < we) {
+            I64 vs = eq + 1;
+            I64 vn = we - vs;
+            if (key_is(s, ws, eq, "name") && vn >= 1 && vn <= NAME_MAX) {
+                for k in 0..vn { name[k] = s[vs + k]; }
+                n = vn;
+            } else if (key_is(s, ws, eq, "role")) {
+                if (key_is(s, vs, we, "parent")) { role = PARENT; }
+                if (key_is(s, vs, we, "child")) { role = CHILD; }
+            } else if (key_is(s, ws, eq, "uid")) {
+                uid = num(s, vs, we);
+            } else if (key_is(s, ws, eq, "gid")) {
+                gid = num(s, vs, we);
+            } else if (key_is(s, ws, eq, "m")) {
+                m = num(s, vs, we);
+            } else if (key_is(s, ws, eq, "t")) {
+                t = num(s, vs, we);
+            } else if (key_is(s, ws, eq, "ceil")) {
+                c = num(s, vs, we);
+            } else if (key_is(s, ws, eq, "idle")) {
+                idle = num(s, vs, we);
+            } else if (key_is(s, ws, eq, "long")) {
+                mark = num(s, vs, we);
+            } else if (key_is(s, ws, eq, "salt") && vn == 32) {
+                for k in 0..32 { salt[k] = s[vs + k]; }
+                hs = true;
+            } else if (key_is(s, ws, eq, "ver") && vn == 64) {
+                for k in 0..64 { ver[k] = s[vs + k]; }
+                hv = true;
+            } else if (key_is(s, ws, eq, "id") && vn == 32) {
+                for k in 0..32 { id[k] = s[vs + k]; }
+                hi = true;
+            }
+        }
+    }
+    if (n < 1 || !hs || !hv || !hi || c < 0 || idle < 1 || idle > IDLE_MAX || mark < 0 || mark > 1) { return false; }
+    I64 r = add(name, n, role, uid, gid, m, t, salt, ver, c as U64, id);
+    if (r < 0) { return false; }
+    longv[r] = mark;
+    return set_idle(r, idle);
+}
+
+// The header's words after `daphnis-accounts 1`, s[a..b): `next=UID` is the uid floor; unknown words are skipped.
+Bool header(in U8[_] s, I64 a, I64 b) {
+    I64 at = a;
+    while (at < b) {
+        if (s[at] != 32) { return false; }
+        I64 ws = at + 1;
+        at = ws;
+        while (at < b && s[at] != 32) { at = at + 1; }
+        if (at - ws >= 5 && key_is(s, ws, ws + 5, "next=")) {
+            I64 v = num(s, ws + 5, at);
+            if (v < UID_FIRST || v > 65536) { return false; }
+            floorv = v;
+        }
+    }
+    return true;
+}
+
+// We return the complete account count, or -1 with no accounts visible when any record is invalid.
+export I64 parse(in U8[_] s, I64 n) {
+    clear();
+    if (n < 18 || !key_is(s, 0, 18, "daphnis-accounts 1")) { return -1; }
+    I64 at = 18;
+    while (at < n && s[at] != 10) { at = at + 1; }
+    if (!header(s, 18, at)) {
+        clear();
+        return -1;
+    }
+    at = at + 1;
+    while (at < n) {
+        I64 a = at;
+        while (at < n && s[at] != 10) { at = at + 1; }
+        if (!line(s, a, at)) {
+            clear();
+            return -1;
+        }
+        at = at + 1;
+    }
+    return nacct;
+}
+
+I64 put(inout U8[_] o, I64 at, in U8[_] s) {
+    for k in 0..len(s) { o[at + k] = s[k]; }
+    return at + len(s);
+}
+
+I64 put_num(inout U8[_] o, I64 at, I64 v) {
+    U8[20] d;
+    I64 n = 0;
+    I64 q = v;
+    if (q == 0) { d[0] = 48; n = 1; }
+    while (q > 0) {
+        d[n] = (48 + q % 10) as U8;
+        q = q / 10;
+        n = n + 1;
+    }
+    for k in 0..n { o[at + k] = d[n - 1 - k]; }
+    return at + n;
+}
+
+// The store as text into o (4,096 bytes hold 16 accounts); its length.
+export I64 write_text(inout U8[_] o) {
+    I64 at = put(o, 0, "daphnis-accounts 1");
+    if (floorv > past_uids()) {
+        at = put(o, at, " next=");
+        at = put_num(o, at, floorv);
+    }
+    o[at] = 10;
+    at = at + 1;
+    for i in 0..nacct {
+        at = put(o, at, "acct id=");
+        for k in 0..32 { o[at + k] = idv[32 * i + k]; }
+        at = put(o, at + 32, " uid=");
+        at = put_num(o, at, uidv[i]);
+        at = put(o, at, " gid=");
+        at = put_num(o, at, gidv[i]);
+        at = put(o, at, " name=");
+        for k in 0..nl[i] { o[at + k] = nm[NAME_MAX * i + k]; }
+        at = at + nl[i];
+        if (rolev[i] == PARENT) { at = put(o, at, " role=parent"); } else { at = put(o, at, " role=child"); }
+        at = put(o, at, " m=");
+        at = put_num(o, at, mv[i]);
+        at = put(o, at, " t=");
+        at = put_num(o, at, tv[i]);
+        at = put(o, at, " salt=");
+        for k in 0..32 { o[at + k] = saltv[32 * i + k]; }
+        at = put(o, at + 32, " ver=");
+        for k in 0..64 { o[at + k] = verv[64 * i + k]; }
+        at = put(o, at + 64, " ceil=");
+        at = put_num(o, at, ceilv[i] as I64);
+        if (idlev[i] != IDLE_MIN) {
+            at = put(o, at, " idle=");
+            at = put_num(o, at, idlev[i]);
+        }
+        if (rolev[i] == CHILD && longv[i] == 1) { at = put(o, at, " long=1"); }
+        o[at] = 10;
+        at = at + 1;
+    }
+    return at;
+}
+
+export I64 parents() {
+    I64 p = 0;
+    for i in 0..nacct {
+        if (rolev[i] == PARENT) { p = p + 1; }
+    }
+    return p;
+}
+
+// A new passphrase's salt and verifier for account i (lowercase hex); false for a bad field. Its id stays. The
+// parent's mark is dropped: pass_len notes the new passphrase's.
+export Bool set_pass(I64 i, I64 m, I64 t, in U8[_] salt, in U8[_] ver) {
+    if (i < 0 || i >= nacct || len(salt) < 32 || len(ver) < 64 || !hex_ok(salt, 0, 32) || !hex_ok(ver, 0, 64)) {
+        return false;
+    }
+    if (m < 8 || m > 65536 || t < 1 || t > 16) { return false; }
+    mv[i] = m;
+    tv[i] = t;
+    longv[i] = 0;
+    for k in 0..32 { saltv[32 * i + k] = salt[k]; }
+    for k in 0..64 { verv[64 * i + k] = ver[k]; }
+    return true;
+}
+
+// Account i removed, the rest kept in order; false for the last parent, whom no one could replace. Its uid is
+// never given again (next_uid).
+export Bool remove(I64 i) {
+    if (i < 0 || i >= nacct || (rolev[i] == PARENT && parents() == 1)) { return false; }
+    if (uidv[i] + 1 > floorv) { floorv = uidv[i] + 1; }
+    for j in i..nacct - 1 {
+        for k in 0..NAME_MAX { nm[NAME_MAX * j + k] = nm[NAME_MAX * (j + 1) + k]; }
+        nl[j] = nl[j + 1];
+        uidv[j] = uidv[j + 1];
+        gidv[j] = gidv[j + 1];
+        rolev[j] = rolev[j + 1];
+        mv[j] = mv[j + 1];
+        tv[j] = tv[j + 1];
+        ceilv[j] = ceilv[j + 1];
+        idlev[j] = idlev[j + 1];
+        longv[j] = longv[j + 1];
+        for k in 0..32 {
+            idv[32 * j + k] = idv[32 * (j + 1) + k];
+            saltv[32 * j + k] = saltv[32 * (j + 1) + k];
+        }
+        for k in 0..64 { verv[64 * j + k] = verv[64 * (j + 1) + k]; }
+    }
+    nacct = nacct - 1;
+    return true;
+}
+
+// The login screen's order (L3): parents first, each group as stored; the k-th account shown.
+export I64 shown(I64 k) {
+    I64 seen = 0;
+    for pass in 0..2 {
+        for i in 0..nacct {
+            Bool want = (pass == 0 && rolev[i] == PARENT) || (pass == 1 && rolev[i] != PARENT);
+            if (want) {
+                if (seen == k) { return i; }
+                seen = seen + 1;
+            }
+        }
+    }
+    return -1;
+}
+
+// The first parent after account `after` in the shown order, wrapping (the approval prompt's Tab); -1 for none.
+export I64 next_parent(I64 after) {
+    I64 start = 0;
+    for k in 0..nacct {
+        if (shown(k) == after) { start = k + 1; }
+    }
+    for j in 0..nacct {
+        I64 i = shown((start + j) % nacct);
+        if (i >= 0 && rolev[i] == PARENT) { return i; }
+    }
+    return -1;
+}
+
+// RS-ROLE: account i's passphrase was accepted under a parent's rule (AC-D3), so it may be a parent's.
+export Bool parent_pass(I64 i) { return i >= 0 && i < nacct && (rolev[i] == PARENT || longv[i] == 1); }
+
+// RS-ROLE: the length n of the passphrase add or set_pass just took for account i, noted as a parent's or not.
+// Whoever sets a passphrase calls it; without the call the account keeps no mark and cannot be promoted.
+export void pass_len(I64 i, I64 n) {
+    if (i < 0 || i >= nacct) { return; }
+    longv[i] = 0;
+    if (pass_ok(PARENT, n)) { longv[i] = 1; }
+}
+
+// RS-ROLE: account i's role. To a child: refused for the last parent; the ceiling stays every grant until set_ceil,
+// and the passphrase keeps its parent's mark. To a parent: only with that mark; the ceiling becomes every grant.
+export I64 set_role(I64 i, I64 role) {
+    if (i < 0 || i >= nacct || (role != PARENT && role != CHILD)) { return NO_ACCOUNT; }
+    if (rolev[i] == role) { return 0; }
+    if (role == CHILD) {
+        if (parents() == 1) { return LAST_PARENT; }
+        rolev[i] = CHILD;
+        longv[i] = 1;
+        return 0;
+    }
+    if (longv[i] != 1) { return SHORT_PASS; }
+    rolev[i] = PARENT;
+    ceilv[i] = 7;
+    return 0;
+}
+
+// RS-ROLE: a child's grant ceiling, a subset of disk 1, net 2, audio 4.
+export I64 set_ceil(I64 i, U64 c) {
+    if (i < 0 || i >= nacct || (c & ~7) != 0) { return NO_ACCOUNT; }
+    if (rolev[i] == PARENT) { return IS_PARENT; }
+    ceilv[i] = c;
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

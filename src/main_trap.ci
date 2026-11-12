@@ -1,0 +1,65 @@
+// src/main_trap.ci: K2. Installs an IDT, provokes a divide error, an invalid opcode and a
+// page fault, prints each as a fault record from cint, then counts PIT ticks and prints the
+// count after a fixed number of them. A last probe runs with the timer live, which panics if
+// the interrupt flag was left set outside cpu_wait_irq. Nothing printed depends on time or on an address.
+
+import src.serial;
+import src.text;
+import src.trap;
+import src.idt;
+import src.pit;
+
+const I64 TICKS = 100;
+
+// "<name>\nfault: cint-core-1/fault/v2 <len> bytes\n<hex>\n", the form rt/ctx.c uses.
+void print_record(in U8[_] name) {
+    I64 nbytes = trap.trap_record_len();
+    U8[12] digits;
+    serial.serial_write(name);
+    serial.serial_write("\nfault: cint-core-1/fault/v2 ");
+    I64 k = text.dec_digits(nbytes, digits);
+    for i in 0..k {
+        serial.serial_putc(digits[i]);
+    }
+    serial.serial_write(" bytes\n");
+    for i in 0..nbytes {
+        U8 b = trap.trap_record_byte(i);
+        serial.serial_putc(text.hex_digit(b >> 4));
+        serial.serial_putc(text.hex_digit(b));
+    }
+    serial.serial_write("\n");
+}
+
+void main() {
+    serial.serial_init();
+    serial.serial_write("Daphnis K2: traps and timer\n");
+    idt.idt_install();
+    trap.trap_probe_de();
+    print_record("trap de");
+    trap.trap_probe_ud();
+    print_record("trap ud");
+    trap.trap_probe_pf(0x40000AB0 as U64);
+    print_record("trap pf");
+    pit.pic_remap();
+    pit.pit_start(1193);
+    if (!pit.pit_is_programmed(1193)) {
+        serial.serial_write("timer: PIT not programmed\n");
+    }
+    I64 waits = 0;
+    while (waits < TICKS) {
+        trap.cpu_wait_irq();
+        waits += 1;
+    }
+    if (trap.timer_ticks() < waits) {
+        serial.serial_write("timer: fewer ticks than waits\n");
+    }
+    trap.trap_probe_ud();
+    U8[12] digits;
+    I64 k = text.dec_digits(waits, digits);
+    serial.serial_write("ticks: ");
+    for i in 0..k {
+        serial.serial_putc(digits[i]);
+    }
+    serial.serial_write("\n");
+}
+// SPDX-License-Identifier: Apache-2.0

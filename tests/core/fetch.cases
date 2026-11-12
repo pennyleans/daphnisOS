@@ -1,0 +1,10 @@
+# tests/core/fetch.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-07-bu5-fetch.md section 4, BU-5a). The offline cases;
+# the oracle is busybox-net's wget through tools/core-fetch-oracle.sh (-o is -O, and -q), and the fetches over a
+# loopback server are check-core.sh's http lines (D-57).
+-o - ftp://host/f | - | -
+-o - http:// | - | -
+-o - http://127.0.0.1:1/f | - | -
+-o - http://127.0.0.1:99999/f | - | D-3
+ | - | D-3
+a b | - | D-3
+-x http://127.0.0.1:1/ | - | D-1

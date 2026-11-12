@@ -1,0 +1,27 @@
+// src/trap.ci: the trap, IDT and timer stubs of arch/x86_64/trap.S and rt/trap.c, as cint
+// externs. rt/host.c binds each name once at boot.
+
+export extern observe U64 trap_stub(I64 vector);
+export extern unrestricted void idt_set(I64 vector, U64 lo, U64 hi);
+export extern unrestricted void idt_load();
+export extern unrestricted void trap_probe_de();
+export extern unrestricted void trap_probe_ud();
+export extern unrestricted void trap_probe_pf(U64 addr);
+export extern observe I64 trap_record_len();
+export extern observe U8 trap_record_byte(I64 i);
+export extern unrestricted void cpu_wait_irq();
+export extern observe I64 timer_ticks();
+
+export extern unrestricted void gdt_set(I64 slot, U64 lo, U64 hi);
+export extern observe U64 tss_base();
+export extern unrestricted void tss_set_ist(I64 n, U64 top);
+export extern observe U64 ist_top(I64 n);
+export extern unrestricted void tss_load();
+export extern unrestricted void trap_probe_nmi();
+export extern unrestricted void trap_probe_stack();
+export extern unrestricted U64 vm_load64(U64 va);
+export extern unrestricted void vm_store64(U64 va, U64 v);
+export extern unrestricted void vm_exec(U64 va);
+export extern unrestricted void vm_invlpg(U64 va);
+export extern observe U64 vm_root();
+// SPDX-License-Identifier: Apache-2.0

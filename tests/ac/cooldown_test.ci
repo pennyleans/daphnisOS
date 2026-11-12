@@ -1,0 +1,271 @@
+// tests/ac/cooldown_test.ci: what a closed window takes with it from the approval prompt, hosted (PR 412). AC-D4's
+// cooldown: after a refused prompt with a passphrase, the same window's next ask for ring 0 within 30 s is refused at
+// once, without a prompt; AC-D4 scopes it to the asking process tree, and a window's tree ends with the window, so a
+// new window that takes the slot is asked (morp's title leg showed one refused at once). The kernel prompt's window:
+// a yes puts the 5-minute hold on the asking window's tree, so a prompt whose window closes holds no window, and a
+// new window in the slot gets neither the hold nor the cooldown. hdesk.ci is a program, so cint test cannot import
+// it: the statements below are hdesk.ci's, copied verbatim (kern_next's check, kern_answer's refusal and its hold,
+// with tile_kern for hdeskctl.tile_ask(FBIO_TILE_KERN, .., ask[0..64]); close_window's two clears after its own
+// answer), and tools/check-cooldown.py holds both files to them. Run by check.sh. RG-1 (PR 479): an app in its own
+// window asks through its host, the terminal that holds its process and is never shown (lx_host); kern_next's match
+// finds the host as any terminal, so the prompt has the app's record (frame 8's icon and title) and its cooldown.
+import user.ci.kit.apps;
+import user.ci.kit.deskask;
+import user.ci.kit.prompttitle;
+
+const I64 COOL_NS = 30000000000;     // and the same window's next request within 30 s is refused without one
+const I64 SEC = 1000000000;
+
+I64 kp_win = -1;
+I64 kp_vp = 0;
+Bool kp_open = false;
+Bool ac_op_up = false;               // the prompt on screen is Settings' (an Accounts operation)
+I64 cool_win = -1;
+I64 cool_until = 0;
+I64 clock = 0;
+I64[8] pid;                          // each window's first process
+I64 bit = -1;                        // the process a yes gave its bit, or -1
+I64 held = -1;                       // the tree a yes held for 5 minutes, or -1
+const I64 NONE = 0;                  // hdesk.ci's window kinds
+const I64 TERM = 1;
+const I64 PIXEL = 2;
+I64[8] kind;
+I64[8] vpid;                         // the process each window's record names (FBIO_TILE_INFO)
+Bool[8] lx_host;                     // RG-1: a terminal that only holds the process of an app in its own window
+I64[8] lx_app;                       // AC-T: kit/prompttitle.ci's record of the app typed into a terminal, plus 1
+U8[64] rec;                          // AC-T2: FBIO_TILE_INFO kind 13 of the asking window's first process
+
+I64 now_ns() { return clock; }
+
+Bool info(I64 i) { return kind[i] != NONE; }
+
+// The kernel's answer to the desk: how 1 is the asking process's bit, how 2 the hold on a window's tree.
+I64 tile_kern(I64 p, I64 how) {
+    if (how == 1) { bit = p; }
+    if (how == 2) { held = p; }
+    return 0;
+}
+
+// kern_next: window w asks; whether it is refused at once, else its prompt is up.
+Bool ask(I64 w) {
+    kp_win = w;
+    if (kp_win >= 0 && kp_win == cool_win && now_ns() < cool_until) {
+        return true;
+    }
+    kp_open = true;
+    return false;
+}
+
+// kern_next for the oldest request, process vp's: the asking window is the first terminal whose process is vp, a
+// host as any other; whether it is refused at once, else its prompt is up.
+Bool ask_of(I64 vp) {
+    kp_vp = vp;
+    kp_win = -1;
+    for i in 0..8 {
+        if (kp_win < 0 && kind[i] == TERM && info(i) && vpid[i] == kp_vp) { kp_win = i; }
+    }
+    if (kp_win >= 0 && kp_win == cool_win && now_ns() < cool_until) {
+        return true;
+    }
+    kp_open = true;
+    return false;
+}
+
+// kern_answer(false) with the passphrase field: the asking window's 30 s begin; the prompt ends.
+void refuse() {
+    cool_win = kp_win;                 // AC-D4: 30 s without a prompt for this window
+    cool_until = now_ns() + COOL_NS;
+    kp_open = false;
+    ac_op_up = false;
+}
+
+// kern_answer(true) for ring 0: the asking process's bit, then the hold on the asking window's tree.
+void approve() {
+    I64 st = tile_kern(kp_vp, 1);
+    if (kp_win >= 0) { st = tile_kern(pid[kp_win], 2); }
+    kp_open = false;
+}
+
+// close_window: Settings' ask of the window is answered first, here at worst a refusal; then the cooldown and the
+// kernel prompt's window go.
+void close_window(I64 i) {
+    if ((ac_op_up || deskask.up()) && kp_win == i) { refuse(); }
+    if (i == cool_win) { cool_win = -1; }   // AC-D4: the cooldown is the tree's; a new window in this slot is asked
+    if (kp_open && !ac_op_up && !deskask.up() && kp_win == i) { kp_win = -1; }   // a kernel ask: no window to hold
+}
+
+void start() {
+    kp_win = -1;
+    kp_vp = 41;
+    kp_open = false;
+    ac_op_up = false;
+    cool_win = -1;
+    cool_until = 0;
+    clock = 100 * SEC;
+    for k in 0..8 {
+        pid[k] = 10 + k;
+        kind[k] = NONE;
+        vpid[k] = 0;
+        lx_host[k] = false;
+        lx_app[k] = 0;
+    }
+    for k in 0..64 { rec[k] = 0; }
+    bit = -1;
+    held = -1;
+}
+
+// Index opened from the plane (pl_run, new_term): its host at slot 1, typed `exec finder`, and its pixel window at
+// slot 2 once it binds, both process p; AC-T2's record of p is the image member /bin/finder.
+void index_at(I64 p) {
+    kind[1] = TERM;
+    lx_host[1] = true;
+    pid[1] = p;
+    vpid[1] = p;
+    lx_app[1] = prompttitle.record(b"finder");
+    kind[2] = PIXEL;
+    pid[2] = p;
+    vpid[2] = p;
+    U8[11] path = b"/bin/finder";
+    for k in 0..64 { rec[k] = 0; }
+    rec[0] = p as U8;
+    rec[8] = 11;
+    for k in 0..11 { rec[16 + k] = path[k]; }
+}
+
+// close_window's slot freed (kind[i] = NONE and RG-1's lx_host[i] = false).
+void freed(I64 i) {
+    close_window(i);
+    kind[i] = NONE;
+    lx_host[i] = false;
+}
+
+// Frame 8's row (prompt_row): whether it shows Index's icon and name, the desk's record of the asking window; with
+// no window, the Terminal's icon and the pid.
+Bool shows_index() {
+    if (kp_win < 0) { return false; }
+    U8[16] t;
+    I64 n = prompttitle.title(lx_app[kp_win] - 1, rec, t);
+    I64 ix = apps.by_program(b"/bin/finder");
+    U8[5] w = b"Index";
+    if (n != 5 || prompttitle.icon(lx_app[kp_win] - 1, rec) != apps.icon(ix)) { return false; }
+    for k in 0..5 {
+        if (t[k] != w[k]) { return false; }
+    }
+    return true;
+}
+
+test "a refusal in a window, that window closed: a new window in the same slot is asked, not refused" {
+    start();
+    assert(!ask(3));
+    refuse();
+    clock = clock + SEC;
+    close_window(3);
+    assert(!ask(3));
+}
+
+test "the same window asks again within 30 s: refused at once; at 30 s it is asked" {
+    start();
+    assert(!ask(3));
+    refuse();
+    clock = clock + 29 * SEC;
+    assert(ask(3));
+    clock = 130 * SEC;
+    assert(!ask(3));
+}
+
+test "another window closed, or another window asking: the refused window keeps its 30 s" {
+    start();
+    assert(!ask(3));
+    refuse();
+    close_window(5);
+    assert(!ask(5));
+    approve();
+    assert(ask(3));
+}
+
+test "Settings' ask of a window closed and refused on the way out: the next window in the slot is asked" {
+    start();
+    ac_op_up = true;
+    kp_open = true;
+    kp_win = 3;
+    close_window(3);
+    assert(!ask(3));
+}
+
+test "a kernel prompt up for window 3, window 3 closed, a new window at 3, yes: the asker's bit, no window held" {
+    start();
+    pid[3] = 40;
+    assert(!ask(3));
+    close_window(3);
+    pid[3] = 50;
+    assert(kp_open);
+    approve();
+    assert(bit == 41 && held == -1);
+}
+
+test "the same prompt refused: the new window at 3 is not cooled, its ask is put up" {
+    start();
+    assert(!ask(3));
+    close_window(3);
+    pid[3] = 50;
+    refuse();
+    assert(!ask(3));
+}
+
+test "another window closed while window 3's kernel prompt is up: a yes holds window 3's tree" {
+    start();
+    pid[3] = 40;
+    assert(!ask(3));
+    close_window(5);
+    approve();
+    assert(bit == 41 && held == 40);
+}
+
+test "RG-1: Index asks: its prompt is its host's, with Index's icon and name" {
+    start();
+    index_at(60);
+    assert(!ask_of(60));
+    assert(kp_win == 1 && shows_index());
+}
+
+test "RG-1: Index refused asks again within 30 s: refused at once; at 30 s its prompt is up again" {
+    start();
+    index_at(60);
+    assert(!ask_of(60));
+    refuse();
+    clock = clock + 29 * SEC;
+    assert(ask_of(60));
+    clock = 130 * SEC;
+    assert(!ask_of(60) && shows_index());
+}
+
+test "RG-1: Index refused, its window closed while its process runs: still refused at once" {
+    start();
+    index_at(60);
+    assert(!ask_of(60));
+    refuse();
+    freed(2);
+    clock = clock + SEC;
+    assert(ask_of(60));
+}
+
+test "RG-1: Index refused and ended (its window, then its host): Index opened again in the slots is asked" {
+    start();
+    index_at(60);
+    assert(!ask_of(60));
+    refuse();
+    freed(2);
+    freed(1);
+    index_at(61);
+    clock = clock + SEC;
+    assert(!ask_of(61) && shows_index());
+}
+
+test "RG-1: Index approved: the bit and the 5-minute hold are on its process, the one its window shows" {
+    start();
+    index_at(60);
+    assert(!ask_of(60));
+    approve();
+    assert(bit == 60 && held == 60 && pid[2] == 60);
+}
+// SPDX-License-Identifier: Apache-2.0

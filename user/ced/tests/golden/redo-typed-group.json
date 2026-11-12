@@ -1,0 +1,28 @@
+{
+  "id": "redo-typed-group",
+  "rules": [
+    "UNDO-3",
+    "KEY-6"
+  ],
+  "text": "",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "616263",
+    "1a",
+    "19"
+  ],
+  "expect": {
+    "text": "abc",
+    "sel": [
+      3,
+      3
+    ]
+  }
+}

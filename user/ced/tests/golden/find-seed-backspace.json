@@ -1,0 +1,38 @@
+{
+  "id": "find-seed-backspace",
+  "rules": [
+    "FIND-1",
+    "FIND-3"
+  ],
+  "text": "abc xyz",
+  "size": [
+    6,
+    40
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [
+    "06",
+    "78797a",
+    "0d",
+    "06",
+    "7f"
+  ],
+  "expect": {
+    "text": "abc xyz",
+    "sel": [
+      4,
+      7
+    ],
+    "screen": [
+      "abc xyz",
+      "",
+      "",
+      "",
+      " x  3 chars selected                1:8",
+      "find:"
+    ]
+  }
+}

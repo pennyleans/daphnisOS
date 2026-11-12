@@ -1,0 +1,92 @@
+// tests/rs/shotdesk_test.ci: hosted tests of the desk's side of RS-SHOT (user/ci/kit/shotdesk.ci;
+// docs/handoff/20261111-rs-shot-wiring.md): the keys, who may shoot, the window's frame cut to the screen, the four
+// shots running, the newest shot's plate alone, and the 20 s wait. Run by check.sh's tests/rs loop.
+
+import user.ci.kit.shotdesk;
+
+test "Print the screen, Alt+Print the focused window, Super+Shift+S an area; nothing else is a shot key" {
+    assert(shotdesk.which(99, false, false, false) == shotdesk.SCREEN);
+    assert(shotdesk.which(99, false, true, true) == shotdesk.SCREEN);       // Print is Print whatever else is held
+    assert(shotdesk.which(99, true, false, false) == shotdesk.WINDOW);
+    assert(shotdesk.which(31, false, true, true) == shotdesk.AREA);
+    assert(shotdesk.which(31, false, true, false) == shotdesk.NONE);       // Super+S: not a shot
+    assert(shotdesk.which(31, false, false, true) == shotdesk.NONE);       // Shift+S: a capital S for the window
+    assert(shotdesk.which(31, false, false, false) == shotdesk.NONE);
+    assert(shotdesk.which(28, false, true, true) == shotdesk.NONE);        // Super+Shift+Enter
+    assert(shotdesk.which(98, false, false, false) == shotdesk.NONE);      // keypad /, beside Print's code
+}
+
+test "a shot needs a session, no account screen, and Disk in the ceiling" {
+    assert(shotdesk.may(true, false, 7));
+    assert(shotdesk.may(true, false, 1));
+    assert(!shotdesk.may(true, false, 6));                                  // Net and Audio without Disk
+    assert(!shotdesk.may(true, false, 0));
+    assert(!shotdesk.may(true, true, 7));                                   // the lock screen
+    assert(!shotdesk.may(false, false, 7));                                 // no account: no home to save in
+}
+
+test "the window's frame is cut to the screen" {
+    I64[4] r;
+    assert(shotdesk.clip(100, 40, 640, 480, 1920, 1080, r));
+    assert(r[0] == 100 && r[1] == 40 && r[2] == 640 && r[3] == 480);
+    assert(shotdesk.clip(-30, 1000, 200, 200, 1920, 1080, r));             // a float dragged past two edges
+    assert(r[0] == 0 && r[1] == 1000 && r[2] == 170 && r[3] == 80);
+    assert(shotdesk.clip(1800, 0, 400, 1080, 1920, 1080, r) && r[2] == 120);
+    assert(!shotdesk.clip(1920, 10, 50, 50, 1920, 1080, r));               // wholly off the screen
+    assert(!shotdesk.clip(10, 10, 0, 50, 1920, 1080, r));
+}
+
+test "only the newest shot's plate shows, and only after status 0 and a name" {
+    I64 a = shotdesk.began(301, 0);
+    I64 b = shotdesk.began(302, 10);
+    assert(a > 0 && b == a + 1 && shotdesk.running());
+    assert(!shotdesk.ended(301, 0, true));                                  // older: its plate was replaced
+    assert(shotdesk.ended(302, 0, true));                                   // newest, named: shown
+    assert(!shotdesk.running());
+    I64 c = shotdesk.began(303, 20);
+    assert(!shotdesk.ended(303, 1, false));                                 // a call failed: nothing shows
+    I64 d = shotdesk.began(304, 30);
+    assert(!shotdesk.ended(304, 0, false));                                 // status 0 with no name: nothing
+    I64 e = shotdesk.began(305, 40);
+    assert(!shotdesk.ended(999, 0, true));                                  // not a shot's pid
+    assert(shotdesk.ended(305, 0, true));
+    assert(!shotdesk.ended(305, 0, true));                                  // its slot is free: once only
+}
+
+test "a shot taken before the lock or a logout shows nothing when it ends" {
+    I64 a = shotdesk.began(401, 0);
+    shotdesk.forget();
+    assert(!shotdesk.ended(401, 0, true));
+    I64 b = shotdesk.began(402, 0);
+    assert(shotdesk.ended(402, 0, true));                                   // the next shot shows again
+}
+
+test "four shots run at a time, and each is reaped by its pid" {
+    for k in 0..4 { assert(shotdesk.began(500 + k, 0) > 0); }
+    assert(shotdesk.began(504, 0) == 0);                                    // no fifth slot
+    I64 n = 0;
+    for k in 0..shotdesk.SLOTS {
+        if (shotdesk.child(k) != 0) { n = n + 1; }
+    }
+    assert(n == 4);
+    for k in 0..4 { Bool s = shotdesk.ended(500 + k, 0, true); }
+    assert(!shotdesk.running());
+}
+
+test "a child past 20 s is named once to be stopped, and its plate never shows" {
+    I64 a = shotdesk.began(601, 1000);
+    assert(shotdesk.late(1000 + shotdesk.WAIT_MS - 1) == 0);
+    assert(shotdesk.late(1000 + shotdesk.WAIT_MS) == 601);
+    assert(shotdesk.late(1000 + 2 * shotdesk.WAIT_MS) == 0);              // once
+    assert(!shotdesk.ended(601, 0, true));                                  // stopped: even a name shows nothing
+}
+
+test "the home and the saved file's path" {
+    U8[128] p;
+    I64 n = shotdesk.home(b"ada", p);
+    assert(n == 9 && p[0] == '/' && p[5] == '/' && p[6] == 'a' && p[8] == 'a');
+    n = shotdesk.path(b"ada", b"Screenshot 2026-11-12 08.04.34.png", p);
+    assert(n == 9 + 10 + 34);
+    assert(p[9] == '/' && p[10] == 'P' && p[18] == '/' && p[19] == 'S' && p[n - 1] == 'g');
+}
+// SPDX-License-Identifier: Apache-2.0

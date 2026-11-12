@@ -1,0 +1,86 @@
+// tests/fs/stamp_test.ci: FS-4 with FS-R3 C (docs/specs/2026-11-07-bu2-meta.md section 4.6), hosted: the stamp time
+// of src/stamp.ci never goes back, whatever the clocks and the boot's base do.
+
+import src.stamp;
+
+const U64 EPOCH = 1767225600;
+const U64 S = 1000000000;
+
+test "the stamp time is the base plus the furthest clock, in whole seconds" {
+    assert(stamp.time(0, EPOCH, 0) == 1767225600);
+    assert(stamp.time(3 * S, EPOCH, 0) == 1767225603);
+    assert(stamp.time(3 * S + 999999999, EPOCH, 0) == 1767225603);
+    assert(stamp.time(4 * S, EPOCH, 1767225603) == 1767225604);
+}
+
+test "the furthest clock only grows: a fresh program's clock, a fork's copy and an ended process change nothing" {
+    U64 far = 0;
+    far = stamp.further(far, 5 * S);           // a long-running process
+    assert(far == 5 * S);
+    far = stamp.further(far, 0);               // a program just started: its clock is 0
+    assert(far == 5 * S);
+    far = stamp.further(far, 5 * S);           // a fork's copy of its parent's clock
+    assert(far == 5 * S);
+    far = stamp.further(far, 2 * S);           // any process behind the furthest
+    assert(far == 5 * S);
+    far = stamp.further(far, 5 * S + 1);
+    assert(far == 5 * S + 1);
+}
+
+test "a file written second by a fresh program is not earlier than the first" {
+    U64 far = 0;
+    I64 last = 0;
+    far = stamp.further(far, 3 * S);           // the long-running writer slept 3 s
+    I64 early = stamp.time(far, EPOCH, last);
+    last = early;
+    far = stamp.further(far, 0);               // the fresh program, clock 0
+    I64 late = stamp.time(far, EPOCH, last);
+    assert(early == 1767225603);
+    assert(late >= early);
+    assert(late == 1767225603);
+}
+
+test "the guard: a base that moves back does not move a stamp back" {
+    I64 last = stamp.time(10 * S, EPOCH, 0);
+    assert(last == 1767225610);
+    I64 t = stamp.time(10 * S, EPOCH - 100000, last);      // the date was set earlier than the stamps given
+    assert(t == last);
+    I64 u = stamp.time(11 * S, EPOCH + 5, last);            // and forward again
+    assert(u == 1767225616);
+}
+
+// RS-CLK: src/proc.ci's sys_clock_settime keeps far_set = far and sets the last stamp to the set's seconds; stamp_s
+// then gives stamp.time(far - far_set, set, last).
+test "RS-CLK: a set of the clock moves the stamp time with it, back or forward, and the guard starts from it" {
+    U64 far = stamp.further(0, 40 * S);
+    I64 last = stamp.time(far, EPOCH, 0);
+    assert(last == 1767225640);
+    U64 far_set = far;                                     // set back a day
+    U64 base = EPOCH - 86400;
+    last = (EPOCH - 86400) as I64;
+    I64 t = stamp.time(far - far_set, base, last);
+    assert(t == 1767139200);                               // earlier than every stamp before the set
+    far = stamp.further(far, 42 * S);                      // 2 s on
+    t = stamp.time(far - far_set, base, t);
+    assert(t == 1767139202);
+    far = stamp.further(far, 0);                           // a fresh program after the set: the guard holds
+    assert(stamp.time(far - far_set, base, t) == t);
+    far_set = far;                                         // set forward a year
+    base = EPOCH + 31536000;
+    t = stamp.time(far - far_set, base, base as I64);
+    assert(t == 1798761600);
+}
+
+test "over a run of clocks in any order the stamps never fall" {
+    U64 far = 0;
+    I64 last = 0;
+    U64 x = 12345;
+    for k in 0..2000 {
+        x = (x * 1103515245 + 12345) % 2147483648;      // any sequence
+        far = stamp.further(far, (x % 5000) * 10000000);
+        I64 t = stamp.time(far, EPOCH, last);
+        assert(t >= last);
+        last = t;
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

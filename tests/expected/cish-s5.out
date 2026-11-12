@@ -1,0 +1,6 @@
+child sees [1] [1] [two words]
+parent sees []
+after unset [] [two words]
+zero one
+end
+status 0

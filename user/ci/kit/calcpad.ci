@@ -1,0 +1,436 @@
+// user/ci/kit/calcpad.ci: Calc's window (stage RS, RS-CALC; frame 39 dark and light, approved by DN-58), its model
+// and its drawing, over the arithmetic ccalc uses (user/ci/core/calc.ci). The program (user/ci/calc.ci) feeds it keys
+// and clicks and copies its rows to the surface; the hosted tests drive it the same way.
+//
+// The window's body is W x H at 1x: the tape (the last TAPE lines, newest nearest the display, each `EXPR = RESULT`
+// right aligned in mono 12), the display (a MANTLE plate: the line being typed in mono 12, its result in mono 28 600,
+// or the failure's words in CADMIUM when `=` failed), and the keypad of 20 keys, 60 x 44 at a 66 x 50 pitch. What is
+// shown is what is evaluated: the line is literal text, a key adds its own text (`×` adds ` * `, `−` ` - ` or `-`),
+// and the display draws `*` as × and `/` as ÷. While a line is typed its result is a preview that keeps nothing
+// (calc.preview); `=` evaluates it for real, puts it on the tape and leaves it and its result on the display. After
+// `=`, a digit, a point or a parenthesis starts a new line, and an operator goes on from the result's digits. A click
+// on a tape line puts its line back on the display.
+import user.ci.core.calc;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.shape;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+import user.ci.kit.appfaces;
+import user.ci.kit.apptext;
+import user.ci.kit.stroke;
+
+export const I64 W = 286;
+export const I64 H = 411;
+export const I64 TAPE = 3;
+export const I64 LINE = 255;          // the longest line the display takes
+export const I64 KEYS = 20;
+
+// keys, row by row
+export const I64 K_CLEAR = 0;
+export const I64 K_OPEN = 1;
+export const I64 K_CLOSE = 2;
+export const I64 K_DIV = 3;
+export const I64 K_MUL = 7;
+export const I64 K_SUB = 11;
+export const I64 K_ADD = 15;
+export const I64 K_ZERO = 16;
+export const I64 K_POINT = 17;
+export const I64 K_ERASE = 18;
+export const I64 K_EQUALS = 19;
+export const I64 TAPE_HIT = 100;      // hit(): TAPE_HIT + i for tape row i (0 the top)
+
+const I64 PAD = 14;
+const I64 TAPE_TOP = 12;
+const I64 TAPE_ROW = 18;
+const I64 DISP_TOP = 76;
+const I64 DISP_H = 76;
+const I64 KEY_TOP = 162;
+const I64 KEY_W = 60;
+const I64 KEY_H = 44;
+const I64 KEY_DX = 66;
+const I64 KEY_DY = 50;
+
+// 0 a function key (SURF2), 1 a digit (SURF1), 2 `=` (FILL)
+U8[20] kind = [0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0, 2];
+// each key's label (UTF-8) at lab[4 k], its length at lab_n[k]; the erase key draws its symbol
+U8[80] lab = ['C', 0, 0, 0, '(', 0, 0, 0, ')', 0, 0, 0, 0xC3, 0xB7, 0, 0,
+              '7', 0, 0, 0, '8', 0, 0, 0, '9', 0, 0, 0, 0xC3, 0x97, 0, 0,
+              '4', 0, 0, 0, '5', 0, 0, 0, '6', 0, 0, 0, 0xE2, 0x88, 0x92, 0,
+              '1', 0, 0, 0, '2', 0, 0, 0, '3', 0, 0, 0, '+', 0, 0, 0,
+              '0', 0, 0, 0, '.', 0, 0, 0, 0, 0, 0, 0, '=', 0, 0, 0];
+U8[20] lab_n = [1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 3, 1, 1, 1, 1, 1, 1, 0, 1];
+// the erase symbol (frame 39's 16 unit drawing at 20 px), segments in sixteenths
+I64[44] erase = [88, 56, 208, 56,  208, 56, 219, 61,  219, 61, 224, 72,  224, 72, 224, 184,  224, 184, 219, 195,
+                 219, 195, 208, 200,  208, 200, 88, 200,  88, 200, 32, 128,  32, 128, 88, 56,
+                 120, 100, 176, 156,  176, 100, 120, 156];
+
+U8[256] ex;                // the line on the display, as typed
+I64 ex_n = 0;
+U8[64] res;                // its result, or the failure's words
+I64 res_n = 0;
+Bool res_bad = false;      // res holds a failure (after `=` only)
+Bool done = false;         // `=` was the last key: the display holds a line and its result
+U8[768] t_ex;              // the tape, oldest first: TAPE lines of 256 bytes
+I64[3] t_ex_n;
+U8[192] t_res;             // and their results, 64 bytes each
+I64[3] t_res_n;
+I64 t_n = 0;
+U8[512] show;              // the display's text, drawn
+U8[64] said;
+
+// --- the model ---
+
+export void reset() {
+    ex_n = 0;
+    res_n = 0;
+    res_bad = false;
+    done = false;
+    t_n = 0;
+    calc.forget();
+}
+
+export I64 line_text(inout U8[_] buf) {
+    for i in 0..ex_n { buf[i] = ex[i]; }
+    return ex_n;
+}
+
+export I64 result_text(inout U8[_] buf) {
+    for i in 0..res_n { buf[i] = res[i]; }
+    return res_n;
+}
+
+export Bool failed() { return res_bad; }
+export I64 tape_lines() { return t_n; }
+
+export I64 tape_line(I64 i, inout U8[_] buf) {
+    for j in 0..t_ex_n[i] { buf[j] = t_ex[256 * i + j]; }
+    return t_ex_n[i];
+}
+
+export I64 tape_result(I64 i, inout U8[_] buf) {
+    for j in 0..t_res_n[i] { buf[j] = t_res[64 * i + j]; }
+    return t_res_n[i];
+}
+
+// The result of the line as it stands, kept nothing (the preview); a line that does not evaluate shows none.
+void preview() {
+    res_bad = false;
+    res_n = 0;
+    I64 r = calc.preview(ex, ex_n);
+    if (r == calc.VALUE) { res_n = calc.value_text(calc.m(), calc.s(), calc.marked(), res); }
+    else if (r == calc.HEX) { res_n = calc.hex_text(calc.hex_value(), res); }
+}
+
+// The last byte of the line that is not a space, or 0.
+U8 last() {
+    I64 i = ex_n;
+    while (i > 0 && ex[i - 1] == ' ') { i = i - 1; }
+    if (i == 0) { return 0; }
+    return ex[i - 1];
+}
+
+void add(in U8[_] s) {
+    if (ex_n + len(s) > LINE) { return; }
+    for i in 0..len(s) { ex[ex_n + i] = s[i]; }
+    ex_n = ex_n + len(s);
+}
+
+// After `=`: a new line (fresh), or the result's digits to go on from (an operator); a negative result in parentheses,
+// since `^` binds before the sign (`(-3) ^ 2` is 9, `-3 ^ 2` is -9).
+void after_done(Bool fresh) {
+    if (!done) { return; }
+    done = false;
+    if (fresh || res_bad) {
+        ex_n = 0;
+        res_bad = false;
+        return;
+    }
+    ex_n = 0;
+    I64 s = 0;
+    if (res_n > 0 && res[0] == '~') { s = 1; }   // the digits; the mark is not an operand
+    if (s < res_n && res[s] == '-') {
+        add(b"(");
+        add(res[s..res_n]);
+        add(b")");
+        return;
+    }
+    add(res[s..res_n]);
+}
+
+// A binary operator with its spaces; minus where an operand is due is the sign alone.
+void op_key(U8 op) {
+    after_done(false);
+    U8 l = last();
+    if (op == '-' && (l == 0 || l == '(' || l == '+' || l == '-' || l == '*' || l == '/' || l == '^' || l == '%')) {
+        add(b"-");
+        return;
+    }
+    U8[3] t;
+    t[0] = ' ';
+    t[1] = op;
+    t[2] = ' ';
+    add(t);
+}
+
+export void clear() {
+    ex_n = 0;
+    res_n = 0;
+    res_bad = false;
+    done = false;
+}
+
+export void clear_tape() { t_n = 0; }
+
+// Backspace: the last byte of the line, with the spaces round it.
+export void erase_one() {
+    done = false;
+    res_bad = false;
+    while (ex_n > 0 && ex[ex_n - 1] == ' ') { ex_n = ex_n - 1; }
+    if (ex_n > 0) { ex_n = ex_n - 1; }
+    while (ex_n > 0 && ex[ex_n - 1] == ' ') { ex_n = ex_n - 1; }
+    preview();
+}
+
+void tape_push() {
+    if (t_n == TAPE) {
+        for i in 0..TAPE - 1 {
+            for j in 0..t_ex_n[i + 1] { t_ex[256 * i + j] = t_ex[256 * (i + 1) + j]; }
+            t_ex_n[i] = t_ex_n[i + 1];
+            for j in 0..t_res_n[i + 1] { t_res[64 * i + j] = t_res[64 * (i + 1) + j]; }
+            t_res_n[i] = t_res_n[i + 1];
+        }
+        t_n = TAPE - 1;
+    }
+    for j in 0..ex_n { t_ex[256 * t_n + j] = ex[j]; }
+    t_ex_n[t_n] = ex_n;
+    for j in 0..res_n { t_res[64 * t_n + j] = res[j]; }
+    t_res_n[t_n] = res_n;
+    t_n = t_n + 1;
+}
+
+// `=`: the line evaluated and kept; on the tape unless it failed or was blank.
+export void equals() {
+    if (done || ex_n == 0) { return; }
+    I64 r = calc.line(ex, ex_n);
+    res_n = 0;
+    res_bad = false;
+    if (r == calc.VALUE) { res_n = calc.value_text(calc.m(), calc.s(), calc.marked(), res); }
+    else if (r == calc.HEX) { res_n = calc.hex_text(calc.hex_value(), res); }
+    else if (r < 0) {
+        res_n = calc.error_text(r, res);
+        res_bad = true;
+        done = true;
+        return;
+    }
+    if (r == calc.BLANK) { return; }
+    tape_push();
+    done = true;
+}
+
+// The line is a name alone (`x`, `scale`), spaces round it allowed.
+Bool bare_name() {
+    I64 i = 0;
+    while (i < ex_n && ex[i] == ' ') { i = i + 1; }
+    if (i == ex_n) { return false; }
+    U8 c = ex[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_')) { return false; }
+    while (i < ex_n && ((ex[i] >= 'a' && ex[i] <= 'z') || (ex[i] >= 'A' && ex[i] <= 'Z') || ex[i] == '_' ||
+                        (ex[i] >= '0' && ex[i] <= '9'))) { i = i + 1; }
+    while (i < ex_n && ex[i] == ' ') { i = i + 1; }
+    return i == ex_n;
+}
+
+// `=` typed on the keyboard: after a name alone it is the name's own `=` (`x = 5`, `scale = 2`); else it evaluates.
+export void typed_equals() {
+    if (!done && bare_name()) {
+        while (ex_n > 0 && ex[ex_n - 1] == ' ') { ex_n = ex_n - 1; }
+        add(b" = ");
+        preview();
+        return;
+    }
+    equals();
+}
+
+// A key of the pad.
+export void press(I64 k) {
+    if (k == K_CLEAR) { clear(); return; }
+    if (k == K_ERASE) { erase_one(); return; }
+    if (k == K_EQUALS) { equals(); return; }
+    if (k == K_DIV) { op_key('/'); }
+    else if (k == K_MUL) { op_key('*'); }
+    else if (k == K_SUB) { op_key('-'); }
+    else if (k == K_ADD) { op_key('+'); }
+    else if (k == K_OPEN) {
+        after_done(true);
+        add(b"(");
+    } else if (k == K_CLOSE) {
+        after_done(false);
+        add(b")");
+    } else if (k == K_POINT) {
+        after_done(true);
+        add(b".");
+    } else {
+        after_done(true);
+        U8[1] d;
+        d[0] = lab[4 * k];
+        add(d);
+    }
+    preview();
+}
+
+// A byte typed on the keyboard: printable ASCII goes into the line as it is. Operators after `=` go on from the
+// result, anything else starts a new line.
+export void typed(U8 b) {
+    if (b < 32 || b > 126) { return; }
+    Bool op = b == '+' || b == '-' || b == '*' || b == '/' || b == '^' || b == '%' || b == '&' || b == '|' ||
+        b == '<' || b == '>' || b == ' ' || b == ')';
+    after_done(!op);
+    U8[1] d;
+    d[0] = b;
+    add(d);
+    preview();
+}
+
+// Tape line i (0 the oldest) back on the display.
+export void tape_back(I64 i) {
+    if (i < 0 || i >= t_n) { return; }
+    ex_n = t_ex_n[i];
+    for j in 0..ex_n { ex[j] = t_ex[256 * i + j]; }
+    done = false;
+    preview();
+}
+
+// --- where things are (1x) ---
+
+export I64 key_x(I64 k) { return PAD + KEY_DX * (k % 4); }
+export I64 key_y(I64 k) { return KEY_TOP + KEY_DY * (k / 4); }
+
+// The tape row a line sits in: the newest in the last row.
+I64 tape_row_of(I64 i) { return TAPE - t_n + i; }
+
+// What lies at 1x point (x, y): a key, TAPE_HIT + a tape line, or -1.
+export I64 hit(I64 x, I64 y) {
+    for k in 0..KEYS {
+        if (x >= key_x(k) && x < key_x(k) + KEY_W && y >= key_y(k) && y < key_y(k) + KEY_H) { return k; }
+    }
+    if (x >= PAD && x < W - PAD) {
+        for i in 0..t_n {
+            I64 t = TAPE_TOP + TAPE_ROW * tape_row_of(i);
+            if (y >= t && y < t + TAPE_ROW) { return TAPE_HIT + i; }
+        }
+    }
+    return -1;
+}
+
+// --- drawing ---
+
+// s[0..n] as the display draws it, into show: `*` as ×, `/` as ÷; its length.
+I64 shown(in U8[_] s, I64 n) {
+    I64 k = 0;
+    for i in 0..n {
+        if (s[i] == '*') {
+            show[k] = 0xC3;
+            show[k + 1] = 0x97;
+            k = k + 2;
+        } else if (s[i] == '/') {
+            show[k] = 0xC3;
+            show[k + 1] = 0xB7;
+            k = k + 2;
+        } else {
+            show[k] = s[i];
+            k = k + 1;
+        }
+    }
+    return k;
+}
+
+// The first byte of show[0..n] from which the rest fits in w device pixels in chrome face f (a whole code point).
+I64 fit_from(I64 n, I64 w, I64 f, I64 z) {
+    I64 s = 0;
+    while (s < n && ctext.width(show[s..n], n - s, f, z) > w) {
+        s = s + 1;
+        while (s < n && (show[s] & 0xC0) == 0x80) { s = s + 1; }
+    }
+    return s;
+}
+
+// Row y (device) of the body at zoom z, in the theme tokens holds.
+export void row_at(inout U32[_] row, I64 y, I64 z) {
+    draw.paint(row, 0, W * z, tokens.word(tokens.PAPER));
+    U32 dim = tokens.word(tokens.INK_DIM);
+    U32 ink = tokens.word(tokens.INK);
+    I64 right = (W - PAD) * z;
+    // the tape
+    for i in 0..t_n {
+        I64 top = (TAPE_TOP + TAPE_ROW * tape_row_of(i)) * z;
+        if (y >= top && y < top + TAPE_ROW * z) {
+            I64 base = top + 10 * z;
+            I64 gap = 8 * z;
+            I64 rw = ctext.width(t_res[64 * i..64 * i + t_res_n[i]], t_res_n[i], faces.PATH, z);
+            I64 eq = ctext.width(b"=", 1, faces.PATH, z);
+            I64 rx = right - rw;
+            _ = ctext.text(row, y, rx, base, right, t_res[64 * i..64 * i + t_res_n[i]], t_res_n[i], ink, faces.PATH, z);
+            I64 qx = rx;
+            if (t_res_n[i] > 0) {
+                qx = rx - gap - eq;
+                _ = ctext.text(row, y, qx, base, rx, b"=", 1, dim, faces.PATH, z);
+            }
+            I64 n = shown(t_ex[256 * i..256 * i + t_ex_n[i]], t_ex_n[i]);
+            I64 room = qx - gap - PAD * z;
+            I64 s = fit_from(n, room, faces.PATH, z);
+            I64 ew = ctext.width(show[s..n], n - s, faces.PATH, z);
+            _ = ctext.text(row, y, qx - gap - ew, base, qx, show[s..n], n - s, dim, faces.PATH, z);
+        }
+    }
+    // the display
+    I64 dt = DISP_TOP * z;
+    if (y >= dt && y < dt + DISP_H * z) {
+        shape.rounded(row, y, PAD * z, dt, right, dt + DISP_H * z, 8 * z, tokens.word(tokens.MANTLE));
+        I64 inner = right - 12 * z;
+        I64 room = inner - (PAD + 12) * z;
+        I64 n = shown(ex, ex_n);
+        I64 s = fit_from(n, room, faces.PATH, z);
+        I64 ew = ctext.width(show[s..n], n - s, faces.PATH, z);
+        _ = ctext.text(row, y, inner - ew, 99 * z, inner, show[s..n], n - s, dim, faces.PATH, z);
+        if (res_bad) {
+            I64 bw = ctext.width(res, res_n, faces.PATH, z);
+            _ = ctext.text(row, y, inner - bw, 135 * z, inner, res, res_n, tokens.word(tokens.CADMIUM), faces.PATH, z);
+        } else if (res_n > 0) {
+            I64 rw = apptext.width(res, res_n, appfaces.FIGURE, z);
+            if (rw <= room) {
+                _ = apptext.text(row, y, inner - rw, 135 * z, inner, res, res_n, ink, appfaces.FIGURE, z);
+            } else {
+                rw = apptext.width(res, res_n, appfaces.FACT, z);
+                _ = apptext.text(row, y, inner - rw, 135 * z, inner, res, res_n, ink, appfaces.FACT, z);
+            }
+        }
+    }
+    // the keypad
+    I64 ky = KEY_TOP * z;
+    if (y < ky || y >= (KEY_TOP + 4 * KEY_DY + KEY_H) * z) { return; }
+    for k in 0..KEYS {
+        I64 x0 = key_x(k) * z;
+        I64 y0 = key_y(k) * z;
+        if (y >= y0 && y < y0 + KEY_H * z) {
+            U32 bg = tokens.word(tokens.SURF2);
+            U32 fg = ink;
+            if (kind[k] == 1) { bg = tokens.word(tokens.SURF1); }
+            if (kind[k] == 2) {
+                bg = tokens.word(tokens.FILL);
+                fg = tokens.word(tokens.ON_FILL);
+            }
+            if (k == K_CLEAR) { fg = tokens.word(tokens.CADMIUM); }
+            shape.rounded(row, y, x0, y0, x0 + KEY_W * z, y0 + KEY_H * z, 6 * z, bg);
+            if (k == K_ERASE) {
+                stroke.path_row(row, y, x0 + 20 * z, y0 + 12 * z, 20 * z, 16, erase, 11, 24, fg);
+            } else {
+                I64 n = lab_n[k] as I64;
+                I64 lw = apptext.width(lab[4 * k..4 * k + n], n, appfaces.KEY, z);
+                _ = apptext.text(row, y, x0 + (KEY_W * z - lw) / 2, y0 + 28 * z, x0 + KEY_W * z, lab[4 * k..4 * k + n], n,
+                                 fg, appfaces.KEY, z);
+            }
+        }
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

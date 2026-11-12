@@ -1,0 +1,76 @@
+import user.ci.web.encoding;
+extern unrestricted I64 fixture_next(out U8[_] input, out U8[_] name);
+extern observe I64 fixture_parameter(I64 which);
+extern unrestricted void fixture_scalar(I64 value);
+extern unrestricted void fixture_report(I64 label_id, I64 terminal, I64 faults, I64 position);
+void main() {
+    U8[131080] input;
+    U8[256] name;
+    assert(!encoding.reset(-1, false, false));
+    encoding.Step invalid = encoding.next(b"A", true);
+    assert(invalid.used == 0 && invalid.value == -2);
+    assert(encoding.reset(1, false, false));
+    encoding.Step partial = encoding.next(b"\xe2", false);
+    assert(partial.used == 1 && partial.value == -3);
+    assert(encoding.reset(32, false, false));
+    encoding.Step first = encoding.next(b"\x88\x62", false);
+    assert(first.used == 2 && first.value == 202);
+    assert(encoding.reset(1, false, false));
+    encoding.Step cleared = encoding.next(b"A", true);
+    assert(cleared.used == 1 && cleared.value == 65 && encoding.errors() == 0 && encoding.position() == 1);
+    while (true) {
+        I64 n = fixture_next(input, name);
+        if (n < 0) { break; }
+        I64 name_n = fixture_parameter(0);
+        I64 id = encoding.label(name[0..name_n]);
+        U8[520] strided_name;
+        I64 ni = 0;
+        while (ni < name_n) { strided_name[3 + ni * 2] = name[ni]; ni = ni + 1; }
+        I64 name_end = 3 + name_n * 2;
+        assert(encoding.label(strided_name[3..name_end by 2]) == id);
+        Bool valid = encoding.reset(fixture_parameter(1), fixture_parameter(2) != 0, fixture_parameter(3) != 0);
+        assert(valid == (fixture_parameter(1) >= 1 && fixture_parameter(1) <= 40));
+        assert(encoding.errors() == 0 && encoding.position() == 0);
+        I64 split = fixture_parameter(4);
+        I64 width = fixture_parameter(5);
+        I64 stride = fixture_parameter(6);
+        I64 at = 0;
+        I64 end = split;
+        I64 terminal = -3;
+        I64 guard = 0;
+        // Views include a nonzero offset and optionally skip interleaved sentinels.
+        while (terminal == -3) {
+            if (end > n) { end = n; }
+            I64 start_byte = 3 + at * stride;
+            I64 end_byte = 3 + end * stride;
+            encoding.Step step;
+            if (stride == 1) { step = encoding.next(input[start_byte..end_byte], end == n); }
+            else { step = encoding.next(input[start_byte..end_byte by 2], end == n); }
+            assert(step.used >= 0 && step.used <= end - at);
+            at = at + step.used;
+            if (step.value >= 0) {
+                assert(step.value <= 1114111 && !(step.value >= 55296 && step.value <= 57343));
+                fixture_scalar(step.value);
+            } else if (step.value == -3) {
+                assert(at == end && end < n);
+                // Empty calls cannot flush a partial state without final input.
+                encoding.Step empty_step = encoding.next(input[0..0], false);
+                assert(empty_step.used == 0 && empty_step.value == -3);
+                end = end + width;
+            } else { terminal = step.value; }
+            guard = guard + 1;
+            assert(guard < 1000000);
+        }
+        I64 faults = encoding.errors();
+        I64 position = encoding.position();
+        I64 repeat = 0;
+        while (repeat < 3) {
+            encoding.Step again = encoding.next(input[3..4], repeat != 0);
+            assert(again.used == 0 && again.value == terminal);
+            assert(encoding.errors() == faults && encoding.position() == position);
+            repeat = repeat + 1;
+        }
+        fixture_report(id, terminal, faults, position);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

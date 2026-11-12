@@ -1,0 +1,25 @@
+{
+  "id": "screen-key-line-full",
+  "rules": [
+    "VIEW-1"
+  ],
+  "text": "",
+  "size": [
+    4,
+    81
+  ],
+  "sel": [
+    0,
+    0
+  ],
+  "chunks": [],
+  "expect": {
+    "text": "",
+    "screen": [
+      "",
+      "",
+      " x                                                                           1:1",
+      "^S save  ^Q quit  ^F find  ^X cut  ^Z undo  ^Y redo  ^G line  ^R replace  ^W wrap"
+    ]
+  }
+}

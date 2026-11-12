@@ -1,0 +1,87 @@
+// tests/hw/hosted/src/phys.ci: pure-Cint physical pool window for hosted hardware driver tests.
+// Covers 48 frames (192 KiB = 24,576 U64 words) from POOL_BASE (32 MiB), enough for descriptor rings and buffers.
+
+const U64 BASE = 33554432;      // src/frames.ci POOL_BASE (32 MiB)
+const I64 WORDS = 24576;        // 48 * 4096 / 8 (< 32,640, matching tests/hosted/src/bits.ci)
+const I64 BYTES = 196608;
+
+U64[24576] words;
+
+export void reset_mem() {
+    for i in 0..WORDS {
+        words[i] = 0;
+    }
+}
+
+I64 off_of(U64 addr, I64 len_bytes) {
+    assert(addr >= BASE);
+    I64 off = (addr - BASE) as I64;
+    assert(off >= 0 && off + len_bytes <= BYTES);
+    return off;
+}
+
+U8 get_b(I64 off) {
+    I64 wi = off / 8;
+    I64 sh = (off % 8) * 8;
+    return ((words[wi] >> (sh as U64)) & 0xFF) as U8;
+}
+
+void set_b(I64 off, U8 b) {
+    I64 wi = off / 8;
+    I64 sh = (off % 8) * 8;
+    U64 mask = (0xFF as U64) << (sh as U64);
+    words[wi] = (words[wi] & ~mask) | ((b as U64) << (sh as U64));
+}
+
+export void phys_read8(U64 base, inout U8[_] dst) {
+    I64 n = len(dst);
+    I64 off = off_of(base, n);
+    for i in 0..n {
+        dst[i] = get_b(off + i);
+    }
+}
+
+export void phys_write8(U64 base, in U8[_] src) {
+    I64 n = len(src);
+    I64 off = off_of(base, n);
+    for i in 0..n {
+        set_b(off + i, src[i]);
+    }
+}
+
+export void phys_read64(U64 base, inout U64[_] dst) {
+    I64 n = len(dst);
+    I64 off = off_of(base, n * 8);
+    assert(off % 8 == 0);
+    I64 wi = off / 8;
+    for i in 0..n {
+        dst[i] = words[wi + i];
+    }
+}
+
+export void phys_write64(U64 base, in U64[_] src) {
+    I64 n = len(src);
+    I64 off = off_of(base, n * 8);
+    assert(off % 8 == 0);
+    I64 wi = off / 8;
+    for i in 0..n {
+        words[wi + i] = src[i];
+    }
+}
+
+export U64 mb_info() {
+    return 0;
+}
+
+export U64 peek_u64(U64 addr) {
+    U64[1] w;
+    phys_read64(addr, w);
+    return w[0];
+}
+
+export void poke_u64(U64 addr, U64 val) {
+    U64[1] w;
+    w[0] = val;
+    phys_write64(addr, w);
+}
+// SPDX-License-Identifier: Apache-2.0

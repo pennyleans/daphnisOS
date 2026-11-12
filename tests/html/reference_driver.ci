@@ -1,0 +1,16 @@
+import user.ci.web.reference;
+extern unrestricted I64 fixture_next(out U32[_] input);
+extern observe I64 fixture_at();
+extern observe Bool fixture_attribute();
+extern unrestricted void fixture_report(I64 used, I64 count, U32 first, U32 second, I64 errors);
+void main() {
+    U32[70000] input;
+    while (true) {
+        I64 n = fixture_next(input);
+        if (n < 0) { break; }
+        assert(n <= len(input));
+        reference.Reference r = reference.resolve(input[0..n], fixture_at(), fixture_attribute());
+        fixture_report(r.used, r.count, r.first, r.second, r.errors);
+    }
+}
+// SPDX-License-Identifier: Apache-2.0

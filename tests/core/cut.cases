@@ -1,0 +1,22 @@
+# tests/core/cut.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Run in tests/core/search.
+-d: -f1 cols.txt | - | -
+-d: -f1,7 cols.txt | - | D-33
+-d: -f6- cols.txt | - | -
+-d: -f-2 cols.txt | - | -
+-d: -f2,4 -s cols.txt | - | D-33
+-d: -f3 | cols.txt | -
+-f1 words.txt | - | -
+-f2 words.txt | - | -
+-c1-3 words.txt | - | -
+-c 2 words.txt | - | -
+-c1,3,5- text.txt | - | -
+-b 5- utf8.txt | - | -
+-c 1-2 -n utf8.txt | - | -
+-b1,1,1 text.txt | - | -
+-c 1 empty nonl.txt | - | -
+-c 1 missing text.txt | - | -
+-d: -f1,3- cols.txt | - | D-33
+-c3-1 text.txt | - | D-3
+text.txt | - | D-3
+-d ab -f1 cols.txt | - | D-3
+-c x text.txt | - | D-3

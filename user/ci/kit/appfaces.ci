@@ -1,0 +1,106 @@
+// user/ci/kit/appfaces.ci: the apps' faces by role (stage RS: Calc and Monitor), each at 1x and 2x, over the
+// modules tools/glyphs.py writes; written by tools/glyphs.py; do not edit. kit/apptext.ci draws with it.
+import user.ci.kit.jbm28_s1;
+import user.ci.kit.jbm28_s2;
+import user.ci.kit.jbm32_s1;
+import user.ci.kit.jbm32_s2;
+import user.ci.kit.inter17_m1;
+import user.ci.kit.inter17_m2;
+import user.ci.kit.jbm13_r1;
+import user.ci.kit.jbm13_r2;
+import user.ci.kit.inter12_s1;
+import user.ci.kit.inter12_s2;
+
+export const I64 FIGURE = 0;  // Calc's result, mono 28 px 600 (frame 39)
+export const I64 FIGURE_LARGE = 1; // Monitor's figure, mono 32 px 600 (frames 42 and 45)
+export const I64 KEY = 2;     // Calc's keys, 17 px 500 (frame 39)
+export const I64 FACT = 3;    // Monitor's facts, mono 13 px 400 (frames 42 and 45)
+export const I64 BUTTON = 4;  // Monitor's End Process button, 12 px 600 (frame 42)
+export const I64 FACES = 5;
+
+// The glyph of code point cp in face f at scale z (1 or 2), or the face's stand-in.
+export I64 index(I64 f, I64 z, I64 cp) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.index(cp); } return jbm28_s1.index(cp); }
+    if (f == 1) { if (z == 2) { return jbm32_s2.index(cp); } return jbm32_s1.index(cp); }
+    if (f == 2) { if (z == 2) { return inter17_m2.index(cp); } return inter17_m1.index(cp); }
+    if (f == 3) { if (z == 2) { return jbm13_r2.index(cp); } return jbm13_r1.index(cp); }
+    if (f == 4) { if (z == 2) { return inter12_s2.index(cp); } return inter12_s1.index(cp); }
+    return 0;
+}
+
+// Glyph g's advance in whole pixels.
+export I64 advance(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.advance(g); } return jbm28_s1.advance(g); }
+    if (f == 1) { if (z == 2) { return jbm32_s2.advance(g); } return jbm32_s1.advance(g); }
+    if (f == 2) { if (z == 2) { return inter17_m2.advance(g); } return inter17_m1.advance(g); }
+    if (f == 3) { if (z == 2) { return jbm13_r2.advance(g); } return jbm13_r1.advance(g); }
+    if (f == 4) { if (z == 2) { return inter12_s2.advance(g); } return inter12_s1.advance(g); }
+    return 0;
+}
+
+// Glyph g's ink box from the pen on the baseline, y down: left, top, width, height.
+export I64 left(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.left(g); } return jbm28_s1.left(g); }
+    if (f == 1) { if (z == 2) { return jbm32_s2.left(g); } return jbm32_s1.left(g); }
+    if (f == 2) { if (z == 2) { return inter17_m2.left(g); } return inter17_m1.left(g); }
+    if (f == 3) { if (z == 2) { return jbm13_r2.left(g); } return jbm13_r1.left(g); }
+    if (f == 4) { if (z == 2) { return inter12_s2.left(g); } return inter12_s1.left(g); }
+    return 0;
+}
+
+export I64 top(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.top(g); } return jbm28_s1.top(g); }
+    if (f == 1) { if (z == 2) { return jbm32_s2.top(g); } return jbm32_s1.top(g); }
+    if (f == 2) { if (z == 2) { return inter17_m2.top(g); } return inter17_m1.top(g); }
+    if (f == 3) { if (z == 2) { return jbm13_r2.top(g); } return jbm13_r1.top(g); }
+    if (f == 4) { if (z == 2) { return inter12_s2.top(g); } return inter12_s1.top(g); }
+    return 0;
+}
+
+export I64 width(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.width(g); } return jbm28_s1.width(g); }
+    if (f == 1) { if (z == 2) { return jbm32_s2.width(g); } return jbm32_s1.width(g); }
+    if (f == 2) { if (z == 2) { return inter17_m2.width(g); } return inter17_m1.width(g); }
+    if (f == 3) { if (z == 2) { return jbm13_r2.width(g); } return jbm13_r1.width(g); }
+    if (f == 4) { if (z == 2) { return inter12_s2.width(g); } return inter12_s1.width(g); }
+    return 0;
+}
+
+export I64 height(I64 f, I64 z, I64 g) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.height(g); } return jbm28_s1.height(g); }
+    if (f == 1) { if (z == 2) { return jbm32_s2.height(g); } return jbm32_s1.height(g); }
+    if (f == 2) { if (z == 2) { return inter17_m2.height(g); } return inter17_m1.height(g); }
+    if (f == 3) { if (z == 2) { return jbm13_r2.height(g); } return jbm13_r1.height(g); }
+    if (f == 4) { if (z == 2) { return inter12_s2.height(g); } return inter12_s1.height(g); }
+    return 0;
+}
+
+// Coverage 0 to 15 of pixel (x, y) of glyph g's box.
+export I64 at(I64 f, I64 z, I64 g, I64 x, I64 y) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.at(g, x, y); } return jbm28_s1.at(g, x, y); }
+    if (f == 1) { if (z == 2) { return jbm32_s2.at(g, x, y); } return jbm32_s1.at(g, x, y); }
+    if (f == 2) { if (z == 2) { return inter17_m2.at(g, x, y); } return inter17_m1.at(g, x, y); }
+    if (f == 3) { if (z == 2) { return jbm13_r2.at(g, x, y); } return jbm13_r1.at(g, x, y); }
+    if (f == 4) { if (z == 2) { return inter12_s2.at(g, x, y); } return inter12_s1.at(g, x, y); }
+    return 0;
+}
+
+// The face's line box above and below the baseline, whole pixels.
+export I64 ascent(I64 f, I64 z) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.ASCENT; } return jbm28_s1.ASCENT; }
+    if (f == 1) { if (z == 2) { return jbm32_s2.ASCENT; } return jbm32_s1.ASCENT; }
+    if (f == 2) { if (z == 2) { return inter17_m2.ASCENT; } return inter17_m1.ASCENT; }
+    if (f == 3) { if (z == 2) { return jbm13_r2.ASCENT; } return jbm13_r1.ASCENT; }
+    if (f == 4) { if (z == 2) { return inter12_s2.ASCENT; } return inter12_s1.ASCENT; }
+    return 0;
+}
+
+export I64 descent(I64 f, I64 z) {
+    if (f == 0) { if (z == 2) { return jbm28_s2.DESCENT; } return jbm28_s1.DESCENT; }
+    if (f == 1) { if (z == 2) { return jbm32_s2.DESCENT; } return jbm32_s1.DESCENT; }
+    if (f == 2) { if (z == 2) { return inter17_m2.DESCENT; } return inter17_m1.DESCENT; }
+    if (f == 3) { if (z == 2) { return jbm13_r2.DESCENT; } return jbm13_r1.DESCENT; }
+    if (f == 4) { if (z == 2) { return inter12_s2.DESCENT; } return inter12_s1.DESCENT; }
+    return 0;
+}
+// SPDX-License-Identifier: Apache-2.0

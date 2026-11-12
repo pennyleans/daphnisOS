@@ -1,0 +1,18 @@
+# tests/core/cmp.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Run in tests/core/search.
+text.txt text2.txt | - | -
+text.txt text3.txt | - | -
+-l text.txt text3.txt | - | -
+-s text.txt text3.txt | - | -
+-s text.txt text2.txt | - | -
+text.txt nonl.txt | - | -
+empty text.txt | - | -
+text.txt empty | - | -
+-l empty text.txt | - | -
+long.txt long.txt | - | -
+- text2.txt | text.txt | -
+text.txt - | text3.txt | -
+missing text.txt | - | -
+-s missing text.txt | - | -
+text.txt | - | D-3
+a b c | - | D-3
+-ls text.txt text3.txt | - | -

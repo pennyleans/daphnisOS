@@ -1,0 +1,21 @@
+# tests/core/uniq.cases: ARGS | STDIN | DIFF (docs/specs/2026-11-06-c-core.md section 6). Run in tests/core/search.
+words.txt | - | -
+ | words.txt | -
+-c words.txt | - | -
+-d words.txt | - | -
+-u words.txt | - | -
+-cd words.txt | - | -
+-i text.txt | - | -
+-ci words.txt | - | -
+-f 1 words.txt | - | -
+-s 1 words.txt | - | -
+-f 1 -s 1 words.txt | - | -
+-f1 -c cols.txt | - | -
+empty | - | -
+nonl.txt | - | -
+- | words.txt | -
+words.txt out.txt | - | -
+missing | - | -
+words.txt a b | - | D-3
+-f x words.txt | - | D-3
+-z words.txt | - | D-1

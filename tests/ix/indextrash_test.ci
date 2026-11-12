@@ -1,0 +1,412 @@
+// tests/ix/indextrash_test.ci: Index's Trash view and note 58's states (frame 32; user/ci/kit/indextrash.ci), hosted:
+// the rule for each act, the menu's words, the Empty Trash button live and at 40 percent, frame 23's ask (its words,
+// keys, presses, keycaps and pixels, at 1x and 2x) and the empty folder's line. Run by check.sh with every
+// tests/ix/*_test.ci.
+import user.ci.kit.indextrash;
+import user.ci.kit.ctxmenu;
+import user.ci.kit.tokens;
+import user.ci.kit.draw;
+import user.ci.kit.blend;
+import user.ci.kit.faces;
+import user.ci.kit.ctext;
+
+const I64 K_ESC = 1;
+const I64 K_TAB = 15;
+const I64 K_ENTER = 28;
+const I64 K_SPACE = 57;
+const I64 K_LEFT = 105;
+const I64 K_RIGHT = 106;
+
+const I64 HOME = 1 | 2;              // ON_VOLUME | WRITABLE: the person's own folder
+const I64 OTHERS = 1 | 4;            // ON_VOLUME | GRANTABLE: another account's folder
+const I64 IMAGE = 0;                 // the read-only image tree
+
+U8[300] got;
+
+Bool is(I64 n, in U8[_] want) {
+    if (n != len(want)) { return false; }
+    for k in 0..n {
+        if (got[k] != want[k]) { return false; }
+    }
+    return true;
+}
+
+I64 st(I64 a, I64 f) { return indextrash.state(a, f); }
+
+test "the Trash's acts are an app's menu rows, and their words" {
+    assert(indextrash.RESTORE == ctxmenu.APP && indextrash.DELETE_FOREVER == ctxmenu.APP + 1);
+    assert(indextrash.MOVE < ctxmenu.SUB);
+    assert(is(indextrash.words(indextrash.RESTORE, got), b"Restore"));
+    assert(is(indextrash.words(indextrash.DELETE_FOREVER, got), b"Delete Forever"));
+    assert(is(indextrash.words(indextrash.EMPTY_TRASH, got), b"Empty Trash"));
+    assert(indextrash.words(ctxmenu.OPEN, got) == 0);
+}
+
+test "note 58: off the volume a write is dimmed, without the right it asks a Parent or is dimmed, reads stay live" {
+    I64[6] w = [ctxmenu.CUT, ctxmenu.RENAME, ctxmenu.TRASH, ctxmenu.NEW_FOLDER, ctxmenu.NEW_FILE, indextrash.MOVE];
+    for k in 0..6 {
+        I64 a = w[k];
+        assert(st(a, HOME) == indextrash.LIVE);
+        assert(st(a, OTHERS) == indextrash.ASK);
+        assert(st(a, IMAGE) == indextrash.DIM);
+        assert(st(a, IMAGE | 4) == indextrash.DIM);          // no grant reaches the image tree
+        assert(st(a, 1) == indextrash.DIM);                  // on the volume, no right, nobody to grant it
+    }
+    I64[5] r = [ctxmenu.OPEN, ctxmenu.COPY, ctxmenu.COPY_PATH, ctxmenu.PROPERTIES, ctxmenu.OPEN_WITH];
+    for k in 0..5 {
+        I64 a = r[k];
+        assert(st(a, IMAGE) == indextrash.LIVE && !indextrash.writes(a));
+    }
+    assert(st(ctxmenu.PASTE, HOME) == indextrash.DIM && st(ctxmenu.PASTE, HOME | 32) == indextrash.LIVE);
+    assert(st(ctxmenu.PASTE, IMAGE | 32) == indextrash.DIM && st(ctxmenu.PASTE, OTHERS | 32) == indextrash.ASK);
+}
+
+test "Restore needs a good record, Empty Trash an item; Delete Forever always works in one's own Trash" {
+    assert(st(indextrash.RESTORE, HOME) == indextrash.DIM);
+    assert(st(indextrash.RESTORE, HOME | indextrash.RECORD_OK) == indextrash.LIVE);
+    assert(st(indextrash.RESTORE, OTHERS | indextrash.RECORD_OK) == indextrash.ASK);   // its folder is another's
+    assert(st(indextrash.EMPTY_TRASH, HOME) == indextrash.DIM);
+    assert(st(indextrash.EMPTY_TRASH, HOME | indextrash.HAS_ITEMS) == indextrash.LIVE);
+    assert(st(indextrash.DELETE_FOREVER, HOME) == indextrash.LIVE);
+    assert(indextrash.confirms(indextrash.DELETE_FOREVER) && indextrash.confirms(indextrash.EMPTY_TRASH));
+    assert(!indextrash.confirms(ctxmenu.TRASH) && !indextrash.confirms(indextrash.RESTORE));
+}
+
+test "the Delete key: Delete Forever in the Trash, which always asks; Move to Trash elsewhere, which asks nothing" {
+    assert(indextrash.K_DELETE == 111);
+    assert(indextrash.delete_act(true) == indextrash.DELETE_FOREVER);
+    assert(indextrash.confirms(indextrash.delete_act(true)));
+    assert(indextrash.delete_act(false) == ctxmenu.TRASH && !indextrash.confirms(indextrash.delete_act(false)));
+    assert(st(indextrash.delete_act(true), HOME) == indextrash.LIVE);
+}
+
+test "the Empty Trash button: its word 12 in at each side, SURF1 when live, at 40 percent when the Trash is empty" {
+    tokens.set_theme(tokens.DARK);
+    I64 w = indextrash.button_w();
+    assert(w == 24 + ctext.width(b"Empty Trash", 11, faces.NAME_BOLD, 1));
+    U32[400] row;
+    U32 paper = tokens.word(tokens.PAPER);
+    draw.paint(row, 0, 400, paper);
+    indextrash.button_row(row, 8 + 3, 100, 8, true);
+    assert(row[100 + 3] == tokens.word(tokens.SURF1) && row[100 + w - 4] == tokens.word(tokens.SURF1));
+    assert(row[99] == paper && row[100 + w] == paper);
+    Bool ink = false;
+    draw.paint(row, 0, 400, paper);
+    indextrash.button_row(row, 8 + 16, 100, 8, true);
+    for x in 112..100 + w - 12 {
+        if (row[x] == tokens.word(tokens.INK)) { ink = true; }
+    }
+    assert(ink);
+    draw.paint(row, 0, 400, paper);
+    indextrash.button_row(row, 8 + 16, 100, 8, false);
+    U32 dim = blend.mix_px(paper, tokens.word(tokens.SURF1), 102);
+    assert(row[103] == dim);
+    for x in 100..100 + w {
+        assert(row[x] != tokens.word(tokens.INK));
+    }
+    draw.paint(row, 0, 400, paper);
+    indextrash.button_row(row, 8 + 32, 100, 8, true);       // past the button: nothing drawn
+    assert(row[110] == paper);
+}
+
+test "the ask's words: the act's name, the count or the one item's name, the act's button" {
+    indextrash.ask(indextrash.EMPTY_TRASH, 12, b"");
+    assert(is(indextrash.title(got), b"EMPTY TRASH") && is(indextrash.go_word(got), b"Empty"));
+    assert(is(indextrash.question(got), b"Remove 12 items permanently?"));
+    indextrash.ask(indextrash.EMPTY_TRASH, 1, b"draft.txt");
+    assert(is(indextrash.question(got), b"Remove 1 item permanently?"));
+    indextrash.ask(indextrash.DELETE_FOREVER, 1, b"draft.txt");
+    assert(is(indextrash.title(got), b"DELETE FOREVER") && is(indextrash.go_word(got), b"Delete"));
+    assert(is(indextrash.question(got), b"Remove draft.txt permanently?"));
+    indextrash.ask(indextrash.DELETE_FOREVER, 3, b"");
+    assert(is(indextrash.question(got), b"Remove 3 items permanently?"));
+    U8[200] long;
+    for k in 0..200 { long[k] = 'w'; }
+    indextrash.ask(indextrash.DELETE_FOREVER, 1, long);
+    I64 n = indextrash.question(got);
+    assert(n < 7 + 200 + 13);
+    assert(got[n - 16] == 0xe2 && got[n - 15] == 0x80 && got[n - 14] == 0xa6);   // the ellipsis, then " permanently?"
+    assert(ctext.width(got, n, faces.NAME_BOLD, 1) <= indextrash.W - 30);
+}
+
+test "the ask's keys: Enter takes the act, Esc cancels, wherever the focus is; Space the focused one; every ask alike" {
+    indextrash.ask(indextrash.EMPTY_TRASH, 4, b"");
+    assert(indextrash.is_up() && indextrash.focus_go());
+    assert(indextrash.key(K_ENTER) == indextrash.GO && !indextrash.is_up());
+    indextrash.ask(indextrash.EMPTY_TRASH, 4, b"");
+    assert(indextrash.key(K_ESC) == indextrash.CANCEL && !indextrash.is_up());
+    indextrash.ask(indextrash.EMPTY_TRASH, 4, b"");
+    assert(indextrash.key(K_TAB) == indextrash.STAY && indextrash.focus_go());        // the first key shows the ring
+    assert(indextrash.key(K_TAB) == indextrash.STAY && !indextrash.focus_go());
+    assert(indextrash.key(K_LEFT) == indextrash.STAY && indextrash.focus_go());
+    assert(indextrash.key(K_RIGHT) == indextrash.STAY && !indextrash.focus_go());
+    assert(indextrash.key(K_ENTER) == indextrash.GO && !indextrash.is_up());          // DN-69: the blue button
+    assert(indextrash.key(K_ENTER) == indextrash.STAY);                               // down: keys pass
+    indextrash.ask(indextrash.EMPTY_TRASH, 4, b"");
+    assert(indextrash.key(K_SPACE) == indextrash.GO && !indextrash.is_up());          // the focus starts on the act
+    indextrash.ask(indextrash.EMPTY_TRASH, 4, b"");
+    assert(indextrash.key(K_TAB) == indextrash.STAY && indextrash.key(K_TAB) == indextrash.STAY);
+    assert(indextrash.key(K_SPACE) == indextrash.CANCEL && !indextrash.is_up());      // Space takes Cancel
+    indextrash.ask(indextrash.EMPTY_TRASH, 4, b"");
+    assert(indextrash.key(K_TAB) == indextrash.STAY && indextrash.key(K_TAB) == indextrash.STAY);
+    assert(indextrash.key(K_ESC) == indextrash.CANCEL && !indextrash.is_up());
+    indextrash.ask(indextrash.DELETE_FOREVER, 1, b"a");                              // opened as Empty Trash is
+    assert(indextrash.key(K_RIGHT) == indextrash.STAY && indextrash.focus_go());
+    assert(indextrash.key(K_RIGHT) == indextrash.STAY && !indextrash.focus_go());
+    indextrash.ask(indextrash.EMPTY_TRASH, 2, b"");                                  // a new ask starts on the act
+    assert(indextrash.focus_go() && indextrash.key(K_TAB) == indextrash.STAY && indextrash.focus_go());
+}
+
+test "the ask's presses: centered in its box, the act at the left, Cancel at the right, off them nothing" {
+    indextrash.place(0, 0, 958, 667);
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    assert(indextrash.height() == 148);
+    I64 px = indextrash.plate_x();
+    I64 py = indextrash.plate_y();
+    assert(px == 279 && py == (667 - 148) / 2);
+    I64 ty = py + indextrash.btn_y();
+    assert(indextrash.btn_y() == 148 - 1 - 14 - 36);
+    assert(indextrash.click(px + 200, ty + 10) == indextrash.STAY);   // between the buttons
+    assert(indextrash.click(px + 20, py + 10) == indextrash.STAY);    // the band
+    assert(indextrash.click(5, 5) == indextrash.STAY && indextrash.is_up());
+    assert(indextrash.click(px + indextrash.go_x0(), ty) == indextrash.GO && !indextrash.is_up());
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    assert(indextrash.click(px + indextrash.cancel_x1() - 1, ty + 35) == indextrash.CANCEL);
+    assert(indextrash.click(px + indextrash.go_x0(), ty) == indextrash.STAY);                  // down: nothing
+    assert(indextrash.go_x0() == 15 && indextrash.cancel_x1() == 385);
+    I64 enter = indextrash.key_w(b"Enter");
+    assert(enter == 12 + ctext.width(b"Enter", 5, faces.SHORTCUT, 1));
+    assert(indextrash.go_x1() - indextrash.go_x0()
+           == 12 + enter + 10 + ctext.width(b"Empty", 5, faces.NAME_BOLD, 1) + 12);
+    assert(indextrash.cancel_x1() - indextrash.cancel_x0()
+           == 12 + indextrash.key_w(b"Esc") + 10 + ctext.width(b"Cancel", 6, faces.NAME_BOLD, 1) + 12);
+    indextrash.ask(indextrash.DELETE_FOREVER, 1, b"draft.txt");
+    assert(indextrash.go_x1() - indextrash.go_x0()
+           == 12 + enter + 10 + ctext.width(b"Delete", 6, faces.NAME_BOLD, 1) + 12);
+    assert(indextrash.go_x1() < indextrash.cancel_x0());
+}
+
+test "the ask's keycaps: Enter on the act in ON_FILL, Esc on Cancel in RULE, 20 high, 12 in, the word 10 after" {
+    tokens.set_theme(tokens.DARK);
+    U32[958] row;
+    U32 paper = tokens.word(tokens.PAPER);
+    indextrash.place(0, 0, 958, 667);
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    I64 px = indextrash.plate_x();
+    I64 ty = indextrash.plate_y() + indextrash.btn_y();
+    I64 gk = px + indextrash.go_x0() + 12;                           // the keycaps' left edges
+    I64 ck = px + indextrash.cancel_x0() + 12;
+    I64 ge = gk + indextrash.key_w(b"Enter");
+    I64 ce = ck + indextrash.key_w(b"Esc");
+    U32 on = tokens.word(tokens.ON_FILL);
+    U32 rule = tokens.word(tokens.RULE);
+    U32 blue = tokens.word(tokens.FILL);
+    U32 surf = tokens.word(tokens.SURF1);
+    draw.paint(row, 0, 958, paper);
+    indextrash.row_at(row, ty + 7);                                  // above the keycaps: the grounds only
+    assert(row[gk + 6] == blue && row[ck + 6] == surf);
+    draw.paint(row, 0, 958, paper);
+    indextrash.row_at(row, ty + 8);                                  // the keycaps' top edges
+    assert(row[gk + 6] == on && row[ge - 6] == on && row[ck + 6] == rule && row[ce - 6] == rule);
+    assert(row[gk - 1] == blue && row[ge] == blue && row[ck - 1] == surf && row[ce] == surf);
+    draw.paint(row, 0, 958, paper);
+    indextrash.row_at(row, ty + 18);                                 // the sides, the key, the word
+    assert(row[gk] == on && row[ge - 1] == on && row[gk + 1] == blue);
+    assert(row[ck] == rule && row[ce - 1] == rule && row[ck + 1] == surf);
+    Bool key_ink = false;                                            // Esc in INK_DIM, smoothed on SURF1
+    for x in ck + 2..ce - 2 {
+        if (row[x] != surf) { key_ink = true; }
+        assert((row[x] & 0xff0000) <= (tokens.word(tokens.INK_DIM) & 0xff0000));
+    }
+    Bool word_ink = false;
+    for x in ce..ce + 10 { assert(row[x] == surf); }
+    for x in ce + 10..px + indextrash.cancel_x1() - 12 {
+        if (row[x] == tokens.word(tokens.INK)) { word_ink = true; }
+    }
+    assert(key_ink && word_ink);
+    draw.paint(row, 0, 958, paper);
+    indextrash.row_at(row, ty + 28);                                 // under the keycaps: the grounds again
+    assert(row[gk + 6] == blue && row[ck + 6] == surf);
+    tokens.set_theme(tokens.LIGHT);
+    draw.paint(row, 0, 958, paper);
+    indextrash.row_at(row, ty + 8);
+    assert(row[gk + 6] == tokens.word(tokens.ON_FILL) && row[ck + 6] == tokens.word(tokens.RULE));
+    tokens.set_theme(tokens.DARK);
+}
+
+test "the ask drawn: FILL band and sides, PAPER inside, the act on FILL, Cancel on SURF1, the ring after a key" {
+    tokens.set_theme(tokens.DARK);
+    U32[958] row;
+    U32 mantle = tokens.word(tokens.MANTLE);
+    indextrash.place(0, 0, 958, 667);
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    I64 px = indextrash.plate_x();
+    I64 py = indextrash.plate_y();
+    draw.paint(row, 0, 958, mantle);
+    indextrash.row_at(row, py + 4);                                  // the band
+    assert(row[px + 20] == tokens.word(tokens.FILL) && row[px + 380] == tokens.word(tokens.FILL));
+    draw.paint(row, 0, 958, mantle);
+    indextrash.row_at(row, py + 40);                                 // under the band: the 1 px sides
+    assert(row[px] == tokens.word(tokens.FILL) && row[px + 1] == tokens.word(tokens.PAPER));
+    assert(row[px + 399] == tokens.word(tokens.FILL) && row[px + 398] == tokens.word(tokens.PAPER));
+    assert(row[px - 1] != mantle);                                   // the shadow beside it
+    I64 ty = py + indextrash.btn_y();
+    draw.paint(row, 0, 958, mantle);
+    indextrash.row_at(row, ty + 2);
+    assert(row[px + indextrash.go_x0() + 3] == tokens.word(tokens.FILL));
+    assert(row[px + indextrash.cancel_x1() - 4] == tokens.word(tokens.SURF1));
+    assert(row[px + indextrash.go_x0() - 3] == tokens.word(tokens.PAPER));                 // no ring at its opening
+    I64 k = indextrash.key(K_TAB);
+    draw.paint(row, 0, 958, mantle);
+    indextrash.row_at(row, ty + 10);
+    assert(row[px + indextrash.go_x0() - 3] == tokens.word(tokens.ULTRAMARINE));           // DN-40's ring
+    assert(row[px + indextrash.go_x0() - 1] == tokens.word(tokens.PAPER));
+    draw.paint(row, 0, 958, mantle);
+    indextrash.row_at(row, py + indextrash.height() + 4);           // below: the shadow only
+    assert(row[px + 200] != mantle && row[5] == mantle);
+    indextrash.ask(indextrash.DELETE_FOREVER, 1, b"draft.txt");                         // reopened: no ring again
+    draw.paint(row, 0, 958, mantle);
+    indextrash.row_at(row, ty + 10);
+    assert(row[px + indextrash.go_x0() - 3] == tokens.word(tokens.PAPER));
+    assert(row[px + indextrash.cancel_x1() + 2] == tokens.word(tokens.PAPER));
+    indextrash.close();
+    draw.paint(row, 0, 958, mantle);
+    indextrash.row_at(row, py + 40);
+    assert(row[px + 1] == mantle && row[px - 1] == mantle);
+}
+
+U32[1000] zr;
+
+// Row y of the plate alone at zoom z, its device top left at (ox, oy), on MANTLE.
+void plate(I64 y, I64 ox, I64 oy, I64 z) {
+    draw.paint(zr, 0, 1000, tokens.word(tokens.MANTLE));
+    indextrash.plate_row(zr, y, ox, oy, z);
+}
+
+// The ask's plate at zoom z from device (ox, oy): every logical part z times as large and z times as far, the sides
+// and keycap edges z thick, the ring only after a key, nothing drawn off the plate (its shadow is the caller's).
+Bool zoomed(I64 z, I64 th) {
+    tokens.set_theme(th);
+    U32 mantle = tokens.word(tokens.MANTLE);
+    U32 blue = tokens.word(tokens.FILL);
+    U32 paper = tokens.word(tokens.PAPER);
+    U32 surf = tokens.word(tokens.SURF1);
+    I64 ox = 16;
+    I64 oy = 8;
+    I64 w = indextrash.W * z;
+    I64 h = indextrash.height() * z;
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    plate(oy - 1, ox, oy, z);                                          // above and below: nothing
+    Bool ok = true;
+    for x in 0..1000 { ok = ok && zr[x] == mantle; }
+    plate(oy + h, ox, oy, z);
+    for x in 0..1000 { ok = ok && zr[x] == mantle; }
+    plate(oy + 4 * z, ox, oy, z);                                      // the band: FILL, the title's ink inside it
+    ok = ok && zr[ox + 20 * z] == blue && zr[ox + w - 20 * z] == blue && zr[ox - 1] == mantle && zr[ox + w] == mantle;
+    Bool title = false;
+    for y in oy..oy + indextrash.BAND * z {
+        plate(y, ox, oy, z);
+        for x in ox + w / 4..ox + 3 * w / 4 { title = title || zr[x] != blue; }
+    }
+    plate(oy + (indextrash.BAND + 4) * z, ox, oy, z);                  // under the band: the sides z thick
+    ok = ok && zr[ox + z - 1] == blue && zr[ox + z] == paper && zr[ox + w - z] == blue && zr[ox + w - z - 1] == paper;
+    Bool question = false;
+    for y in oy + (indextrash.BAND + indextrash.PAD) * z..oy + (indextrash.BAND + indextrash.PAD + 18) * z {
+        plate(y, ox, oy, z);
+        for x in ox + 20 * z..ox + 200 * z { question = question || zr[x] != paper; }
+    }
+    I64 bt = indextrash.btn_y();
+    plate(oy + (bt + 2) * z, ox, oy, z);                               // the act on FILL, Cancel on SURF1, no ring
+    ok = ok && zr[ox + (indextrash.go_x0() + 3) * z] == blue && zr[ox + (indextrash.cancel_x1() - 4) * z] == surf;
+    ok = ok && zr[ox + (indextrash.go_x0() - 3) * z] == paper;
+    I64 ky = oy + (bt + (indextrash.BTN_H - indextrash.KEY_H) / 2) * z;   // the keycaps' top edges, z thick
+    I64 gk = ox + (indextrash.go_x0() + 12 + 6) * z;
+    I64 ck = ox + (indextrash.cancel_x0() + 12 + 6) * z;
+    plate(ky - 1, ox, oy, z);
+    ok = ok && zr[gk] == blue && zr[ck] == surf;
+    plate(ky + z - 1, ox, oy, z);
+    ok = ok && zr[gk] == tokens.word(tokens.ON_FILL) && zr[ck] == tokens.word(tokens.RULE);
+    I64 k = indextrash.key(K_TAB);                                     // DN-40's ring, 4 out and 2 wide at 1x
+    plate(oy + (bt + 10) * z, ox, oy, z);
+    ok = ok && zr[ox + (indextrash.go_x0() - 3) * z] == tokens.word(tokens.ULTRAMARINE);
+    ok = ok && zr[ox + (indextrash.go_x0() - 1) * z] == paper;
+    indextrash.close();
+    plate(oy + 4 * z, ox, oy, z);                                      // down: nothing
+    for x in 0..1000 { ok = ok && zr[x] == mantle; }
+    return ok && title && question;
+}
+
+test "the ask's plate at 1x and 2x from any device top left, both themes: each part z times, its shadow the caller's" {
+    assert(zoomed(1, tokens.DARK) && zoomed(2, tokens.DARK));
+    assert(zoomed(1, tokens.LIGHT) && zoomed(2, tokens.LIGHT));
+    tokens.set_theme(tokens.DARK);
+}
+
+test "at 1x the plate is the one Index draws: row_at is its shadow, then plate_row at plate_x() and plate_y()" {
+    tokens.set_theme(tokens.DARK);
+    U32[958] row;
+    indextrash.place(0, 0, 958, 667);
+    indextrash.ask(indextrash.DELETE_FOREVER, 1, b"draft.txt");
+    I64 k = indextrash.key(K_TAB);
+    I64 px = indextrash.plate_x();
+    I64 py = indextrash.plate_y();
+    for y in py + indextrash.RAD..py + indextrash.height() - indextrash.RAD {   // the corners show the shadow
+        draw.paint(row, 0, 958, tokens.word(tokens.MANTLE));
+        indextrash.row_at(row, y);
+        plate(y, px, py, 1);
+        for x in px..px + indextrash.W { assert(row[x] == zr[x]); }
+    }
+}
+
+test "a press from the plate's top left, logical, as a desk at 2x gives it: the act, Cancel, off them nothing" {
+    indextrash.place(0, 0, 958, 667);
+    I64 bt = indextrash.btn_y();
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    assert(indextrash.press(indextrash.go_x0() - 1, bt + 1) == indextrash.STAY);
+    assert(indextrash.press(indextrash.go_x0() + 1, bt - 1) == indextrash.STAY);
+    assert(indextrash.press(indextrash.cancel_x1(), bt + 1) == indextrash.STAY && indextrash.is_up());
+    I64 dx = 16 + 2 * (indextrash.go_x0() + 1);                       // a device x at 2x, the plate 16 in
+    assert(indextrash.press((dx - 16) / 2, bt + 1) == indextrash.GO);
+    assert(!indextrash.is_up() && indextrash.press(indextrash.go_x0() + 1, bt + 1) == indextrash.STAY);
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");
+    assert(indextrash.press(indextrash.cancel_x1() - 1, bt + indextrash.BTN_H - 1) == indextrash.CANCEL);
+    indextrash.ask(indextrash.EMPTY_TRASH, 3, b"");                   // click() is press() from place()'s box
+    assert(indextrash.click(indextrash.plate_x() + indextrash.go_x0(), indextrash.plate_y() + bt) == indextrash.GO);
+}
+
+test "an empty folder: one line in INK_DIM centered in the body, nothing above or below it" {
+    tokens.set_theme(tokens.LIGHT);
+    U32[600] row;
+    U32 paper = tokens.word(tokens.PAPER);
+    I64 w = ctext.width(b"Folder is empty", 15, faces.BODY, 1);
+    I64 t = 100 + (300 - 18) / 2;
+    Bool seen = false;
+    I64 lo = 600;
+    I64 hi = 0;
+    for y in t..t + 18 {
+        draw.paint(row, 0, 600, paper);
+        indextrash.empty_row(row, y, 200, 100, 600, 400);
+        for x in 0..600 {
+            if (row[x] != paper) {
+                seen = true;
+                if (x < lo) { lo = x; }
+                if (x > hi) { hi = x; }
+                assert(x >= 200 + (400 - w) / 2 - 1 && x <= 200 + (400 - w) / 2 + w + 1);
+            }
+        }
+    }
+    assert(seen && lo < 400 && hi > 400);
+    Bool dim = false;
+    draw.paint(row, 0, 600, paper);
+    indextrash.empty_row(row, t + 9, 200, 100, 600, 400);
+    for x in 0..600 {
+        if (row[x] == tokens.word(tokens.INK_DIM)) { dim = true; }
+        assert(row[x] != tokens.word(tokens.INK));
+    }
+    assert(dim);
+    draw.paint(row, 0, 600, paper);
+    indextrash.empty_row(row, t - 1, 200, 100, 600, 400);
+    indextrash.empty_row(row, t + 18, 200, 100, 600, 400);
+    for x in 0..600 { assert(row[x] == paper); }
+}
+// SPDX-License-Identifier: Apache-2.0
