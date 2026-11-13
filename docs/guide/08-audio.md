@@ -1,25 +1,14 @@
 # 08 Audio
 
-| piece | state |
-| --- | --- |
-| device | Intel HDA (QEMU `intel-hda` with `hda-output`), driver in cint (`src/hda.ci`), the device is the clock |
-| interface | `/dev/dsp`: S16LE, stereo, 48 kHz; up to 4 streams, mixed by the kernel each tick |
-| access | `grant audio`; without it `open("/dev/dsp")` is `EACCES` |
-| OPL3 | a YMF262 in cint (`user/ci/opl/opl3.ci`), ported from ymfm (BSD-3-Clause), equal to ymfm sample for sample |
-| Doom sound effects | not yet (AU-5) |
-| Doom music | not yet (AU-8: MIDI and MUS through the OPL3) |
-| listening on a real speaker | not yet (AU-6) |
+Daphnis provides `/dev/dsp` with a supported Intel HDA controller. The interface
+takes signed 16-bit little-endian stereo PCM at 48 kHz. Opening the device
+requires the Audio grant.
 
-## Try it
+## Test in QEMU
 
-`atone` plays a test signal. Under QEMU with the HDA device:
+`check-audio.sh` boots the `cish` test image with QEMU's Intel HDA device and
+WAV backend. Its `atone` program plays a test signal with `grant audio ./atone`.
+The check compares the captured WAV samples with the kernel's mix.
 
-```
-./grant audio ./atone
-```
-
-`check-audio.sh` boots the `cish` flavor with QEMU's `wav` backend and checks that the captured file is the kernel's
-mix byte for byte.
-
-Checked by `check-audio.sh` (21) and `check-opl.sh` (17: a 442,462-sample walk of every OPL3 feature against
-ymfm).
+The development [Doom image](05-doom.md) also supports sound effects in QEMU.
+`check-opl.sh` compares the separate OPL3 implementation with ymfm.

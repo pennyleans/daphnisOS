@@ -1,27 +1,23 @@
-# launching a persistent development desktop
+# Launching a persistent development desktop
 
-`tools/desk.sh` boots an already-built desktop (kernel and initrd) on a volume that already exists, under qemu, and
-keeps a receipt of the run. it builds nothing, never creates, formats, truncates or repairs the volume, never uses
-sudo and never changes host permissions. it starts qemu itself with an argument array; `tools/run-qemu.sh` and
-`tools/play.sh` are the gate runner and the doom player and are not used.
+`tools/desk.sh` starts a source-built desktop in QEMU using a kernel, initrd, and
+existing volume image. For the downloadable disk image, see the
+[project README](../../README.md).
 
-## two different jobs
+## Prepare a development volume
 
-**preparing a disposable development volume** uses tools that already exist. it is not part of this launcher:
+Build the development desktop and create a scratch volume.
 
 ```
-B=$DAPHNIS_BUILD
-make FLAVORS=hdesk COMPILERS=gcc O=$B
-tools/mkcintvol.sh $B/scratch.img 256M    # toolchain volume, mounts at /home, never in git
+B="${DAPHNIS_BUILD:-${TMPDIR:-/tmp}/daphnis-build-hdesk}"
+make FLAVORS=hdesk COMPILERS=gcc O="$B"
+tools/mkcintvol.sh "$B/scratch.img" 256M
 ```
 
-**launching a persistent user volume** is what `desk.sh` does: you supply the artifacts and the volume, the guest
-writes the volume during ordinary use, and a later launch reuses the same path.
+Reuse the same volume path on a later launch to keep files written under
+`/home`.
 
-a toolchain volume made with `mkcintvol.sh` is a development convenience. creating one does not enroll accounts and
-does not qualify confidential sessions. this launcher does not either; a boot alone proves neither.
-
-## launch
+## Launch
 
 ```
 bash tools/desk.sh --kernel /abs/gcc-hdesk/kernel32.elf --initrd /abs/hdesk/initrd.cpio \

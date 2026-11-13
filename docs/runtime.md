@@ -177,7 +177,7 @@ a bigger local array fails at link time).
 
 What checks the total, measured with `cint emit-c` at the pin: `cint_mem_frame_charge` is
 emitted in every function with local arrays, by element count, when the program has a call
-cycle, and (measured at K4.5, pennyleans/cint#500) also when an array's function calls into
+cycle, and (measured at K4.5, see [compiler notes](cint-gaps.md#14-frame-arena-charges-depend-on-where-the-callee-is-k45)) also when an array's function calls into
 another module: the same two functions with a `U8[4000]` each, in one module, have no charge, and
 with a callee in a second module have two. `RT_FRAME_ARENA_ELEMENTS` is 4,096 elements, so a
 charged program's live arrays total at most 32 KiB when the elements are 8 bytes (checked: five

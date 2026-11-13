@@ -1,31 +1,29 @@
-# Daphnis userland guide
+# Daphnis guide
 
-Draft, 2026-11-06. Fact source for the public copy pass (`docs/release/OPEN-SOURCE.md`).
-Every command here was read from the tree at that commit; the gate named on each page is what proves it.
+Daphnis is an experimental x86-64 operating system. Start with the
+[project README](../../README.md) for the 0.1.1 disk image and boot instructions.
+The image includes the desktop, cish, native command-line utilities, ced, and
+other desktop apps. It boots through UEFI and has a writable home volume.
+See the [hardware notes](../hw/README.md) for board-specific information.
 
-| page | piece | image (flavor) that carries it | gate |
-| --- | --- | --- | --- |
-| [01-build.md](01-build.md) | build, boot, run the gates | all | `check.sh` and the 11 stage gates |
-| [02-desk.md](02-desk.md) | the desk: windows, desktops, Super menu, switcher, Settings | `hdesk`, `deskplay` | `check-hybrid.sh` |
-| [03-cish.md](03-cish.md) | `cish`, the shell | every image a person uses | `check-cish.sh` |
-| [04-ced.md](04-ced.md) | `ced`, the editor | `desk`, `hdesk`, `deskplay`, `desknet`, `cish` | `check-editor.sh` |
-| [05-doom.md](05-doom.md) | Doom in a window, the sealed run, the record | `deskplay` (play), `doom` (sealed) | `check-doom.sh`, `check-episode.sh` |
-| [06-files.md](06-files.md) | files, directories, the `/disk` volume, grants | every image; `/disk` with a volume | `check.sh`, `check-disk.sh` |
-| [07-network.md](07-network.md) | TCP, UDP, names, `grant net` | `net`, `desknet` | `check-net.sh` |
-| [08-audio.md](08-audio.md) | `/dev/dsp`, the mixer, the OPL3 | gate images | `check-audio.sh`, `check-opl.sh` |
-| [09-agent.md](09-agent.md) | `talk` and `agent`: Claude in a terminal tile | `desknet` | `check-agent.sh` |
+## Using Daphnis
 
-## Two desks
+- [Desktop and shortcuts](02-desk.md)
+- [cish shell](03-cish.md)
+- [ced text editor](04-ced.md)
+- [Files, home volume, and grants](06-files.md)
+- [Networking](07-network.md)
 
-| desk | program | flavor | state |
-| --- | --- | --- | --- |
-| the hybrid desk | `hdesk` | `hdesk`, `deskplay` | current: desktops 1 to 9, float and tile, Super menu, switcher, Settings, mouse |
-| the first desk | `tiler` | `desk`, `desknet` | W-4: two fixed tiles (shell over doom); still the desk of the network and agent images |
+## Building and testing
 
-The agent and network walkthroughs run in the first desk until `desknet` moves to `hdesk`.
+These walkthroughs use source builds or test images. Each page names the image
+or script it needs.
 
-## Not in any image yet
-
-Doom's sound and music (AU-5, AU-6, AU-8), a native core tool set (SW-3 B; busybox applets stand in), packages
-(SW-4 open), job control and signal delivery, UTF-8 text, files over 64 KiB made inside Daphnis, real hardware
-(stage HW, specified only).
+- [Build and boot from source](01-build.md)
+- [Launch a development desktop with a persistent volume](desktop-launch.md)
+- [Run the workspace recovery checks](workspace-recovery.md)
+- [Play Doom in the separate development image](05-doom.md)
+- [Test audio and OPL3](08-audio.md)
+- [Try the network and API client demos](09-agent.md)
+- [Create a capture recovery key](capture-keys.md)
+- [Record and replay a capture test image](capture-run.md)

@@ -51,7 +51,7 @@ if [ -z "${RELEASE_STICK_HEAD:-}" ]; then
     head=$(git rev-parse --verify HEAD)
     rm -rf -- "$B"; mkdir -p "$B/src" "$B/release" "$(dirname "$out")"; : > "$B/.daphnis-build"
     git -c core.autocrlf=false -c core.attributesFile=/dev/null archive --format=tar "$head" | tar -x -C "$B/src"
-    exec env -i PATH="$PATH:/usr/sbin:/sbin" HOME="${HOME:?}" LC_ALL=C TMPDIR="${TMPDIR:-/tmp}" \
+    exec env -i PATH="$PATH:/usr/sbin:/sbin" HOME="${HOME:?}" LC_ALL=C TZ=UTC0 TMPDIR="${TMPDIR:-/tmp}" \
         CINT_TOOLCHAIN="${CINT_TOOLCHAIN:-$(dirname "$(readlink -f "$(command -v cint)")")/cint.toolchain}" \
         DOOM_ROOT="${DOOM_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/freedoom-ci}" \
         ${BEARSSL_TARBALL:+BEARSSL_TARBALL="$(realpath "$BEARSSL_TARBALL")"} \
@@ -60,7 +60,8 @@ if [ -z "${RELEASE_STICK_HEAD:-}" ]; then
 fi
 # Stage two, in $B/src, the commit's copy, with only the environment above. PATH has /usr/sbin and /sbin for mke2fs,
 # debugfs and sfdisk. SOURCE_DATE_EPOCH is the commit's time: mtools stamps the ESP's directory entries with it, so the
-# ESP is a function of the commit (GRUB's BOOTX64.EFI and the volume already are).
+# ESP is a function of the commit (GRUB's BOOTX64.EFI and the volume already are). FAT keeps local time, so TZ=UTC0
+# holds those stamps to UTC whatever the build host's time zone (HW-16).
 out=$1 size=$2 inodes=$3 B=$4 head=$RELEASE_STICK_HEAD
 cd "$(dirname "$0")/.."
 [ "$PWD" = "$(cd "$B/src" 2>/dev/null && pwd)" ] \

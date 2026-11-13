@@ -53,12 +53,15 @@ test "frame 37: a press on a track asks for that step; a drag follows the pointe
     stkeys.set_delay(500);
     stkeys.set_rate(30);
     I64 ry = Y0 + stpage.BODY + stpage.PITCH;
+    assert(!stkeys.dragging());
     assert(stkeys.click(CX, Y0, CR, YB, track(0) + stpage.SL_W, ry + 20) == stkeys.DELAY && stkeys.arg() == 1000);
+    assert(stkeys.dragging());                                                             // the desk feeds it moves
     stkeys.set_delay(1000);
     assert(stkeys.move(CX, Y0, CR, YB, track(0) - 50, ry + 20) == stkeys.DELAY && stkeys.arg() == 250);
     stkeys.set_delay(250);
     assert(stkeys.move(CX, Y0, CR, YB, track(0) - 60, ry + 20) == stpage.NONE);            // already there
     stkeys.release();
+    assert(!stkeys.dragging());
     assert(stkeys.move(CX, Y0, CR, YB, track(0) + 100, ry + 20) == stpage.NONE);           // nothing held
     ry = ry + stpage.PITCH;
     assert(stkeys.click(CX, Y0, CR, YB, track(1) + 8, ry + 20) == stkeys.RATE && stkeys.arg() == 5);

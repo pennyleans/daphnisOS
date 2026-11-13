@@ -227,6 +227,7 @@ export I64 move(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
 }
 
 export void release() { drag = F_NONE; }
+export Bool dragging() { return drag != F_NONE; }
 
 // --- the keyboard ---
 

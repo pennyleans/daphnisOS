@@ -169,11 +169,15 @@ SIENNA, OCHRE = ct.WORDS[3], ct.WORDS[4]
 T = ct.TOK                               # K-3: the theme's words by name (Gruvbox Dark until use_theme)
 
 
+THEME = [0]                              # the theme use_theme last chose (tokens.theme(), the symbols' accents)
+
+
 def use_theme(n):
     """K-3: the twins draw theme n (0 Gruvbox Dark, 1 Warm Paper) from now on."""
     global T, SIENNA, OCHRE
     ct.use_theme(n)
     T, SIENNA, OCHRE = ct.TOK, ct.WORDS[3], ct.WORDS[4]
+    THEME[0] = n
 EPOCH = 1767225600                       # 2026-01-01T00:00:00Z: the date of every gate flavor (A-3)
 
 
@@ -1816,6 +1820,36 @@ def sh_rounded(row, y, x0, y0, x1, y1, r, c):
         sh_cover(row, x, c, sh_samples(x, y, x0, y0, x1, y1, k))
 
 
+def arc_in(r, py):
+    """hdesk.ci arc_in: the first pixel across a corner of radius r, py rows from its edge, kit/shape.ci arc16 covers whole."""
+    def arc16(px):
+        if px >= r or py >= r:
+            return 16
+        return sum((8 * r - (8 * px + 2 * s + 1)) ** 2 + (8 * r - (8 * py + 2 * t + 1)) ** 2 <= 64 * r * r
+                   for s in range(4) for t in range(4))
+    c = 0
+    while c < r and arc16(c) < 16:
+        c += 1
+    return c
+
+
+def place_cut(fx, fy, fw, fh, s, x0, y0, x1, y1):
+    """hdesk.ci put_cut (WB-7, 0.1.1): a float's visible surface rectangle in bands, none of it past the body's lower
+    corners (inset RING, radius RAD - RING)."""
+    rb = (DN_RAD - DN_RING) * s
+    bx0, bx1, by1 = fx + DN_RING * s, fx + fw - DN_RING * s, fy + fh - DN_RING * s
+    out = [(x0, y0, x1, min(y1, by1 - rb))]
+    y, ye = max(y0, by1 - rb), min(y1, by1)
+    while y < ye:
+        c = arc_in(rb, by1 - 1 - y)
+        e = y + 1
+        while e < ye and arc_in(rb, by1 - 1 - e) == c:
+            e += 1
+        out.append((max(x0, bx0 + c), y, min(x1, bx1 - c), e))
+        y = e
+    return out
+
+
 def sh_lower_rounded(row, y, x0, y0, x1, y1, r, c):
     """kit/shape.ci lower_rounded (DN-36): square top corners, bottom corners of radius r."""
     if y < y0 or y >= y1 or x0 >= x1:
@@ -2001,7 +2035,25 @@ class Plane:
         return min(self.PL_W, self.WP)
 
     def plate_h(self):
-        return min(self.PL_H, max(self.HP - self.PL_TOP, 0))
+        return min(self.PL_H + self.pv_grow(), max(self.HP - self.PL_TOP, 0))   # kit/plane.ci: a wrapped preview
+
+    PV_LINES = 3
+
+    def pv_wrap(self, w):
+        """kit/plane.ci pv_wrap: each value's lines, 1 to PV_LINES, while the screen holds the plate; the lines past one."""
+        room = max(self.HP - self.PL_TOP - self.PL_H, 0) // 16
+        lines, more = [], 0
+        for f, lab, val in self.m["fields"]:
+            n = max(1, min(self.wrap_lines(val, f, w), self.PV_LINES, 1 + room - more))
+            lines.append(n)
+            more += n - 1
+        return lines, more
+
+    def pv_grow(self):
+        m = self.m
+        if not self.qn or not m["fields"] or m["previewing"] or self.WP < 880:
+            return 0
+        return 16 * self.pv_wrap(176 * self.Z)[1]
 
     def plate_x0(self):
         return (self.WP - self.plate_w()) // 2
@@ -2356,7 +2408,7 @@ class Plane:
                                    self.tok("OCHRE"))
                 self.say(row, y, nx + dw, ny - 2, 16, x1, name, ink, pf)
 
-    LABEL_PAD = 4
+    LABEL_PAD = 0                            # kit/plane.ci: the whole cell (was 4)
 
     def pin_face(self, t, room):
         """kit/plane.ci pin_face (DN-52 (e), measured): 12 px, else 11, else 10, the first in which t fits room."""
@@ -2569,13 +2621,14 @@ class Plane:
         Z, m = self.Z, self.m
         if self.WP < 880 or (self.pv_y1 > self.band_y1() and not m["previewing"]):   # DN-22
             return
-        x0, x1, y0, y1 = self.pv_x0 * Z, self.pv_x1 * Z, self.pv_y0 * Z, self.pv_y1 * Z
+        x0, x1, y0, y1 = self.pv_x0 * Z, self.pv_x1 * Z, self.pv_y0 * Z, (self.pv_y1 + self.pv_grow()) * Z
         if y < y0 or y >= y1:
             return
         sh_rounded(row, y, x0, y0, x1, y1, self.R_CELL * Z, self.tok("PAPER"))   # DN-49 (frame 2)
         icon, name, what, opn, two = m["preview"]
         t = self.pv_y0
         lx, rx = x0 + 16 * Z, x1 - 16 * Z
+        lines, more = ([], 0) if m["previewing"] else self.pv_wrap(rx - lx - 72 * Z)
         self.icon_c3(row, y, lx + 24 * Z, (t + 40) * Z, icon, 48, self.tok("PAPER"))
         tx = lx + 60 * Z
         self.say(row, y, tx, t + 20, 18, rx, name, self.tok("INK"), tw.TITLE)
@@ -2588,12 +2641,19 @@ class Plane:
                 if r + 16 <= self.pv_y1 - 16:
                     self.say(row, y, lx, r, 16, rx, ln, self.tok("INK"), F_PATH)
             return
+        r = fy
         for i, (f, lab, val) in enumerate(m["fields"]):
-            r = fy + 26 * i
             self.say(row, y, lx, r, 16, lx + 72 * Z, lab, self.tok("INK_DIM"), F_BODY)
-            self.say(row, y, lx + 72 * Z, r, 16, rx, val, self.tok("INK"), f)
+            at = 0
+            for ln in range(lines[i]):            # kit/plane.ci: wrapped at spaces, the last line the rest
+                e = self.wrap_end(val, at, f, rx - lx - 72 * Z) if ln + 1 < lines[i] else len(val)
+                self.say(row, y, lx + 72 * Z, r + 16 * ln, 16, rx, val[at:e], self.tok("INK"), f)
+                at = e
+                while at < len(val) and val[at] == 32:
+                    at += 1
+            r += 26 + 16 * (lines[i] - 1)
         for i, word in enumerate((opn, two)):
-            bt = fy + 26 * 5 - 10 + 16 + 36 * i
+            bt = fy + 26 * 5 - 10 + 16 + 16 * more + 36 * i
             if bt * Z <= y < (bt + 32) * Z:
                 sh_rounded(row, y, lx, bt * Z, rx, (bt + 32) * Z, self.R_CTRL * Z, self.tok("SURF1"))
                 ink = self.tok("INK")
@@ -3683,7 +3743,8 @@ def dn_st_line(row, cx, ry, cr, what, focus, s, y, pn=b"cat"):
             if ry + 4 <= y < ry + 36:
                 p_round(row, cr - 176, ry + 4, cr, ry + 36, DN_RCTRL, T["SURF1"])
             ptxt(row, cr - 164, ry + 12, cr - 24, t, ink, F_PATH)
-            p_mid(row, cr - 24, 14, ry + 12 + TBASE, cr - 10, b"^" if s[9] == 1 else b"v", ink, F_BODY)
+            sym_row(row, PEN[3], pen_x(cr - 23), pen_y(ry + 12), SYM[5]["UP_MONO" if s[9] == 1 else "DOWN_MONO"],
+                    PEN[0], ink, THEME[0], 256)
     elif what == 6:
         lab(b"Tiling", 344)
         if ry + 4 <= y < ry + 36:
@@ -4992,11 +5053,15 @@ def main(argv):
             ks -= 1
         ex, ey = x + bs + (cw - ks * ow) // 2, y + bs + tb + (ch - ks * oh) // 2
         cut = []
+        zs, sw = bl[k][6], bl[k][3]
+        r = DN_RAD * zs                                                  # WB-7 rounded: whole, not maximized
+        rnd = fl and 2 * r <= 256 and x >= 0 and x + w <= sw and w >= 2 * r and h >= 2 * r and not (x == 0 and x + w == sw)
         if dk == d and mode != MINIMIZED and rects != -1:
             for (rx, ry, rw, rh) in rects:
                 x0, y0, x1, y1 = max(rx, ex), max(ry, ey), min(rx + rw, ex + ks * ow), min(ry + rh, ey + ks * oh)
-                if x0 < x1 and y0 < y1:
-                    cut.append((x0, y0, x1 - x0, y1 - y0))
+                for (a0, b0, a1, b1) in (place_cut(x, y, w, h, zs, x0, y0, x1, y1) if rnd else [(x0, y0, x1, y1)]):
+                    if a0 < a1 and b0 < b1:
+                        cut.append((a0, b0, a1 - a0, b1 - b0))
         if (sx, sy, s, n, st) != (ex, ey, ks, len(cut[:32]), 0):
             pbad.append((l, (ex, ey, ks, len(cut))))
     line(places > 0 and not pbad, "places: %d placements at the integer scale, centered, cut to the surface" % places,

@@ -307,8 +307,8 @@ and `./doom --sealed` as its child, then the canary, on gcc, clang and both thro
 transcript is `tests/expected/doom.serial`. The kernel hands a started program its arguments
 (`proc.push_arg`); a program the shell starts gets them through `execve` as before.
 
-The budget split (2026-11-05, on l's word): every doom run is in the doom flavor, on `check-doom.sh`'s budget.
-The budget widened (2026-11-06, l's pace rule of 2026-11-05 23:35Z: merge on cloud gates, major tests later): `check.sh`'s
+The budget split (2026-11-05): every doom run is in the doom flavor, on `check-doom.sh`'s budget.
+The budget widened (2026-11-06): `check.sh`'s
 budget is 480 s; it ran 312 to 345 s of 360 on the cloud after G-0, W-4, G-1 and H-R1, so a merge could fail on time alone.
 The checked R-2c run left the user flavor (pid 46) for the doom flavor's fourth run, `doom` unsealed (pid 4),
 whose level counts, tic words, frame digests and surface `tools/check-doom.py` checks against
@@ -387,8 +387,7 @@ of XRGB words; `mark.ci` is Daphnis's 1-bit mark in the OS (ruling MK-1), 16 px 
 "daphnis" in the face, written by `tools/mark.py`; `draw.ci` paints a rectangle, a frame, a line of the face and the mark at 1x or
 2x into one row of a surface at a time, since a module array holds at most 65,536 elements and the surface contract
 hands rows over. The tokens are the opencut lockup's five words (ruling W-2 A: paper `F3EFE6`, ink `141413`,
-ultramarine `1A4B8C`, yellow ochre `E5A900`, cadmium red `D62828`); burnt sienna is a placeholder until agy's kit
-names it, and the tiler does not draw it.
+ultramarine `1A4B8C`, yellow ochre `E5A900`, cadmium red `D62828`). The first tiler did not use the burnt sienna token.
 
 `tiler [--cols N] [--rows N] [--mark-only | --face-only] [--surface-out PATH]` draws the grid: paper, the ink
 hairlines, a title band in each tile (its column, row and inside size, a rule under it), the mark before the title

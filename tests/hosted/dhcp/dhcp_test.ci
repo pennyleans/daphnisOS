@@ -6,6 +6,7 @@ import src.dhcp;
 import src.net;
 import src.ip;
 import src.eth;
+import src.bootarg;
 
 const I64 SRV = 0x0A000202;
 const I64 OURS = 0x0A00020F;
@@ -134,5 +135,19 @@ test "the record's source is DHCP, and the lease's seconds left count timer wake
     wakes(1);                            // the lease's end: the client starts again and holds no lease
     assert(!dhcp.bound() && dhcp.lease_left() == 0);
     assert(dhcp.source() == 1);
+}
+
+// l 11-13 A: on QEMU's user-network MAC the kernel keeps its fixed address, asks no server, and names QEMU's
+// resolver, so facts kind 3 and /etc/resolv.conf carry a DNS; the record's source stays the fixed address's.
+test "QEMU's MAC: no DHCP, the fixed address's source, and QEMU's resolver 10.0.2.3" {
+    eth.set_unconfigured();
+    eth.set_qemu_mac(true);
+    bootarg.set_none(true);              // no daphnis.net= on the boot line
+    I64 s0 = ip.sends();
+    assert(!dhcp.boot_begin());
+    assert(ip.sends() == s0 && dhcp.source() == 0);
+    assert(eth.dns_ip() == 0x0A000203);
+    eth.set_qemu_mac(false);
+    bootarg.set_none(false);
 }
 // SPDX-License-Identifier: Apache-2.0

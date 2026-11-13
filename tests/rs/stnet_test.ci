@@ -38,6 +38,8 @@ test "frame 35: the record's fields read as the frame writes them" {
     stnet.set_record(false, MAC, ADDR, MASK, GW, DNS, stnet.BOOT);
     assert(same(t, stnet.value_of(stnet.R_STATUS, t), b"Disconnected"));
     assert(same(t, stnet.value_of(stnet.R_CONFIGURED, t), b"Manual"));
+    stnet.set_record(true, MAC, ADDR, MASK, GW, DNS, stnet.FIXED);
+    assert(same(t, stnet.value_of(stnet.R_CONFIGURED, t), b"Automatic"));
 }
 
 test "frame 31's rule: Copy Details writes the rows as Label: value lines, leaving out what the record lacks" {
@@ -68,7 +70,7 @@ test "frame 35: rows 32 high, 41 apart; the dot green when the link is up" {
     tokens.set_theme(0);
 }
 
-test "no record: the title alone, Copy Details at 40 percent and inert" {
+test "no record: no rows, Copy Details at 40 percent and inert" {
     stnet.no_record();
     assert(!stnet.shows(stnet.R_STATUS) && !stnet.shows(stnet.R_MAC));
     U8[64] t;
@@ -78,8 +80,48 @@ test "no record: the title alone, Copy Details at 40 percent and inert" {
     assert(stnet.key(stpage.K_ENTER) == stpage.NONE && stnet.key(stpage.K_TAB) == stpage.BACK);
 }
 
-test "the desk's Tab order: Copy Details, the page's one stop, then the sidebar; a press copies" {
+test "no clipboard (POST-1): with a record, Copy Details is at 40 percent, takes no press and is no stop" {
     stnet.set_record(true, MAC, ADDR, MASK, GW, DNS, stnet.DHCP);
+    stnet.set_copy_live(false);
+    stnet.open();
+    assert(stnet.click(CX, Y0, CR, YB, CR - 20, Y0 + 30) == stpage.NONE);
+    assert(!stnet.enter() && !stnet.enter_last());
+    assert(stnet.key(stpage.K_SPACE) == stpage.NONE && stnet.key(stpage.K_TAB) == stpage.BACK);
+    I64 y = Y0 + 34;                                                       // the button's middle row
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stnet.row_at(row, CX, Y0, CR, YB, y);
+    U32 dim = row[CR - 4];
+    stnet.set_copy_live(true);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stnet.row_at(row, CX, Y0, CR, YB, y);
+    assert(row[CR - 4] == tokens.word(tokens.SURF1) && dim != row[CR - 4]);  // live: its own ground
+    stnet.set_copy_live(false);
+}
+
+test "no network device: Not available, dim, where the rows would start; no WIRED" {
+    stnet.no_record();
+    I64 seen = 0;
+    for y in (Y0 + stpage.BODY)..(Y0 + stpage.BODY + stnet.EMPTY_H) {
+        pen.at(0, 0, 1, y);
+        for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+        stnet.row_at(row, CX, Y0, CR, YB, y);
+        for x in CX..(CX + 120) {
+            if (row[x] == tokens.word(tokens.INK_DIM)) { seen = seen + 1; }
+            assert(row[x] != tokens.word(tokens.INK));                                     // dim, never the ink
+        }
+    }
+    assert(seen > 20);
+    I64 y = Y0 + stpage.BODY + stnet.EMPTY_H + 4;                                         // nothing under it
+    pen.at(0, 0, 1, y);
+    for x in 0..800 { row[x] = tokens.word(tokens.PAPER); }
+    stnet.row_at(row, CX, Y0, CR, YB, y);
+    for x in 0..800 { assert(row[x] == tokens.word(tokens.PAPER)); }
+}
+
+test "the desk's Tab order with a clipboard: Copy Details, the page's one stop, then the sidebar; a press copies" {
+    stnet.set_record(true, MAC, ADDR, MASK, GW, DNS, stnet.DHCP);
+    stnet.set_copy_live(true);
     stnet.open();
     assert(stnet.click(CX, Y0, CR, YB, CR - 20, Y0 + 30) == stnet.COPY);
     assert(stnet.click(CX, Y0, CR, YB, CX + 20, Y0 + 100) == stpage.NONE);
@@ -90,5 +132,6 @@ test "the desk's Tab order: Copy Details, the page's one stop, then the sidebar;
     assert(stnet.key(stpage.K_TAB) == stpage.BACK && stnet.focused() == 0);
     assert(stnet.enter() && stnet.focused() == 1 && stnet.key(stpage.K_BACKTAB) == stpage.BACK);
     assert(stnet.enter_last() && stnet.focused() == 1);
+    stnet.set_copy_live(false);
 }
 // SPDX-License-Identifier: Apache-2.0

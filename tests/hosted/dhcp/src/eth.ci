@@ -4,6 +4,7 @@
 export const I64 FRAME = 1514;
 export const I64 NETMASK = 0xFFFFFF00;
 export const I64 BROADCAST = 0xFFFFFFFF;
+export const I64 QEMU_DNS = 0x0A000203;
 
 I64 cur_ip = 0;
 I64 cur_gw = 0;
@@ -32,8 +33,18 @@ export I64 prefix_len() {
     return n;
 }
 
+Bool qemu_mac = false;
+
+export void set_qemu_mac(Bool b) {
+    qemu_mac = b;
+}
+
 export Bool is_qemu_user_mac() {
-    return false;
+    return qemu_mac;
+}
+
+export void set_dns(I64 dns) {
+    cur_dns = dns;
 }
 
 I64 get16(in U8[1514] f, I64 at) {

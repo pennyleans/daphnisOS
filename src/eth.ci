@@ -15,6 +15,7 @@ export const I64 FRAME = 1514;
 export const I64 HDR = 14;
 export const I64 OUR_IP = 0x0A00020F;      // 10.0.2.15 (default on QEMU user net)
 export const I64 GATEWAY = 0x0A000202;     // 10.0.2.2
+export const I64 QEMU_DNS = 0x0A000203;    // 10.0.2.3, QEMU's user network's resolver
 export const I64 NETMASK = 0xFFFFFF00;
 export const I64 BROADCAST = 0xFFFFFFFF;
 export const I64 TYPE_IPV4 = 0x0800;
@@ -131,6 +132,11 @@ void arp_send(I64 op, in U8[6] dst, in U8[6] tha, I64 ip) {
     put32(f, 28, cur_ip);
     put32(f, 38, ip);
     net.send(f, 42);
+}
+
+// Sets the resolver alone (src/dhcp.ci: QEMU's on the fixed address).
+export void set_dns(I64 dns) {
+    cur_dns = dns;
 }
 
 export void set_unconfigured() {

@@ -575,7 +575,7 @@ def after(transcript, initrd, volume, name):
     pngs = [f.split("/")[5] for f in out.splitlines() if f.count("/") >= 6 and f.split("/")[5].endswith(".png")]
     good = []
     for p in pngs:
-        b = subprocess.run(["debugfs", "-R", "cat %s/%s" % (pics, p), volume], capture_output=True).stdout
+        b = subprocess.run(["debugfs", "-R", "cat \"%s/%s\"" % (pics, p), volume], capture_output=True).stdout
         if b[:8] == b"\x89PNG\r\n\x1a\n" and b[12:16] == b"IHDR":
             good.append("%s %d bytes %dx%d" % (p, len(b), int.from_bytes(b[16:20], "big"),
                                                 int.from_bytes(b[20:24], "big")))

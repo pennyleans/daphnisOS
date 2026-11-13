@@ -1,6 +1,16 @@
-// tests/hosted/dhcp/src/bootarg.ci: src/bootarg.ci for the hosted DHCP test; the boot line says daphnis.net=dhcp.
+// tests/hosted/dhcp/src/bootarg.ci: src/bootarg.ci for the hosted DHCP test; the boot line says daphnis.net=dhcp,
+// or nothing after set_none (the QEMU MAC test).
+
+Bool none = false;
+
+export void set_none(Bool b) {
+    none = b;
+}
 
 export I64 boot_net[n](inout U8[n] dst) {
+    if (none) {
+        return 0;
+    }
     dst[0] = 100;   // d
     dst[1] = 104;   // h
     dst[2] = 99;    // c

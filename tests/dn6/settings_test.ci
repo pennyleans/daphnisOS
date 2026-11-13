@@ -15,6 +15,7 @@ import user.ci.kit.ctext;
 import user.ci.kit.draw;
 import user.ci.kit.pen;
 import user.ci.kit.shade;
+import user.ci.kit.symbols;
 
 const I64 TBASE = 13;       // hdesk.ci's
 const I64 RAD = 8;
@@ -241,11 +242,10 @@ void st_line(I64 cx, I64 ry, I64 cr, I64 what, Bool focus, in I64[16] s, in U8[_
         } else {
             if (y >= ry + 4 && y < ry + 36) { pen.round(row, cr - 176, ry + 4, cr, ry + 36, R_CTRL, tok(tokens.SURF1)); }
             e = ptxt(cr - 164, ry + 12, cr - 24, t, n, tok(tokens.INK), faces.PATH);
-            if (s[9] == 1) {
-                e = ptxt_mid(cr - 24, 14, ry + 12, cr - 10, b"^", 1, tok(tokens.INK), faces.BODY);
-            } else {
-                e = ptxt_mid(cr - 24, 14, ry + 12, cr - 10, b"v", 1, tok(tokens.INK), faces.BODY);
-            }
+            I64 chev = symbols.DOWN_MONO;  // the bank's chevron, as stpage.menu_button draws Time Zone's and Layout's
+            if (s[9] == 1) { chev = symbols.UP_MONO; }
+            symbols.row_at(row, pen.row_y(), pen.x(cr - 23), pen.y(ry + 12), chev, pen.zoom(), tok(tokens.INK),
+                           tokens.theme(), 256);
         }
     } else if (what == 6) {
         e = ptxt(cx, ry + 12, cr - 344, b"Tiling", 6, tok(tokens.INK), faces.NAME);
@@ -516,11 +516,11 @@ test "Keep saves (FBIO_TILE_SAVE), Esc and the 15 s switch back with no save; a 
 
 test "the desk's own pages' rows, the Resolution menu and Grants' list at scale 1 and 2 equal the twin's, both themes" {
     tokens.set_theme(tokens.DARK);
-    assert(rows_sum(1) == 772214928);
-    assert(rows_sum(2) == 413779726);
+    assert(rows_sum(1) == 454514270);
+    assert(rows_sum(2) == 2438740);
     tokens.set_theme(tokens.LIGHT);
-    assert(rows_sum(1) == 298833329);
-    assert(rows_sum(2) == 148949691);
+    assert(rows_sum(1) == 316887964);
+    assert(rows_sum(2) == 981933991);
     tokens.set_theme(tokens.DARK);
 }
 

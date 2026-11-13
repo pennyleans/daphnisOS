@@ -264,8 +264,10 @@ test "frame 48: each page names its keyboard row where it draws the ring, none b
     assert(stnet.focus_top() == -1);
     stnet.set_record(true, b"\x52\x54\x00\x12\x34\x56", b"\x0a\x00\x02\x0f", b"\xff\xff\xff\x00", b"\x0a\x00\x02\x02",
                      b"\x0a\x00\x02\x03", stnet.DHCP);
+    stnet.set_copy_live(true);                       // with a clipboard (POST-1: none in 0.1.x)
     assert(stnet.enter());                           // Copy Details, in the head
     assert(stnet.focus_top() == 18 && stnet.focus_bottom() == 18 + stpage.BTN && stnet.focus_bottom() < stbox.BAND);
+    stnet.set_copy_live(false);
     stkeys.open();
     assert(stkeys.enter());                          // Layout, then Repeat Delay, Repeat Rate, Shortcuts
     assert(stkeys.focus_top() == stpage.BODY && stkeys.focus_bottom() == stpage.BODY + stpage.ROW);
@@ -388,9 +390,9 @@ test "the desk's Tab order through the frame: each page's controls once from the
                      b"\x0a\x00\x02\x03", stnet.DHCP);
     trash();
     I64[6] pages = [stside.DESK, stside.ACCOUNTS, stside.NETWORK, stside.DATETIME, stside.KEYBOARD, stside.STORAGE];
-    I64[6] want = [4, 8, 1, 4, 4, 1];  // swatches, Choose Picture, Recent Files, pins; Add, list, Role, Password,
-                                       // three boxes, Remove; Copy Details; Set, Time Zone, 24-Hour, Week; Layout,
-                                       // two sliders, Show All; Empty Trash
+    I64[6] want = [4, 8, 0, 4, 4, 1];  // swatches, Choose Picture, Recent Files, pins; Add, list, Role, Password,
+                                       // three boxes, Remove; none (Copy Details waits for a clipboard, POST-1); Set,
+                                       // Time Zone, 24-Hour, Week; Layout, two sliders, Show All; Empty Trash
     I64[16] seen;
     for k in 0..6 {
         I64 p = pages[k];

@@ -1,8 +1,7 @@
 # Results: K4.5 (the shepherd)
 
-Branch `opencode/k45`, from `main` of that day. Code and docs under test: the branch head (a clean
-clone of it, in `/tmp/opencode/k45/clean`, built into a fresh directory); the commits after it
-(this file and a wording fix in the notes) change only docs. What the stage built and what it claims is `docs/shepherd.md`.
+Historical results from the K4.5 development branch, built from a clean clone.
+See [the shepherd scheduler notes](shepherd.md) for the scope of these checks.
 
 ## The gate
 
@@ -114,14 +113,14 @@ not in this table.
 
 * My first design for the quantum (a soft `fuel_limit` and a yield inside `cint_rt_fault_fuel`) is unsound:
   EMIT-28 leaf functions drop the slow path's result. Found by review, confirmed in the emitted C
-  (`docs/shepherd.md`); filed as pennyleans/cint#512. The quantum ends a turn at host calls instead.
+  (`docs/shepherd.md`). The quantum ends a turn at host calls instead.
 * QEMU `-icount shift=0` makes one binary reproducible and not portable: 6, 7, 232 and 233 preemptions for gcc and
   clang at `-O2` and `-O0`, against 4 or 5 with no `-icount` (`docs/shepherd.md`).
 * A guard page alone is not enough: at `-O2` gcc inlined a chain into one frame of 28,672 bytes and one
   subtraction stepped over the guard. A guard of two pages and `-fstack-clash-protection` fix it; removing the flag
   makes `net 5` fail.
 * cint's frame arena charges arrays when a call crosses a module boundary, and not in one module with no cycle
-  (pennyleans/cint#500, a comment). The old statement in `docs/runtime.md` was incomplete.
+  (see [compiler notes, item 14](cint-gaps.md#14-frame-arena-charges-depend-on-where-the-callee-is-k45)). The old statement in `docs/runtime.md` was incomplete.
 * A trap record was made from the kernel's context, so a probe in a task recorded the kernel's call stack
   (found by `net 6`); now it is made from the running context.
 * Review defects, all fixed: a record with no live call had no valid position and its print panicked; a task could call any

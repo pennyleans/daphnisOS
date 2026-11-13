@@ -119,6 +119,20 @@ void main() {
     I64 m = plane.nav(1, 0);
     "name rest-1920x1080-1x-dark\n";
     frame(1920, 1052);
+    // the first boot's ten pins, Web Browser's name whole (LABEL_PAD 0); then the query `shop` on its file row, whose
+    // Opens wraps to a second line and the plate grows 16 (pv_grow), and `monitor`, whose Found as wraps too
+    desk(1920, 1052, 1, 10);
+    "name pins10-1920x1080-1x-dark\n";
+    frame(1920, 1052);
+    desk(1920, 1052, 1, 10);
+    sources();
+    type_in(b"shop");
+    "name opens-1920x1080-1x-dark\n";
+    frame(1920, 1052);
+    desk(1920, 1052, 1, 10);
+    type_in(b"monitor");
+    "name found-1920x1080-1x-dark\n";
+    frame(1920, 1052);
     // 1920 x 1080 at 2x: C = 896, six columns; the band clipped whole or nothing
     desk(1920, 1024, 2, 9);
     "name rest-1920x1080-2x-dark\n";

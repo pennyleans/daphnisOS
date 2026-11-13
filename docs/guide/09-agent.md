@@ -1,6 +1,7 @@
 # 09 Claude in a terminal (`talk`, `agent`)
 
-An app a person starts, never part of the base image and never running in the background (AG-1 A, FOUNDING law 3).
+The `desknet` development image includes two clients for testing Claude
+from a terminal. The 0.1.1 disk image ships without these clients.
 
 | program | what it does |
 | --- | --- |
@@ -31,7 +32,7 @@ The script writes the key and model id to a small ext2 volume (mode 0600, remove
 terminal:
 
 ```
-./grant net ./agent -k /disk/agent.key -t -x api.anthropic.com 443
+grant net agent -k /home/agent.key -t -x api.anthropic.com 443
 ```
 
 Each tool call is shown and runs only on `y`. Ctrl+D ends it.
@@ -43,5 +44,4 @@ Each tool call is shown and runs only on `y`. Ctrl+D ends it.
 - `-cpu max` (the scripts pass it) gives the guest RDRAND; without it `agent` opens no TLS session.
 - 37 public roots ship in `user/tls/roots/public.pem` (from Ubuntu 24.04's ca-certificates).
 
-Checked by `check-agent.sh` (33 checks, mocks only: the bridge, plain HTTP, DNS, TLS against a test certificate, a
-six-call tool session).
+`check-agent.sh` exercises the bridge, HTTP, DNS, TLS, and tool calls against test servers.

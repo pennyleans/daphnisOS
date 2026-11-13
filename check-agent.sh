@@ -88,7 +88,7 @@ app_lines() { # transcript first last: the lines from the one holding first to t
     python3 -c '
 import re, sys
 t = open(sys.argv[1], encoding="latin-1").read()
-t = re.sub(r"(net tx \d+ sha256 [0-9a-f]{64}|net rx \d+ \d+ [0-9a-f]+|rng \d+ [0-9a-f]+)\n", "", t)
+t = re.sub(r"(net tx \d+ sha256 [0-9a-f]{64}|net rx \d+ \d+(?: \d+)? [0-9a-f]+|rng \d+ [0-9a-f]+)\n", "", t)
 i, j = t.find(sys.argv[2]), t.find(sys.argv[3])
 if i < 0 or j < 0:
     sys.exit(1)

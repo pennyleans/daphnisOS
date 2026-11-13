@@ -39,7 +39,7 @@ locals (`fu`, `fcap`, EMIT-28) and on a failed charge does `(void)cint_fuel_char
 fault;`, so the task would end as "done" with half its output and no record. Two advisors found
 this independently from the emitted C of this tree (`build/.../taskwork.c`). A yield inside such a
 function needs a cintc change; none is needed for what is built here, because output only happens
-at host calls. `docs/cint-gaps.md` item 13 has the reproducer; it is filed as pennyleans/cint#512.
+at host calls. See [compiler notes, item 13](cint-gaps.md#13-no-resumable-fuel-point-k45) for the reproducer.
 
 What this does not do: a task that computes without a host call is never interrupted (its real
 fuel limit still stops it). That cannot change a result, since the task shares nothing; it only

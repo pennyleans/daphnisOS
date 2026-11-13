@@ -2,7 +2,8 @@
 //
 // Boot policy:
 //   - No `daphnis.net=` and QEMU's user-network MAC (52:54:00:12:34:56): keep Stage N's fixed
-//     10.0.2.15/24 and gateway 10.0.2.2 silently so existing records and transcripts do not move.
+//     10.0.2.15/24 and gateway 10.0.2.2 silently so existing records and transcripts do not move, with
+//     QEMU's resolver 10.0.2.3 for the Network page and /etc/resolv.conf.
 //   - `daphnis.net=dhcp`, or no `daphnis.net=` on any other MAC (real hardware): RFC 2131 client
 //     (DISCOVER, OFFER, REQUEST, ACK/NAK; options 1 subnet, 3 router, 6 DNS, 50 requested IP,
 //     51 lease time, 53 message type, 54 server identifier, 55 parameter list; renewal at half the
@@ -282,6 +283,7 @@ export Bool boot_begin() {
         if (eth.is_qemu_user_mac()) {
             mode = MODE_NONE;
             st = ST_OFF;
+            eth.set_dns(eth.QEMU_DNS);  // QEMU's user network answers DNS there, as its DHCP would say
             return false;
         }
         mode = MODE_DHCP;

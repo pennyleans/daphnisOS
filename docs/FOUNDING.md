@@ -2,9 +2,9 @@
 
 Founding document, revision 0.7 draft (baseline: `main` of 2026-11-06; revision 0.7, 2026-11-06: section 5's
 containment bullet and law 4 for stacked floating windows, rulings HX-1 B and HX-9 A, `docs/specs/2026-11-05-h-hybrid.md`).
-Revision 0.5 is l's Google Doc of 2026-11-05 (baseline of 2026-11-05). This copy is the repository's; section 8 lists
-every edit made to 0.5 and why, so l can accept or reverse each one. The Google Doc stays the draft surface;
-this file is what the tree is built against.
+This document records the November 2026 design baseline. Section 8 lists the
+changes since revision 0.5. See the [Daphnis guide](guide/README.md) for current
+user documentation.
 
 A verifiable Unix workstation for people leaving macOS.
 
@@ -114,7 +114,7 @@ demo wins.
 Practical meaning for daily users: if hostile shell workloads and compiler flag changes cannot shift a real-time
 simulation by one bit, background tasks cannot silently alter a writer's draft or the foreground state behind
 the user's back. The receipt is evidence of integrity, not of confidentiality: it shows that the foreground run
-was not changed, not that nothing could read it. Nothing here is public until l's go and the voice review.
+was not changed, not that nothing could read it.
 
 ## 5. Visual grammar and the framebuffer desk
 
@@ -146,20 +146,19 @@ temperature interval. Most of the Daphnis workspace stays neutral warm paper and
 legible over eight-hour sessions, Daphnis pairs Klee's and Albers' two iron-earth pigments to separate local disk
 mutation from off-machine network reach: yellow ochre marks writable local storage (ring 1), burnt sienna marks
 live network apertures (ring 2), cool receding ultramarine marks active input focus (ring 3), and high-chroma
-cadmium red marks a hard invariant fault or a process in the ring 0 mode (WB-R5 A and stage R0, l 2026-11-07
-23:13Z; the rings are the design table's).
+cadmium red marks a hard invariant fault or a process in the ring 0 mode (WB-R5 A and stage R0).
 
 | field or token | value | structural role |
 | --- | --- | --- |
 | paper ground and ink | warm archival off-white and carbon black | resting workspace plane, 1 px dividual grid hairlines, body and terminal type |
-| 1-bit seal | the miniature counter-change mark of W-1 (the disc and `daphnis` in the kit face, 1x and 2x; MK-1, l 2026-11-05) | boot stamp, top-left system anchor, verified receipt indicator; the opencut lockup is the large and promo mark |
+| 1-bit seal | the miniature counter-change mark of W-1 (the disc and `daphnis` in the kit face, 1x and 2x; MK-1) | boot stamp, top-left system anchor, verified receipt indicator; the opencut lockup is the large and promo mark |
 | ultramarine | deep relational blue | the active focus frame receiving keyboard and pointer input |
 | yellow ochre | hydrated mineral yellow | ring 1: an explicit local persistence grant on a plane (a mounted writable path; stays on the machine) |
 | burnt sienna | calcined iron earth | ring 2: an explicit network grant on a plane (an open socket or off-machine channel) |
 | cadmium red | high-salience vermilion | a hard invariant fault (a canary trip, a digest desync, a killed ring 3 violation) or ring 0: a process in the ring 0 mode (stage R0) |
 
 The pixel values: the opencut lockup fixes five of the six, paper `F3EFE6`, ink `141413`, ultramarine `1A4B8C`,
-yellow ochre `E5A900`, cadmium red `D62828`; burnt sienna is not in the lockup and comes from agy's kit (W-2 A, l 2026-11-05: the five pinned now).
+yellow ochre `E5A900`, cadmium red `D62828`. Stage W's palette also includes burnt sienna.
 Stage W reads them from one table.
 
 Planar nesting and dividual tiling:
@@ -178,7 +177,7 @@ Planar nesting and dividual tiling:
 
 Stage 1, the sealed run and the challenge (stage R of `DESIGN.html`): R-2b and R-2c are built; R-2d (the
 sealed run, the canary, the Track 2 churn script, the pinned chain) is building. Then the gate headroom, and the
-public receipt and the rules of Break the Receipt after l's go and the voice review.
+public receipt and the rules of Break the Receipt.
 
 Stages 2 to 4 run in parallel from here, each under its own spec in `docs/specs/` and its own units:
 
@@ -211,8 +210,8 @@ l, 2026-11-07 17:46Z: "cvim ... as the IDE", so `cide`'s scope is `cvim`'s). Bus
    server to check a local binary. Every packet traces to an explicit user-granted capability.
 4. Planar honesty: active focus, capability grants and fault boundaries stay visible on the flat tiling plane,
    never buried under overlapping windows, system trays or silent daemons. A grant or fault on a covered,
-   minimized or other-desktop window is named, title and pid, one click from the bar (KD-1 A, l 2026-11-07): the
-   disk and network grants in the system panel (SP-R1 B, l 2026-11-08), ring 0 counted on the bar itself (KERN).
+   minimized or other-desktop window is named, title and pid, one click from the bar (KD-1 A): the
+   disk and network grants in the system panel (SP-R1 B), ring 0 counted on the bar itself (KERN).
 5. Linux ABI as bridge, cint as standard: static Linux binaries keep Unix muscle memory working from day one;
    native cint software sets the bar for auditability, footprint and bit-exact verification.
 6. No claim without evidence (SPEC-07 section 14): public copy states what a gate measured, names the commit,

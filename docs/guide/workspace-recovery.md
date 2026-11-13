@@ -1,11 +1,10 @@
-# workspace recovery acceptance
+# Workspace recovery checks
 
 `tools/check-workspace.py` is the scripted receipt that user work survives a reboot and a failed build, and that
 acknowledged `sync` survives an abrupt stop of the machine. it is a standalone guest acceptance, separate from
 `check-build.sh` and `check-disk.sh`, which establish pieces of it and are not substitutes.
 
-it does not qualify editor ux, account isolation, encrypted snapshots, physical storage or unsynced crash
-consistency. physical boot stays with the hw task.
+This check uses scratch QEMU images. It covers data acknowledged by `sync`.
 
 ## run
 

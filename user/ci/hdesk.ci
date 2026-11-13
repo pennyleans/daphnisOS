@@ -949,6 +949,38 @@ I64 put_rect(I64 n, I64 x0, I64 y0, I64 x1, I64 y1) {
     return n + 1;
 }
 
+// The first of the r device pixels across a lower corner of radius r, py rows above its bottom, that the corner's
+// arc covers whole (kit/shape.ci arc16); r past the arc.
+I64 arc_in(I64 r, I64 py) {
+    I64 c = 0;
+    while (c < r && shape.arc16(r, c, py) < 16) { c = c + 1; }
+    return c;
+}
+
+// WB-7 (0.1.1, the square corner): the visible rectangle [x0, x1) x [y0, y1) of float i's surface as place_buf's
+// rectangles from the n-th, none of it past the body's lower corners (inset RING, radius RAD - RING, the shape
+// float_row draws inside the ring): the rows the corners cross go in bands, each cut to the pixels the body covers
+// whole, so no square of the surface shows outside the ring; the count.
+I64 put_cut(I64 i, I64 n, I64 x0, I64 y0, I64 x1, I64 y1) {
+    if (tb(i) == 0 || !rounded(i)) { return put_rect(n, x0, y0, x1, y1); }
+    I64 rb = (RAD - RING) * sc;
+    I64 bx0 = layout.frame_x(i) + sl_dx + RING * sc;
+    I64 bx1 = layout.frame_x(i) + layout.frame_w(i) + sl_dx - RING * sc;
+    I64 by1 = layout.frame_y(i) + layout.frame_h(i) - RING * sc;
+    I64 m = n;
+    m = put_rect(m, x0, y0, x1, min(y1, by1 - rb));
+    I64 y = max(y0, by1 - rb);
+    I64 ye = min(y1, by1);
+    while (y < ye) {
+        I64 c = arc_in(rb, by1 - 1 - y);
+        I64 e = y + 1;
+        while (e < ye && arc_in(rb, by1 - 1 - e) == c) { e = e + 1; }
+        m = put_rect(m, max(x0, bx0 + c), y, min(x1, bx1 - c), e);
+        y = e;
+    }
+    return m;
+}
+
 void place(I64 i) {
     I64 k = scale_of(i);
     I64 pw = k * surf_w(i);
@@ -970,16 +1002,16 @@ void place(I64 i) {
             if (sheet_blocks(i)) {         // DN-43: the client's surface stays off its sheet (review on PR 272)
                 I64[16] pc;
                 I64 np = sheet_around(i, x0, y0, x1, y1, pc);
-                for pi in 0..np { n = put_rect(n, pc[4 * pi], pc[4 * pi + 1], pc[4 * pi + 2], pc[4 * pi + 3]); }
+                for pi in 0..np { n = put_cut(i, n, pc[4 * pi], pc[4 * pi + 1], pc[4 * pi + 2], pc[4 * pi + 3]); }
             } else if (tip_on && tr_open) {   // SP-7: the client's surface stays off the tooltip
                 I64 tx1 = tip_x + tip_w;
                 I64 ty1 = tip_y + tooltip.H * sc;
-                n = put_rect(n, x0, y0, x1, min(y1, tip_y));
-                n = put_rect(n, x0, max(y0, ty1), x1, y1);
-                n = put_rect(n, x0, max(y0, tip_y), min(x1, tip_x), min(y1, ty1));
-                n = put_rect(n, max(x0, tx1), max(y0, tip_y), x1, min(y1, ty1));
+                n = put_cut(i, n, x0, y0, x1, min(y1, tip_y));
+                n = put_cut(i, n, x0, max(y0, ty1), x1, y1);
+                n = put_cut(i, n, x0, max(y0, tip_y), min(x1, tip_x), min(y1, ty1));
+                n = put_cut(i, n, max(x0, tx1), max(y0, tip_y), x1, min(y1, ty1));
             } else {
-                n = put_rect(n, x0, y0, x1, y1);
+                n = put_cut(i, n, x0, y0, x1, y1);
             }
         }
     }
@@ -1510,7 +1542,10 @@ void win_row_span(I64 i, I64 y, I64 xa, I64 xb) {
                   (i == OV && (kp_open || sp_open || tr_open || msg_up() || sw_open || rv_open || ask_up() ||
                                keysheet.is_up()))) &&
         rounds(i, y);
-    if (round) { keep_at(fx0, fx1, rad_of(i) * sc); }
+    if (round) {
+        keep_at(fx0, fx1, rad_of(i) * sc);
+        under_pixel(i, y, rad_of(i) * sc);
+    }
     win_body_span(i, y, xa, xb);
     if (round) { cut_corners(i, y); }
     if (about.blocks(i)) { about.row_at(row, y, am_z(), tokens.theme()); }   // DN-43: the sheet over it, no dim (DN-69)
@@ -2598,13 +2633,64 @@ U32 ov_ground() {
 // corner spans within `under`.
 Bool rounds(I64 i, I64 y) {
     I64 r = rad_of(i) * sc;
+    I64 y0 = layout.frame_y(i);
+    I64 y1 = y0 + layout.frame_h(i);
+    return rounded(i) && ((y >= y0 && y < y0 + r) || (y >= y1 - r && y < y1));
+}
+
+// WB-7: whether float i is drawn with rounded corners at all: its frame whole on the screen, not maximized, its two
+// corner spans within `under`.
+Bool rounded(I64 i) {
+    I64 r = rad_of(i) * sc;
     I64 x0 = layout.frame_x(i);
     I64 y0 = layout.frame_y(i);
     I64 x1 = x0 + layout.frame_w(i);
     I64 y1 = y0 + layout.frame_h(i);
     if (2 * r > len(under) || x0 < 0 || x1 > w || x1 - x0 < 2 * r || y1 - y0 < 2 * r) { return false; }
-    if (x0 == 0 && x1 == w) { return false; }   // FF 3g: a maximized window stays square at the screen's edge
-    return (y >= y0 && y < y0 + r) || (y >= y1 - r && y < y1);
+    return !(x0 == 0 && x1 == w);   // FF 3g: a maximized window stays square at the screen's edge
+}
+
+// WB-7 (0.1.1, the square corner): where a pixel window below shows its surface through float i's corners on row
+// y, the kernel composes none of it (its rectangles stop at i's frame), and what the desk drew there, that window's
+// ground under i's shadow, would show as a dark square past the arc. Those pixels of `under` take the window's
+// ground unshaded, as the kernel shows it round the frame (no shadow lands on a surface).
+void under_pixel(I64 i, I64 y, I64 r) {
+    if (sh_sel || any_moving()) { return; }   // place's rule: nothing composed then, the desk's own drawing shows
+    I64 fx0 = layout.frame_x(i);
+    I64 fx1 = fx0 + layout.frame_w(i);
+    I64 ki = stack_key(i);
+    Bool any = false;
+    for j in 0..WINDOWS {
+        if (j != i && kind[j] == PIXEL && shown(j) && stack_key(j) < ki && y >= layout.frame_y(j) &&
+            y < layout.frame_y(j) + layout.frame_h(j)) {
+            any = true;
+        }
+    }
+    if (!any) { return; }
+    U32 g = tok(tokens.PAPER);
+    for k in 0..2 * r {
+        I64 x = fx0 + k;
+        if (k >= r) { x = fx1 - 2 * r + k; }
+        I64 top = -1;
+        for j in 0..WINDOWS {
+            if (j != i && shown(j) && stack_key(j) < ki && x >= layout.frame_x(j) &&
+                x < layout.frame_x(j) + layout.frame_w(j) && y >= layout.frame_y(j) &&
+                y < layout.frame_y(j) + layout.frame_h(j) && (top < 0 || stack_key(j) > stack_key(top))) {
+                top = j;
+            }
+        }
+        if (top >= 0 && kind[top] == PIXEL && in_surface(top, x, y)) { under[k] = g; }
+    }
+}
+
+// Whether device pixel (x, y) lies on pixel window j's surface as place puts it.
+Bool in_surface(I64 j, I64 x, I64 y) {
+    I64 k = scale_of(j);
+    I64 pw = k * surf_w(j);
+    I64 ph = k * surf_h(j);
+    I64 sx = cbx(j) + (cbw(j) - pw) / 2 + sl_dx;
+    I64 sy = cby(j) + (cbh(j) - ph) / 2;
+    return x >= sx && x < sx + pw && y >= sy && y < sy + ph;
 }
 
 // What lies under the r device pixels at each end of [x0, x1) on the row, kept in `under` before a rounded
@@ -7317,8 +7403,9 @@ Bool has_bin(in U8[_] name) {
     return false;
 }
 
-// At start: /bin read; on a volume, /dev/fsidx taken and the index of /home built (FF-1); the first boot's pins
-// (finder first once it is in /bin, FF-6; terminal, editor, settings).
+// At start: /bin read; on a volume, /dev/fsidx taken and the index of /home built (FF-1); the first boot's pins, every
+// app the desk has in apps.ci's order (DN-49 frame 1; Settings, Trash and All Apps stay on the rail). The plane's open
+// line (`hdesk: ff open pins N`) counts them.
 void pl_init() {
     bin_read();
     if (sys_flags() % 2 == 1) {
@@ -7334,7 +7421,7 @@ void pl_init() {
             plane.app(i);
         }
     }
-    for i in 0..3 { Bool p = plane.pin_app(i); }   // DN-5: the first boot's pins, APPS-1's first three
+    for i in 0..apps.N { Bool p = plane.pin_app(i); }   // DN-49 frame 1: every app the desk has (Settings: a home)
     "hdesk: ff programs {bin_n} index {ix_on} ring {ix_fd >= 0}\n";
 }
 
@@ -9503,10 +9590,17 @@ void st_act(I64 p, I64 a) {
         return;
     }
     if (p == stside.KEYBOARD && (a == stkeys.DELAY || a == stkeys.RATE)) {   // RS-KR: the desk sets the repeat
-        if (a == stkeys.DELAY) { kr_delay = stkeys.arg(); }
-        if (a == stkeys.RATE && stkeys.arg() > 0) { kr_period = 1000 / stkeys.arg(); }
-        I64 r = hdeskctl.rep_set(kr_delay, kr_period);
-        "hdesk: settings repeat {kr_delay} {kr_period} ({r})\n";
+        I64 d = kr_delay;
+        I64 per = kr_period;
+        if (a == stkeys.DELAY) { d = stkeys.arg(); }
+        if (a == stkeys.RATE && stkeys.arg() > 0) { per = 1000 / stkeys.arg(); }
+        I64 r = hdeskctl.rep_set(d, per);
+        if (r == 0) {                  // the kernel took it: the page's knob moves there, the next step starts there
+            kr_delay = d;
+            kr_period = per;
+            if (a == stkeys.DELAY) { stkeys.set_delay(d); } else { stkeys.set_rate(stkeys.arg()); }
+        }
+        "hdesk: settings repeat {d} {per} ({r})\n";
         return;
     }
     if (p == stside.DESK && a == stdesk.BG) {      // BG-1: a swatch, shown now and written as the account
@@ -9707,8 +9801,7 @@ I64 g_bit(I64 b) { return grtrack.bit(b); }
 void gr_track() {
     Bool ch = false;
     for i in 0..WINDOWS {
-        I64 g = 0;
-        if (kind[i] != NONE) { g = gw[i] & (3 | GRANT_KERN); }
+        I64 g = grtrack.word(kind[i], lx_host[i], gw[i] & (3 | GRANT_KERN));   // a host's is its window's: no row
         if (grtrack.track(i, g, now_s)) {
             ch = true;
             g_req_bits[i] = g_req_bits[i] & g;
@@ -10243,6 +10336,22 @@ Bool st_pin_drag() { return st_win >= 0 && stbox.page() == stside.DESK && stdesk
 // The pin dragged off the list, where its drop is refused: the Not here pointer.
 Bool st_pin_off() { return st_pin_drag() && stdesk.refused(); }
 
+// A repeat slider held by the pointer (RS-KR): the knob follows the pointer, each new step set as it is reached.
+Bool st_rep_drag() { return st_win >= 0 && stbox.page() == stside.KEYBOARD && stkeys.dragging(); }
+
+void st_rep_move() {
+    I64 cx = cbx(st_win);
+    I64 cy = cby(st_win);
+    I64 px = cx + (mx - cx) / sc;
+    I64 py = cy + (my - cy) / sc;
+    st_box_of(st_win);
+    I64 r = stkeys.move(stbox.cx(), stbox.y0_at(py), stbox.cr(), stbox.yb_at(py), px, py);
+    if (r >= stpage.ACT) {
+        st_act(stside.KEYBOARD, r);
+        redraw();
+    }
+}
+
 // The pointer moved with the pin held: where it would land, drawn again when that changed.
 void st_pin_move() {
     I64 cx = cbx(st_win);
@@ -10391,11 +10500,10 @@ void st_line(I64 cx, I64 ry, I64 cr, I64 what, Bool focus, in I64[16] s, in U8[_
         } else {
             if (y >= ry + 4 && y < ry + 36) { pen.round(row, cr - 176, ry + 4, cr, ry + 36, R_CTRL, tok(tokens.SURF1)); }
             e = ptxt(cr - 164, ry + 12, cr - 24, t, n, tok(tokens.INK), faces.PATH);
-            if (s[9] == 1) {
-                e = ptxt_mid(cr - 24, 14, ry + 12, cr - 10, b"^", 1, tok(tokens.INK), faces.BODY);
-            } else {
-                e = ptxt_mid(cr - 24, 14, ry + 12, cr - 10, b"v", 1, tok(tokens.INK), faces.BODY);
-            }
+            I64 chev = symbols.DOWN_MONO;  // the bank's chevron, as stpage.menu_button draws Time Zone's and Layout's
+            if (s[9] == 1) { chev = symbols.UP_MONO; }
+            symbols.row_at(row, pen.row_y(), pen.x(cr - 23), pen.y(ry + 12), chev, pen.zoom(), tok(tokens.INK),
+                           tokens.theme(), 256);
         }
     } else if (what == 6) {
         e = ptxt(cx, ry + 12, cr - 344, b"Tiling", 6, tok(tokens.INK), faces.NAME);
@@ -11230,6 +11338,7 @@ void motion(I64 code, I64 value) {
         dsy = dsy + my - oy;
         drag_apply();
     }
+    if (drag == 0 && st_rep_drag() && (mx != ox || my != oy)) { st_rep_move(); }
     if (drag == 0 && st_pin_drag() && (mx != ox || my != oy)) {
         st_pin_move();                 // frame 33: the pin follows; off the list, Not here (frame 26)
         pointer(true);
@@ -11791,6 +11900,10 @@ void button(I64 code, I64 value) {
     if (value == 0) {
         if (bb_win >= 0 && code == BTN_LEFT) {
             bar_release();
+            return;
+        }
+        if (code == BTN_LEFT && st_rep_drag()) {
+            stkeys.release();
             return;
         }
         if (code == BTN_LEFT && st_pin_drag()) {

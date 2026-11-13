@@ -105,6 +105,19 @@ test "EVIOCGREP: any holder reads the delay and the period; into memory it canno
     kz_end(d);
 }
 
+test "EVIOCGREP and EVIOCSREP as musl sends them: an int request, sign-extended; only the low 32 bits count" {
+    I64 d = kz_desk();
+    I64 dfd = kz_event0(d);
+    U64 hi = 0xFFFFFFFF00000000;
+    assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP, kz_rep(d, KZ_RW + 512, 250, 25), 0, 0, 0) == 0);
+    kz_fill(d);
+    assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCGREP | hi, KZ_RW + 1024, 0, 0, 0) == 0);   // musl's int
+    assert(kz_u64(d, KZ_RW + 1024) == (250 as U64) | ((25 as U64) << 32));
+    assert(kz_call(d, NR_IOCTL, dfd as U64, keyrep.EVIOCSREP | hi, kz_rep(d, KZ_RW + 512, 500, 33), 0, 0, 0) == 0);
+    assert(kz_rep_is(500, 33));
+    kz_end(d);
+}
+
 // The desk's read of the device at tick t: the events it got, each type | code << 16 | value << 32 (Linux's struct
 // input_event after its time); none for -EAGAIN.
 I64 kz_ev_n = 0;

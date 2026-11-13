@@ -1371,6 +1371,13 @@ I64 sys_clock_settime(I64 pid, U64 clk, U64 ts) {
 // u32 at arg, the delay before the first repeat and the period between repeats, in ms (src/keyrep.ci). EVIOCGREP: any
 // holder of the device reads them. EVIOCSREP: the desk alone (the tiler's pid, uid 0), -EPERM for any other before
 // arg is read; then -EFAULT, and -EINVAL for a delay outside 100 to 2000 or a period outside 10 to 1000.
+// Whether an ioctl request is EVIOCGREP or EVIOCSREP. Linux's request is an unsigned int, so only its low 32 bits
+// count: musl's ioctl takes an int, and EVIOCGREP (bit 31 set) reaches the kernel sign-extended.
+Bool is_keyrep(U64 req) {
+    U64 r = req & 0xFFFFFFFF;
+    return r == keyrep.EVIOCGREP || r == keyrep.EVIOCSREP;
+}
+
 I64 sys_keyrep(I64 pid, U64 req, U64 arg) {
     U8[8] b;
     if (req == keyrep.EVIOCGREP) {
@@ -1853,8 +1860,8 @@ void syscall(I64 pid) {
         ret = sys_setsid(pid);
     } else if (nr == 121 || nr == 124) {
         ret = sys_getpgid(pid, signed_of(a0), nr == 124);
-    } else if (nr == 16 && (a1 == keyrep.EVIOCGREP || a1 == keyrep.EVIOCSREP) && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_EVENT) {
-        ret = sys_keyrep(pid, a1, a2);   // RS-KR
+    } else if (nr == 16 && is_keyrep(a1) && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_EVENT) {
+        ret = sys_keyrep(pid, a1 & 0xFFFFFFFF, a2);   // RS-KR
     } else if (nr == 16 && a1 == tile.FBIO_TILE_INFO && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {
         ret = sys_tile_info(pid, a2);
     } else if (nr == 16 && a1 == tile.FBIO_TILE_KERN && fs.fd_kind(pid, fd_of(a0)) == fs.KIND_FB) {

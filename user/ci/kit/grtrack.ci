@@ -3,6 +3,11 @@
 // track() with each window's word (0 for a slot with no window) and forget() when a window ends; both say whether
 // the record changed, so the page is told again while it is open (a review's finding: a row stayed
 // after its app ended, since forget left nothing for track to see).
+// 0.1.1 (the design read of v0.1.0): an app in its own window holds a host terminal (hdesk.ci lx_host) whose process
+// is the window's, so both carried its grant word and Settings' Grants listed Monitor twice, once with the host's
+// path. word() gives a host none: the page lists the windows the person has (kit/winroom.ci has), one row each.
+import user.ci.kit.winroom;
+
 export const I64 SLOTS = 16;
 export const I64 DISK = 1;             // the grant word's bits
 export const I64 NET = 2;
@@ -15,6 +20,22 @@ export I64 bit(I64 b) {
     if (b == 0) { return DISK; }
     if (b == 1) { return NET; }
     return KERN;
+}
+
+// The word the page tracks for a place of the desk's table of kind k (host: it only holds an app's process) whose
+// grant word is g: g for a window the person has, else 0.
+export I64 word(I64 k, Bool host, I64 g) {
+    if (!winroom.has(k, host)) { return 0; }
+    return g;
+}
+
+// The windows the record holds a grant for: the windows the Grants page lists.
+export I64 windows() {
+    I64 c = 0;
+    for i in 0..SLOTS {
+        if (seen_w[i] != 0) { c = c + 1; }
+    }
+    return c;
 }
 
 // Window i's word g at time now: a new bit takes now; true when the word differs from the one seen last.

@@ -214,7 +214,7 @@ export Bool portrait() { return HP > WP; }
 
 // DN-49: the plate, 1x: centered, PL_TOP under the bar, narrower only on a screen narrower than it.
 export I64 plate_w() { return min(PL_W, WP); }
-export I64 plate_h() { return min(PL_H, max(HP - PL_TOP, 0)); }
+export I64 plate_h() { return min(PL_H + pv_grow(), max(HP - PL_TOP, 0)); }   // pv_grow: a wrapped preview
 export I64 plate_x0() { return (WP - plate_w()) / 2; }
 export I64 plate_y0() { return PL_TOP; }
 export I64 col_w() { return max(plate_w() - 2 * PL_PAD, 0); }
@@ -1601,10 +1601,13 @@ I64 sect_of(I64 p) {
     return 3;
 }
 
+I64 lay_grow = 0;
 void lay_query() {
-    if (lay_gen == gen && lay_was == 2) { return; }
+    I64 g = pv_grow();                 // the band's end moves with the preview's wrapped lines
+    if (lay_gen == gen && lay_was == 2 && lay_grow == g) { return; }
     lay_gen = gen;
     lay_was = 2;
+    lay_grow = g;
     I64 y = band_y0();
     I64 end = band_y1();
     for p in 0..32 { q_y[p] = -1; }
@@ -2087,7 +2090,7 @@ void grid_row(inout U32[_] row, I64 y) {
 
 // DN-49: a pin's name clipped to its cell, LABEL_PAD in from each side, its last whole code points and an ellipsis
 // (U+2026) where it does not fit; the hovered pin's full name in the tooltip then, as at 28 px.
-export const I64 LABEL_PAD = 4;
+export const I64 LABEL_PAD = 0;       // the whole cell, as frame 1 sets Web Browser (was 4)
 
 // DN-52 (e), measured as note 49 allows: a pinned name's face, 12 px (SMALL), else 11, else 10, the first in which
 // the name fits room device pixels (its cell less LABEL_PAD each side and the open dot with its gap); fit_name clips
@@ -2400,12 +2403,55 @@ void query_pass(inout U32[_] row, I64 y) {
 // DN-22: the panel is dropped where the work area is under 880 px at the scale (or would not fit).
 export Bool preview_shown() { return WP >= 880 && (q_pv_y1 <= band_y1() || previewing); }
 
+// DN-49 (frame 2): a value wider than its 176 px column wraps at
+// spaces, as the frame's grid wraps it, three lines at most (a word wider than the column alone on its line, clipped).
+// Each line past the first moves the fields after it and the buttons down 16, and the panel and the plate grow 16
+// with them (pv_grow), while the screen holds the plate; past that the lines left are joined into the last one,
+// which is clipped at the panel's edge as before.
+export const I64 PV_LINES = 3;
+I64[5] pv_ln;           // the lines each value takes, 1 to PV_LINES
+I64 pv_more = 0;        // the lines past the first, all values
+
+void pv_wrap(I64 w) {
+    I64 room = max(HP - PL_TOP - PL_H, 0) / 16;
+    pv_more = 0;
+    for i in 0..5 {
+        I64 n = wrap_lines(pv_val[TEXT * i..TEXT * i + pv_vl[i]], pv_vl[i], pv_vf[i], w);
+        n = min(n, min(PV_LINES, 1 + room - pv_more));
+        if (n < 1) { n = 1; }
+        pv_ln[i] = n;
+        pv_more = pv_more + n - 1;
+    }
+}
+
+// The plate's growth for the selected row's preview: 16 a wrapped line, 0 at rest, with no row, while a file's lines
+// show (Tab) or where the panel is dropped (DN-22). Kept for the selection, the layout's generation and the scale, so
+// the rows that read it between a present() and its use never redo the preview.
+I64 pg_sel = -1;
+I64 pg_gen = -1;
+I64 pg_z = -1;
+I64 pg_qn = -1;
+I64 pg = 0;
+export I64 pv_grow() {
+    if (qn == 0 || rn == 0 || previewing || WP < 880) { return 0; }
+    I64 s = selected();
+    if (s == pg_sel && gen == pg_gen && Z == pg_z && qn == pg_qn) { return pg; }
+    pg_sel = s;
+    pg_gen = gen;
+    pg_z = Z;
+    pg_qn = qn;
+    preview_of(s);
+    pv_wrap(176 * Z);
+    pg = 16 * pv_more;
+    return pg;
+}
+
 void preview_panel(inout U32[_] row, I64 y) {
     if (!preview_shown()) { return; }
     I64 x0 = q_pv_x0 * Z;
     I64 x1 = q_pv_x1 * Z;
     I64 y0 = q_pv_y0 * Z;
-    I64 y1 = q_pv_y1 * Z;
+    I64 y1 = (q_pv_y1 + pv_grow()) * Z;
     if (y < y0 || y >= y1) { return; }
     // DN-49 (frame 2): PAPER, radius 12, 16 in; the 48 px icon, 12, the name (TITLE) over what it is; the fields, a
     // 72 px label column, 26 apart; two 32 px buttons 4 apart, SURF1, radius 6, the word 10 in.
@@ -2414,6 +2460,8 @@ void preview_panel(inout U32[_] row, I64 y) {
     I64 t = q_pv_y0;
     I64 lx = x0 + 16 * Z;
     I64 rx = x1 - 16 * Z;
+    pv_more = 0;
+    if (!previewing) { pv_wrap(rx - lx - 72 * Z); }
     icon_c(row, y, lx + 24 * Z, (t + 40) * Z, pv_icon, 48, tok(tokens.PAPER));
     I64 tx = lx + 60 * Z;
     say(row, y, tx, t + 20, 18, rx, pv_name, pv_nl, tok(tokens.INK), faces.TITLE);
@@ -2430,15 +2478,24 @@ void preview_panel(inout U32[_] row, I64 y) {
         }
         return;
     }
+    I64 r = fy;
     for i in 0..5 {
-        I64 r = fy + 26 * i;
         say(row, y, lx, r, 16, lx + 72 * Z, pv_lab[16 * i..16 * i + pv_ll[i]], pv_ll[i], tok(tokens.INK_DIM),
             faces.BODY);
-        say(row, y, lx + 72 * Z, r, 16, rx, pv_val[TEXT * i..TEXT * i + pv_vl[i]], pv_vl[i], tok(tokens.INK),
-            pv_vf[i]);
+        I64 vn = pv_vl[i];
+        I64 at = 0;
+        for l in 0..pv_ln[i] {
+            I64 e = vn;           // the last line takes the rest
+            if (l + 1 < pv_ln[i]) { e = wrap_end(pv_val[TEXT * i..TEXT * i + vn], vn, at, pv_vf[i], rx - lx - 72 * Z); }
+            say(row, y, lx + 72 * Z, r + 16 * l, 16, rx, pv_val[TEXT * i + at..TEXT * i + e], e - at, tok(tokens.INK),
+                pv_vf[i]);
+            at = e;
+            while (at < vn && pv_val[TEXT * i + at] == ' ') { at = at + 1; }
+        }
+        r = r + 26 + 16 * (pv_ln[i] - 1);
     }
     for i in 0..2 {
-        I64 bt = fy + 26 * 5 - 10 + 16 + 36 * i;
+        I64 bt = fy + 26 * 5 - 10 + 16 + 16 * pv_more + 36 * i;
         I64 by0 = bt * Z;
         I64 by1 = (bt + 32) * Z;
         if (y >= by0 && y < by1) {

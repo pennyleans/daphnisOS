@@ -29,4 +29,44 @@ test "an app that ends with grants: forget says so and its record is empty; a sl
     assert(!grtrack.forget(5));
     assert(grtrack.track(5, grtrack.DISK, 70) && grtrack.at(5, 0) == 70);   // the slot's next window starts afresh
 }
+
+// The desk's table as hdesk.ci's gr_track reads it: each place's kind (0 free, 1 a terminal, 2 a pixel window), whether
+// it is a host (lx_host) and its grant word; the record told for every place.
+I64 told(in I64[_] k, in Bool[_] host, in I64[_] g, I64 now) {
+    for i in 0..grtrack.SLOTS {
+        Bool c = grtrack.track(i, grtrack.word(k[i], host[i], g[i]), now);
+    }
+    return grtrack.windows();
+}
+
+test "an app in its own window is one row, not two; the same app opened twice is two rows (0.1.1)" {
+    I64[16] k;
+    Bool[16] host;
+    I64[16] g;
+    for i in 0..grtrack.SLOTS { Bool f = grtrack.forget(i); }
+    // the design read of v0.1.0: Console, Edit (cal.ci) and Monitor; Monitor's host and window share its process,
+    // so both carry its ring 0 grant
+    k[0] = 1;                                          // Console
+    k[1] = 1;                                          // Edit, a terminal app
+    k[2] = 1;                                          // Monitor's host, at /home/demo
+    host[2] = true;
+    g[2] = grtrack.KERN;
+    k[3] = 2;                                          // Monitor's window
+    g[3] = grtrack.KERN;
+    assert(told(k, host, g, 10) == 1);
+    assert(grtrack.seen(2) == 0 && grtrack.seen(3) == grtrack.KERN);
+    k[4] = 1;                                          // Monitor opened again: a second host and window
+    host[4] = true;
+    g[4] = grtrack.KERN;
+    k[5] = 2;
+    g[5] = grtrack.KERN;
+    assert(told(k, host, g, 20) == 2);
+    assert(grtrack.seen(4) == 0 && grtrack.seen(5) == grtrack.KERN && grtrack.at(5, 2) == 20);
+    g[1] = grtrack.DISK;                               // a terminal app's own grant is its own row
+    assert(told(k, host, g, 30) == 3);
+    k[4] = 0;                                          // the second Monitor ends: host and window go
+    host[4] = false;
+    k[5] = 0;
+    assert(told(k, host, g, 40) == 2 && grtrack.seen(5) == 0);
+}
 // SPDX-License-Identifier: Apache-2.0

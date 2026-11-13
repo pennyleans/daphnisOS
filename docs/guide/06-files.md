@@ -1,45 +1,27 @@
-# 06 Files, the volume, grants
+# 06 Files, home volume, and grants
 
-## The root
+The root filesystem is in RAM and resets at boot. The release image has an
+ext2 volume mounted at `/home`. Each account has a directory under that mount,
+such as `/home/alex`. Save files under `$HOME` in a signed-in session to keep
+them across reboots.
 
-The image's files sit at their cpio paths in a RAM filesystem (`/etc/motd`, `/bin/ls`). Programs make, move and
-remove files and directories there; every process has a working directory. Linux's file calls work as a static
-musl program makes them (`open`, `openat` and the other `*at` calls, `read`, `write`, `lseek`, `stat`,
-`getdents64`, `rename`, `mkdir`, `rmdir`, `unlink`, `dup`, `fcntl`, `poll`). 16 descriptors a process. The root is
-gone at power off.
+## Development volumes
 
-A file made inside Daphnis holds at most 64 KiB today.
-
-## `/disk`
-
-Boot with a raw ext2 volume and it mounts at `/disk` (virtio block):
-
-```
-tools/mkdisk.sh $B/play.img                 # a 4 MiB test volume, pinned digest
-DISK=$B/play.img tools/run-qemu.sh ...      # any flavor that mounts it (hdesk, deskplay, disk)
-```
-
-Any ext2 volume with 4 KiB blocks works; `mke2fs` and `debugfs` on the host read and write the same bytes. Reads need
-nothing. Writes need the grant.
+Development images that mount a volume use the same `/home` path. See
+[Launch a persistent development desktop](desktop-launch.md) to attach an
+existing ext2 image to QEMU.
 
 ## Grants
 
-A process starts with no grants. `grant` sets them for one command and its children:
+Grants control access to the persistent volume, network, and sound device.
+The desktop manages grants for signed-in sessions. From a shell, `grant`
+requests access for one command and its children, subject to the session's
+permissions.
 
-```
-grant disk ced /disk/notes.txt
-grant net wget http://10.0.2.2:8000/file
-grant disk,audio ./doom ...
-```
-
-| grant | without it |
+| Grant | Access |
 | --- | --- |
-| `disk` | a write under `/disk` fails with `EACCES` |
-| `net` | `socket` fails with `EACCES` |
-| `audio` | opening `/dev/dsp` fails with `EACCES` |
+| `disk` | Write under `/home`, subject to file permissions. |
+| `net` | Open network sockets. |
+| `audio` | Open the sound device `/dev/dsp` when available. |
 
-The grant word is part of the process's canonical state, inherited by `fork`. The desk rings a window whose
-foreground holds `disk` (sienna) or `net` (ochre).
-
-Checked by `check.sh` (files, directories, processes, pipes against Linux) and `check-disk.sh` (16: ext2 read and
-write, a second boot sees the first boot's writes, the grant's refusal, the Doom chain unchanged with a volume).
+`check-disk.sh` exercises ext2 reads, writes, and persistence in its test image.

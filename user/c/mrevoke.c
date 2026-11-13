@@ -44,7 +44,7 @@ static long word_of(long pid)
     unsigned char b[REC];
     for (long id = 0; id < 64; id++) {
         unsigned long p, st, g;
-        if (call(NR_FACTS, 2, id, (long)b, REC) != REC) break;
+        if (call(NR_FACTS, 2, id, (long)b, REC) < REC) break; /* the record only grows (KF-R1: 96 bytes) */
         memcpy(&p, b, 8);
         memcpy(&st, b + 24, 8);
         memcpy(&g, b + 72, 8);

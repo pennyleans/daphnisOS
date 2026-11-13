@@ -4,10 +4,11 @@
 // Address, the numbers in mono 12.
 //
 // The host reads the network record (`facts` kind 3, KF-3c; any process may) and hands its fields over by set_record;
-// the page formats them. Until the host has a record it calls no_record, and the page shows its title alone with
-// Copy Details at 40 percent: it never shows numbers it was not given. A field the record holds as zero (no address
-// yet, no gateway) is a row the page leaves out. Copy Details returns COPY; details() writes the rows as "Label: value"
-// lines for the host to put on the clipboard (as the About page's Copy Details, frame 31).
+// the page formats them. Until the host has a record (no network device) it calls no_record, and the page shows its
+// title and "Not available" in INK_DIM, as the Grants page shows "None active" and the system panel its Wi-Fi: it
+// never shows numbers it was not given. A field the record holds as zero (no address yet, no gateway) is a row the
+// page leaves out. Copy Details is at 40 percent and takes no press until the desk has a clipboard (set_copy_live, as
+// the About page's, frame 31; POST-1); then it returns COPY, and details() writes the rows as "Label: value" lines.
 //
 // The dot is the network's green (stpage.green, note 62) when the link is up, INK_DIM when it is down.
 import user.ci.kit.tokens;
@@ -23,6 +24,7 @@ export const I64 BOOT = 2;
 
 export const I64 S_PITCH = 41;         // a 32 px row to the next: 32, 4, the rule, 4 (frame 35)
 export const I64 ROWS = 7;
+export const I64 EMPTY_H = 40;         // the empty state's line, as the Grants page's (kit/stgrant.ci LINE)
 
 export const I64 R_STATUS = 0;
 export const I64 R_CONFIGURED = 1;
@@ -38,6 +40,7 @@ U8[6] mac;
 U8[16] quad;                           // address, mask, gateway, DNS, four bytes each in network order
 I64 source = DHCP;
 
+Bool copy_live = false;               // a desk clipboard (POST-1: none in 0.1.x)
 I64 fs = 0;                            // 1: Copy Details under the keyboard
 Bool kbd = false;
 
@@ -61,6 +64,9 @@ export void set_record(Bool link, in U8[_] m, in U8[_] addr, in U8[_] mask, in U
 }
 
 export void no_record() { has = false; }
+
+// Whether Copy Details can work: the desk has a clipboard.
+export void set_copy_live(Bool b) { copy_live = b; }
 export Bool record() { return has; }
 
 export void open() {
@@ -68,8 +74,8 @@ export void open() {
     kbd = false;
 }
 
-// The keyboard moves in from the sidebar: Copy Details, the page's one stop, when there is a record to copy; whether it
-// took the keyboard. Shift+Tab finds the same stop.
+// The keyboard moves in from the sidebar: Copy Details, the page's one stop, when there is a record to copy and a
+// clipboard to copy it to; whether it took the keyboard. Shift+Tab finds the same stop.
 export Bool enter() {
     kbd = true;
     fs = 0;
@@ -84,7 +90,7 @@ export Bool enter_last() {
 
 Bool tab(I64 d) {
     I64 can = 0;
-    if (has) { can = 1; }
+    if (has && copy_live) { can = 1; }
     fs = stpage.tab_to(fs - 1, d, 1, can) + 1;
     return fs > 0;
 }
@@ -121,9 +127,9 @@ export I64 value_of(I64 r, inout U8[_] t) {
         return stpage.put(t, 0, b"Disconnected");
     }
     if (r == R_CONFIGURED) {
-        if (source == DHCP) { return stpage.put(t, 0, b"Automatic"); }
+        // FIXED is QEMU's address, given by the machine as its DHCP would give it: Automatic.
         if (source == BOOT) { return stpage.put(t, 0, b"Manual"); }
-        return stpage.put(t, 0, b"Fixed");
+        return stpage.put(t, 0, b"Automatic");
     }
     if (r == R_MAC) {
         I64 at = 0;
@@ -194,11 +200,19 @@ export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
     if (stpage.on(y, y0 + 14, stpage.BTN + 8)) {
         if (stpage.on(y, y0 + 18, stpage.BTN)) {
             stpage.button(row, bx, y0 + 18, copy_w(), stpage.BTN, b"Copy Details", 12, tok(tokens.INK), faces.NAME);
-            if (!has) { stpage.fade(row, bx, cr); }
+            if (!has || !copy_live) { stpage.fade(row, bx, cr); }
         }
-        if (kbd && fs == 1 && has) { stpage.focus(row, bx, y0 + 18, cr, y0 + 18 + stpage.BTN, stpage.R_CTRL); }
+        if (kbd && fs == 1 && has && copy_live) {
+            stpage.focus(row, bx, y0 + 18, cr, y0 + 18 + stpage.BTN, stpage.R_CTRL);
+        }
     }
-    if (!has) { return; }
+    if (!has) {                        // no network device: the state, dim, where the rows would start
+        if (stpage.on(y, y0 + stpage.BODY, EMPTY_H)) {
+            I64 e = pen.text(row, cx, stpage.base(y0 + stpage.BODY, EMPTY_H), cr, b"Not available", 13,
+                             tok(tokens.INK_DIM), faces.BODY);
+        }
+        return;
+    }
     stpage.section(row, cx, y0 + stpage.BODY, cr, b"WIRED", 5, y);
     I64 ry = rows_y(y0);
     Bool first = true;
@@ -231,15 +245,15 @@ export void row_at(inout U32[_] row, I64 cx, I64 y0, I64 cr, I64 yb, I64 y) {
 
 export I64 click(I64 cx, I64 y0, I64 cr, I64 yb, I64 px, I64 py) {
     kbd = false;
-    if (has && py >= y0 + 18 && py < y0 + 18 + stpage.BTN && px >= cr - copy_w() && px < cr) {
+    if (has && copy_live && py >= y0 + 18 && py < y0 + 18 + stpage.BTN && px >= cr - copy_w() && px < cr) {
         fs = 1;
         return COPY;
     }
     return stpage.NONE;
 }
 
-// A key: Tab and Shift+Tab go to Copy Details and on to the sidebar (BACK); Enter or Space copies. An arrow with no
-// stop shows the ring on it.
+// A key: Tab and Shift+Tab go to Copy Details (with a clipboard) and on to the sidebar (BACK); Enter or Space
+// copies. An arrow with no stop shows the ring on it.
 export I64 key(I64 code) {
     if (stpage.is_tab(code) || stpage.is_arrow(code)) { kbd = true; }
     if (stpage.is_tab(code)) {
@@ -251,7 +265,7 @@ export I64 key(I64 code) {
         return stpage.NONE;
     }
     if (stpage.is_arrow(code)) { return stpage.DRAW; }
-    if (has && stpage.is_press(code)) { return COPY; }
+    if (has && copy_live && stpage.is_press(code)) { return COPY; }
     return stpage.NONE;
 }
 // SPDX-License-Identifier: Apache-2.0

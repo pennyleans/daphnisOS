@@ -112,7 +112,8 @@ int main(int argc, char **argv)
     return cint_program_main(argc + 3 + ng, v);
 }
 EOF
+# HW-16: the module files link in byte order of their paths (as user/ci/build.sh does since B3), so two hosts link the same bytes
 # shellcheck disable=SC2046
 $cc -std=c17 -O2 -static -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -Wl,--gc-sections -s -DCINT_RT_HELPERS_PORTABLE -I"$inc" -I"$c" \
-    -o "$out/ced" "$work/main.c" $(find "$c" -name '*.c' ! -name cint-program.c) "$inc/cint_rt.c"
+    -o "$out/ced" "$work/main.c" $(find "$c" -name '*.c' ! -name cint-program.c | LC_ALL=C sort) "$inc/cint_rt.c"
 sha256sum "$out/ced"

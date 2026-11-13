@@ -12,7 +12,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-FETCH_SHA256 = '58fff3c6bb9cdf761460dc5058f5d712e8fe6139168f9631bec203d8db3281e6'
+FETCH_SHA256 = '084487a97a04e4bab9c84ede5e9fabb706b6c9ca2380a0efdc22153186d44cea'
 SYNTHETIC_FIXTURE = b'DAPHKEY1' + bytes(range(80, 112)) + bytes(range(16))
 
 

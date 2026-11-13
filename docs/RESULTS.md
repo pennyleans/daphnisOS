@@ -84,7 +84,7 @@ K4 (stretch), line by line:
   than are free, each with the state hash unchanged; no case of a fragmented pool.
 * **The view shim is a copy window** (`phys_read64` and friends with `in` and `out` views), because
   an extern cannot return a view and cannot hold one past the call. Ranges are fixed in
-  `rt/phys.c` (`docs/memory.md`). Whether this is what l meant by the shim is l's call.
+  `rt/phys.c` (`docs/memory.md`).
 * **Error unions across modules and `Grants` across modules are refused by cintc (`C9102`)**, so
   the allocators return negative status codes and the service-calling code is in the root module,
   copied into the hosted twin and compared between markers (`docs/cint-gaps.md` 7 and 8).

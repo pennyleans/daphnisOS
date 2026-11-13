@@ -38,8 +38,7 @@ The shim is a copy, not a shared view: the data a view holds is valid for the ca
 (SPEC-03 A-15), and a page-table edit is a read of 512 words, a change, and a write. It is
 the smallest construct that fits the spec as pinned. A real view over a physical range, or
 registered buffers (SPEC-03 6a), would avoid the copies; the pinned toolchain has no way to
-make cintc emit one for the kernel. Whether this is the shim l meant is still l's call
-(`docs/HANDOFF.md`, open items).
+make cintc emit one for the kernel.
 
 ## The memory map
 

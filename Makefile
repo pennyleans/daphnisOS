@@ -409,7 +409,8 @@ $(UB)/%: $$(shell bash user/ci/build.sh --deps $$*) $(UB_COMMON)
 	@mkdir -p $(@D)
 	@CINT_TOOLCHAIN=$(CINT_TOOLCHAIN) CI_OUT=$(UB) CI_TLS=$(O)/tls bash user/ci/build.sh $* > $@.log 2>&1 \
 	    || { cat $@.log >&2; rm -f $@; exit 1; }
-$(UB)/fetch: $(O)/tls/libbearssl.a user/tls/anchors.h
+# The programs that import user/ci/tls.ci (fetch, agent) link BearSSL from $(O)/tls
+$(UB)/fetch $(UB)/agent: $(O)/tls/libbearssl.a user/tls/anchors.h
 # The C probes (user/c, musl-gcc as user/c/build.sh builds them): a static pattern, so the cint rule above is not tried
 C_PROGS := $(basename $(notdir $(wildcard user/c/*.c)))
 $(addprefix $(UB)/,$(C_PROGS)): $(UB)/%: user/c/%.c user/c/build.sh
